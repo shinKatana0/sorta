@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.db
+*.db-wal
+*.db-shm
+config.yaml
+moves*.jsonl
+sort_plan_*.csv
+sort_plan_*.html
+sort_plan_*_thumbs/
+report_output/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+dist/

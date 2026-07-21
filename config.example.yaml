@@ -1,0 +1,146 @@
+# Sorta — configuration. Copy to config.yaml and edit.
+
+# Source folders with photos (traversed recursively)
+sources:
+  - "D:/Photos"          # quote Windows paths
+  # - "/mnt/photos"
+
+# Path to the SQLite index
+database: "sorta.db"
+
+# Language of sorted folders and status text (ru | en | ja), default en (F25/F27).
+# Cities/districts are still transliterated — place localization depends on the
+# geo hierarchy (F26).
+language: en
+
+# CLI log level: DEBUG | INFO | WARNING | ERROR (default WARNING).
+# Does not affect folder/name language — only the verbosity of technical messages.
+log_level: WARNING
+
+index:
+  extensions:
+    photo: [jpg, jpeg, png, heic, heif, webp, tif, tiff, bmp]
+    raw:   [cr2, cr3, nef, arw, dng, orf, rw2, raf]
+    video: [mp4, mov, avi, mts, m2ts, 3gp, mkv]
+  # Files smaller than this are ignored (icons, thumbnails, junk)
+  min_file_size_kb: 5
+  # Threads for parallel hashing/pHash (default min(8, cpu count))
+  workers: 8
+  # pHash is computed by a separate command `sorta phash` (not in index), then
+  # `sorta dupes --near`. Hamming-distance threshold for the report:
+  phash_max_distance: 5
+  # Skip hidden directories and directories from this list
+  skip_dirs: [".thumbnails", "@eaDir", "$RECYCLE.BIN", "System Volume Information"]
+
+dates:
+  # Years outside this range are treated as junk in EXIF/filename
+  min_year: 1990
+  max_year: 2035
+
+dedup:
+  # Choosing the canonical file among exact duplicates:
+  # prefer_exif_then_largest — the file with an EXIF date first, then the larger one
+  canonical_strategy: prefer_exif_then_largest
+
+geo:
+  # A gap between frames larger than this (in hours) starts a new time session;
+  # within a session, files without GPS inherit the place of GPS neighbours
+  # (session_inferred)
+  session_gap_hours: 6
+  # Source of the Country/City/District geo hierarchy: offline (bundled GeoNames,
+  # default, no network) | online (Nominatim/OSM, opt-in, needs network) — G2/G2b.
+  provider: offline
+  # Online-provider settings (only when provider: online):
+  nominatim_url: "https://nominatim.openstreetmap.org"
+  nominatim_user_agent: "sorta-photo-organizer"   # required by the OSM policy
+  nominatim_timeout: 10
+  # Coordinate rounding for the online-geo cache: neighbouring photos in the same
+  # ~cell = one request to Nominatim. 3 digits ≈ 110 m (balance of speed/accuracy).
+  cache_coord_digits: 3
+
+events:
+  # A gap between frames larger than this (hours) — a new time session
+  gap_hours: 6
+  # F30: adjacent sessions in the SAME city/region merge into a trip when the gap
+  # is smaller than this (hours) — wedding evening+morning or a multi-day trip = one event
+  trip_merge_gap_hours: 48
+  # F30: groups smaller than this size do not become an event (files go down the
+  # "no event" branch → Year/Month)
+  min_event_size: 5
+  # F44: adjacent sessions merge into a trip even across DIFFERENT cities if they
+  # are in the same country and closer than this (km) — Bali across villages → one
+  # trip; 0 — merge only on city/region equality
+  trip_merge_max_km: 120
+
+sort:
+  # Photos with multiple people in --by person mode:
+  # primary — into the largest face's folder; shared_folder — into a shared-people folder
+  multi_person: primary
+  # Directories of the already-manually-sorted part of the collection: files in
+  # them (and all subfolders, by path boundary) are not sorted — they stay in the
+  # index but drop out of the plan. Combined with the --exclude flag. Photographed
+  # documents (receipt/paper/meter, no faces) go to _Documents/ — a separate review
+  # folder, not junk.
+  exclude_dirs: []
+  #   - "D:/Photos/Sorted"
+  # Threads for parallel report-thumbnail generation (sort --thumbnails).
+  # 0 = auto (min(8, cpu count)); decoding is spread across the pool (F18).
+  thumbnail_workers: 0
+  # F35: root for albums (sorta album / "Collect into folder" buttons).
+  # null → "_Albums" next to the DB
+  album_dir: null
+  # F56: where to write sort plan reports (CSV/HTML/thumbnails).
+  # null → report_output/ next to the DB
+  report_dir: null
+  # F49: drop the district level in the city layout when the district name is not
+  # localized in the config language (foreign transliteration Wichit/Tuban →
+  # Country/City/Year; localized Ubud/Kuta and online districts from Nominatim are
+  # not affected). false — previous behaviour (transliterated district in the path).
+  drop_unlocalized_district: true
+
+faces:
+  min_face_px: 40        # faces smaller (px) are not embedded — quality filter
+  det_threshold: 0.7     # detector confidence threshold (Immich default)
+  min_cluster_size: 5    # min faces per cluster (HDBSCAN); smaller — noise
+  max_distance: 0.5      # cosine face-similarity threshold (Immich default)
+  # Threads for prefetch frame decoding (GPU inference is serial); default min(8, cores)
+  decode_workers: 8
+
+# Phase 5 (F6): places without GPS, event naming, junk classification.
+# Event-name provider: template (offline, default) | local_vlm (ollama)
+# | claude (Anthropic API, only when explicitly chosen — outbound traffic).
+naming:
+  provider: template
+  landmark_threshold: 0.85   # conservative: 0.35 gave false matches (a wrong city
+  #                            is worse than unknown). Proper fix — a geo model, backlog #11
+  junk_threshold: 0.85       # CLIP threshold for screenshot/meme (high:
+  #                            photos with camera EXIF/GPS/faces are not marked junk)
+  document_threshold: 0.9    # CLIP threshold for "documents" (F15): a photographed
+  #                            document (receipt/paper/meter, no faces) → _Documents, not junk
+  # "Document rescue" thresholds based on the text-area fraction (F37/F38):
+  text_frac_min: 0.08        # a document with a lower text fraction → treated as a scene (FP gate)
+  text_frac_document: 0.15   # a photo with a higher text fraction → treated as a document (FN rescue)
+  text_rescue_docscore_min: 0.3  # OCR runs only if doc-score ≥ this (perf)
+  text_frac_downscale_px: 1280   # downscale the frame to this before OCR detection (speed)
+  # F37-B: deep junk-classification tier — a local VLM (memory/document/product)
+  # instead of the fast CLIP. opt-in: needs the [vlm] extra (uv sync --extra vlm);
+  # default false, and with the extra missing it gracefully falls back to CLIP.
+  # The same is enabled by the `--deep` flag for one run and the "Deep analysis (VLM)"
+  # checkbox in the UI.
+  vlm_enabled: false
+  classify_vlm_model: "Qwen/Qwen2.5-VL-3B-Instruct"  # junk VLM classifier (deep tier)
+  product_candidate_min: 0.4  # product-CLIP above this → the frame goes to the VLM tier (candidate gate)
+  landmarks_file: data/landmarks.yaml
+  max_samples: 4             # how many event frames to pass to the VLM/Claude (3–5)
+  clip:
+    model: ViT-L-14-quickgelu  # the quickgelu variant is required for the openai weights
+    pretrained: openai
+    batch_size: 16
+  local_vlm:                 # ollama, if provider: local_vlm
+    base_url: http://localhost:11434
+    model: llava
+    timeout: 120
+  claude:                    # if provider: claude
+    model: claude-opus-4-8
+    api_key_env: ANTHROPIC_API_KEY
+    timeout: 60

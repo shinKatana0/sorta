@@ -1,0 +1,39 @@
+Sorta — third-party data attribution
+=====================================
+
+This project bundles and/or queries geographic data from third parties.
+Sorta's own source code is MIT-licensed (see LICENSE); the notices below
+cover only the data, not the code.
+
+1. GeoNames (bundled, offline reverse geocoding)
+-------------------------------------------------
+`data/geo/*.tsv` (countries.tsv, admin1.tsv, places.tsv, names.tsv) are
+derived from the GeoNames geographical database (https://www.geonames.org/),
+built via `scripts/build_geodata.py` from a GeoNames `cities1000` export.
+
+GeoNames is made available under a Creative Commons Attribution 4.0
+License (CC BY 4.0): https://creativecommons.org/licenses/by/4.0/
+
+  Data source: GeoNames (https://www.geonames.org/), CC BY 4.0.
+
+This attribution satisfies the CC BY 4.0 requirement for any product
+that redistributes GeoNames-derived data, including Sorta's offline
+`geo.provider: offline` mode (the default — no network access involved).
+
+2. OpenStreetMap / Nominatim (optional, online reverse geocoding)
+-------------------------------------------------------------------
+When a user explicitly enables `geo.provider: online` in `config.yaml`,
+Sorta sends GPS coordinates (never images) to a Nominatim reverse-geocoding
+endpoint (default: https://nominatim.openstreetmap.org) to resolve places
+more accurately for locations outside the bundled GeoNames coverage.
+
+OpenStreetMap data is © OpenStreetMap contributors, available under the
+Open Database License (ODbL): https://www.openstreetmap.org/copyright
+
+Sorta's Nominatim client identifies itself with a fixed User-Agent
+(`geo.nominatim_user_agent`, default `sorta-photo-organizer`) and
+throttles requests to at most one per second, per the Nominatim usage
+policy: https://operations.osmfoundation.org/policies/nominatim/
+
+This feature is opt-in and off by default; see SECURITY.md for the
+full privacy discussion.

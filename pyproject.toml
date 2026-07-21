@@ -1,0 +1,119 @@
+[project]
+name = "sorta"
+version = "0.1.0"
+description = "Index and sort a large photo collection by city, person, or event"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "shinKatana0", email = "shinKatana0@users.noreply.github.com" }]
+requires-python = ">=3.11,<3.15"  # upper bound: dictated by the GPU profile — CUDA
+# wheels (nvidia-*-cu13) do not support 3.15+; the CPU profile does not need it, but a
+# single requires-python for both profiles is simpler, so we do not widen it (F55).
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "pillow>=10.0",
+    "blake3>=0.4",
+    "imagehash>=4.3",
+    "pyexiftool>=0.5",
+    "reverse-geocoder>=1.5.1",
+    "send2trash>=1.8",
+    "insightface>=1.0.1",
+    "hdbscan>=0.8.44",
+    "numpy>=2.4.6",
+    "open-clip-torch>=3.3.0",
+    "pillow-heif>=1.4.0",
+    "easyocr>=1.7.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "pytest-cov>=5.0", "types-PyYAML"]
+# F37-B: deep classifier tier (VLM Qwen2.5-VL). Opt-in — not in the base
+# dependencies; install `uv sync --extra vlm` when naming.vlm_enabled: true.
+# Without it the code lazily falls back to the fast tier (CLIP) — see the graceful
+# fallback in junk.py.
+vlm = ["transformers>=4.49,<4.52", "accelerate>=0.34", "qwen-vl-utils>=0.0.8"]
+# F55: install profiles for the hardware — exactly one of cpu/gpu (mutually
+# exclusive, see tool.uv.conflicts). `uv sync --extra cpu` — the default for other
+# machines without NVIDIA; `uv sync --extra gpu` — the current CUDA 13 (Blackwell
+# sm_120) stack. The code (faces.py, landmarks.py) already falls back to
+# CPUExecutionProvider — no change needed, only the package choice at install time.
+cpu = ["onnxruntime>=1.27.0", "torch>=2.10.0", "torchvision>=0.25.0"]
+gpu = [
+    "onnxruntime-gpu>=1.27.0",
+    # CUDA 13 + cuDNN 9 runtime for CUDAExecutionProvider — pip wheels instead of a
+    # system CUDA Toolkit. We do not use the onnxruntime-gpu[cuda,cudnn] extras:
+    # they reference the outdated nvidia-*-cu13 names, which on PyPI are now just
+    # stubs (for CUDA 13 the packages were renamed to the suffixless form).
+    "nvidia-cuda-runtime>=13.0",
+    "nvidia-cuda-nvrtc>=13.0",
+    "nvidia-cublas>=13.0",
+    "nvidia-cufft>=12.0",
+    "nvidia-curand>=10.0",
+    "nvidia-cudnn-cu13>=9.0",
+    # torch/torchvision with CUDA (cu130) for CLIP on the GPU — otherwise open-clip
+    # pulls CPU torch and junk/landmarks run on the CPU (hours on 300 GB). Index below.
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/shinKatana0/sorta"
+Repository = "https://github.com/shinKatana0/sorta"
+
+[project.scripts]
+sorta = "sorta.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sorta"]
+
+# F55: cpu/gpu — mutually exclusive install profiles (torch/onnxruntime for
+# different hardware). conflicts forces uv to resolve them in separate forks, which
+# is what lets tool.uv.sources below pick a different torch index per extra.
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "gpu" },
+    ],
+]
+
+# torch/torchvision: under extra=gpu — from the PyTorch cu130 index (CUDA 13, for
+# Blackwell sm_120, compatible with the nvidia-*-cu13 packages of onnxruntime-gpu);
+# under extra=cpu — from the CPU PyTorch index (resolves cleaner than the default
+# PyPI wheel with its hidden dependency on a system CUDA). explicit: the index is
+# used only for the packages explicitly pinned below, everything else — from PyPI.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu130", extra = "gpu" },
+    { index = "pytorch-cpu", extra = "cpu" },
+]
+torchvision = [
+    { index = "pytorch-cu130", extra = "gpu" },
+    { index = "pytorch-cpu", extra = "cpu" },
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.coverage.report]
+# Ratchet: raise to 80 after covering cli.py and implementing the phase 2-5 stubs.
+fail_under = 65

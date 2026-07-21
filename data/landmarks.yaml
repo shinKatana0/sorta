@@ -1,0 +1,61 @@
+# Curated-список известных мест для CLIP zero-shot (F6, FR-2b).
+# Расширяется пользователем: добавьте свои места по образцу.
+#
+# Формат записи:
+#   prompt  — англоязычное описание для CLIP (матчится лучше русского);
+#   name    — как место называется в отчётах и папках;
+#   country — ISO-код страны (как отдаёт reverse_geocoder, поле cc);
+#   city    — город для places.city.
+#
+# Порог уверенности — naming.landmark_threshold в config.yaml.
+
+landmarks:
+  - prompt: "a photo of the Eiffel Tower in Paris"
+    name: "Эйфелева башня"
+    country: FR
+    city: Paris
+
+  - prompt: "a photo of Red Square and Saint Basil's Cathedral in Moscow"
+    name: "Красная площадь"
+    country: RU
+    city: Moscow
+
+  - prompt: "a photo of the Colosseum amphitheatre in Rome"
+    name: "Колизей"
+    country: IT
+    city: Rome
+
+  - prompt: "a photo of the Brandenburg Gate in Berlin"
+    name: "Бранденбургские ворота"
+    country: DE
+    city: Berlin
+
+  - prompt: "a photo of Sagrada Familia basilica in Barcelona"
+    name: "Саграда Фамилия"
+    country: ES
+    city: Barcelona
+
+  - prompt: "a photo of the Charles Bridge in Prague"
+    name: "Карлов мост"
+    country: CZ
+    city: Prague
+
+  - prompt: "a photo of Hagia Sophia in Istanbul"
+    name: "Айя-София"
+    country: TR
+    city: Istanbul
+
+  - prompt: "a photo of the Burj Khalifa tower in Dubai"
+    name: "Бурдж-Халифа"
+    country: AE
+    city: Dubai
+
+  - prompt: "a photo of Times Square in New York City"
+    name: "Таймс-сквер"
+    country: US
+    city: "New York"
+
+  - prompt: "a photo of Tower Bridge in London"
+    name: "Тауэрский мост"
+    country: GB
+    city: London

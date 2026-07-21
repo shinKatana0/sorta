@@ -1,0 +1,30 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # CPU-профиль: torch/onnxruntime CPU-сборки. Верхняя версия — по наличию
+        # CPU-wheels torch/onnxruntime (3.14 добавить, когда появятся колёса).
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # CPU-профиль + dev-инструменты (torch/onnxruntime/pytest вынесены в extra,
+      # см. pyproject F55). Голый `uv sync` их не поставит и потянет torch мимо
+      # pin-индекса — поэтому обязательны --extra cpu --extra dev.
+      - name: Quality gate (ruff + mypy + pytest, CPU profile)
+        run: uv run --python ${{ matrix.python }} --extra cpu --extra dev python scripts/check.py
