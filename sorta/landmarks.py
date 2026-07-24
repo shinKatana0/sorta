@@ -12,6 +12,7 @@ finished in Phase 6.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -122,6 +123,24 @@ class CachingFeatureClassifier:
         return np.stack(rows)
 
 
+def _decode_pool_size(s: NamingSettings) -> int:
+    """How many threads decode the frames of a CLIP batch (F64).
+
+    The CLIP stages (junk/landmarks) are decode-bound, not GPU-bound: growing the
+    batch barely moves the needle, while the decode pool does — on a 24-core
+    machine 16 workers give ~1.6× the throughput of 8. So the auto default is one
+    worker per core capped at 16 (past that the curve flattens out, and every
+    in-flight decode costs memory).
+
+    `clip.decode_workers` > 0 is a user override and wins over the auto default;
+    the field is read via getattr — it is optional in the settings object.
+    """
+    override = int(getattr(s, "clip_decode_workers", 0) or 0)
+    if override > 0:
+        return override
+    return max(1, min(os.cpu_count() or 4, 16))
+
+
 def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML, smoke test
     """The real open_clip zero-shot classifier (shared by landmarks and junk).
 
@@ -137,7 +156,6 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
       decode+encode_image per path over the classifier's lifetime, not per
       `classify()` call.
     """
-    import os
     from concurrent.futures import ThreadPoolExecutor
 
     import open_clip
@@ -159,7 +177,7 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
     except Exception:
         _in = 224
     _draft = (_in * 2, _in * 2)
-    _pool = ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4)))
+    _pool = ThreadPoolExecutor(max_workers=_decode_pool_size(s))
     _text_cache: dict[tuple[str, ...], object] = {}
 
     def _load(path: str):
