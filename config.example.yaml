@@ -103,7 +103,11 @@ faces:
   det_threshold: 0.7     # detector confidence threshold (Immich default)
   min_cluster_size: 5    # min faces per cluster (HDBSCAN); smaller — noise
   max_distance: 0.5      # cosine face-similarity threshold (Immich default)
-  # Threads for prefetch frame decoding (GPU inference is serial); default min(8, cores)
+  # Parallel inference sessions (F12.1): faces is inference-bound; independent
+  # FaceAnalysis sessions scale ~x3 on GPU. 0 = auto (4 on CUDA, 1 on CPU).
+  infer_workers: 0
+  # Threads for prefetch frame decoding (used only on the CPU / 1-session path);
+  # default min(8, cores). With parallel inference each session decodes its own frames.
   decode_workers: 8
 
 # Phase 5 (F6): places without GPS, event naming, junk classification.
