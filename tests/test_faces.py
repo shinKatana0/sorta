@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -12,6 +13,8 @@ from sorta.config import Config, FacesConfig
 from sorta.db import connect
 from sorta.faces import (
     EMBED_DIM,
+    FacesSettings,
+    _hdbscan_labels,
     cluster_faces,
     detect_and_cluster,
     detect_faces,
@@ -292,6 +295,75 @@ class TestCluster(FacesTestCase):
             self.cfg, self.conn, analyzer=lambda path, orient: paths[path])
         self.assertEqual(face_stats.faces_found, 12)
         self.assertEqual((cl_stats.clusters, cl_stats.noise), (2, 0))
+
+
+class TestSmallCollectionGuard(FacesTestCase):
+    """F3.2: clustering must survive collections with almost no faces.
+
+    Without an explicit min_samples, hdbscan asks its kd-tree for
+    k = min_cluster_size + 1 neighbours and raises
+    "k must be less than or equal to the number of training points",
+    taking down the whole faces phase on demo/screenshot folders.
+    """
+
+    def add_marker(self):
+        """A "file processed, no faces" sentinel row (bbox='[]', empty embedding)."""
+        fid, _ = self.add_file()
+        cur = self.conn.execute(
+            "INSERT INTO faces (file_id, bbox, embedding) VALUES (?, '[]', ?)", (fid, b""))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def test_single_face_among_markers_is_noise(self):
+        marker_ids = [self.add_marker() for _ in range(37)]
+        only = self.add_face(self.add_file()[0], lone(0))
+        stats = cluster_faces(self.cfg, self.conn)
+        self.assertEqual((stats.faces, stats.clusters, stats.noise), (1, 0, 1))
+        self.assertIsNone(self.cluster_of_face(only))
+        for mid in marker_ids:
+            self.assertIsNone(self.cluster_of_face(mid))
+        n_rows = self.conn.execute("SELECT COUNT(*) FROM face_clusters").fetchone()[0]
+        self.assertEqual(n_rows, 0)
+
+    def test_fewer_faces_than_min_cluster_size_does_not_crash(self):
+        # n = 2..min_cluster_size: k = min_samples + 1 must never exceed n
+        for n in range(2, FacesSettings().min_cluster_size + 1):
+            with self.subTest(n=n):
+                self.conn.execute("DELETE FROM faces")
+                self.conn.commit()
+                ids = [self.add_face(self.add_file()[0], e) for e in group(0, n)]
+                stats = cluster_faces(self.cfg, self.conn)  # must not raise
+                self.assertEqual(stats.faces, len(ids))
+
+    def test_min_samples_capped_at_n_minus_one(self):
+        """k = min_samples + 1 <= n, and no regression for a normal collection."""
+        seen = []
+
+        class Stop(Exception):
+            pass
+
+        def fake_hdbscan(**kwargs):
+            seen.append(kwargs["min_samples"])
+            raise Stop
+
+        s = FacesSettings()
+        for n, expected in [(2, 1), (3, 2), (6, s.min_cluster_size), (50, s.min_cluster_size)]:
+            with self.subTest(n=n):
+                seen.clear()
+                x = np.stack(group(0, n)).astype(np.float64)
+                with mock.patch("hdbscan.HDBSCAN", fake_hdbscan), self.assertRaises(Stop):
+                    _hdbscan_labels(x, s)
+                self.assertEqual(seen, [expected])
+                self.assertLessEqual(expected + 1, n)
+
+    def test_below_two_faces_never_calls_hdbscan(self):
+        for n in (0, 1):
+            with self.subTest(n=n):
+                x = np.zeros((n, EMBED_DIM), dtype=np.float64)
+                with mock.patch("hdbscan.HDBSCAN", side_effect=AssertionError("called")):
+                    labels = _hdbscan_labels(x, FacesSettings())
+                self.assertEqual(labels.shape, (n,))
+                self.assertTrue((labels < 0).all())
 
 
 class TestManualOps(FacesTestCase):

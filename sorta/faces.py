@@ -329,11 +329,25 @@ def _hdbscan_labels(x: np.ndarray, s: FacesSettings) -> np.ndarray:
     """HDBSCAN over normalized vectors: euclidean on the unit sphere is monotonic
     with cosine distance (d_e = sqrt(2*d_cos)) — hdbscan cannot do cosine directly.
     The max_distance threshold is converted to epsilon on the same scale.
+
+    Small collections: hdbscan defaults min_samples to min_cluster_size and its
+    kd-tree then asks for k = min_samples + 1 neighbours; with fewer points than k
+    it raises ValueError and takes the whole faces phase down. Hence the guard
+    below — a single face cannot form a cluster anyway (min_cluster_size >= 2),
+    and for n >= 2 min_samples is capped at n - 1 so that k <= n. For a normal
+    collection (n > min_cluster_size) the cap is inactive and min_samples stays
+    equal to min_cluster_size, i.e. exactly the previous implicit default.
     """
     import hdbscan
 
+    n = int(x.shape[0])
+    if n < 2:
+        return np.full(n, -1, dtype=np.intp)  # everything is noise -> cluster_id NULL
+    min_samples = max(1, min(s.min_cluster_size, n - 1))
+
     labels = hdbscan.HDBSCAN(
         min_cluster_size=s.min_cluster_size,
+        min_samples=min_samples,
         metric="euclidean",
         cluster_selection_epsilon=math.sqrt(2.0 * s.max_distance),
     ).fit_predict(x)
@@ -345,6 +359,7 @@ def _hdbscan_labels(x: np.ndarray, s: FacesSettings) -> np.ndarray:
         # dangerous — it glues different people together, so only as a fallback.
         labels = hdbscan.HDBSCAN(
             min_cluster_size=s.min_cluster_size,
+            min_samples=min_samples,
             metric="euclidean",
             allow_single_cluster=True,
         ).fit_predict(x)
