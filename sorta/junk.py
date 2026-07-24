@@ -224,6 +224,11 @@ def easyocr_text_frac_detector(
     """
     import easyocr
 
+    from .diagnostics import warn_if_gpu_mismatch
+
+    # F63: easyocr(gpu=True) silently falls back to the CPU when torch is a CPU-only
+    # build (verbose=False also hides easyocr's own "Using CPU" notice) — surface it.
+    warn_if_gpu_mismatch()
     # verbose=False: suppresses the model-download progress bar (the █ / █ char),
     # which crashes the Windows cp1251 console (UnicodeEncodeError). The download
     # proceeds silently; the detector itself does not change from this.

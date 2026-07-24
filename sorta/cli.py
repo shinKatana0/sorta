@@ -12,6 +12,7 @@ from . import __version__
 from .config import configure_logging, load_config
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
+from .diagnostics import gpu_health, warn_if_gpu_mismatch
 from .events import add_manual_event, build_events, rename_event
 from .faces import detect_and_cluster, export_contact_sheet, label_cluster
 from .faces import merge as merge_clusters
@@ -256,6 +257,7 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     of each other and of `deep`/`geo`."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
     if src:  # an explicit source overrides config sources for this run
         cfg.sources = [Path(src).resolve()]
     if not cfg.sources:
@@ -407,12 +409,18 @@ try:
         _cmd_junk(config)
 
     @app.command()
+    def doctor():
+        """Диагностика окружения: torch/onnxruntime, GPU, рассинхрон CPU/GPU (F63)."""
+        print(gpu_health().summary)
+
+    @app.command()
     def ui(port: int = typer.Option(8756, "--port", help="Порт локального сервера (127.0.0.1)"),
            config: str = _CFG):
         """Локальный веб-интерфейс: живой отчёт плана (пока режим city). Ctrl+C — стоп."""
         from .ui import serve as ui_serve
         cfg = load_config(config)
         configure_logging(cfg.log_level)
+        warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
         conn = connect(cfg.database)
         ui_serve(cfg, conn, port=port, config_path=config)
 
