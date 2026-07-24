@@ -1,5 +1,10 @@
 # Sorta
 
+[![CI](https://github.com/shinKatana0/sorta/actions/workflows/check.yml/badge.svg)](https://github.com/shinKatana0/sorta/actions/workflows/check.yml)
+[![Release](https://img.shields.io/github/v/release/shinKatana0/sorta)](https://github.com/shinKatana0/sorta/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 > 言語: [English](README.md) · [Русский](README.ru.md) · **日本語**
 
 **大容量の写真・動画コレクション**（60 GB 超で動作確認、300 GB 超を想定した設計）を

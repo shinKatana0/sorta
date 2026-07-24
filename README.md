@@ -1,5 +1,10 @@
 # Sorta
 
+[![CI](https://github.com/shinKatana0/sorta/actions/workflows/check.yml/badge.svg)](https://github.com/shinKatana0/sorta/actions/workflows/check.yml)
+[![Release](https://img.shields.io/github/v/release/shinKatana0/sorta)](https://github.com/shinKatana0/sorta/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 > Languages: **English** · [Русский](README.ru.md) · [日本語](README.ja.md)
 
 **Index and sort a large photo/video collection** (60 GB+ tested, 300 GB+ by design)

@@ -1,0 +1,45 @@
+name: Bug report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please do **not** paste real photos
+        or personal metadata — Sorta is local-first and we don't need your data to help.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command(s) or UI actions. Redact any personal paths.
+      placeholder: |
+        1. sorta index D:\photos
+        2. sorta run --faces
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, CPU/GPU profile (`--extra cpu` / `--extra gpu`), Sorta version (`sorta --version`).
+      placeholder: |
+        - OS: Windows 11
+        - Python: 3.11
+        - Profile: gpu (CUDA 13, RTX 4070)
+        - Sorta: 0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / traceback
+      description: Relevant output. Redact personal file paths.
+      render: shell
