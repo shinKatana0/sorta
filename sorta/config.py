@@ -151,6 +151,7 @@ class NamingConfig:
     clip_model: str = "ViT-L-14-quickgelu"  # the quickgelu variant for the openai weights (without it — a mismatch)
     clip_pretrained: str = "openai"
     clip_batch_size: int = 16
+    clip_decode_workers: int = 0         # F64: CLIP decode-pool threads; 0 = auto min(cpu, 16)
     max_samples: int = 4                 # sample frames of an event for the VLM (3–5)
     vlm_base_url: str = "http://localhost:11434"
     vlm_model: str = "llava"
@@ -182,6 +183,7 @@ def _naming_from(raw: dict) -> NamingConfig:
         clip_model=str(clip.get("model", d.clip_model)),
         clip_pretrained=str(clip.get("pretrained", d.clip_pretrained)),
         clip_batch_size=int(clip.get("batch_size", d.clip_batch_size)),
+        clip_decode_workers=int(clip.get("decode_workers", d.clip_decode_workers)),
         max_samples=int(raw.get("max_samples", d.max_samples)),
         vlm_base_url=str(vlm.get("base_url", d.vlm_base_url)).rstrip("/"),
         vlm_model=str(vlm.get("model", d.vlm_model)),

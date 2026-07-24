@@ -111,6 +111,10 @@ faces:
 # | claude (Anthropic API, only when explicitly chosen — outbound traffic).
 naming:
   provider: template
+  # CLIP zero-shot (landmarks + junk, shared model). Nested under naming.
+  clip:
+    batch_size: 16       # GPU forward batch; the CLIP path is decode-bound, so this barely matters
+    decode_workers: 0    # F64: decode-pool threads. 0 = auto min(cpu, 16) — the real lever for junk/landmarks speed
   landmark_threshold: 0.85   # conservative: 0.35 gave false matches (a wrong city
   #                            is worse than unknown). Proper fix — a geo model, backlog #11
   junk_threshold: 0.85       # CLIP threshold for screenshot/meme (high:
