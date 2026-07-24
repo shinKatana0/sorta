@@ -18,6 +18,7 @@ import math
 import os
 import sqlite3
 import sys
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from html import escape
@@ -36,6 +37,9 @@ EMBED_DIM = 512
 FaceHit = tuple[list[float], float, np.ndarray]
 # analyzer(path, exif_orientation) -> found faces; replaced in tests
 Analyzer = Callable[[str, int | None], list[FaceHit]]
+# infer(bgr image) -> found faces; a factory builds one session per worker thread
+Infer = Callable[[np.ndarray], list[FaceHit]]
+InferFactory = Callable[[], Infer]
 
 
 @dataclass(frozen=True)
@@ -152,6 +156,90 @@ def _decode_workers(cfg: Config) -> int:
     return min(8, os.cpu_count() or 4)
 
 
+def _cuda_provider_available() -> bool:
+    """Is onnxruntime built with CUDA available in this environment?
+
+    The GPU profile installs onnxruntime-gpu, the CPU one plain onnxruntime; an
+    absent/broken onnxruntime means CPU semantics.
+    """
+    try:
+        import onnxruntime
+
+        return "CUDAExecutionProvider" in onnxruntime.get_available_providers()
+    except Exception:
+        return False
+
+
+def _infer_workers(cfg: Config) -> int:
+    """How many independent inference sessions run in parallel (F12.1).
+
+    faces is inference-bound, not decode-bound: `app.get` takes ~256 ms/frame at ~6%
+    GPU load, while the decode pool feeds it ~9× faster. The lever is several
+    independent FaceAnalysis sessions — measured ×3.17 on 4 sessions, ~0.6 GB VRAM
+    each. On a CPU-only profile parallel sessions merely oversubscribe the cores,
+    so the auto default there is 1 (and the pipeline keeps the prefetch-decode pool).
+    """
+    n = (cfg.raw.get("faces") or {}).get("infer_workers")
+    if n:
+        return max(1, int(n))
+    return 4 if _cuda_provider_available() else 1
+
+
+def _detect_parallel(
+    rows: list[sqlite3.Row],
+    decode: Callable[[str, int | None], np.ndarray],
+    infer_factory: InferFactory,
+    workers: int,
+    on_result: Callable[[sqlite3.Row, list[FaceHit] | None], None],
+) -> None:
+    """Decode + infer `rows` in a pool of `workers` threads, results on the caller's thread.
+
+    Every worker builds its OWN inference session on first use (thread-local): the
+    onnxruntime session is not thread-safe, independent sessions share no state and
+    run in parallel safely. Decoding happens inside the worker as well — that
+    subsumes the prefetch-decode of the serial path.
+
+    `on_result(row, hits)` is called strictly from this (the main) thread as frames
+    complete — hence writes to SQLite stay single-writer. hits=None means the frame
+    failed to decode or infer; it does not stop the rest. Input order is not
+    preserved (faces rows are independent).
+    """
+    from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+
+    workers = max(1, workers)
+    window = workers * 2  # bounded in-flight window: full-res frames are heavy
+    local = threading.local()
+    it = iter(rows)
+
+    def process(r: sqlite3.Row) -> list[FaceHit]:
+        infer: Infer | None = getattr(local, "infer", None)
+        if infer is None:
+            infer = local.infer = infer_factory()
+        return infer(decode(r["path"], r["orientation"]))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending: dict[Future, sqlite3.Row] = {}
+
+        def _fill() -> None:
+            while len(pending) < window:
+                r = next(it, None)
+                if r is None:
+                    return
+                pending[pool.submit(process, r)] = r
+
+        _fill()
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in done:
+                r = pending.pop(fut)
+                try:
+                    hits: list[FaceHit] | None = fut.result()
+                except Exception:  # a broken frame — do not crash the pipeline
+                    hits = None
+                on_result(r, hits)
+            _fill()
+
+
 def _prefetch_decode(
     rows: list[sqlite3.Row],
     decode: Callable[[str, int | None], np.ndarray],
@@ -199,11 +287,12 @@ def _prefetch_decode(
 _ALLOWED_MODULES = ["detection", "recognition"]
 
 
-def _insightface_infer(s: FacesSettings) -> Callable[[np.ndarray], list[FaceHit]]:  # pragma: no cover — ML, smoke test
+def _insightface_infer(s: FacesSettings) -> Infer:  # pragma: no cover — ML, smoke test
     """insightface buffalo_l: GPU (CUDA) with a CPU fallback.
 
-    The onnxruntime session is not thread-safe for parallel inference — `app.get`
-    is called only from the main thread, frame decoding is not part of this.
+    An onnxruntime session is not thread-safe, so this is called once per inference
+    worker (F12.1): every thread gets its own FaceAnalysis, and nothing is shared
+    between them. The contract of the returned infer (bbox/score/embedding) is fixed.
     """
     from insightface.app import FaceAnalysis
 
@@ -269,6 +358,7 @@ def detect_faces(
     cfg: Config, conn: sqlite3.Connection,
     progress: Callable[[int, int], None] | None = None,
     analyzer: Analyzer | None = None,
+    infer_factory: InferFactory | None = None,
 ) -> FaceStats:
     """Find faces in new canonical photos and write embeddings into faces.
 
@@ -277,9 +367,14 @@ def detect_faces(
     retried on the next run.
 
     The mock path (an `analyzer` passed, as in tests) is strictly serial, decode and
-    inference in one call, behaviour unchanged. The real path (analyzer=None,
-    insightface) decodes frames ahead in a thread pool (`_prefetch_decode`), while
-    `app.get` on the GPU stays strictly sequential on the main thread.
+    inference in one call, behaviour unchanged. The real path (analyzer=None) runs
+    `_infer_workers(cfg)` inference sessions in parallel, one per thread (F12.1);
+    with a single worker (the CPU profile) it keeps the previous pipeline — a
+    prefetch-decode pool feeding one session on this thread. `infer_factory` builds
+    a session; in production it is `_insightface_infer`, tests inject a fake one.
+
+    SQLite is written only from this thread in both cases (single-writer), one
+    transaction per file; the order of faces rows does not matter.
     """
     s = _settings(cfg)
     rows = conn.execute(
@@ -304,22 +399,35 @@ def detect_faces(
                 progress(i, len(rows))
         return stats
 
-    infer = _insightface_infer(s)  # pragma: no cover — ML, smoke test
-    decoded = _prefetch_decode(rows, _decode_for_faces, _decode_workers(cfg))
-    for i, (r, img, err) in enumerate(decoded, 1):  # pragma: no cover — ML, smoke test
-        decoded_hits: list[FaceHit] | None = None
-        if err is not None:
+    factory: InferFactory = infer_factory or (lambda: _insightface_infer(s))
+    done = 0
+
+    def on_result(r: sqlite3.Row, hits: list[FaceHit] | None) -> None:
+        """Called only from this thread — the single writer to SQLite."""
+        nonlocal done
+        if hits is None:
             stats.errors += 1
         else:
+            _write_hits(conn, s, stats, r, hits)
+        done += 1
+        if progress:
+            progress(done, len(rows))
+
+    workers = _infer_workers(cfg)
+    if workers > 1:
+        _detect_parallel(rows, _decode_for_faces, factory, workers, on_result)
+        return stats
+
+    infer = factory()
+    for r, img, err in _prefetch_decode(rows, _decode_for_faces, _decode_workers(cfg)):
+        frame_hits: list[FaceHit] | None = None
+        if err is None:
             assert img is not None
             try:
-                decoded_hits = infer(img)
+                frame_hits = infer(img)
             except Exception:
-                stats.errors += 1
-        if decoded_hits is not None:
-            _write_hits(conn, s, stats, r, decoded_hits)
-        if progress:
-            progress(i, len(rows))
+                frame_hits = None
+        on_result(r, frame_hits)
     return stats
 
 
