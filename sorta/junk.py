@@ -63,9 +63,19 @@ does not detect screenshots/memes, that stays the fast tier's job. GRACEFUL FALL
 (transformers not installed, the model does not load, not enough VRAM) is caught
 ENTIRELY around building the classifier — a silent fall back to the fast tier (CLIP),
 the error is only logged (`_log.warning`), `classify()` does not crash.
-Incrementality: the "already processed" marker toggles between 'clip' and 'vlm'
-depending on the active tier — a fast<->deep switch reprocesses rather than losing
-rows (see `active_source` in `classify()`).
+
+F68: incrementality runs on its OWN column `media_class.tier` (schema v11), not on
+`source`. The two mean different things: `source` is WHAT decided the verdict
+(heuristic | clip | ocr | vlm — user-facing, read by sorter.py), `tier` is WHICH
+TIER processed the row (heuristic | clip | vlm — the incrementality marker). They
+do not coincide: the OCR gate/rescue rewrites source to 'ocr' inside the fast pass,
+and the VLM gate deliberately leaves clear personal photos on source='clip' — under
+the old `source`-based marker both kinds of rows failed the "already processed"
+check and were reclassified on EVERY run (with the deep tier on, that meant the
+whole collection). `classify()` computes `active_tier` (see below) and writes it to
+every row it touches; `todo` is the rows whose `tier` differs from it, so a
+fast<->deep switch (either direction) reprocesses instead of losing rows, and a
+repeated run with the same tier processes nothing.
 
 F48 (#28, V1 profile): the junk-stage bottleneck is not the models but the SECOND
 decode of the frame inside OCR (`imaging.decode_rgb(path, max_edge=1280)` — 315
@@ -394,7 +404,11 @@ def _is_real_photo(row: sqlite3.Row) -> bool:
 @dataclass
 class JunkStats:
     total: int = 0        # canonical photos in total
-    processed: int = 0    # processed in this run (excluding source='clip' rows)
+    processed: int = 0    # processed in this run (rows whose tier != the active one)
+    # F68: rows skipped as already handled by the active tier (total - processed).
+    # On a repeated run without input changes it equals `total` and processed is 0 —
+    # the observable sign that incrementality works.
+    skipped_incremental: int = 0
     clip_used: bool = False
     by_verdict: dict[str, int] = field(default_factory=dict)
     vlm_candidates: int = 0  # #14/V1: files selected for the VLM (doc/product zone)
@@ -412,8 +426,13 @@ def classify(
 ) -> JunkStats:
     """Classify canonical photos into media_class.
 
-    use_clip=False — heuristics only (source='heuristic'); such rows will be
-    reprocessed by CLIP on the next run with use_clip=True.
+    use_clip=False — heuristics only (source='heuristic', tier='heuristic'); such
+    rows will be reprocessed by CLIP on the next run with use_clip=True.
+
+    F68: incrementality is driven by `media_class.tier`, not by `source` — every row
+    this run touches gets tier = active_tier ('heuristic' | 'clip' | 'vlm'), and only
+    rows carrying a different tier are redone (see the module docstring for why
+    `source` cannot serve as that marker).
 
     text_detector (F37, Phase A): (path, width, height) -> text_frac | None.
     By default an easyocr detector is built (lazily, once per run) — as with
@@ -435,7 +454,7 @@ def classify(
                   f.gps_lat,
                   EXISTS(SELECT 1 FROM faces fa
                          WHERE fa.file_id = f.id AND fa.bbox != '[]') AS has_faces,
-                  mc.source AS mc_source
+                  mc.source AS mc_source, mc.tier AS mc_tier
            FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
            WHERE f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'
            ORDER BY f.id"""
@@ -458,12 +477,15 @@ def classify(
                     "junk: VLM недоступна (%s) — откат на fast-ярус (CLIP)", exc)
                 vlm_fn = None
 
-    # incrementality: the "already processed by this tier" marker toggles between
-    # 'vlm' and 'clip' — a fast<->deep switch reprocesses old rows with the right
-    # tier rather than losing them or re-running fresh ones in a loop.
-    active_source = "vlm" if vlm_fn is not None else "clip"
-    todo = [r for r in rows if r["mc_source"] != active_source]
+    # F68: incrementality runs on media_class.tier — the marker of WHICH TIER
+    # processed the row, independent of `source` (what decided the verdict). Three
+    # tiers: 'heuristic' (use_clip=False), 'clip' (the fast pass), 'vlm' (the fast
+    # pass + the deep refinement of candidates). A row is redone only when its tier
+    # differs from the active one — so any switch, upgrade or downgrade, reprocesses.
+    active_tier = "heuristic" if not use_clip else ("vlm" if vlm_fn is not None else "clip")
+    todo = [r for r in rows if r["mc_tier"] != active_tier]
     stats.processed = len(todo)
+    stats.skipped_incremental = len(rows) - len(todo)
     if not todo:
         return stats
     if progress:
@@ -477,17 +499,21 @@ def classify(
     }
     heur = {fid: v or "photo" for fid, v in heur_raw.items()}
     now = utcnow_iso()
-    upsert = """INSERT INTO media_class (file_id, verdict, source, score, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+    # F68: `tier` is written on every path and always equals active_tier — a row the
+    # active tier touched must never stay unmarked (or marked by an older tier),
+    # otherwise it is reclassified on every run.
+    upsert = """INSERT INTO media_class (file_id, verdict, source, score, updated_at,
+                                         tier)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_id) DO UPDATE SET verdict = excluded.verdict,
                     source = excluded.source, score = excluded.score,
-                    updated_at = excluded.updated_at"""
+                    updated_at = excluded.updated_at, tier = excluded.tier"""
 
     if not use_clip:
         with conn:
             for r in todo:
                 verdict = heur[r["id"]]
-                conn.execute(upsert, (r["id"], verdict, "heuristic", None, now))
+                conn.execute(upsert, (r["id"], verdict, "heuristic", None, now, active_tier))
                 stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
         if progress:
             progress(len(todo), len(todo))
@@ -588,7 +614,7 @@ def classify(
                     # F29: the Screenshots folder is a "floor" for photo; we do not
                     # override document/meme (conservative, brief F29).
                     verdict = "screenshot"
-                conn.execute(upsert, (r["id"], verdict, source, score, now))
+                conn.execute(upsert, (r["id"], verdict, source, score, now, active_tier))
                 stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
                 # #14/V1: selection into VLM candidates (deep refines doc/product/photo) —
                 # without faces, not screenshot/meme, and the fast tier doubts: already a
@@ -619,10 +645,11 @@ def classify(
                                  fid, exc)
                     continue
                 verdict = _VLM_LABEL_TO_VERDICT.get(label, fast_verdict)
-                # mark source='vlm' ALWAYS (even if the verdict matched fast) —
-                # so a repeated run does not re-run the VLM on these candidates
-                # (incrementality: mc_source == active_source == 'vlm').
-                conn.execute(upsert, (fid, verdict, "vlm", None, now))
+                # source='vlm' — the VLM is what decided this verdict. The
+                # incrementality marker is `tier` (already written as 'vlm' by the
+                # fast pass above, for candidates and non-candidates alike), so a
+                # repeated run does not re-run the VLM on these files.
+                conn.execute(upsert, (fid, verdict, "vlm", None, now, active_tier))
                 if verdict != fast_verdict:
                     stats.by_verdict[fast_verdict] = stats.by_verdict.get(fast_verdict, 1) - 1
                     stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
