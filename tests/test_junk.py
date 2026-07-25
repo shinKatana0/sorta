@@ -7,6 +7,7 @@ and by a separate, higher CLIP threshold (naming.document_threshold).
 F22: the "street/building" anti-class narrows document FP on travel photos; the
 explicit Screenshot_ name overrides both document detection and the face veto.
 """
+import os
 import sys
 import tempfile
 import types
@@ -501,11 +502,16 @@ class TestPolygonArea(unittest.TestCase):
 
 
 class TestEasyocrTextFracDetectorDecode(unittest.TestCase):
-    """F48: the detector must call imaging.decode_rgb with an aggressive draft_margin
-    (perf fix: the default margin=2× kills JPEG-draft for typical max_edge/camera
-    frame sizes, see junk.py/imaging.py) and pass downscale_px as max_edge, as before (F40)."""
+    """F67 (was F48): the detector decodes through the preview cache.
 
-    def test_decode_rgb_called_with_aggressive_draft_margin_and_maxpx(self):
+    F48 asserted an aggressive draft_margin on imaging.decode_rgb — that knob existed
+    to salvage the JPEG draft when decoding the ORIGINAL. F67 routes the OCR path
+    through decode_rgb_preview, so the frame is already small and the margin no
+    longer applies; what still must hold is that downscale_px is passed as max_edge
+    (F40) and that the original is not decoded directly.
+    """
+
+    def test_decode_goes_through_preview_cache_with_maxpx(self):
         from sorta.junk import easyocr_text_frac_detector
 
         fake_easyocr = types.ModuleType("easyocr")
@@ -520,14 +526,16 @@ class TestEasyocrTextFracDetectorDecode(unittest.TestCase):
         fake_easyocr.Reader = FakeReader
 
         calls = []
-        real_decode_rgb = imaging.decode_rgb
+        real_preview = imaging.decode_rgb_preview
 
-        def spy_decode_rgb(path, max_edge=None, **kwargs):
+        def spy_preview(path, mtime, size, max_edge=None, **kwargs):
             calls.append((max_edge, kwargs))
-            return real_decode_rgb(path, max_edge=max_edge, **kwargs)
+            return real_preview(path, mtime, size, max_edge=max_edge, **kwargs)
 
         with unittest.mock.patch.dict(sys.modules, {"easyocr": fake_easyocr}), \
-                unittest.mock.patch.object(imaging, "decode_rgb", spy_decode_rgb):
+                unittest.mock.patch.dict(
+                    os.environ, {imaging.ENV_PREVIEW_DIR: tempfile.mkdtemp()}), \
+                unittest.mock.patch.object(imaging, "decode_rgb_preview", spy_preview):
             detector = easyocr_text_frac_detector(800)
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "x.jpg"
@@ -536,9 +544,8 @@ class TestEasyocrTextFracDetectorDecode(unittest.TestCase):
 
         self.assertEqual(frac, 0.0)
         self.assertEqual(len(calls), 1)
-        max_edge, kwargs = calls[0]
+        max_edge, _kwargs = calls[0]
         self.assertEqual(max_edge, 800)
-        self.assertEqual(kwargs.get("draft_margin"), imaging._DRAFT_MARGIN_AGGRESSIVE)
 
 
 class TestOcrTextFrac(unittest.TestCase):

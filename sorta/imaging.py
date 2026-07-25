@@ -9,9 +9,21 @@ ArcFace crop) is deliberately NOT moved onto this module — it has its own bran
 
 decode_rgb_cached caches the decode result (a small, max_edge-bounded image) —
 it is the decode that is expensive, not storing the original on disk.
+
+F67 adds a second, DISK-level layer on top of the same decode: decode_rgb_preview.
+The same frame used to be decoded 3-5 times per run (CLIP in landmarks, CLIP/OCR/VLM
+in junk, pHash in dedup) because decode_rgb_cached is bounded and per-process, and
+the stages run one after another. The preview cache decodes once, writes a 1536px
+JPEG next to nothing (a shared cache dir) and every later stage reads that instead
+of the original (HEIC full decode 473 ms -> pHash from a preview 1.4 ms, measured
+2026-07-25). It is lazy: no separate pass or command, whichever stage needs the
+frame first creates the preview.
 """
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -170,3 +182,222 @@ def cache_clear() -> None:
     """Clear the in-process decode_rgb_cached cache (tests, between CLI commands)."""
     with _cache_lock:
         _cache.clear()
+
+
+# --- F67: the lazy disk preview cache ---------------------------------------
+#
+# Configured through env vars only, on purpose: config.py is outside this feature's
+# ownership, the `imaging:` config section (preview_cache / preview_dir /
+# preview_max_edge / preview_quality) comes later and keeps env as an override.
+ENV_PREVIEW_CACHE = "SORTA_PREVIEW_CACHE"
+ENV_PREVIEW_DIR = "SORTA_PREVIEW_DIR"
+ENV_PREVIEW_MAX_EDGE = "SORTA_PREVIEW_MAX_EDGE"
+ENV_PREVIEW_QUALITY = "SORTA_PREVIEW_QUALITY"
+
+# 1536 on the long edge covers every consumer with headroom (OCR 1280, VLM 896,
+# CLIP 448, pHash 96); q88 keeps a frame at ~150 KB and is visually lossless at
+# those sizes (measured pHash drift vs a full decode: <= 2 bits at 512px already,
+# against a near-duplicate threshold of 5).
+PREVIEW_MAX_EDGE = 1536
+PREVIEW_QUALITY = 88
+
+_FALSE_VALUES = {"0", "false", "no", "off"}
+_EXIF_ORIENTATION = 274
+
+
+def _env_int(name: str, default: int) -> int:
+    """Positive int from an env var; garbage/non-positive -> the default."""
+    try:
+        value = int(os.environ.get(name, "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def preview_cache_enabled() -> bool:
+    """SORTA_PREVIEW_CACHE=0 -> decode_rgb_preview degrades to plain decode_rgb."""
+    return os.environ.get(ENV_PREVIEW_CACHE, "").strip().lower() not in _FALSE_VALUES
+
+
+def preview_dir() -> Path:
+    """Where the preview JPEGs live (SORTA_PREVIEW_DIR overrides).
+
+    Default: %LOCALAPPDATA%\\sorta\\previews on Windows, ~/.cache/sorta/previews
+    elsewhere — a user-level cache, never inside the sorted collection.
+    """
+    override = os.environ.get(ENV_PREVIEW_DIR, "").strip()
+    if override:
+        return Path(override)
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if os.name == "nt" and local_app_data:
+        return Path(local_app_data) / "sorta" / "previews"
+    return Path.home() / ".cache" / "sorta" / "previews"
+
+
+def preview_max_edge() -> int:
+    return _env_int(ENV_PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE)
+
+
+def preview_quality() -> int:
+    return _env_int(ENV_PREVIEW_QUALITY, PREVIEW_QUALITY)
+
+
+def preview_key(path: str | Path, mtime: float, size: int) -> str:
+    """Stable cache key for (file, mtime, size).
+
+    A changed file yields a changed key, so invalidation is free — the same
+    principle as the in-process decode_rgb_cached key. Stale entries of the old key
+    are simply never read again (preview_cache_clear removes them).
+    """
+    raw = f"{Path(os.path.abspath(path)).as_posix()}|{mtime}|{size}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _preview_path(key: str) -> Path:
+    # Sharded by the first 2 hex chars: 37k files in a single NTFS directory
+    # degrade noticeably on lookup.
+    return preview_dir() / key[:2] / f"{key}.jpg"
+
+
+def _peek(path: str | Path) -> tuple[tuple[int, int], int] | None:
+    """(size, exif orientation) from the header alone, without decoding pixels."""
+    _ensure_heif_registered()
+    try:
+        with Image.open(path) as im:
+            size = im.size
+            try:
+                orientation = int(im.getexif().get(_EXIF_ORIENTATION) or 1)
+            except Exception:
+                orientation = 1
+        return size, orientation
+    except Exception:
+        return None
+
+
+def _render(
+    img: Image.Image, max_edge: int | None, orientation: int,
+    *, grayscale: bool, apply_orientation: bool,
+) -> Image.Image:
+    """Render a decoded frame the way decode_rgb would have returned it.
+
+    Used only when the cache is unusable (nothing was stored to read back), so the
+    call still returns the right frame instead of failing. The orientation is passed
+    explicitly: a freshly decoded frame carries no exif of its own we can rely on,
+    while the preview ON DISK does (see _write_preview).
+    """
+    out = img
+    if apply_orientation and orientation != 1:
+        out.getexif()[_EXIF_ORIENTATION] = orientation
+        out = ImageOps.exif_transpose(out)
+    out = out.convert("L" if grayscale else "RGB")  # convert() always returns a copy
+    if max_edge is not None and max(out.size) > max_edge:
+        out.thumbnail((max_edge, max_edge))
+    return out
+
+
+def _read_preview(
+    dest: Path, max_edge: int | None, *, grayscale: bool, apply_orientation: bool,
+) -> Image.Image | None:
+    if not dest.exists():
+        return None
+    img = decode_rgb(dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+    if img is None:
+        # A corrupt cache entry (bad sector, a write interrupted by a crash) must
+        # not poison the file forever — drop it, the caller falls back to the source.
+        # A spurious drop (a concurrent os.replace on Windows can make one open fail)
+        # costs nothing but one regeneration.
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+    return img
+
+
+def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
+    """Store img as the preview for dest. Any failure is silently ignored.
+
+    Written to a temp file next to the target + os.replace: the pool has ~20 threads
+    and readers of other stages run concurrently — nobody may ever observe a half
+    file. Two workers on the same path at the same time is fine (last one wins), a
+    per-key lock is not needed.
+    """
+    tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        params: dict[str, Image.Exif] = {}
+        if orientation != 1:
+            # The preview is stored UNROTATED (consumers do not apply orientation),
+            # but the tag is kept so a later apply_orientation=True read still works.
+            exif = Image.Exif()
+            exif[_EXIF_ORIENTATION] = orientation
+            params["exif"] = exif
+        img.save(tmp, "JPEG", quality=preview_quality(), **params)
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def decode_rgb_preview(
+    path: str | Path,
+    mtime: float,
+    size: int,
+    max_edge: int | None = None,
+    *,
+    grayscale: bool = False,
+    apply_orientation: bool = False,
+) -> Image.Image | None:
+    """decode_rgb backed by a lazy disk cache of 1536px previews.
+
+    The first stage that needs the frame decodes the original once and writes the
+    preview; every later stage (pHash 96, CLIP 448, VLM 896, OCR 1280) decodes the
+    small JPEG instead. Contract is that of decode_rgb — same size/mode for the same
+    max_edge/grayscale/apply_orientation, None on an undecodable source.
+
+    The cache is skipped (a direct decode_rgb, nothing written) when it is disabled,
+    when the source is already no larger than preview_max_edge (a preview would be a
+    copy, not a saving — PNG screenshots), and on any cache read/write failure
+    (read-only dir, full disk): the call must degrade, never fail.
+
+    max_edge=None on a cache hit returns the PREVIEW-sized frame, not the original
+    resolution — this layer is for the small-frame consumers (all of them pass
+    max_edge). Full resolution (faces) still goes through decode_rgb.
+    """
+    if not preview_cache_enabled():
+        return decode_rgb(path, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+
+    dest = _preview_path(preview_key(path, mtime, size))
+    cached = _read_preview(
+        dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+    if cached is not None:
+        return cached
+
+    peeked = _peek(path)
+    if peeked is None:  # unreadable source — decode_rgb gives the same None
+        return decode_rgb(path, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+    src_size, orientation = peeked
+    if max(src_size) <= preview_max_edge():
+        return decode_rgb(path, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+
+    full = decode_rgb(path, preview_max_edge())  # RGB, unrotated — as stored
+    if full is None:
+        return None
+    _write_preview(full, dest, orientation)
+    # Read back what we have just written instead of rendering `full` in memory: a
+    # cold and a warm call must return the SAME pixels, otherwise a pHash would
+    # depend on whether the cache happened to be warm. The extra decode is of a
+    # 1536px JPEG — cheap next to the full-size decode just paid for.
+    stored = _read_preview(
+        dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+    if stored is not None:
+        return stored
+    # The cache is unusable (read-only dir, full disk) — render from what we have.
+    return _render(
+        full, max_edge, orientation, grayscale=grayscale, apply_orientation=apply_orientation)
+
+
+def preview_cache_clear() -> None:
+    """Remove the preview cache directory (tests, a future `sorta cache clear`)."""
+    shutil.rmtree(preview_dir(), ignore_errors=True)

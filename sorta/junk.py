@@ -78,10 +78,16 @@ decode_rgb) — draft kicks in, the decode is many times cheaper; `text_frac` (t
 fraction of area under text) does not change from this, the document/photo verdict
 accuracy is preserved (the ratio is scale-robust). Other decode_rgb consumers (thumbs
 in ui.py/sorter.py, the VLM decode) stay on the default margin — unaffected.
+
+F67 supersedes that decode path: OCR and VLM take the frame from the shared disk
+preview cache (`imaging.decode_rgb_preview`) instead of decoding the original, so
+the draft margin no longer matters here — a 1536px preview is cheap to decode by
+itself, and the cost is shared with the pHash/CLIP stages.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -217,10 +223,10 @@ def easyocr_text_frac_detector(
     Lazy-import: the junk module is imported without easyocr (like faces with
     insightface). The Reader is built once and reused for the whole classify() run.
 
-    F38: decode via imaging.decode_rgb (not reader.detect(path) — cv2 silently does
-    not read non-ASCII paths and HEIC, the frame dropped out of the OCR signal) +
-    downscale to maxpx before detect() (a full-size decode — seconds/frame on large
-    photos). The box area is computed RELATIVE to the downscaled frame.
+    F38: decode via imaging (not reader.detect(path) — cv2 silently does not read
+    non-ASCII paths and HEIC, the frame dropped out of the OCR signal) + downscale to
+    maxpx before detect() (a full-size decode — seconds/frame on large photos).
+    The box area is computed RELATIVE to the downscaled frame.
     """
     import easyocr
 
@@ -240,14 +246,15 @@ def easyocr_text_frac_detector(
         # decode_rgb finishes with a thumbnail down to max_edge, no separate one
         # needed. HEIC does not support draft (full decode), but detect still runs on
         # the shrunk frame.
-        # F48: profiling found that the default decode_rgb headroom (draft_margin=2×)
-        # in practice KILLS draft for typical camera frames at max_edge=1280
-        # (a 2× margin asks for more than the first halving gives) — the decode
-        # was full (315 ms/frame). text_frac is the FRACTION of area under text, not
-        # the recognition itself, so sub-pixel downscale sharpness is not needed ->
-        # the aggressive margin (imaging._DRAFT_MARGIN_AGGRESSIVE) is safe here.
-        img = imaging.decode_rgb(
-            path, max_edge=maxpx, draft_margin=imaging._DRAFT_MARGIN_AGGRESSIVE)
+        # F67: the frame now comes from the shared preview cache — the F48 aggressive
+        # draft margin is no longer needed on this path (a 1536px preview is already
+        # small, there is nothing left for draft to save). mtime/size for the cache
+        # key come from a local stat: the TextFracDetector signature stays as it is.
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None  # vanished/unreadable file — same contract as a decode error
+        img = imaging.decode_rgb_preview(path, st.st_mtime, st.st_size, max_edge=maxpx)
         if img is None:
             return None  # could not decode (corrupt/unrecognized file)
         # detect() — box DETECTION only, without text recognition: for density the
@@ -312,8 +319,8 @@ def qwen_vlm_classifier(
     it fails ONLY when actually building the classifier (which the caller in
     classify() wraps in try/except for a graceful fallback to the fast tier).
 
-    Decode — via imaging.decode_rgb (Unicode/HEIC-safe, the Phase A/F38 lesson),
-    downscale to _DEFAULT_VLM_MAX_EDGE before feeding the model.
+    Decode — via imaging.decode_rgb_preview (Unicode/HEIC-safe, the Phase A/F38
+    lesson), downscale to _DEFAULT_VLM_MAX_EDGE before feeding the model.
     """
     import torch
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
@@ -326,7 +333,13 @@ def qwen_vlm_classifier(
     model.eval()
 
     def classify_media(path: str) -> str:
-        img = imaging.decode_rgb(path, max_edge=_DEFAULT_VLM_MAX_EDGE)
+        # F67: via the shared preview cache (see easyocr_text_frac_detector).
+        try:
+            st = os.stat(path)
+        except OSError:
+            return "personal_photo"  # unreadable — conservative, as on a decode error
+        img = imaging.decode_rgb_preview(
+            path, st.st_mtime, st.st_size, max_edge=_DEFAULT_VLM_MAX_EDGE)
         if img is None:
             return "personal_photo"  # could not decode — conservative
         messages = [{
