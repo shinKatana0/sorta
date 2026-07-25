@@ -15,7 +15,7 @@ from typing import Callable, Iterator
 
 from .config import Config
 from .dates import resolve_taken_at
-from .exif import ExifData, read_batch
+from .exif import ExifData, read_batch, resolve_exif_workers
 from .hashing import file_hash, resolve_workers
 
 _BATCH = 200
@@ -128,15 +128,20 @@ def index(cfg: Config, conn: sqlite3.Connection,
     has_orientation = _has_column(conn, "files", "orientation")
     has_not_personal = _has_column(conn, "files", "not_personal")
     workers = resolve_workers(cfg.raw)
+    exif_workers = resolve_exif_workers(cfg.raw)
 
     def flush(pool: ThreadPoolExecutor):
         if not pending:
             return
-        exif_map = read_batch([p for p, _ in pending])
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         # stat + blake3 — in the thread pool (I/O and hashing release the GIL); the
         # write to SQLite — only on the main thread (single-writer, one transaction per batch).
-        results = list(pool.map(_hash_one, pending))
+        # pool.map queues the work and returns a lazy iterator right away, so exiftool
+        # (separate processes) runs alongside the hashing and the batch costs the longer
+        # of the two phases instead of their sum (F72).
+        results_it = pool.map(_hash_one, pending)
+        exif_map = read_batch([p for p, _ in pending], exif_workers)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        results = list(results_it)
         with conn:  # one transaction per batch — Ctrl+C does not break consistency
             for r in results:
                 path = str(r.path.resolve())
@@ -265,10 +270,11 @@ def refresh_exif(cfg: Config, conn: sqlite3.Connection, *, only_missing: bool = 
     ).fetchall()
 
     total = len(rows)
+    exif_workers = resolve_exif_workers(cfg.raw)
     for start in range(0, total, _BATCH):
         batch = rows[start:start + _BATCH]
         paths = [Path(r["path"]) for r in batch]
-        exif_map = read_batch(paths)
+        exif_map = read_batch(paths, exif_workers)
         with conn:  # one transaction per batch — Ctrl+C does not break consistency
             for row, path in zip(batch, paths):
                 stats.scanned += 1

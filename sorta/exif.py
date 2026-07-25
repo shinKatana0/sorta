@@ -1,18 +1,22 @@
 """Metadata reading: exiftool (preferred) or Pillow (fallback).
 
 exiftool covers HEIC/RAW/video; Pillow — only jpeg/png/tiff/webp.
-exiftool runs through one long-lived process (-stay_open) — the process-startup
-cost is not paid per batch; on a session failure it falls back to a one-shot
-subprocess call.
+exiftool runs through a pool of long-lived processes (-stay_open) — the
+process-startup cost is not paid per batch; on a session failure that session's
+slice falls back to a one-shot subprocess call.
 The interface is uniform: read_batch(paths) -> dict[path, ExifData].
 """
 from __future__ import annotations
 
 import atexit
 import json
+import math
+import os
 import shutil
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +78,16 @@ _SESSION_ARGS = _QUERY_ARGS + (
 )
 
 
+def _close_pipes(proc: subprocess.Popen) -> None:
+    """A dead exiftool still owns its pipes — flushing them later raises EINVAL."""
+    for pipe in (proc.stdin, proc.stdout):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+
 class ExifToolSession:
     """Long-lived process `exiftool -stay_open True -@ -` (FR-1 item 7).
 
@@ -81,13 +95,20 @@ class ExifToolSession:
     the response is read up to the `{ready}` marker. The pipes are binary (UTF-8 by
     hand) — this avoids the text-mode \\n -> \\r\\n translation. A dead process is
     restarted transparently on the next read().
+
+    One request at a time: the pipes are a single request/response stream, so two
+    threads writing into the same session would interleave queries and answers.
+    The lock makes that impossible instead of merely unlikely (F72).
     """
 
     def __init__(self) -> None:
         self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
 
     def _ensure(self) -> subprocess.Popen:
         if self._proc is None or self._proc.poll() is not None:
+            if self._proc is not None:
+                _close_pipes(self._proc)
             self._proc = subprocess.Popen(
                 [*_EXIFTOOL_CMD, "-stay_open", "True", "-@", "-"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -98,37 +119,132 @@ class ExifToolSession:
     def read(self, paths: list[Path]) -> dict[str, ExifData]:
         if not paths:
             return {}
-        proc = self._ensure()
-        assert proc.stdin is not None and proc.stdout is not None
-        args = [*_SESSION_ARGS, *_EXIFTOOL_TAGS, *map(str, paths)]
-        proc.stdin.write(("\n".join(args) + "\n-execute\n").encode("utf-8"))
-        proc.stdin.flush()
-        buf = bytearray()
-        while True:
-            line = proc.stdout.readline()
-            if not line:
-                raise RuntimeError("exiftool -stay_open: process exited before {ready}")
-            if line.strip().startswith(b"{ready"):
-                break
-            buf += line
+        with self._lock:
+            proc = self._ensure()
+            assert proc.stdin is not None and proc.stdout is not None
+            args = [*_SESSION_ARGS, *_EXIFTOOL_TAGS, *map(str, paths)]
+            proc.stdin.write(("\n".join(args) + "\n-execute\n").encode("utf-8"))
+            proc.stdin.flush()
+            buf = bytearray()
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    raise RuntimeError("exiftool -stay_open: process exited before {ready}")
+                if line.strip().startswith(b"{ready"):
+                    break
+                buf += line
         payload = buf.decode("utf-8", errors="replace").strip()
         return _parse_records(json.loads(payload)) if payload else {}
 
     def close(self) -> None:
-        proc, self._proc = self._proc, None
-        if proc is None or proc.poll() is not None:
+        with self._lock:
+            proc, self._proc = self._proc, None
+        if proc is None:
             return
         try:
-            assert proc.stdin is not None
-            proc.stdin.write(b"-stay_open\nFalse\n")
-            proc.stdin.flush()
-            proc.wait(timeout=5)
+            if proc.poll() is None:
+                assert proc.stdin is not None
+                proc.stdin.write(b"-stay_open\nFalse\n")
+                proc.stdin.flush()
+                proc.wait(timeout=5)
         except Exception:
             proc.kill()
+        finally:
+            _close_pipes(proc)
 
 
-_session = ExifToolSession()
-atexit.register(_session.close)
+# Below this many paths per session the split is not worth it: eight processes on five
+# files only add scheduling noise (the sessions are already warm, but exiftool still
+# parses the argfile and re-emits JSON per slice).
+_MIN_PATHS_PER_SESSION = 32
+
+
+def resolve_exif_workers(raw: dict | None) -> int:
+    """Number of parallel exiftool sessions — same shape as hashing.resolve_workers.
+
+    `index.exif_workers` in config.yaml (read straight from `cfg.raw`, no typed field
+    is added for it); default min(8, cpu_count). exiftool is a separate process, so the
+    GIL does not cap it and it scales nearly linearly: measured on the production
+    collection (40 287 files) 11.8 ms/file with one session, 5.8 with two, 3.2 with
+    four, 2.0 with eight (F72).
+    """
+    default = min(8, os.cpu_count() or 1)
+    idx = (raw or {}).get("index") or {}
+    workers = idx.get("exif_workers")
+    if workers is None:
+        return default
+    try:
+        n = int(workers)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
+def _split(paths: list[Path], parts: int) -> list[list[Path]]:
+    """Contiguous slices of near-equal size: every path lands in exactly one of them."""
+    size, rest = divmod(len(paths), parts)
+    out: list[list[Path]] = []
+    start = 0
+    for i in range(parts):
+        end = start + size + (1 if i < rest else 0)
+        out.append(paths[start:end])
+        start = end
+    return out
+
+
+def _slice_count(n_paths: int, workers: int) -> int:
+    return max(1, min(workers, math.ceil(n_paths / _MIN_PATHS_PER_SESSION)))
+
+
+def _read_slice(session: ExifToolSession, paths: list[Path]) -> dict[str, ExifData]:
+    """One slice through its own session; a broken session only costs its own slice."""
+    try:
+        return session.read(paths)
+    except Exception:
+        session.close()  # _ensure() starts a fresh process on the next call
+        return read_batch_exiftool(paths)
+
+
+class ExifToolPool:
+    """N long-lived exiftool sessions serving one read_batch in parallel (F72).
+
+    The processes are created once for the whole run and reused across calls —
+    re-spawning them per batch would throw away the point of -stay_open. Creation is
+    lazy: a command that never reads metadata never spawns a single exiftool.
+    """
+
+    def __init__(self) -> None:
+        self._sessions: list[ExifToolSession] = []
+        self._lock = threading.Lock()
+
+    def sessions(self, count: int) -> list[ExifToolSession]:
+        with self._lock:
+            while len(self._sessions) < count:
+                self._sessions.append(ExifToolSession())
+            return self._sessions[:count]
+
+    def read(self, paths: list[Path], workers: int) -> dict[str, ExifData]:
+        if not paths:
+            return {}
+        chunks = _split(paths, _slice_count(len(paths), workers))
+        sessions = self.sessions(len(chunks))
+        if len(chunks) == 1:
+            return _read_slice(sessions[0], chunks[0])
+        out: dict[str, ExifData] = {}
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            for part in pool.map(_read_slice, sessions, chunks):
+                out.update(part)  # keyed by resolved path — merge order does not matter
+        return out
+
+    def close(self) -> None:
+        with self._lock:
+            sessions, self._sessions = self._sessions, []
+        for session in sessions:
+            session.close()
+
+
+_pool = ExifToolPool()
+atexit.register(_pool.close)  # leftover `exiftool -stay_open` processes would hang around
 
 
 def read_batch_exiftool(paths: list[Path], chunk: int = 200) -> dict[str, ExifData]:
@@ -193,11 +309,14 @@ def read_one_pillow(path: Path) -> ExifData:
     return data
 
 
-def read_batch(paths: list[Path]) -> dict[str, ExifData]:
+def read_batch(paths: list[Path], workers: int | None = None) -> dict[str, ExifData]:
+    """Metadata for a batch of paths, keyed by the resolved absolute path.
+
+    `workers` — how many exiftool sessions may share the batch; None (and any value
+    <= 0) means the default of resolve_exif_workers. The caller passes the configured
+    value in (the indexer does) so this module stays independent of Config.
+    """
     if exiftool_available():
-        try:
-            return _session.read(paths)
-        except Exception:
-            _session.close()
-            return read_batch_exiftool(paths)
+        n = workers if workers is not None and workers > 0 else resolve_exif_workers(None)
+        return _pool.read(paths, n)
     return {str(p.resolve()): read_one_pillow(p) for p in paths}
