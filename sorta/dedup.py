@@ -9,6 +9,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Callable
 
+from . import imaging
 from .hashing import resolve_workers
 
 if TYPE_CHECKING:
@@ -16,7 +17,6 @@ if TYPE_CHECKING:
 
 try:
     import imagehash  # type: ignore
-    from PIL import Image
     _PHASH = True
 except ImportError:  # pragma: no cover
     _PHASH = False
@@ -34,15 +34,25 @@ _PHASH_BATCH = 200
 _PHASH_DECODE = 96
 
 
-def _phash_one(path: str) -> str | None:
+def _phash_one(path: str, mtime: float, size: int) -> str | None:
+    """pHash of one file, decoded through the shared preview cache (F67).
+
+    The frame comes from imaging.decode_rgb_preview instead of a local
+    Image.open/draft/thumbnail: draft is a no-op on HEIC (425 ms/frame — this stage
+    was the slowest one on the live collection at 7-10 img/s), while a pHash off an
+    existing preview costs ~1.4 ms. Already-stored pHashes are NOT invalidated: on
+    live files a preview-based pHash differs from the full-decode one by at most
+    2 bits (avg 0.3) against the near-duplicate threshold of 5, so the
+    `phash IS NULL` incrementality stays as it was.
+    """
     if not _PHASH:
         return None
+    img = imaging.decode_rgb_preview(
+        path, mtime, size, max_edge=_PHASH_DECODE, grayscale=True)
+    if img is None:
+        return None
     try:
-        with Image.open(path) as img:
-            img.draft("L", (_PHASH_DECODE, _PHASH_DECODE))  # JPEG DCT scaling during decode
-            img.load()  # required before thumbnail(), else a repeated load() fails on fp=None
-            img.thumbnail((_PHASH_DECODE, _PHASH_DECODE))
-            return str(imagehash.phash(img))
+        return str(imagehash.phash(img))
     except Exception:
         return None
 
@@ -54,7 +64,7 @@ def compute_phashes(
     """Compute pHash for files without one (incremental). Returns the number computed.
 
     Moved out of the hot `index()` path (F11): the pHash decode is done at a reduced
-    resolution (Image.draft + thumbnail before imagehash.phash), in parallel (the
+    resolution (F67: via the shared preview cache, see _phash_one), in parallel (the
     same ThreadPoolExecutor as in indexer.index — Pillow decoding releases the GIL).
     HEIC — if pillow-heif is installed, otherwise such files are silently skipped
     (phash stays NULL, as before).
@@ -62,7 +72,7 @@ def compute_phashes(
     if not _PHASH:
         return 0
     rows = conn.execute(
-        """SELECT id, path FROM files
+        """SELECT id, path, mtime, size FROM files
            WHERE phash IS NULL AND error IS NULL AND media_type = 'photo'"""
     ).fetchall()
     total = len(rows)
@@ -74,7 +84,12 @@ def compute_phashes(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for start in range(0, total, _PHASH_BATCH):
             batch = rows[start:start + _PHASH_BATCH]
-            results = list(pool.map(_phash_one, [r["path"] for r in batch]))
+            results = list(pool.map(
+                _phash_one,
+                [r["path"] for r in batch],
+                [r["mtime"] for r in batch],
+                [r["size"] for r in batch],
+            ))
             with conn:  # one transaction per batch — as in index()
                 for r, ph in zip(batch, results):
                     if ph is not None:

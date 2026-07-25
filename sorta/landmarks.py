@@ -21,6 +21,7 @@ from typing import Callable, Iterator, Sequence, TypeVar
 import numpy as np
 import yaml
 
+from . import imaging
 from .config import Config
 from .naming import NamingSettings, naming_settings, utcnow_iso
 
@@ -149,8 +150,9 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
       GIL in the C decode);
     - inference in ONE batch on the GPU (encode_image over the whole batch, not one
       by one);
-    - decode at a reduced resolution (Image.draft) — CLIP resizes to the model input
-      anyway, so decoding a full-size HEIC/JPEG is pointless;
+    - decode at a reduced resolution (F67: through the shared preview cache) — CLIP
+      resizes to the model input anyway, so decoding a full-size HEIC/JPEG is
+      pointless, and the preview is shared with the pHash/OCR/VLM stages;
     - prompt text embeddings are cached (identical between batches);
     - image features are cached by path (F19, `CachingFeatureClassifier`) — one
       decode+encode_image per path over the classifier's lifetime, not per
@@ -161,7 +163,6 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
     import open_clip
     import pillow_heif
     import torch
-    from PIL import Image
 
     pillow_heif.register_heif_opener()  # so CLIP reads HEIC/HEIF (iPhone)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -181,15 +182,19 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
     _text_cache: dict[tuple[str, ...], object] = {}
 
     def _load(path: str):
+        # F67: the frame comes from the shared preview cache — the same file is also
+        # decoded by junk (CLIP/OCR/VLM) and dedup (pHash), and the preview turns
+        # every run after the first into a small-JPEG decode. mtime/size for the key
+        # come from a local stat (microseconds against hundreds of ms of decode) so
+        # that the Classifier/FeatureEncoder signatures stay untouched.
         try:
-            with Image.open(path) as im:
-                try:
-                    im.draft("RGB", _draft)  # JPEG: decode at a reduced scale
-                except Exception:
-                    pass
-                return preprocess(im.convert("RGB"))
+            st = os.stat(path)
+            im = imaging.decode_rgb_preview(path, st.st_mtime, st.st_size, max_edge=_draft[0])
+            if im is None:
+                return None  # corrupt/undecodable file → a zero row
+            return preprocess(im)
         except Exception:
-            return None  # corrupt/undecodable file → a zero row
+            return None
 
     def _text_features(prompts: list[str]):
         key = tuple(prompts)
