@@ -326,17 +326,69 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+# F66: near_duplicate_groups over tens of thousands of pHashes costs seconds, and the
+# Duplicates tab re-requests it on every open. The payload is a few MB of JSON, so a
+# couple of entries is all we keep (one per max_distance in practice).
+_DUPES_CACHE_MAX_ITEMS = 2
+_DupesFingerprint = tuple[tuple[int, int], ...]
+_DupesCacheKey = tuple[str, int, _DupesFingerprint]
+_dupes_cache: OrderedDict[_DupesCacheKey, list[dict]] = OrderedDict()
+_dupes_cache_lock = threading.Lock()
+
+
+def _dupes_cache_clear() -> None:
+    """Drop the cached Duplicates payloads (test isolation)."""
+    with _dupes_cache_lock:
+        _dupes_cache.clear()
+
+
+def _db_fingerprint(db_path: Path) -> _DupesFingerprint:
+    """(st_mtime_ns, st_size) of the DB file AND its `-wal` sidecar.
+
+    The schema runs in WAL mode, so a commit can land entirely in `<db>-wal` and
+    leave the main file untouched — keying on the `.db` stat alone would serve stale
+    groups after a pipeline run. A missing file contributes (-1, -1).
+    """
+    fingerprint: list[tuple[int, int]] = []
+    for p in (db_path, Path(f"{db_path}-wal")):
+        try:
+            st = p.stat()
+        except OSError:
+            fingerprint.append((-1, -1))
+        else:
+            fingerprint.append((st.st_mtime_ns, st.st_size))
+    return tuple(fingerprint)
+
+
 def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
     """near_duplicate_groups -> JSON-compatible groups for the Duplicates tab.
 
     recommended (F14): the best frame of the group by (width*height, then size) desc.
     action — the current decision from dedup_choice (keep/to_delete/None).
+
+    Cached (F66) under (db path, max_distance, _db_fingerprint): any write to the
+    index changes the fingerprint and the payload is recomputed.
     """
+    key: _DupesCacheKey = (str(db_path), max_distance, _db_fingerprint(db_path))
+    with _dupes_cache_lock:
+        cached = _dupes_cache.get(key)
+        if cached is not None:
+            _dupes_cache.move_to_end(key)
+            return cached
+
+    def remember(payload: list[dict]) -> list[dict]:
+        with _dupes_cache_lock:
+            _dupes_cache[key] = payload
+            _dupes_cache.move_to_end(key)
+            while len(_dupes_cache) > _DUPES_CACHE_MAX_ITEMS:
+                _dupes_cache.popitem(last=False)
+        return payload
+
     conn = _connect(db_path)
     try:
         groups = near_duplicate_groups(conn, max_distance=max_distance)
         if not groups:
-            return []
+            return remember([])
         all_ids = [r["id"] for g in groups for r in g]
         placeholders = ",".join("?" * len(all_ids))
         wh = {
@@ -381,7 +433,7 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
         )
         best["recommended"] = True
         result.append({"group": idx, "frames": frames})
-    return result
+    return remember(result)
 
 
 def _validate_group_payload(payload: object) -> tuple[list[int], int | None] | None:
