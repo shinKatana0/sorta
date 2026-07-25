@@ -23,6 +23,7 @@ from .faces import detect_and_cluster, export_contact_sheet, label_cluster
 from .faces import merge as merge_clusters
 from .geo import resolve_places
 from .indexer import index as run_index
+from .indexer import refresh_exif
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
@@ -113,6 +114,29 @@ def _cmd_index(config_path: str, src: str | None = None) -> None:
         stats = run_index(cfg, conn, progress=lambda s: cb(s.scanned, None))
         dups = assign_duplicates(conn, cfg.dedup.canonical_strategy)
     print(_summarize_index(stats, dups))
+
+
+def _summarize_refresh(stats) -> str:
+    return (f"Перечитано: {stats.scanned} файлов, обновлено {stats.updated}; "
+            f"вернулось координат: {stats.recovered_gps}, дат съёмки: "
+            f"{stats.recovered_date}; без EXIF: {stats.still_empty}, "
+            f"ошибок: {stats.errors}")
+
+
+def _cmd_refresh_exif(config_path: str) -> None:
+    """F71: re-read metadata of already-indexed files.
+
+    A plain `index` skips them — `_needs_update` compares path+size+mtime and none of
+    those changed, only the exiftool flag did.
+    """
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    conn = connect(cfg.database)
+    with stage_timer("refresh-exif"), progress_task("refresh-exif: метаданные") as cb:
+        stats = refresh_exif(cfg, conn, progress=cb)
+    print(_summarize_refresh(stats))
+    if stats.recovered_gps:
+        print("Появились новые координаты — перезапустите: sorta geo (и sorta events)")
 
 
 def _cmd_geo(config_path: str) -> None:
@@ -385,8 +409,15 @@ try:
         src: str = typer.Argument(
             None, help="Каталог с фото (рекурсивно); переопределяет config sources"),
         config: str = _CFG,
+        refresh_exif: bool = typer.Option(
+            False, "--refresh-exif",
+            help="Перечитать метаданные уже проиндексированных файлов "
+                 "(вместо сканирования). Содержимое файлов не читается."),
     ):
         """Сканировать источники, извлечь метаданные, пометить дубликаты."""
+        if refresh_exif:
+            _cmd_refresh_exif(config)
+            return
         _cmd_index(config, src=src)
 
     @app.command()
