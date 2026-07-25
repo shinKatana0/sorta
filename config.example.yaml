@@ -18,6 +18,10 @@ language: en
 log_level: WARNING
 
 index:
+  # F72: parallel exiftool sessions. exiftool is a separate process, so it
+  # scales almost linearly — measured 11.8 -> 2.0 ms per file going from 1 to 8
+  # sessions. 0 = auto min(8, cores). Small batches use fewer sessions.
+  # exif_workers: 8
   extensions:
     photo: [jpg, jpeg, png, heic, heif, webp, tif, tiff, bmp]
     raw:   [cr2, cr3, nef, arw, dng, orf, rw2, raf]
