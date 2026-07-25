@@ -121,7 +121,28 @@ def assign_duplicates(conn: sqlite3.Connection, strategy: str = "prefer_exif_the
 
 def hamming(a: str, b: str) -> int:
     """Bitwise Hamming distance between hex pHash strings of equal length."""
-    return bin(int(a, 16) ^ int(b, 16)).count("1")
+    return (int(a, 16) ^ int(b, 16)).bit_count()
+
+
+def _band_ranges(bits: int, bands: int) -> list[tuple[int, int]]:
+    """Split `bits` bit positions into `bands` disjoint contiguous ranges.
+
+    Returns (offset, width) pairs that cover [0, bits) exactly once, with widths
+    differing by at most 1 — 64 bits over 6 bands gives 11,11,11,11,10,10.
+
+    F66: the previous split was done on hex characters with a ceil step, so 16
+    characters over 6 bands gave five bands of 3 characters and a last one of a
+    single character. That tiny band put ~1/16 of the collection into each of its
+    buckets and produced almost all of the candidate pairs.
+    """
+    base, rem = divmod(bits, bands)
+    ranges: list[tuple[int, int]] = []
+    offset = 0
+    for i in range(bands):
+        width = base + (1 if i < rem else 0)
+        ranges.append((offset, width))
+        offset += width
+    return ranges
 
 
 def near_duplicate_groups(
@@ -134,8 +155,15 @@ def near_duplicate_groups(
     even if dist(A, C) > the threshold — for a report this is expected).
 
     Candidates are found via band buckets (pigeonhole): the hash is cut into
-    max_distance+1 parts; a pair within the threshold shares at least one part —
-    a full O(n^2) scan is not needed.
+    max_distance+1 parts of near-equal BIT width (_band_ranges); a pair within the
+    threshold shares at least one part — a full O(n^2) scan is not needed. Hashes of
+    different bit length are never compared (the length is part of the bucket key).
+
+    F66 — three things keep this cheap on tens of thousands of files: each pHash is
+    parsed into an int once per file (not once per pair), identical pHashes are
+    collapsed into the group up front so the buckets hold one representative per
+    distinct value instead of a whole clique, and the distance itself is
+    (a ^ b).bit_count() over those ints instead of re-parsing hex strings.
 
     Exact duplicates (dup_of IS NOT NULL) and errored files are excluded.
     Writes nothing to the DB. Groups are sorted by the path of the first file,
@@ -145,7 +173,6 @@ def near_duplicate_groups(
         """SELECT id, path, size, phash FROM files
            WHERE phash IS NOT NULL AND error IS NULL AND dup_of IS NULL"""
     ).fetchall()
-    by_id = {r["id"]: r for r in rows}
 
     parent = {r["id"]: r["id"] for r in rows}
 
@@ -155,23 +182,40 @@ def near_duplicate_groups(
             x = parent[x]
         return x
 
-    bands = max_distance + 1
-    buckets: dict[tuple[int, int, str], list[int]] = {}
+    # Files sharing the exact same pHash are always one group — union them right away
+    # and keep a single representative per distinct (bit length, value).
+    by_value: dict[tuple[int, int], list[int]] = {}
     for r in rows:
-        h = r["phash"].lower()
-        step = max(1, -(-len(h) // bands))  # ceil; length in the key — do not compare different pHashes
-        for bi in range(bands):
-            part = h[bi * step:(bi + 1) * step]
-            buckets.setdefault((len(h), bi, part), []).append(r["id"])
+        h = r["phash"]
+        by_value.setdefault((len(h) * 4, int(h, 16)), []).append(r["id"])
+    for ids in by_value.values():
+        root = ids[0]
+        for other in ids[1:]:
+            parent[other] = root
 
-    for ids in buckets.values():
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):
-                a, b = by_id[ids[i]], by_id[ids[j]]
-                ra, rb = find(a["id"]), find(b["id"])
-                if ra == rb:
-                    continue
-                if hamming(a["phash"], b["phash"]) <= max_distance:
+    bands = max(1, max_distance + 1)
+    ranges_by_len: dict[int, list[tuple[int, int]]] = {}
+    buckets: dict[tuple[int, int, int], list[tuple[int, int]]] = {}
+    for (bit_len, value), ids in by_value.items():
+        ranges = ranges_by_len.get(bit_len)
+        if ranges is None:
+            ranges = ranges_by_len[bit_len] = _band_ranges(bit_len, bands)
+        rep = ids[0]
+        for bi, (offset, width) in enumerate(ranges):
+            part = (value >> offset) & ((1 << width) - 1)
+            buckets.setdefault((bit_len, bi, part), []).append((value, rep))
+
+    for items in buckets.values():
+        n = len(items)
+        if n < 2:
+            continue
+        for i in range(n - 1):
+            va, ia = items[i]
+            ra = find(ia)  # stays the root: unions below only re-point other roots at it
+            for j in range(i + 1, n):
+                vb, ib = items[j]
+                rb = find(ib)
+                if ra != rb and (va ^ vb).bit_count() <= max_distance:
                     parent[rb] = ra
 
     grouped: dict[int, list[sqlite3.Row]] = {}
