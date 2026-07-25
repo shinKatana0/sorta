@@ -93,6 +93,18 @@ F67 supersedes that decode path: OCR and VLM take the frame from the shared disk
 preview cache (`imaging.decode_rgb_preview`) instead of decoding the original, so
 the draft margin no longer matters here — a 1536px preview is cheap to decode by
 itself, and the cost is shared with the pHash/CLIP stages.
+
+F73: with the decode that cheap, what is left of the junk stage is `reader.detect`
+itself — and it used to run strictly serially on the pipeline thread (py-spy on a
+live 24.5k-frame run: 4.27 files/s, every decode worker idle). The detect calls are
+independent, so they now go through `_OcrPool`: K threads, each with its OWN easyocr
+Reader (a Reader holds a torch model and its buffers — sharing one is not safe, the
+same reason F12.1 gives every faces worker its own FaceAnalysis). The per-chunk loop
+is split into three phases — the pre-OCR verdict, the parallel text_frac, then the
+verdicts and the DB writes — and only the middle one leaves the caller's thread, so
+SQLite stays single-writer. This is a perf change only: the gate `run_ocr`, the
+thresholds and the order in which verdicts are applied are untouched, so the
+classification is byte-for-byte what K=1 produces.
 """
 from __future__ import annotations
 
@@ -100,8 +112,10 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Queue
 from typing import Callable
 
 import numpy as np
@@ -199,6 +213,222 @@ _DEFAULT_TEXT_RESCUE_DOCSCORE_MIN = 0.3
 _DEFAULT_TEXT_FRAC_DOWNSCALE_PX = 1280
 
 TextFracDetector = Callable[[str, int | None, int | None], float | None]
+# F73: builds the detector of ONE worker thread — see _OcrPool. Every thread needs
+# its own (an easyocr Reader is not thread-safe), so the pool takes a factory, not a
+# ready detector.
+TextFracDetectorFactory = Callable[[], TextFracDetector]
+# (file_id, path, width, height) — one OCR job for the pool. file_id keys the result
+# back to the row, the pool does not preserve the input order.
+OcrJob = tuple[int, str, int | None, int | None]
+
+# F73: the default ceiling for naming.ocr_workers. Each worker keeps its own Reader
+# (i.e. its own model copy in VRAM), so the default stays deliberately conservative —
+# a higher value is a measurement on real hardware, not a default that may knock over
+# a weak card.
+_DEFAULT_OCR_WORKERS_CAP = 4
+
+
+def resolve_ocr_workers(raw: dict | None) -> int:
+    """How many OCR threads run in parallel — `naming.ocr_workers` in config.yaml.
+
+    Read straight out of `cfg.raw`, the way hashing.resolve_workers reads
+    `index.workers`: no typed field is added to NamingConfig for it. Default
+    min(4, cpu_count) — see _DEFAULT_OCR_WORKERS_CAP on why it is that low.
+    Absent / 0 / negative / garbage -> the default; the result is always >= 1.
+    """
+    default = min(_DEFAULT_OCR_WORKERS_CAP, os.cpu_count() or 1)
+    workers = ((raw or {}).get("naming") or {}).get("ocr_workers")
+    if workers is None:
+        return default
+    try:
+        n = int(workers)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
+class _OcrPool:
+    """text_frac over a pool of worker threads, one own detector per thread (F73).
+
+    Worker threads are long-lived (they outlive a chunk) and pull jobs from a shared
+    queue. Every worker builds its OWN detector on its first job — lazily, once,
+    thread-local — and reuses it for every later frame and every later chunk: loading
+    an easyocr Reader is expensive, building one per frame would cost far more than
+    the detection it does. Nothing is shared between workers.
+
+    VRAM degradation: if a worker cannot build its detector (typically no memory left
+    for the second and further Readers), the stage does NOT crash — the pool shrinks
+    to the detectors actually created (in the limit a single worker), the job goes
+    back into the queue for a surviving worker, and the reason is logged. No silent
+    fallback: it is exactly on such silence that the reason for a VLM refusal was
+    lost once (F37-B lesson). If not a single detector can be built, text_frac()
+    re-raises the build error — an unbuildable detector was a stage error before F73
+    too.
+
+    Results are returned to the caller's thread; nothing here touches SQLite.
+    """
+
+    def __init__(self, factory: TextFracDetectorFactory, workers: int) -> None:
+        self._factory = factory
+        self._workers = max(1, workers)
+        self._local = threading.local()
+        self._lock = threading.Lock()   # guards the counters and the batch state
+        self._built = 0                 # detectors created (reserved slots included)
+        self._limit = self._workers     # shrunk on a build failure, never below 1
+        self._error: BaseException | None = None   # the last build failure
+        self._jobs: Queue[OcrJob | None] = Queue()
+        self._threads: list[threading.Thread] = []
+        self._live = 0                  # worker threads still in the pool
+        self._results: dict[int, float | None] = {}
+        self._left = 0                  # jobs of the current batch not finished yet
+        self._batch_done = threading.Event()
+
+    @property
+    def detectors_built(self) -> int:
+        """Detectors created over the whole run (<= workers) — for the stage log."""
+        return self._built
+
+    def text_frac(self, jobs: list[OcrJob]) -> dict[int, float | None]:
+        """text_frac for `jobs`, keyed by file_id; returns on the caller's thread.
+
+        A detector error on one frame becomes None for that file_id ("no signal" —
+        the gate/rescue leaves the verdict alone) and does not affect its neighbours,
+        the same contract the try/except around reader.detect has always given.
+        A file_id missing from the result also means "no signal".
+        """
+        if not jobs:
+            return {}
+        results = self._serial(jobs) if self._workers == 1 else self._parallel(jobs)
+        if len(results) < len(jobs) and self._error is not None:
+            # Not one detector alive: OCR is unavailable for the whole stage. Fail
+            # loudly instead of quietly dropping the signal for every frame.
+            raise self._error
+        return results
+
+    def close(self) -> None:
+        """Stop the workers (their detectors die with the threads)."""
+        for _ in self._threads:
+            self._jobs.put(None)
+        for t in self._threads:
+            t.join()
+        self._threads.clear()
+        self._live = 0
+        while not self._jobs.empty():  # sentinels of workers that had already retired
+            self._jobs.get_nowait()
+
+    def _detector(self) -> TextFracDetector | None:
+        """The calling thread's detector, built on first use; None -> leave the pool.
+
+        The slot is reserved under the lock but the factory runs outside it: loading
+        several Readers in parallel is fine, and serializing it would only delay the
+        start of the stage.
+        """
+        det: TextFracDetector | None = getattr(self._local, "det", None)
+        if det is not None:
+            return det
+        with self._lock:
+            if self._built >= self._limit:
+                return None  # the pool is already at its (shrunk) size
+            self._built += 1
+        try:
+            det = self._factory()
+        except Exception as exc:  # noqa: BLE001 — degrade the pool, do not kill the stage
+            with self._lock:
+                self._built -= 1
+                self._error = exc
+                self._limit = max(1, self._built)
+                limit = self._limit
+            _log.warning(
+                "junk: OCR-детектор не построился (%s) — пул уменьшен до %d воркер(ов)",
+                exc, limit)
+            return None
+        self._local.det = det
+        return det
+
+    def _one(self, det: TextFracDetector, job: OcrJob) -> float | None:
+        _fid, path, width, height = job
+        try:
+            return det(path, width, height)
+        except Exception as exc:  # noqa: BLE001 — one bad frame must not break the stage
+            _log.warning("junk: OCR не удался для %s: %s", path, exc)
+            return None
+
+    def _serial(self, jobs: list[OcrJob]) -> dict[int, float | None]:
+        """workers == 1: everything on the caller's thread — the pre-F73 path."""
+        det = self._detector()
+        if det is None:
+            return {}
+        return {job[0]: self._one(det, job) for job in jobs}
+
+    def _parallel(self, jobs: list[OcrJob]) -> dict[int, float | None]:
+        self._start()
+        with self._lock:
+            self._results = {}
+            self._left = len(jobs)
+            self._batch_done.clear()
+        for job in jobs:
+            self._jobs.put(job)
+        self._batch_done.wait()
+        with self._lock:
+            results, left = self._results, self._left
+        if left:  # the pool died mid-batch — drop the leftovers, text_frac() reports it
+            while not self._jobs.empty():
+                self._jobs.get_nowait()
+        return results
+
+    def _start(self) -> None:
+        """Bring the worker set up to the current (possibly shrunk) pool size."""
+        with self._lock:
+            missing = self._limit - self._live
+            self._live += max(0, missing)
+        for _ in range(max(0, missing)):
+            t = threading.Thread(target=self._run, name="sorta-ocr", daemon=True)
+            self._threads.append(t)
+            t.start()
+
+    def _run(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:  # close() — a shutdown sentinel per started thread
+                with self._lock:
+                    self._live -= 1
+                return
+            det = self._detector()
+            if det is None:
+                # No detector for this thread (VRAM): hand the job back and leave the
+                # pool — the surviving workers finish the batch.
+                self._jobs.put(job)
+                self._retire()
+                return
+            frac = self._one(det, job)
+            with self._lock:
+                self._results[job[0]] = frac
+                self._left -= 1
+                if self._left == 0:
+                    self._batch_done.set()
+
+    def _retire(self) -> None:
+        """This worker leaves the pool; the last one to go unblocks the batch."""
+        with self._lock:
+            self._live -= 1
+            if self._live == 0:
+                self._batch_done.set()
+
+
+def _resolve_detector_factory(
+    cfg: Config, text_detector: TextFracDetector | None,
+) -> TextFracDetectorFactory:
+    """The factory the OCR pool builds its per-thread detectors with (F73).
+
+    An explicitly injected `text_detector` (a mock in tests, a caller with its own
+    detector) is handed to every worker as it is — how it copes with threads is then
+    the caller's business. Otherwise each worker builds its own easyocr detector.
+    """
+    if text_detector is not None:
+        return lambda: text_detector
+    downscale_px = int(
+        getattr(cfg.naming, "text_frac_downscale_px", _DEFAULT_TEXT_FRAC_DOWNSCALE_PX))
+    return lambda: easyocr_text_frac_detector(downscale_px)  # pragma: no cover — ML
 
 
 def _document_score(probs_row: np.ndarray) -> float:
@@ -433,6 +663,7 @@ def classify(
     classifier: Classifier | None = None,
     use_clip: bool = True,
     text_detector: TextFracDetector | None = None,
+    text_detector_factory: TextFracDetectorFactory | None = None,
     vlm_classifier: VlmClassifyFn | None = None,
     vlm_classifier_factory: Callable[[str], VlmClassifyFn] | None = None,
     progress: Callable[[int, int], None] | None = None,
@@ -450,6 +681,13 @@ def classify(
     text_detector (F37, Phase A): (path, width, height) -> text_frac | None.
     By default an easyocr detector is built (lazily, once per run) — as with
     classifier, the caller passes its own (mock) in tests.
+
+    text_detector_factory (F73): builds ONE detector per OCR worker thread; by
+    default it wraps easyocr_text_frac_detector, and an explicit `text_detector`
+    (above) is shared by every worker instead. Tests replace the factory to count how
+    many detectors a run creates and to check the degradation path (a factory that
+    fails on the second and further calls must shrink the pool, not kill the stage).
+    The number of workers comes from `naming.ocr_workers` (see resolve_ocr_workers).
 
     vlm_classifier / vlm_classifier_factory (F37, Phase B): the deep tier,
     opt-in via cfg.naming.vlm_enabled (default False, gated by use_clip=True —
@@ -534,10 +772,13 @@ def classify(
 
     if classifier is None:
         classifier = clip_classifier(s)  # pragma: no cover — ML, smoke test
-    if text_detector is None:
-        downscale_px = int(
-            getattr(cfg.naming, "text_frac_downscale_px", _DEFAULT_TEXT_FRAC_DOWNSCALE_PX))
-        text_detector = easyocr_text_frac_detector(downscale_px)  # pragma: no cover — ML, smoke test
+    # F73: the OCR pool — K worker threads, one own detector each, built lazily on
+    # first use and reused for the whole run (see _OcrPool). The detector itself is no
+    # longer built here: a run where the gate opens for nothing loads no model at all.
+    ocr_workers = resolve_ocr_workers(cfg.raw)
+    ocr = _OcrPool(
+        text_detector_factory or _resolve_detector_factory(cfg, text_detector),
+        ocr_workers)
     stats.clip_used = True
     document_threshold = float(cfg.naming.document_threshold)
     text_frac_min = float(getattr(cfg.naming, "text_frac_min", _DEFAULT_TEXT_FRAC_MIN))
@@ -560,60 +801,76 @@ def classify(
     # (id, path, fast_verdict).
     vlm_candidates: list[tuple[int, str, str]] = []
     done = 0
-    with conn:
-        for chunk in batched(todo, s.clip_batch_size):
-            paths = [r["path"] for r in chunk]
-            probs = classifier(paths, prompts)
-            # F15: document-CLIP only for files without detected faces —
-            # faces are an unconditional veto, a second pass for them is unneeded.
-            noface_idx = [i for i, r in enumerate(chunk) if not r["has_faces"]]
-            doc_score: dict[int, float] = {}
-            product_score: dict[int, float] = {}
-            if noface_idx:
-                doc_probs = classifier([paths[i] for i in noface_idx], doc_prompts)
-                for k, i in enumerate(noface_idx):
-                    doc_score[i] = _document_score(doc_probs[k])
-                if vlm_fn is not None:  # the product prefilter is only needed for the VLM gate
-                    prod_probs = classifier([paths[i] for i in noface_idx], prod_prompts)
+    try:
+        with conn:
+            for chunk in batched(todo, s.clip_batch_size):
+                paths = [r["path"] for r in chunk]
+                probs = classifier(paths, prompts)
+                # F15: document-CLIP only for files without detected faces —
+                # faces are an unconditional veto, a second pass for them is unneeded.
+                noface_idx = [i for i, r in enumerate(chunk) if not r["has_faces"]]
+                doc_score: dict[int, float] = {}
+                product_score: dict[int, float] = {}
+                if noface_idx:
+                    doc_probs = classifier([paths[i] for i in noface_idx], doc_prompts)
                     for k, i in enumerate(noface_idx):
-                        product_score[i] = _product_score(prod_probs[k])
-            for i, (r, p) in enumerate(zip(chunk, probs)):
-                best = int(np.argmax(p))
-                score = float(p[best])
-                if heur_raw[r["id"]] == "screenshot":
-                    # F22: an explicit Screenshot_/"снимок экрана" name — a strong
-                    # signal, it overrides both the document detection and the face
-                    # veto (an avatar in a screenshot does not make the file a real photo).
-                    verdict = "screenshot"
-                elif i in doc_score and doc_score[i] >= document_threshold:
-                    # no faces + a high-confidence CLIP document → a separate
-                    # review category (F15), goes BEFORE the camera/GPS veto.
-                    verdict = "document"
-                    score = doc_score[i]
-                elif _is_real_photo(r):
-                    # camera EXIF/GPS or faces in the photo → this is a shot photo; a
-                    # meme/screenshot does not carry those. The CLIP verdict does not
-                    # override (otherwise on real data most "junk" would be false).
-                    verdict = "photo"
-                elif score >= s.junk_threshold:
-                    verdict = _CLIP_CLASSES[best][0]
-                else:
-                    verdict = heur[r["id"]]
-                source = "clip"
-                # F37 (Phase A): the OCR signal only for the document<->photo pair,
-                # only without faces (the same veto as the document-CLIP above) —
-                # screenshot/meme are not touched.
-                # F38: the rescue branch (photo) runs OCR only if doc_score is
-                # uncertain (>= text_rescue_docscore_min) — a clear scene
-                # (doc_score≈0) spends no OCR call. The FP gate (document) — without
-                # a limit, as before (there are few documents anyway).
-                run_ocr = not r["has_faces"] and (
-                    verdict == "document"
-                    or (verdict == "photo"
-                        and doc_score.get(i, 0.0) >= text_rescue_docscore_min)
-                )
-                if run_ocr:
-                    text_frac = text_detector(r["path"], r["width"], r["height"])
+                        doc_score[i] = _document_score(doc_probs[k])
+                    if vlm_fn is not None:  # the product prefilter is only needed for the VLM gate
+                        prod_probs = classifier([paths[i] for i in noface_idx], prod_prompts)
+                        for k, i in enumerate(noface_idx):
+                            product_score[i] = _product_score(prod_probs[k])
+                # F73, phase 1: the pre-OCR verdict of every frame of the chunk, plus
+                # the frames the OCR gate opens for. The gate condition itself and the
+                # verdict logic are unchanged — only the OCR call left this loop.
+                pre: list[tuple[str, float, str]] = []  # (verdict, score, source)
+                ocr_jobs: list[OcrJob] = []
+                for i, (r, p) in enumerate(zip(chunk, probs)):
+                    best = int(np.argmax(p))
+                    score = float(p[best])
+                    if heur_raw[r["id"]] == "screenshot":
+                        # F22: an explicit Screenshot_/"снимок экрана" name — a strong
+                        # signal, it overrides both the document detection and the face
+                        # veto (an avatar in a screenshot does not make the file a real photo).
+                        verdict = "screenshot"
+                    elif i in doc_score and doc_score[i] >= document_threshold:
+                        # no faces + a high-confidence CLIP document → a separate
+                        # review category (F15), goes BEFORE the camera/GPS veto.
+                        verdict = "document"
+                        score = doc_score[i]
+                    elif _is_real_photo(r):
+                        # camera EXIF/GPS or faces in the photo → this is a shot photo; a
+                        # meme/screenshot does not carry those. The CLIP verdict does not
+                        # override (otherwise on real data most "junk" would be false).
+                        verdict = "photo"
+                    elif score >= s.junk_threshold:
+                        verdict = _CLIP_CLASSES[best][0]
+                    else:
+                        verdict = heur[r["id"]]
+                    pre.append((verdict, score, "clip"))
+                    # F37 (Phase A): the OCR signal only for the document<->photo pair,
+                    # only without faces (the same veto as the document-CLIP above) —
+                    # screenshot/meme are not touched.
+                    # F38: the rescue branch (photo) runs OCR only if doc_score is
+                    # uncertain (>= text_rescue_docscore_min) — a clear scene
+                    # (doc_score≈0) spends no OCR call. The FP gate (document) — without
+                    # a limit, as before (there are few documents anyway).
+                    run_ocr = not r["has_faces"] and (
+                        verdict == "document"
+                        or (verdict == "photo"
+                            and doc_score.get(i, 0.0) >= text_rescue_docscore_min)
+                    )
+                    if run_ocr:
+                        ocr_jobs.append((r["id"], r["path"], r["width"], r["height"]))
+                # F73, phase 2: text_frac for the gated frames, in the pool. This is the
+                # only part of the stage that leaves this thread.
+                text_fracs = ocr.text_frac(ocr_jobs)
+                # F73, phase 3: apply the OCR signal, then write — on this thread only
+                # (single writer) and in the original per-chunk order, so the verdicts
+                # and stats are exactly those of the serial version.
+                for i, r in enumerate(chunk):
+                    verdict, score, source = pre[i]
+                    # missing / None both mean "no signal" — the verdict is left alone
+                    text_frac = text_fracs.get(r["id"])
                     if text_frac is not None:
                         if verdict == "document" and text_frac < text_frac_min:
                             # FP gate: CLIP is sure it is "document", but there is
@@ -623,26 +880,34 @@ def classify(
                             # FN rescue: dense text over the whole frame — a document,
                             # even if the CLIP score was low.
                             verdict, score, source = "document", text_frac, "ocr"
-                if verdict == "photo" and _in_screenshots_dir(r["path"]):
-                    # F29: the Screenshots folder is a "floor" for photo; we do not
-                    # override document/meme (conservative, brief F29).
-                    verdict = "screenshot"
-                conn.execute(upsert, (r["id"], verdict, source, score, now, active_tier))
-                stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
-                # #14/V1: selection into VLM candidates (deep refines doc/product/photo) —
-                # without faces, not screenshot/meme, and the fast tier doubts: already a
-                # document, OR the document-CLIP is in a suspicious zone, OR the
-                # product-CLIP is above the threshold. Clear personal photos (both scores
-                # low) are not touched by the VLM.
-                if (vlm_fn is not None and not r["has_faces"]
-                        and verdict not in ("screenshot", "meme")
-                        and (verdict == "document"
-                             or doc_score.get(i, 0.0) >= text_rescue_docscore_min
-                             or product_score.get(i, 0.0) >= product_candidate_min)):
-                    vlm_candidates.append((r["id"], r["path"], verdict))
-            done += len(chunk)
-            if progress:
-                progress(done, len(todo))
+                    if verdict == "photo" and _in_screenshots_dir(r["path"]):
+                        # F29: the Screenshots folder is a "floor" for photo; we do not
+                        # override document/meme (conservative, brief F29).
+                        verdict = "screenshot"
+                    conn.execute(upsert, (r["id"], verdict, source, score, now, active_tier))
+                    stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
+                    # #14/V1: selection into VLM candidates (deep refines doc/product/photo) —
+                    # without faces, not screenshot/meme, and the fast tier doubts: already a
+                    # document, OR the document-CLIP is in a suspicious zone, OR the
+                    # product-CLIP is above the threshold. Clear personal photos (both scores
+                    # low) are not touched by the VLM.
+                    if (vlm_fn is not None and not r["has_faces"]
+                            and verdict not in ("screenshot", "meme")
+                            and (verdict == "document"
+                                 or doc_score.get(i, 0.0) >= text_rescue_docscore_min
+                                 or product_score.get(i, 0.0) >= product_candidate_min)):
+                        vlm_candidates.append((r["id"], r["path"], verdict))
+                done += len(chunk)
+                if progress:
+                    progress(done, len(todo))
+    finally:
+        # F73: the workers (and their Readers) live exactly as long as the stage does.
+        # The count is logged so a run can be checked against "one Reader per worker,
+        # not per frame" without a profiler.
+        ocr.close()
+        if ocr.detectors_built:
+            _log.info("junk: OCR-детекторов создано %d (воркеров %d)",
+                      ocr.detectors_built, ocr_workers)
 
     # #14/V1: the deep tier — the VLM only on the selected candidates (not all frames).
     # Each call in try/except: a VLM runtime error on one frame does NOT crash the
