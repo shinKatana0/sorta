@@ -25,7 +25,8 @@ def configure_logging(level: str) -> None:
     invalid = lvl_name not in _VALID_LOG_LEVELS
     if invalid:
         lvl_name = "WARNING"
-    logger.setLevel(lvl_name)
+    console_level = getattr(logging, lvl_name)
+    logger.setLevel(console_level)
     if not any(getattr(h, "_sorta_handler", False) for h in logger.handlers):
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
@@ -36,9 +37,19 @@ def configure_logging(level: str) -> None:
     # handler above is untouched — the file is added, not substituted. A failure to
     # open it must never take a command down, hence the broad guard.
     try:
-        from .runlog import setup_file_logging
+        from .runlog import file_log_level, setup_file_logging
 
         setup_file_logging()
+        # A record is dropped by the level of the LOGGER it was emitted on, before any
+        # handler is consulted. With log_level=WARNING (the default) that swallowed the
+        # INFO `stage=... elapsed=...` lines the run log exists for — the file stayed
+        # silent about exactly the thing it was added to measure. Lower the logger to
+        # whatever the file wants, and give the console its own level back so its
+        # output does not become chattier.
+        for existing in logger.handlers:
+            if getattr(existing, "_sorta_handler", False):
+                existing.setLevel(console_level)
+        logger.setLevel(min(console_level, file_log_level()))
     except Exception as exc:  # noqa: BLE001 — logging is never worth crashing over
         logger.warning("config: не удалось включить файловый лог: %s", exc)
     if invalid:

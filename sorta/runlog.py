@@ -120,6 +120,17 @@ def _lower_root_level(root: logging.Logger, level: int) -> None:
         root.setLevel(level)
 
 
+def file_log_level(level: int | str | None = None) -> int:
+    """Level the file sink will record at (argument, then SORTA_LOG_LEVEL, then INFO).
+
+    Callers need this to decide how far to lower their own logger: a record is
+    dropped by the level of the logger it was emitted on, long before any handler is
+    consulted, so a WARNING console setting would silently swallow the INFO stage
+    timings this module exists to write.
+    """
+    return _resolve_level(level)
+
+
 def setup_file_logging(
     path: str | Path | None = None, level: int | str | None = None
 ) -> Path:

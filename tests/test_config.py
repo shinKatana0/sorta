@@ -96,7 +96,15 @@ class TestConfigureLogging(unittest.TestCase):
 
     def test_invalid_level_falls_back_to_warning(self):
         configure_logging("BOGUS")
-        self.assertEqual(self.logger.level, logging.WARNING)
+        # The assertion moved from the logger to the console handler on purpose: the
+        # logger is now deliberately lowered to the file sink's level so the INFO
+        # `stage=` lines are not dropped before reaching it (they were). What "falls
+        # back to WARNING" has to mean is what the console prints, and that is the
+        # handler's level.
+        console = [h for h in self.logger.handlers if getattr(h, "_sorta_handler", False)]
+        self.assertTrue(console)
+        for handler in console:
+            self.assertEqual(handler.level, logging.WARNING)
 
     def test_invalid_level_does_not_raise(self):
         try:
