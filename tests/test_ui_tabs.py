@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+import urllib.parse
 
 from tests.test_ui import UiServerTestBase
 
@@ -39,6 +40,11 @@ class PersonEventTestBase(UiServerTestBase):
 
 
 class TestApiPlanPersonEvent(PersonEventTestBase):
+    def _page(self, mode: str, category: str) -> dict:
+        _status, body, _ctype = self.get(
+            f"/api/plan?mode={mode}&category=" + urllib.parse.quote(category))
+        return json.loads(body)
+
     def test_person_mode_returns_expected_fields(self):
         fid, _p, _c = self.add_photo_file("a.jpg")
         self.add_face(fid, label="Alice")
@@ -46,7 +52,11 @@ class TestApiPlanPersonEvent(PersonEventTestBase):
         status, body, ctype = self.get("/api/plan?mode=person")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        items = json.loads(body)
+        data = json.loads(body)
+        self.assertEqual(data["total"], 1)
+        categories = [row["category"] for row in data["categories"]]
+        self.assertTrue(any(c.startswith("Alice") for c in categories), categories)
+        items = self._page("person", categories[0])["items"]
         self.assertEqual({it["file_id"] for it in items}, {fid})
         expected_keys = {"file_id", "name", "target_rel", "reason", "date",
                          "geo", "category", "thumb_url"}
@@ -61,7 +71,10 @@ class TestApiPlanPersonEvent(PersonEventTestBase):
         status, body, ctype = self.get("/api/plan?mode=event")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        items = json.loads(body)
+        data = json.loads(body)
+        categories = [row["category"] for row in data["categories"]]
+        self.assertTrue(all(c.startswith("2023") for c in categories), categories)
+        items = self._page("event", categories[0])["items"]
         self.assertEqual({it["file_id"] for it in items}, {fid})
         for item in items:
             self.assertTrue(item["target_rel"].startswith("2023/"))

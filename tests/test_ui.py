@@ -27,11 +27,10 @@ def _make_jpeg(path: Path, color=(200, 50, 50), size=(64, 48)) -> bytes:
 
 
 class UiServerTestBase(unittest.TestCase):
-    """The server does NOT start in setUp: PlanCache is built once on the
-    build_server caller's thread (see ui.PlanCache) — fixtures must be added BEFORE
-    start_server(), otherwise the plan stays empty (not a bug, but a consequence of
-    the thread-safe design: the sqlite3 connection from setUp must not be touched from
-    ThreadingHTTPServer threads).
+    """The server does NOT start in setUp: fixtures are inserted through the setUp
+    connection, and only a committed row is visible to the short-lived connection a
+    lazy PlanCache build opens (see ui.PlanCache, F70) — so fixtures still go in
+    before the first /api/plan request, not necessarily before start_server().
     """
 
     def setUp(self):
@@ -122,14 +121,26 @@ class TestServerSmoke(UiServerTestBase):
 
 
 class TestApiPlan(UiServerTestBase):
-    def test_city_mode_returns_expected_fields(self):
+    def test_city_mode_aggregate_and_page_return_expected_fields(self):
+        # F70: /api/plan is an aggregate by target folder; the files of one folder
+        # come from an explicit page request.
         fid1, _p1, _c1 = self.add_photo_file("a.jpg", country="ru", city="Moscow")
         fid2, _p2, _c2 = self.add_photo_file("b.jpg", country="ru", city="Moscow")
         self.start_server()
         status, body, ctype = self.get("/api/plan?mode=city")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        items = json.loads(body)
+        data = json.loads(body)
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(len(data["categories"]), 1)
+        category = data["categories"][0]["category"]
+        self.assertEqual(data["categories"][0]["count"], 2)
+
+        _s, page_body, _c = self.get(
+            "/api/plan?mode=city&category=" + urllib.parse.quote(category))
+        page = json.loads(page_body)
+        self.assertEqual(page["total"], 2)
+        items = page["items"]
         self.assertEqual({it["file_id"] for it in items}, {fid1, fid2})
         expected_keys = {"file_id", "name", "target_rel", "reason", "date",
                          "geo", "category", "thumb_url"}
@@ -150,18 +161,18 @@ class TestApiPlan(UiServerTestBase):
         status, _body, _ctype = self.get("/api/plan")
         self.assertEqual(status, 400)
 
-    def test_plan_cached_not_recomputed_after_start(self):
+    def test_plan_cached_not_recomputed_after_first_request(self):
         self.add_photo_file("a.jpg", country="ru", city="Moscow")
         self.start_server()
         status1, body1, _ = self.get("/api/plan?mode=city")
-        # adding a file AFTER the server starts must not enter the cache —
-        # PlanCache is built once at build_server and not recomputed afterwards.
+        # adding a file AFTER the mode has been built must not enter the cache —
+        # PlanCache builds a mode once and keeps it until an explicit rebuild.
         self.add_photo_file("b.jpg", country="ru", city="Moscow")
         status2, body2, _ = self.get("/api/plan?mode=city")
         self.assertEqual(status1, 200)
         self.assertEqual(status2, 200)
-        self.assertEqual(len(json.loads(body1)), 1)
-        self.assertEqual(len(json.loads(body1)), len(json.loads(body2)))
+        self.assertEqual(json.loads(body1)["total"], 1)
+        self.assertEqual(json.loads(body1), json.loads(body2))
 
 
 class TestThumbAndPhoto(UiServerTestBase):

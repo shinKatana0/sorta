@@ -383,15 +383,12 @@ class TestSortRebuildFailureDoesNotMaskSuccess(SortTestBase):
     def test_rebuild_failure_after_apply_keeps_result_and_flags_preview_stale(self):
         _fid, src_path, _content = self.add_photo_file(
             "a.jpg", country="ru", city="Moscow")
-        real_rebuild = ui.PlanCache.rebuild
         calls = {"n": 0}
 
         def flaky_rebuild(cache_self, cfg, conn):
+            # F70: build_server no longer rebuilds anything, so the only call here is
+            # the post-apply invalidation from _run_sort — the one under test.
             calls["n"] += 1
-            if calls["n"] == 1:
-                # the first call — building the cache at server startup (build_server),
-                # must go through normally, otherwise the server would not come up at all.
-                return real_rebuild(cache_self, cfg, conn)
             raise RuntimeError("rebuild boom")
 
         with mock.patch.object(ui.PlanCache, "rebuild", flaky_rebuild):
@@ -404,7 +401,7 @@ class TestSortRebuildFailureDoesNotMaskSuccess(SortTestBase):
 
             final = _poll_until(self.sort_status, lambda d: d["finished"])
 
-        self.assertGreaterEqual(calls["n"], 2)
+        self.assertGreaterEqual(calls["n"], 1)
         # apply went through — the file is physically copied, error is empty, result is present
         self.assertIsNone(final["error"])
         self.assertIsNotNone(final["result"])

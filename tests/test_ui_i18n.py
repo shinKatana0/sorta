@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+import urllib.parse
 
 from sorta import ui
 
@@ -62,7 +63,10 @@ class TestIndexHtmlLanguage(UiServerTestBase):
         status, body, ctype = self.get("/api/plan?mode=city")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        items = json.loads(body)
+        category = json.loads(body)["categories"][0]["category"]
+        _s, page_body, _c = self.get(
+            "/api/plan?mode=city&category=" + urllib.parse.quote(category))
+        items = json.loads(page_body)["items"]
         self.assertEqual(items[0]["geo"], "ru/Moscow")
 
 
