@@ -28,7 +28,7 @@ class TestMigrations(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("dedup_choice", tbls)
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 10)
+            self.assertEqual(v, 11)
             conn.close()
 
     def test_v1_db_migrates_to_v2(self):
@@ -82,11 +82,78 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("city_geonameid", pl_cols)  # added by the v6 migration
             self.assertIn("country_name", pl_cols)     # added by the v10 migration
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 10)
+            self.assertEqual(v, 11)
             row = conn.execute("SELECT * FROM files").fetchone()
             self.assertEqual(row["path"], "/a.jpg")
             self.assertIsNone(row["orientation"])
             self.assertEqual(row["not_personal"], 0)
+            conn.close()
+
+
+    def test_v10_db_gets_media_class_tier_backfilled(self):
+        """v11: media_class.tier is added and backfilled from source.
+
+        'ocr' is a verdict of the fast (clip) tier, not a tier of its own — mapping
+        it to 'clip' is what keeps the upgrade from reclassifying the collection.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "v10.db"
+            raw = sqlite3.connect(db)
+            raw.executescript(
+                """PRAGMA user_version = 10;
+                   CREATE TABLE media_class (
+                       file_id INTEGER PRIMARY KEY,
+                       verdict TEXT NOT NULL, source TEXT NOT NULL,
+                       score REAL, updated_at TEXT NOT NULL
+                   );"""
+            )
+            for fid, source in enumerate(("clip", "ocr", "vlm", "heuristic"), start=1):
+                raw.execute(
+                    "INSERT INTO media_class (file_id, verdict, source, updated_at) "
+                    "VALUES (?, 'photo', ?, 'x')", (fid, source))
+            raw.commit()
+            raw.close()
+
+            conn = connect(db)
+            tiers = {r["source"]: r["tier"]
+                     for r in conn.execute("SELECT source, tier FROM media_class")}
+            self.assertEqual(tiers, {"clip": "clip", "ocr": "clip",
+                                     "vlm": "vlm", "heuristic": "heuristic"})
+            conn.close()
+
+    def test_v1_db_without_media_class_migrates(self):
+        """Regression: media_class only appeared in v3 — the v11 ALTER must not run
+        on a v1/v2 DB, where executescript creates the table from scratch instead."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "v1.db"
+            raw = sqlite3.connect(db)
+            raw.executescript("PRAGMA user_version = 1; CREATE TABLE files ("
+                              "id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                              "size INTEGER NOT NULL, mtime REAL NOT NULL,"
+                              "ext TEXT NOT NULL, media_type TEXT NOT NULL,"
+                              "hash TEXT, hash_algo TEXT, phash TEXT,"
+                              "taken_at TEXT, taken_at_source TEXT,"
+                              "taken_at_confidence TEXT, gps_lat REAL, gps_lon REAL,"
+                              "camera_make TEXT, camera_model TEXT,"
+                              "width INTEGER, height INTEGER,"
+                              "dup_of INTEGER REFERENCES files(id), error TEXT,"
+                              "indexed_at TEXT NOT NULL);"
+                              "CREATE TABLE events (id INTEGER PRIMARY KEY,"
+                              "started_at TEXT NOT NULL, ended_at TEXT NOT NULL,"
+                              "place_city TEXT, name TEXT NOT NULL,"
+                              "name_is_manual INTEGER NOT NULL DEFAULT 0);"
+                              "CREATE TABLE places (file_id INTEGER PRIMARY KEY,"
+                              "country TEXT, region TEXT, city TEXT,"
+                              "confidence TEXT NOT NULL, updated_at TEXT NOT NULL);"
+                              "CREATE TABLE move_batches (id INTEGER PRIMARY KEY,"
+                              "mode TEXT NOT NULL, dest_root TEXT NOT NULL,"
+                              "started_at TEXT NOT NULL, finished_at TEXT);")
+            raw.commit()
+            raw.close()
+
+            conn = connect(db)  # must not raise "no such table: media_class"
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(media_class)")}
+            self.assertIn("tier", cols)
             conn.close()
 
 
@@ -103,7 +170,7 @@ class TestReset(unittest.TestCase):
             reset_index(conn)
             # data wiped, schema alive (tables + user_version)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0], 0)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 10)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 11)
             tables = {r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("media_class", tables)

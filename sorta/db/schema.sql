@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -85,9 +85,14 @@ CREATE TABLE IF NOT EXISTS event_files (
 CREATE TABLE IF NOT EXISTS media_class (
     file_id INTEGER PRIMARY KEY REFERENCES files(id),
     verdict TEXT NOT NULL,                -- photo | screenshot | meme | document
-    source TEXT NOT NULL,                 -- heuristic | clip
+    source TEXT NOT NULL,                 -- which signal decided: heuristic | clip | ocr | vlm
     score REAL,                           -- classifier confidence, NULL for heuristics
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- v11: which TIER processed the row (heuristic | clip | vlm). Distinct from
+    -- `source`: a file the vlm tier deliberately skipped (the gate judged it a clear
+    -- personal photo) still keeps source='clip' but was fully handled by tier='vlm'.
+    -- Conflating the two made every run reclassify the whole collection.
+    tier TEXT
 );
 
 -- v7 (U3): user decisions on near-duplicates from the web app (sorta ui).
