@@ -32,6 +32,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE places ADD COLUMN district_name TEXT")
     if 1 <= version <= 9:  # v10: places.country_name (G6 online — full country name)
         conn.execute("ALTER TABLE places ADD COLUMN country_name TEXT")
+    # media_class itself only appeared in v3 — a v1/v2 DB has no such table yet
+    # (it gets created by executescript below), so the range starts at 3.
+    if 3 <= version <= 10:  # v11: media_class.tier (F68 — incrementality marker)
+        conn.execute("ALTER TABLE media_class ADD COLUMN tier TEXT")
+        # Backfill so the upgrade does not reclassify the whole collection: 'ocr' is
+        # a verdict of the fast (clip) tier, not a tier of its own.
+        conn.execute(
+            "UPDATE media_class SET tier = CASE source"
+            " WHEN 'ocr' THEN 'clip' WHEN 'vlm' THEN 'vlm'"
+            " WHEN 'heuristic' THEN 'heuristic' ELSE 'clip' END"
+        )
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
