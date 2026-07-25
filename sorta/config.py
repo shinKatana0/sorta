@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -30,6 +31,16 @@ def configure_logging(level: str) -> None:
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         handler._sorta_handler = True  # type: ignore[attr-defined]
         logger.addHandler(handler)
+    # F69: every command already funnels through here, so this is the one place that
+    # gives all of them a run log without touching twenty call sites. The console
+    # handler above is untouched — the file is added, not substituted. A failure to
+    # open it must never take a command down, hence the broad guard.
+    try:
+        from .runlog import setup_file_logging
+
+        setup_file_logging()
+    except Exception as exc:  # noqa: BLE001 — logging is never worth crashing over
+        logger.warning("config: не удалось включить файловый лог: %s", exc)
     if invalid:
         logger.warning("config: неверный log_level=%r, используется WARNING", level)
 
@@ -244,9 +255,33 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         log_level=str(data.get("log_level", "WARNING")),
         raw=data,
     )
+    _apply_imaging_config(data.get("imaging") or {})
     # sources may be empty: the source is given positionally (sorta index <dir>).
     # The non-empty requirement is at the point of use (index / in-place sort).
     return cfg
+
+
+# F67 follow-up: the preview cache is configured through env vars, because imaging.py
+# is a leaf module with no access to Config (decode_rgb_preview is called from pool
+# workers that only carry a path). Rather than thread settings through every caller,
+# the config file seeds those env vars — and only when they are NOT already set, so a
+# variable exported in the shell still wins, which is the documented contract.
+_IMAGING_ENV = {
+    "preview_cache": "SORTA_PREVIEW_CACHE",
+    "preview_dir": "SORTA_PREVIEW_DIR",
+    "preview_max_edge": "SORTA_PREVIEW_MAX_EDGE",
+    "preview_quality": "SORTA_PREVIEW_QUALITY",
+}
+
+
+def _apply_imaging_config(raw: dict) -> None:
+    for key, env_name in _IMAGING_ENV.items():
+        if key not in raw or os.environ.get(env_name):
+            continue
+        value = raw[key]
+        if isinstance(value, bool):  # YAML `false` -> the "0" imaging expects
+            value = "1" if value else "0"
+        os.environ[env_name] = str(value)
 
 
 def save_language(path: str | Path, lang: str) -> None:

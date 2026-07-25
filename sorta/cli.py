@@ -8,11 +8,16 @@ from typing import Callable
 
 import numpy as np
 
-from . import __version__
+from . import __version__, imaging
 from .config import configure_logging, load_config
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
-from .diagnostics import gpu_health, warn_if_gpu_mismatch
+from .diagnostics import (
+    geo_data_health,
+    gpu_health,
+    warn_if_geo_data_missing,
+    warn_if_gpu_mismatch,
+)
 from .events import add_manual_event, build_events, rename_event
 from .faces import detect_and_cluster, export_contact_sheet, label_cluster
 from .faces import merge as merge_clusters
@@ -22,6 +27,7 @@ from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
 from .progress import progress_task
+from .runlog import default_log_path, log_environment, stage_timer
 from .sorter import plan_album, plan_and_sort
 from .sorter import undo as undo_batch
 
@@ -84,6 +90,10 @@ def _summarize_events(stats) -> str:
 def _summarize_junk(stats) -> str:
     kinds = ", ".join(f"{v}: {n}" for v, n in sorted(stats.by_verdict.items()))
     line = f"Классификация: {stats.processed}/{stats.total} обработано ({kinds})"
+    # F68: makes incrementality observable — on a repeat run with nothing new this
+    # should account for everything and `processed` should be 0.
+    if getattr(stats, "skipped_incremental", 0):
+        line += f"; пропущено как уже обработанные: {stats.skipped_incremental}"
     if getattr(stats, "vlm_candidates", 0):
         line += f"; VLM: {stats.vlm_applied}/{stats.vlm_candidates} кандидатов переклассифицировано"
     return line
@@ -257,7 +267,9 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     of each other and of `deep`/`geo`."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    log_environment()  # F69: versions, package origin, GPU, geo data — once per run
     warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
+    warn_if_geo_data_missing()  # F65: an unreadable geo base empties every place
     if src:  # an explicit source overrides config sources for this run
         cfg.sources = [Path(src).resolve()]
     if not cfg.sources:
@@ -275,7 +287,9 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
                  if name not in _OPTIONAL_STAGES or enabled_optional[name]]
         for i, (name, fn) in enumerate(steps, 1):
             print(f"[этап {i}/{len(steps)}] {name}")
-            with progress_task(name) as cb:
+            # F69: the per-stage timing goes to the run log, so "which stage ate the
+            # three hours" is answerable after the fact instead of by eye.
+            with stage_timer(name), progress_task(name) as cb:
                 summary = fn(cfg, conn, cb)  # type: ignore[operator]
             for line in str(summary).splitlines():
                 print(f"  {line}")
@@ -410,8 +424,38 @@ try:
 
     @app.command()
     def doctor():
-        """Диагностика окружения: torch/onnxruntime, GPU, рассинхрон CPU/GPU (F63)."""
+        """Диагностика окружения: torch/onnxruntime, GPU, гео-база, лог-файл."""
         print(gpu_health().summary)
+        # F65: the geo base failing to load is invisible at runtime (every coordinate
+        # just resolves to an empty place), so the doctor has to state it outright.
+        geo = geo_data_health()
+        print(("" if geo.available else "⚠ ") + geo.summary)
+        print(f"Лог прогона: {default_log_path()}")
+        print(f"Кэш превью: {imaging.preview_dir()}"
+              + ("" if imaging.preview_cache_enabled() else " (ОТКЛЮЧЁН)"))
+
+    @app.command("cache")
+    def cache_cmd(
+        clear: bool = typer.Option(
+            False, "--clear", help="Удалить кэш превью (он пересоберётся сам)"),
+        config: str = _CFG,
+    ):
+        """Кэш превью: показать путь и размер, при --clear — удалить.
+
+        Кэш безопасно удалять в любой момент: он ленивый и пересоздаётся той стадией,
+        которой первой понадобится кадр. Смысл команды — освободить место (порядка
+        150 КБ на фото) или заставить перегенерировать превью после смены настроек.
+        """
+        load_config(config)  # applies the imaging: section onto the env
+        directory = imaging.preview_dir()
+        if not clear:
+            files = sum(1 for _ in directory.rglob("*.jpg")) if directory.exists() else 0
+            size = sum(f.stat().st_size for f in directory.rglob("*.jpg")) if files else 0
+            print(f"Кэш превью: {directory}")
+            print(f"  файлов: {files}, размер: {size / 1e9:.2f} ГБ")
+            return
+        imaging.preview_cache_clear()
+        print(f"Кэш превью удалён: {directory}")
 
     @app.command()
     def ui(port: int = typer.Option(8756, "--port", help="Порт локального сервера (127.0.0.1)"),

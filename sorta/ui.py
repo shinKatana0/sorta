@@ -126,6 +126,7 @@ from send2trash import send2trash as send_to_trash
 from . import db, faces, i18n, imaging
 from .config import Config, save_language
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
+from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
 from .faces import detect_and_cluster
 from .geo import resolve_places
@@ -133,6 +134,7 @@ from .indexer import index as run_index
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
+from .runlog import log_environment, stage_timer
 from .sorter import ALBUM_KINDS, ALBUM_MODES, AlbumReport, PlanItem, plan_album, plan_and_sort
 
 _log = logging.getLogger(__name__)
@@ -187,7 +189,8 @@ class PlanCache:
     def rebuild(self, cfg: Config, conn: sqlite3.Connection) -> None:
         by_mode: dict[str, list[PlanItem]] = {}
         for mode in _SUPPORTED_MODES:
-            report = plan_and_sort(cfg, conn, mode, self._dest, apply=False)
+            report = plan_and_sort(cfg, conn, mode, self._dest, apply=False,
+                                   write_reports=False)
             by_mode[mode] = report.plan
         self._by_mode = by_mode
 
@@ -271,9 +274,10 @@ def _encode_jpeg_cached(
     avoids a needless re-decode under a request spike for one frame.
     """
     try:
-        mtime = path.stat().st_mtime
+        stat = path.stat()
     except OSError:
         return None
+    mtime = stat.st_mtime
     key: _ImgCacheKey = (file_id, mtime)
     with cache_lock:
         cached = cache.get(key)
@@ -287,7 +291,11 @@ def _encode_jpeg_cached(
             if cached is not None:
                 cache.move_to_end(key)
                 return cached
-        img = imaging.decode_rgb(path, max_edge=max_edge)
+        # F67: a gallery of thousands of tiles used to pay a full decode of the
+        # ORIGINAL per tile (180-470 ms) — the preview cache turns that into a few ms
+        # once the frame has been touched by any stage.
+        img = imaging.decode_rgb_preview(
+            path, mtime, stat.st_size, max_edge=max_edge)
         if img is None:
             return None
         buf = io.BytesIO()
@@ -1290,7 +1298,11 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                 break
             state.set_stage(i, name)
             try:
-                fn(run_cfg, conn, state.set_progress)
+                # F69: the UI pipeline runs for hours in a background thread with
+                # nobody watching the console — the per-stage timing has to reach the
+                # run log, or "which stage ate the time" stays a guess.
+                with stage_timer(name):
+                    fn(run_cfg, conn, state.set_progress)
             except _PipelineCancelled:
                 completed = False  # mid-stage cancellation via the progress callback
                 break
@@ -4184,6 +4196,8 @@ def serve(cfg: Config, conn: sqlite3.Connection, *,
     cli.py decides how to show it to the user). `config_path` is threaded to the
     server so the folder-language selector can persist into config.yaml.
     """
+    log_environment()  # F69: one environment header per server start
+    warn_if_geo_data_missing()  # F65: an unreadable geo base empties every place
     try:
         httpd = build_server(cfg, conn, port=port, config_path=config_path)
     except OSError as exc:

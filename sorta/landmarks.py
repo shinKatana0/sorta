@@ -59,8 +59,45 @@ class Landmark:
     city: str
 
 
+# F65 follow-up: the same packaging trap the geo database fell into. The historical
+# default is a path relative to the CURRENT DIRECTORY, so it only ever resolved when
+# sorta was run from the repository root — an installed CLI found nothing. The
+# curated list now ships as package data; _LEGACY_LANDMARKS_FILE keeps working trees
+# checked out before the move alive.
+DEFAULT_LANDMARKS_FILE = "data/landmarks.yaml"
+_PACKAGE_LANDMARKS_FILE = Path(__file__).resolve().parent / "data" / "landmarks.yaml"
+_LEGACY_LANDMARKS_FILE = Path(__file__).resolve().parent.parent / "data" / "landmarks.yaml"
+
+
+def resolve_landmarks_file(configured: str | Path | None) -> Path:
+    """Configured value -> an existing landmarks file.
+
+    An existing path wins, so a user-supplied list is always respected. Only the
+    historical default (or an empty value) falls back to the bundled file — a custom
+    path that does not exist raises instead of silently swapping in our list, which
+    would be indistinguishable from the config having been applied.
+    """
+    if configured:
+        candidate = Path(configured)
+        if candidate.exists():
+            return candidate
+        if str(configured) != DEFAULT_LANDMARKS_FILE:
+            raise FileNotFoundError(
+                f"naming.landmarks_file: {candidate} not found. Point it at an "
+                f"existing file or drop the setting to use the bundled list."
+            )
+    for fallback in (_PACKAGE_LANDMARKS_FILE, _LEGACY_LANDMARKS_FILE):
+        if fallback.exists():
+            return fallback
+    raise FileNotFoundError(
+        f"bundled landmark list not found at {_PACKAGE_LANDMARKS_FILE} — reinstall "
+        f"sorta or set naming.landmarks_file to your own list."
+    )
+
+
 def load_landmarks(path: str | Path) -> list[Landmark]:
-    """Read data/landmarks.yaml (format: prompt/name/country/city)."""
+    """Read the landmark list (format: prompt/name/country/city)."""
+    path = resolve_landmarks_file(path)
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     entries = data.get("landmarks") or []
     result: list[Landmark] = []

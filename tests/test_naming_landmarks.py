@@ -215,9 +215,14 @@ class TestLoadLandmarks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_landmarks(f)
 
-    def test_repo_default_list_is_valid(self):
-        repo_yaml = Path(__file__).resolve().parents[1] / "data" / "landmarks.yaml"
-        self.assertTrue(load_landmarks(repo_yaml))
+    def test_bundled_default_list_is_valid(self):
+        # F65 follow-up: the list moved from <repo>/data into the package, so it also
+        # ships in the wheel — pointing at the old location is now an error, not a
+        # silent fallback, which is the whole point of the change.
+        packaged = (Path(__file__).resolve().parents[1]
+                    / "sorta" / "data" / "landmarks.yaml")
+        self.assertTrue(packaged.exists())
+        self.assertTrue(load_landmarks(packaged))
 
 
 class TestDetectLandmarks(unittest.TestCase):

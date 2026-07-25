@@ -138,7 +138,10 @@ naming:
   vlm_enabled: false
   classify_vlm_model: "Qwen/Qwen2.5-VL-3B-Instruct"  # junk VLM classifier (deep tier)
   product_candidate_min: 0.4  # product-CLIP above this → the frame goes to the VLM tier (candidate gate)
-  landmarks_file: data/landmarks.yaml
+  # F65: the bundled list now ships inside the package (sorta/data/landmarks.yaml).
+  # Leave this out to use it; set a path only to supply your OWN list — a path that
+  # does not exist is an error, not a silent fallback.
+  # landmarks_file: my-landmarks.yaml
   max_samples: 4             # how many event frames to pass to the VLM/Claude (3–5)
   clip:
     model: ViT-L-14-quickgelu  # the quickgelu variant is required for the openai weights
@@ -152,3 +155,14 @@ naming:
     model: claude-opus-4-8
     api_key_env: ANTHROPIC_API_KEY
     timeout: 60
+
+# F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
+# later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding
+# the original again (HEIC costs ~470 ms per full decode, the preview ~2 ms).
+# Budget roughly 150 KB per photo. Safe to delete at any time: `sorta cache --clear`.
+# The matching SORTA_PREVIEW_* environment variables override these.
+imaging:
+  preview_cache: true
+  # preview_dir: D:/sorta-previews   # default: %LOCALAPPDATA%\sorta\previews
+  preview_max_edge: 1536
+  preview_quality: 88

@@ -914,8 +914,14 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                   dedupe: bool = False,
                   delete_worse_dupes: bool = False,
                   exclude: Sequence[str] | None = None,
+                  write_reports: bool = True,
                   progress: Callable[[int, int], None] | None = None) -> SortReport:
     """Build a layout plan; with apply=True move files with journaling.
+
+    write_reports=False skips the CSV/HTML artefacts (the returned SortReport still
+    carries the paths they WOULD have had). The UI calls this purely to read the plan
+    into memory, and every rebuild was silently dropping six report files into
+    report_output/ as a side effect of someone opening a tab.
 
     Dry-run (default): prints a summary, writes the CSV and HTML plan next to the DB
     and performs no FS or journal operation. where — conditions from --where.
@@ -1076,16 +1082,18 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     stem = f"sort_plan_{mode}_{stamp}"
     csv_path = _report_dir(cfg) / f"{stem}.csv"
     html_path = csv_path.with_name(f"{stem}.html")
-    _write_plan_csv(csv_path, plan)
-    thumb_workers = cfg.sort.thumbnail_workers or min(8, os.cpu_count() or 4)
-    _write_plan_html(html_path, plan, dest, thumbnails=thumbnails,
-                     thumbnail_workers=thumb_workers)
+    if write_reports:
+        _write_plan_csv(csv_path, plan)
+        thumb_workers = cfg.sort.thumbnail_workers or min(8, os.cpu_count() or 4)
+        _write_plan_html(html_path, plan, dest, thumbnails=thumbnails,
+                         thumbnail_workers=thumb_workers)
     report = SortReport(mode=mode, dest=dest, csv_path=csv_path, html_path=html_path,
                         plan=plan, dirs=len({it.dst.parent for it in plan}),
                         excluded=excluded_count, in_place=in_place_run)
     excluded_note = f"; исключено: {excluded_count}" if excludes else ""
+    where_note = (f"; план: {csv_path}, {html_path}" if write_reports else "")
     print(f"sort --by {mode}{' --apply' if apply else ' (dry-run)'}: "
-          f"{len(plan)} файлов -> {report.dirs} каталогов; план: {csv_path}, {html_path}"
+          f"{len(plan)} файлов -> {report.dirs} каталогов{where_note}"
           f"{excluded_note}")
     if not apply:
         return report
