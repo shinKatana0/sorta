@@ -381,7 +381,14 @@ def decode_rgb_preview(
     if max(src_size) <= preview_max_edge():
         return decode_rgb(path, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
 
-    full = decode_rgb(path, preview_max_edge())  # RGB, unrotated — as stored
+    # draft_margin: the F48 trap, one level up. The default 2x margin asks draft() for
+    # 2*1536=3072, which a typical ~4000px camera frame cannot satisfy by halving
+    # (4000/2=2000 < 3072), so draft stays silent and the FULL frame is decoded. At
+    # margin=1.0 the request is 1536, the first halving qualifies, and ~4x fewer pixels
+    # are decoded — measured 363 -> 259 ms per 15.7 MP JPEG for a byte-identical
+    # 1536x1157 result, since thumbnail() lands on the exact size either way.
+    full = decode_rgb(path, preview_max_edge(),  # RGB, unrotated — as stored
+                      draft_margin=_DRAFT_MARGIN_AGGRESSIVE)
     if full is None:
         return None
     _write_preview(full, dest, orientation)
