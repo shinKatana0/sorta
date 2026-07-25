@@ -1,6 +1,6 @@
 """F26/G1 data-prep: assemble bundled geo data from GeoNames (needs NETWORK, one-off).
 
-Output in data/geo/:
+Output in sorta/data/geo/ (package data — the layout that gets into the wheel, F65):
   places.tsv    — geonameid, lat, lon, fcode, cc, admin1, admin2, name_en, population
                   (all cities1000 places — city PPLA*/PPLC and district are derived from them)
   names.tsv     — geonameid, lang, name  (ru/en/ja, from alternateNamesV2; includes
@@ -24,7 +24,7 @@ from pathlib import Path
 GEO = "https://download.geonames.org/export/dump/"
 LANGS = {"ru", "en", "ja"}
 CITY_FCODES = {"PPLC", "PPLA", "PPLA2", "PPLA3", "PPLA4"}
-OUT = Path("data/geo")
+OUT = Path(__file__).resolve().parent.parent / "sorta" / "data" / "geo"  # package data
 
 
 def download(name: str) -> bytes:

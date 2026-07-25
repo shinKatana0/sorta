@@ -70,6 +70,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sorta"]
+# F65: the bundled GeoNames data lives INSIDE the package (sorta/data/geo) — the
+# repository-root data/ never made it into the wheel, so an installed CLI resolved
+# every coordinate to an empty place. `packages` already pulls in the whole sorta/
+# tree; `artifacts` states it explicitly so no ignore rule can quietly drop the TSVs.
+artifacts = ["sorta/data/geo/*.tsv"]
 
 # F55: cpu/gpu — mutually exclusive install profiles (torch/onnxruntime for
 # different hardware). conflicts forces uv to resolve them in separate forks, which
