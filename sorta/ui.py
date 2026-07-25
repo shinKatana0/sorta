@@ -1270,6 +1270,8 @@ class _ProcessState:
 
 
 _BROWSE_DIALOG_TIMEOUT_S = 120
+# Serialises the folder dialog — see _browse_for_folder.
+_browse_lock = threading.Lock()
 
 _BROWSE_DIALOG_SCRIPT = (
     "import tkinter, tkinter.filedialog, sys\n"
@@ -1290,7 +1292,24 @@ def _browse_for_folder() -> str:
     opened in a SEPARATE process (its own main thread, without a conflict with the web
     server). Any failure (no display/GUI, cancel, timeout, exception) -> an empty
     string, not an error — the button is just a convenience, manual path entry always
-    works."""
+    works.
+
+    Only one dialog at a time: the subprocess takes a second or two to show a window,
+    and every request that arrives meanwhile used to spawn another Explorer. The
+    client disables its button too, but that cannot cover a second browser tab or a
+    click that races the disable — the guard belongs here as well. A refused call
+    returns "" (same contract as cancel), so the already-open dialog stays the one
+    the user is talking to.
+    """
+    if not _browse_lock.acquire(blocking=False):
+        return ""
+    try:
+        return _run_browse_dialog()
+    finally:
+        _browse_lock.release()
+
+
+def _run_browse_dialog() -> str:
     try:
         result = subprocess.run(
             [sys.executable, "-c", _BROWSE_DIALOG_SCRIPT],
@@ -3124,8 +3143,25 @@ label { cursor: pointer; }
         document.getElementById("process-deep-checkbox").checked;
   }
 
+  // Последнее известное состояние пайплайна. Обработчик галочек срабатывает
+  // мгновенно, а опрос статуса — раз в тик: без этого флага отметка «faces» во
+  // время прогона включала кнопку «догнать этап» до следующего тика, и её можно
+  // было нажать, пока идёт индексация.
+  var processRunning = false;
+
   function updateRerunSelectedDisabled() {
-    document.getElementById("process-rerun-optional-btn").disabled = !rerunSelectedAllowed();
+    document.getElementById("process-rerun-optional-btn").disabled =
+        processRunning || !rerunSelectedAllowed();
+  }
+
+  // Всё, что задаёт вход пайплайна, на время прогона недоступно: менять источник
+  // у уже идущей обработки бессмысленно, а диалог выбора папки ещё и открывает
+  // отдельное окно поверх работающего процесса.
+  function updateProcessInputsDisabled() {
+    ["process-browse-btn", "process-source-dir"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.disabled = processRunning; }
+    });
   }
 
   ["process-faces-checkbox", "process-events-checkbox", "process-deep-checkbox"]
@@ -3167,8 +3203,10 @@ label { cursor: pointer; }
     var rerunBtn = document.getElementById("process-rerun-optional-btn");
     var bar = document.getElementById("process-progress");
     var statusEl = document.getElementById("process-status");
-    startBtn.disabled = !!data.running;
-    rerunBtn.disabled = !!data.running || !rerunSelectedAllowed();
+    processRunning = !!data.running;
+    startBtn.disabled = processRunning;
+    rerunBtn.disabled = processRunning || !rerunSelectedAllowed();
+    updateProcessInputsDisabled();
     cancelBtn.style.display = data.running ? "" : "none";
     cancelBtn.disabled = !!data.cancel_requested;
     bar.style.display = data.running ? "" : "none";
@@ -3269,11 +3307,22 @@ label { cursor: pointer; }
     });
   });
 
+  // Диалог появляется через секунду-две, а кнопка всё это время оставалась
+  // активной — каждый лишний клик открывал ещё один проводник. Блокируем на время
+  // запроса; сервер тоже отказывает во втором диалоге (см. _browse_for_folder),
+  // потому что вкладку можно открыть и вторую.
+  function browseIntoField(btn, apply) {
+    if (btn.disabled) { return; }
+    btn.disabled = true;
+    postJson("/api/browse", {})
+      .then(function (resp) { if (resp && resp.path) { apply(resp.path); } })
+      .catch(function () {})
+      .then(function () { btn.disabled = false; });
+  }
+
   document.getElementById("process-browse-btn").addEventListener("click", function () {
-    postJson("/api/browse", {}).then(function (resp) {
-      if (resp && resp.path) {
-        document.getElementById("process-source-dir").value = resp.path;
-      }
+    browseIntoField(this, function (path) {
+      document.getElementById("process-source-dir").value = path;
     });
   });
 
@@ -3383,10 +3432,8 @@ label { cursor: pointer; }
   });
 
   document.getElementById("sort-browse-btn").addEventListener("click", function () {
-    postJson("/api/browse", {}).then(function (resp) {
-      if (resp && resp.path) {
-        document.getElementById("sort-dest").value = resp.path;
-      }
+    browseIntoField(this, function (path) {
+      document.getElementById("sort-dest").value = path;
     });
   });
 
@@ -3499,9 +3546,7 @@ label { cursor: pointer; }
     box.appendChild(input);
     var browseBtn = makeBtn("ghost", null, I18N.process_browse_button, "btn-sm album-browse-btn");
     browseBtn.addEventListener("click", function () {
-      postJson("/api/browse", {}).then(function (resp) {
-        if (resp && resp.path) input.value = resp.path;
-      });
+      browseIntoField(this, function (path) { input.value = path; });
     });
     box.appendChild(browseBtn);
     fetch("/api/sort/suggest-dest").then(function (r) { return r.json(); })

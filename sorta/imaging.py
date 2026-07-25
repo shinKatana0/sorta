@@ -318,9 +318,17 @@ def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
 
     Written to a temp file next to the target + os.replace: the pool has ~20 threads
     and readers of other stages run concurrently — nobody may ever observe a half
-    file. Two workers on the same path at the same time is fine (last one wins), a
-    per-key lock is not needed.
+    file.
+
+    Two workers on the same path at once is fine, but "last one wins" does NOT hold on
+    Windows: os.replace onto a destination another thread has OPEN fails with
+    PermissionError (WinError 5), and readers open the preview immediately after it
+    appears. Swallowing that silently meant a hot path could end up with no cached
+    file at all. The content is a pure function of the key, so an existing file is
+    always as good as ours: skip up front, and treat a lost race as success.
     """
+    if dest.exists():
+        return
     tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -332,7 +340,12 @@ def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
             exif[_EXIF_ORIENTATION] = orientation
             params["exif"] = exif
         img.save(tmp, "JPEG", quality=preview_quality(), **params)
-        os.replace(tmp, dest)
+        try:
+            os.replace(tmp, dest)
+        except OSError:
+            if not dest.exists():
+                raise  # a real failure (no space, no permission on the directory)
+            tmp.unlink(missing_ok=True)  # someone else won the race — their file stands
     except Exception:
         try:
             tmp.unlink(missing_ok=True)
