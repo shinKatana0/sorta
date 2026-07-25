@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-25
+
+### Added
+- **Parallel faces inference** (F12.1): independent insightface sessions run in a
+  thread pool — ~3× faster face detection on a GPU (measured on real data). Tune with
+  `faces.infer_workers` (auto: 4 on CUDA, 1 on CPU); SQLite stays single-writer.
+- **`sorta doctor`** and a startup GPU-health check (F63): warns when PyTorch is a
+  CPU-only build while onnxruntime is on CUDA — so CLIP/OCR silently running on the
+  CPU (GPU idle for hours) no longer goes unnoticed.
+- **Configurable CLIP decode pool** (F64): `naming.clip.decode_workers` (auto
+  `min(cpu, 16)`) speeds the decode-bound junk/landmarks stages on multi-core machines.
+- README web-app hero GIF + Cities screenshot (captured on a synthetic demo), plus
+  CI / release / license / Python badges, a CHANGELOG, and GitHub issue templates.
+
+### Fixed
+- Face clustering no longer crashes on very small collections — fewer detected faces
+  than the HDBSCAN sample size previously raised and took down the whole faces stage
+  (F3.2).
+
+### Performance
+- pHash / index decode threads are tunable via `index.workers` (the decode-bound pHash
+  stage scales with cores).
+
 ## [0.1.0] - 2026-07-24
 
 First public release — the MVP is feature-complete and CI is green.
@@ -33,5 +56,6 @@ First public release — the MVP is feature-complete and CI is green.
   never modified.
 - **Trilingual** UI and folder names (en/ru/ja); default UI language English.
 
-[Unreleased]: https://github.com/shinKatana0/sorta/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shinKatana0/sorta/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/shinKatana0/sorta/releases/tag/v0.2.0
 [0.1.0]: https://github.com/shinKatana0/sorta/releases/tag/v0.1.0
