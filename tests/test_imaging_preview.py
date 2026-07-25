@@ -340,11 +340,19 @@ class TestPreviewResilience(PreviewCacheTestCase):
             self.assertIsNotNone(img)
             self.assertEqual(img.size, expected.size)
             self.assertEqual(img.mode, "L")
-        self.assertEqual(len(self.previews()), 1)  # one key -> one final file
+        # At most one final file — that is the atomicity claim this test is about.
+        # NOT "exactly one": on Windows os.replace fails when the destination is open,
+        # and eight threads racing on ONE path can all lose. The write path is
+        # best-effort by contract (every failure degrades to a plain decode), and
+        # population is covered by test_creates_one_preview_and_reuses_it, which is
+        # not racy. Insisting on population here made the suite flaky without
+        # asserting anything the design promises.
+        self.assertLessEqual(len(self.previews()), 1)
         self.assertEqual(list(self.cache.rglob("*.tmp")), [])
-        with Image.open(self.previews()[0]) as stored:
-            stored.load()  # a truncated write would raise here
-            self.assertEqual(max(stored.size), imaging.PREVIEW_MAX_EDGE)
+        for stored_path in self.previews():
+            with Image.open(stored_path) as stored:
+                stored.load()  # a truncated write would raise here
+                self.assertEqual(max(stored.size), imaging.PREVIEW_MAX_EDGE)
 
 
 if __name__ == "__main__":
