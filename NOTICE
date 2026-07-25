@@ -7,7 +7,7 @@ cover only the data, not the code.
 
 1. GeoNames (bundled, offline reverse geocoding)
 -------------------------------------------------
-`data/geo/*.tsv` (countries.tsv, admin1.tsv, places.tsv, names.tsv) are
+`sorta/data/geo/*.tsv` (countries.tsv, admin1.tsv, places.tsv, names.tsv) are
 derived from the GeoNames geographical database (https://www.geonames.org/),
 built via `scripts/build_geodata.py` from a GeoNames `cities1000` export.
 

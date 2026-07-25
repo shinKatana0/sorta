@@ -1,4 +1,5 @@
 """F63: GPU-health guard — do not stay silent when torch runs on the CPU.
+F65: geo-data guard — the same for the bundled GeoNames files.
 
 The `cpu`/`gpu` install profiles are mutually exclusive uv extras, but both ship the
 SAME package name `torch` (indexes cu130 vs cpu). Any command with `--extra cpu` in a
@@ -8,13 +9,20 @@ GPU venv silently reinstalls torch as a CPU wheel, evicting `torch+cu130`. Meanw
 masks the regression. CLIP (open-clip) and easyocr/CRAFT then quietly run on the CPU:
 a large collection takes hours with the GPU idle, without a single signal.
 
+The geo part is the same story with another mechanism: `sorta/data/geo/places.tsv`
+did not travel into the wheel, the resolver found nothing and returned empty places
+for 15 955 files with honest GPS — without a single message (F65). Here we only look
+at the file: is it there, where did we look, how big is it — the base itself is never
+loaded.
+
 This module is a pure diagnostics layer: it touches no DB, imports torch/onnxruntime
-lazily (like faces with insightface) and never raises at the caller.
+(and geodata) lazily and never raises at the caller.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 _LOG = logging.getLogger(__name__)
 
@@ -139,4 +147,93 @@ def warn_if_gpu_mismatch(
     if not health.mismatch:
         return False
     log.warning(_MISMATCH_WARNING, health.torch_version, ", ".join(health.ort_providers))
+    return True
+
+
+# --- F65: the bundled geo data ---------------------------------------------------
+
+_PLACES_FILE = "places.tsv"
+
+_GEO_FIX_HINT = (
+    "Rebuild the bundled data with `python scripts/build_geodata.py` or reinstall "
+    "sorta — until then every coordinate resolves to an empty place."
+)
+
+_GEO_MISSING_WARNING = "geo data unusable: %s (%s). " + _GEO_FIX_HINT
+
+
+@dataclass
+class GeoDataHealth:
+    """Is the bundled `places.tsv` where the resolver looks for it?
+
+    Paths are strings (like the other fields here) so that dataclasses.asdict() of
+    this stays JSON-serialisable for `sorta doctor`/the UI banner. `size_bytes` is
+    None when the file is absent; `available`/`places_path`/`summary` are derived in
+    __post_init__ for the same reason as in GpuHealth — they cannot drift.
+    """
+
+    data_dir: str
+    size_bytes: int | None
+    available: bool = field(init=False)
+    places_path: str = field(init=False)
+    problem: str | None = field(init=False)
+    summary: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.places_path = str(Path(self.data_dir) / _PLACES_FILE)
+        # A zero-byte file (an interrupted build/checkout) is just as unusable as none.
+        if self.size_bytes is None:
+            self.problem = "file not found"
+        elif self.size_bytes == 0:
+            self.problem = "file is empty"
+        else:
+            self.problem = None
+        self.available = self.problem is None
+        self.summary = self._summary()
+
+    def _summary(self) -> str:
+        if self.problem is not None:
+            return f"geo data: {self.places_path} — {self.problem.upper()}. {_GEO_FIX_HINT}"
+        size_mb = (self.size_bytes or 0) / (1024 * 1024)
+        return f"geo data: {self.places_path} ({size_mb:.1f} MB)"
+
+
+def _file_size(path: Path) -> int | None:
+    """Size of the file in bytes; None — it is absent/unreadable. Reads no content."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def geo_data_health(data_dir: str | Path | None = None) -> GeoDataHealth:
+    """Check the bundled geo data at `data_dir` (default — where the resolver looks).
+
+    Pure: only a stat() of places.tsv, no network, no DB, and the base is not loaded.
+    The geodata import is lazy — it pulls numpy/scipy, which a diagnostics call on a
+    broken install should not require.
+    """
+    if data_dir is None:
+        from .geodata import GeoResolver
+
+        data_dir = GeoResolver().data_dir
+    directory = Path(data_dir)
+    return GeoDataHealth(
+        data_dir=str(directory), size_bytes=_file_size(directory / _PLACES_FILE),
+    )
+
+
+def warn_if_geo_data_missing(
+    health: GeoDataHealth | None = None, *, log: logging.Logger = _LOG
+) -> bool:
+    """Log exactly one warning if the bundled geo data cannot be used.
+
+    Returns True if the problem was reported. Like warn_if_gpu_mismatch: call it once
+    from an entry point, not inside a loop.
+    """
+    if health is None:
+        health = geo_data_health()
+    if health.available:
+        return False
+    log.warning(_GEO_MISSING_WARNING, health.places_path, health.problem)
     return True

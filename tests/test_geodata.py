@@ -1,11 +1,13 @@
 """G1 (F26): the offline geo-resolver (a tiny fixture, without the real 12 MB)."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
-from sorta.geodata import GeoResolver
+from sorta import geodata
+from sorta.geodata import GeoDataMissing, GeoResolver
 
 # A tiny world: a city (PPLA) in SPb + two districts (PPLX) nearby + a capital
 # farther away (PPLC) + a city with no records in names.tsv at all.
@@ -99,20 +101,14 @@ class TestResolve:
         assert res.country_cc == "TH"
         assert res.city_id == 300
 
-    def test_empty_data_dir_never_raises(self, tmp_path: Path) -> None:
-        empty = GeoResolver(data_dir=tmp_path / "does_not_exist")
-        res = empty.resolve(59.9311, 30.3609)
-        assert res == (None, None, None) or (res.country_cc is None and res.city_id is None
-                                               and res.district_id is None)
-
-    def test_data_dir_exists_but_files_missing(self, tmp_path: Path) -> None:
-        d = tmp_path / "geo_empty"
-        d.mkdir()
-        empty = GeoResolver(data_dir=d)
-        res = empty.resolve(0.0, 0.0)
-        assert res.country_cc is None
-        assert res.city_id is None
-        assert res.district_id is None
+    def test_places_file_without_usable_rows_resolves_to_none(self, tmp_path: Path) -> None:
+        # The file is there but empty (an interrupted build): no data to resolve
+        # against, yet nothing to shout about either — the resolve is simply empty.
+        data_dir = tmp_path / "geo_blank"
+        data_dir.mkdir()
+        (data_dir / "places.tsv").write_text("", encoding="utf-8")
+        res = GeoResolver(data_dir=data_dir).resolve(59.9311, 30.3609)
+        assert (res.country_cc, res.city_id, res.district_id) == (None, None, None)
 
 
 class TestName:
@@ -139,9 +135,10 @@ class TestName:
     def test_lang_case_insensitive(self, resolver: GeoResolver) -> None:
         assert resolver.name(100, "RU") == resolver.name(100, "ru")  # type: ignore[arg-type]
 
-    def test_empty_resolver_falls_back_to_id_string(self, tmp_path: Path) -> None:
+    def test_missing_data_raises_instead_of_faking_a_name(self, tmp_path: Path) -> None:
         empty = GeoResolver(data_dir=tmp_path / "does_not_exist")
-        assert empty.name(100, "ru") == "100"
+        with pytest.raises(GeoDataMissing):
+            empty.name(100, "ru")
 
 
 class TestHasLocalizedName:
@@ -162,9 +159,10 @@ class TestHasLocalizedName:
     def test_false_for_unknown_geonameid(self, resolver: GeoResolver) -> None:
         assert resolver.has_localized_name(999999, "ru") is False
 
-    def test_false_for_empty_resolver(self, tmp_path: Path) -> None:
+    def test_missing_data_raises(self, tmp_path: Path) -> None:
         empty = GeoResolver(data_dir=tmp_path / "does_not_exist")
-        assert empty.has_localized_name(100, "ru") is False
+        with pytest.raises(GeoDataMissing):
+            empty.has_localized_name(100, "ru")
 
     def test_true_for_en_when_en_present(self, resolver: GeoResolver) -> None:
         assert resolver.has_localized_name(101, "en") is True
@@ -233,9 +231,10 @@ class TestReverseLookups:
     def test_country_cc_by_name_unknown_is_none(self, resolver: GeoResolver) -> None:
         assert resolver.country_cc_by_name("Wakanda", "ru") is None
 
-    def test_country_cc_by_name_empty_resolver(self, tmp_path: Path) -> None:
+    def test_country_cc_by_name_missing_data_raises(self, tmp_path: Path) -> None:
         empty = GeoResolver(data_dir=tmp_path / "does_not_exist")
-        assert empty.country_cc_by_name("Россия", "ru") is None
+        with pytest.raises(GeoDataMissing):
+            empty.country_cc_by_name("Россия", "ru")
 
     def test_city_ids_by_name_localized(self, resolver: GeoResolver) -> None:
         assert resolver.city_ids_by_name("Москва", "ru") == [200]
@@ -257,6 +256,135 @@ class TestReverseLookups:
         # Krestovsky Island — PPLX (a district), not a city_id -> must not resolve.
         assert resolver.city_ids_by_name("Krestovsky Island", "en") == []
 
-    def test_city_ids_by_name_empty_resolver(self, tmp_path: Path) -> None:
+    def test_city_ids_by_name_missing_data_raises(self, tmp_path: Path) -> None:
         empty = GeoResolver(data_dir=tmp_path / "does_not_exist")
-        assert empty.city_ids_by_name("Москва", "ru") == []
+        with pytest.raises(GeoDataMissing):
+            empty.city_ids_by_name("Москва", "ru")
+
+
+class TestMissingData:
+    """F65 regression: a missing places.tsv used to be a silent `return` — the resolver
+    then answered "nowhere" to every coordinate and the whole run lost its geo truth."""
+
+    def test_data_available_false_without_places(self, tmp_path: Path) -> None:
+        assert GeoResolver(data_dir=tmp_path / "does_not_exist").data_available() is False
+
+    def test_data_available_true_with_fixture(self, resolver: GeoResolver) -> None:
+        assert resolver.data_available() is True
+
+    def test_data_available_loads_nothing(self, tmp_path: Path) -> None:
+        # cheap check: it must not touch the data (a resolve after it still works)
+        data_dir = tmp_path / "geo"
+        _write_fixture(data_dir)
+        r = GeoResolver(data_dir=data_dir)
+        assert r.data_available() is True
+        assert r._loaded is False
+
+    def test_data_dir_is_exposed(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "geo"
+        _write_fixture(data_dir)
+        assert GeoResolver(data_dir=data_dir).data_dir == data_dir
+
+    def test_resolve_raises_with_actionable_message(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does_not_exist"
+        with pytest.raises(GeoDataMissing) as exc:
+            GeoResolver(data_dir=missing).resolve(50.0875, 14.4213)
+        message = str(exc.value)
+        assert str(missing / "places.tsv") in message      # where we looked
+        assert "scripts/build_geodata.py" in message       # what to do
+
+    def test_error_is_a_filenotfounderror(self, tmp_path: Path) -> None:
+        # callers that already catch FileNotFoundError keep working
+        with pytest.raises(FileNotFoundError):
+            GeoResolver(data_dir=tmp_path / "nope")._ensure_loaded()
+
+    def test_keeps_raising_on_every_call(self, tmp_path: Path) -> None:
+        # the failed load must not mark the resolver as "loaded" — otherwise the
+        # second call is silent again and we are back to the original bug
+        r = GeoResolver(data_dir=tmp_path / "nope")
+        for _ in range(2):
+            with pytest.raises(GeoDataMissing):
+                r.resolve(50.0875, 14.4213)
+
+    def test_optional_admin1_missing_only_warns(self, tmp_path: Path,
+                                                caplog: pytest.LogCaptureFixture) -> None:
+        data_dir = tmp_path / "geo_no_admin1"
+        _write_fixture(data_dir, admin1=None)
+        r = GeoResolver(data_dir=data_dir)
+        with caplog.at_level(logging.WARNING, logger="sorta.geodata"):
+            res = r.resolve(59.9350, 30.3700)
+        assert res.city_id == 100                      # loading went through
+        assert r.region_name("RU", "66", "ru") is None  # just without region names
+        warnings = [rec for rec in caplog.records if "admin1.tsv" in rec.getMessage()]
+        assert len(warnings) == 1
+        assert str(data_dir / "admin1.tsv") in warnings[0].getMessage()
+
+    def test_optional_files_warn_once_each(self, tmp_path: Path,
+                                           caplog: pytest.LogCaptureFixture) -> None:
+        data_dir = tmp_path / "geo_places_only"
+        _write_fixture(data_dir, names=[], admin1=None, countries=None)
+        (data_dir / "names.tsv").unlink()
+        r = GeoResolver(data_dir=data_dir)
+        with caplog.at_level(logging.WARNING, logger="sorta.geodata"):
+            r.resolve(59.9350, 30.3700)
+            r.resolve(55.7558, 37.6173)  # data is loaded once -> no second round of warnings
+        records = [rec for rec in caplog.records if rec.name == "sorta.geodata"]
+        assert len(records) == 3  # admin1 + countries + names
+
+
+class TestDefaultDataDir:
+    """F65: the data must be found from ANY working directory — it lives in the package."""
+
+    def test_default_dir_points_inside_the_package(self) -> None:
+        assert geodata._DEFAULT_DATA_DIR.parent.parent.name == "sorta"
+        assert geodata._DEFAULT_DATA_DIR.parts[-2:] == ("data", "geo")
+
+    def test_bundled_places_file_exists_in_the_tree(self) -> None:
+        assert (geodata._DEFAULT_DATA_DIR / "places.tsv").is_file()
+
+    def test_default_resolver_uses_the_package_dir(self) -> None:
+        assert GeoResolver().data_dir == geodata._DEFAULT_DATA_DIR
+        assert GeoResolver().data_available() is True
+
+    def test_falls_back_to_the_repo_layout(self, tmp_path: Path,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+        # a working tree from before the move: no sorta/data/geo, but data/geo is there
+        legacy = tmp_path / "repo_data_geo"
+        _write_fixture(legacy)
+        monkeypatch.setattr(geodata, "_DEFAULT_DATA_DIR", tmp_path / "no_package_data")
+        monkeypatch.setattr(geodata, "_LEGACY_DATA_DIR", legacy)
+        assert GeoResolver().data_dir == legacy
+        assert GeoResolver().resolve(59.9311, 30.3609).city_id == 100
+
+    def test_package_dir_wins_over_the_repo_layout(self, tmp_path: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+        package = tmp_path / "package_data_geo"
+        _write_fixture(package)
+        legacy = tmp_path / "repo_data_geo"
+        _write_fixture(legacy)
+        monkeypatch.setattr(geodata, "_DEFAULT_DATA_DIR", package)
+        monkeypatch.setattr(geodata, "_LEGACY_DATA_DIR", legacy)
+        assert GeoResolver().data_dir == package
+
+    def test_error_points_at_the_package_dir_when_nothing_is_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        package = tmp_path / "package_data_geo"
+        monkeypatch.setattr(geodata, "_DEFAULT_DATA_DIR", package)
+        monkeypatch.setattr(geodata, "_LEGACY_DATA_DIR", tmp_path / "repo_data_geo")
+        assert GeoResolver().data_dir == package
+        with pytest.raises(GeoDataMissing, match="places.tsv"):
+            GeoResolver().resolve(0.0, 0.0)
+
+
+class TestBundledData:
+    """The acceptance scenario: the real bundled base resolves Prague to CZ.
+
+    Slow-ish (the whole 12 MB is loaded) — deliberately ONE test, this is exactly the
+    case that was broken outside the repository root.
+    """
+
+    def test_prague_resolves_to_cz(self) -> None:
+        res = GeoResolver().resolve(50.0875, 14.4213)
+        assert res.country_cc == "CZ"
+        assert res.city_id is not None

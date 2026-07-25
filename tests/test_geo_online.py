@@ -112,23 +112,26 @@ class TestGeoOnline(unittest.TestCase):
         mock_sleep.assert_called_once()
 
     def test_online_network_error_is_unknown(self):
-        # GPS was present -> confidence stays exact_gps (like offline with empty data),
-        # but the place itself (city/district) does not resolve and geo does not crash
+        # F65: coordinates alone no longer earn confidence='exact_gps' — the label now
+        # means "the place was actually resolved from the coordinates". Marking an
+        # unresolved row exact_gps is exactly what hid the missing-geodata bug: 11 885
+        # files reported success with country/city NULL.
         photo = self.add_file(lat=55.75, lon=37.62)
         with patch("sorta.geo.urllib.request.urlopen", side_effect=OSError("boom")):
             resolve_places(self.cfg, self.conn, progress=lambda done, total: None)
         row = self.place_of(photo)
-        self.assertEqual(row["confidence"], "exact_gps")
+        self.assertEqual(row["confidence"], "unknown")
         self.assertIsNone(row["city"])
         self.assertIsNone(row["country"])
         self.assertIsNone(row["district_name"])
 
     def test_online_empty_address_is_unknown(self):
+        # F65: same rule as above — an empty address is not a resolved place.
         photo = self.add_file(lat=55.75, lon=37.62)
         with patch("sorta.geo.urllib.request.urlopen", return_value=_FakeResponse({})):
             resolve_places(self.cfg, self.conn, progress=lambda done, total: None)
         row = self.place_of(photo)
-        self.assertEqual(row["confidence"], "exact_gps")
+        self.assertEqual(row["confidence"], "unknown")
         self.assertIsNone(row["city"])
         self.assertIsNone(row["district_name"])
 

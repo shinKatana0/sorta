@@ -8,6 +8,10 @@ Confidence levels:
 - session_inferred — place inherited from a file with GPS in the same time session
 - unknown          — could not resolve (visual — landmarks.py, Phase 5/F6)
 
+`exact_gps` requires a place that ACTUALLY resolved (F65): coordinates whose resolve
+came back empty stay `unknown` and are counted in `GeoStats.gps_unresolved` — such a
+file must not look confidently placed nor become a donor for session inheritance.
+
 The provider is chosen by `cfg.geo.provider`: offline (default) — bundled GeoNames
 via geodata.GeoResolver; online (G2b) — Nominatim/OSM reverse geocoding, names as
 text already in cfg.language (no geonameids).
@@ -31,6 +35,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Protocol
 
 from .config import Config
@@ -52,6 +57,9 @@ class GeoStats:
     exact_gps: int = 0
     session_inferred: int = 0
     unknown: int = 0
+    # F65: files with valid coordinates whose place did not resolve. Non-zero means
+    # the geo data is broken/missing, not that the user's photos are unusual.
+    gps_unresolved: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,11 @@ class _OfflineBatchResolver:
     def __init__(self, resolver: GeoResolver) -> None:
         self._resolver = resolver
         self._name_cache: dict[int, str] = {}
+
+    @property
+    def data_dir(self) -> Path | None:
+        """Where the bundled data is read from — for the "nothing resolved" warning."""
+        return getattr(self._resolver, "data_dir", None)
 
     def _city_name(self, geonameid: int | None) -> str | None:
         if geonameid is None:
@@ -264,6 +277,7 @@ def resolve_places(
             gps_rows.append(r)
             coords.append((lat, lon))
     resolved: dict[int, tuple[_Place, str]] = {}
+    gps_unresolved = 0
     if coords:
         resolver = _resolver_for(cfg)
         # online: the entire network phase sits right here (in the resolve) (~1
@@ -272,7 +286,24 @@ def resolve_places(
         # network already ran, the rest is pure SQLite).
         places = resolver.resolve_places(coords, progress=progress)
         for r, place in zip(gps_rows, places):
+            # F65: honest confidence — coordinates alone do not make an exact_gps.
+            # An empty place (missing geo data offline, a failed request online) stays
+            # "unknown" instead of filling the DB with confident-looking NULLs, and
+            # never becomes a donor for session inheritance below.
+            if place.country is None:
+                gps_unresolved += 1
+                continue
             resolved[r["id"]] = (place, "exact_gps")
+        if gps_unresolved:
+            # the offline resolver knows where it read from; online (Nominatim) has
+            # already logged each failed request itself — here it is the total
+            data_dir = getattr(resolver, "data_dir", None)
+            _log.warning(
+                "geo: %d из %d файлов с координатами не разрезолвились в место%s — "
+                "проверьте гео-данные (places.tsv)",
+                gps_unresolved, len(coords),
+                f" (гео-данные: {data_dir})" if data_dir else "",
+            )
 
     # 2) session_inferred: inheritance of the FULL place (country + both geonameids
     #    + city) within a time session.
@@ -289,7 +320,7 @@ def resolve_places(
             resolved[r["id"]] = (place, "session_inferred")
 
     # 3) write: full recomputation of the places table in one transaction
-    stats = GeoStats(total=len(rows))
+    stats = GeoStats(total=len(rows), gps_unresolved=gps_unresolved)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if progress:
         progress(0, len(rows))  # total right away, even if the stage is small/fast (#37)

@@ -29,11 +29,28 @@ _NAMES = {_GID_MOSCOW: "Moscow", _GID_PARIS: "Paris", _GID_SPB: "Saint Petersbur
 class _FakeResolver:
     """A mini resolver instead of geodata.GeoResolver — without the real bundled data."""
 
+    data_dir = Path("/bundled/geo")
+
     def resolve(self, lat, lon):
         return _RESOLUTIONS[(round(lat, 2), round(lon, 2))]
 
     def name(self, geonameid, lang):
         return _NAMES[geonameid]
+
+
+class _EmptyResolver:
+    """F65: a resolver whose data is missing — every coordinate resolves to nothing.
+
+    Exactly what the installed CLI did: honest GPS in, an empty place out.
+    """
+
+    data_dir = Path("/missing/geo")
+
+    def resolve(self, lat, lon):
+        return Resolution(country_cc=None, city_id=None, district_id=None)
+
+    def name(self, geonameid, lang):  # pragma: no cover — no city id to name
+        raise AssertionError("name() must not be called for an unresolved place")
 
 
 class TestGeo(unittest.TestCase):
@@ -66,8 +83,8 @@ class TestGeo(unittest.TestCase):
             """SELECT country, region, city, city_geonameid, district_geonameid, confidence
                FROM places WHERE file_id = ?""", (file_id,)).fetchone()
 
-    def run_geo(self):
-        with patch("sorta.geo.GeoResolver", return_value=_FakeResolver()):
+    def run_geo(self, resolver=None):
+        with patch("sorta.geo.GeoResolver", return_value=resolver or _FakeResolver()):
             return resolve_places(self.cfg, self.conn, progress=lambda done, total: None)
 
     def test_exact_gps(self):
@@ -200,6 +217,45 @@ class TestGeo(unittest.TestCase):
         ).fetchall()
         self.assertEqual([tuple(r) for r in first], [tuple(r) for r in second])
         self.assertEqual(len(first), 3)
+
+    def test_unresolved_gps_is_not_exact_gps(self):
+        # F65: coordinates alone are not a place. With broken geo data the row used to
+        # be written as exact_gps with NULL country — 11 885 fake successes in prod.
+        moscow = self.add_file("2023-05-01T10:00:00", lat=55.75, lon=37.62)
+        stats = self.run_geo(_EmptyResolver())
+        row = self.place_of(moscow)
+        self.assertEqual(row["confidence"], "unknown")
+        self.assertIsNone(row["country"])
+        self.assertEqual((stats.exact_gps, stats.unknown, stats.gps_unresolved), (0, 1, 1))
+
+    def test_resolved_gps_reports_no_unresolved(self):
+        self.add_file("2023-05-01T10:00:00", lat=55.75, lon=37.62)
+        stats = self.run_geo()
+        self.assertEqual((stats.exact_gps, stats.gps_unresolved), (1, 0))
+
+    def test_unresolved_gps_warns_with_the_data_dir(self):
+        self.add_file("2023-05-01T10:00:00", lat=55.75, lon=37.62)
+        with self.assertLogs("sorta.geo", level="WARNING") as cm:
+            self.run_geo(_EmptyResolver())
+        self.assertEqual(len(cm.records), 1)
+        # the message names the geo-data directory — the first thing to check
+        self.assertIn(str(_EmptyResolver.data_dir), cm.records[0].getMessage())
+
+    def test_no_warning_when_everything_resolves(self):
+        self.add_file("2023-05-01T10:00:00", lat=55.75, lon=37.62)
+        with self.assertNoLogs("sorta.geo", level="WARNING"):
+            self.run_geo()
+
+    def test_unresolved_donor_is_not_inherited(self):
+        # an empty place must not spread through the session as session_inferred:
+        # only a file with a REALLY resolved place can be a donor
+        neighbor = self.add_file("2023-05-01T10:00:00")
+        self.add_file("2023-05-01T11:00:00", lat=55.75, lon=37.62)
+        stats = self.run_geo(_EmptyResolver())
+        row = self.place_of(neighbor)
+        self.assertEqual(row["confidence"], "unknown")
+        self.assertIsNone(row["city"])
+        self.assertEqual((stats.session_inferred, stats.unknown), (0, 2))
 
     def test_unknown_provider_raises(self):
         self.cfg.geo = GeoConfig(provider="bogus")
