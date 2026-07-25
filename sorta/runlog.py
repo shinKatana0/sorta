@@ -209,8 +209,14 @@ def stage_timer(name: str, *, total: int | None = None) -> Iterator[StageResult]
     """Time a pipeline stage and write a machine-greppable summary line.
 
     The summary keeps a stable `stage=<name> elapsed=<sec> processed=<n>` prefix, so a
-    profile of a run can be collected from the file without parsing prose. An exception
-    is logged as ERROR (with the traceback) and propagates — the timer never swallows it.
+    profile of a run can be collected from the file without parsing prose. Nothing is
+    ever swallowed — whatever came out is re-raised.
+
+    Failures are logged as ERROR with a traceback; a BaseException that is NOT an
+    Exception is control flow, not breakage (KeyboardInterrupt, SystemExit, and the
+    pipeline's own cancellation, which subclasses BaseException precisely so that an
+    `except Exception` inside a stage cannot eat it). Pressing "Cancel" used to print
+    a full ERROR traceback, which reads as a crash for something the user asked for.
     """
     result = StageResult(name=name, total=total)
     started = time.perf_counter()
@@ -220,11 +226,18 @@ def stage_timer(name: str, *, total: int | None = None) -> Iterator[StageResult]
         _LOG.info("stage=%s started total=%d", name, total)
     try:
         yield result
-    except BaseException:
+    except Exception:
         elapsed = time.perf_counter() - started
         _LOG.error(
             "stage=%s failed elapsed=%.3f%s", name, elapsed, _counters(result, elapsed),
             exc_info=True,
+        )
+        raise
+    except BaseException as exc:
+        elapsed = time.perf_counter() - started
+        _LOG.info(
+            "stage=%s interrupted (%s) elapsed=%.3f%s",
+            name, type(exc).__name__, elapsed, _counters(result, elapsed),
         )
         raise
     elapsed = time.perf_counter() - started

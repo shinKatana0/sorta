@@ -77,5 +77,56 @@ class TestTestSuiteIsolation(unittest.TestCase):
             self.assertIn("sorta-tests", value)
 
 
+class TestCancellationIsNotAnError(unittest.TestCase):
+    """Cancelling a stage is a user action, not breakage.
+
+    The pipeline's cancellation subclasses BaseException on purpose (so an
+    `except Exception` inside a stage cannot eat it). stage_timer used to catch
+    BaseException wholesale and print an ERROR traceback for it — pressing "Cancel"
+    looked exactly like a crash.
+    """
+
+    class _Cancelled(BaseException):
+        pass
+
+    def _capture(self, exc_type):
+        records: list[logging.LogRecord] = []
+
+        class Sink(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        logger = logging.getLogger("sorta.runlog")
+        sink = Sink()
+        logger.addHandler(sink)
+        old = logger.level
+        logger.setLevel(logging.INFO)
+        self.addCleanup(lambda: (logger.removeHandler(sink), logger.setLevel(old)))
+        with self.assertRaises(exc_type):
+            with runlog.stage_timer("junk"):
+                raise exc_type("stop")
+        return records
+
+    def test_cancellation_logs_info_without_a_traceback(self):
+        records = self._capture(self._Cancelled)
+        levels = {r.levelno for r in records}
+        self.assertNotIn(logging.ERROR, levels)
+        interrupted = [r for r in records if "interrupted" in r.getMessage()]
+        self.assertTrue(interrupted, "нет строки об остановке стадии")
+        self.assertIsNone(interrupted[0].exc_info)
+        self.assertIn("stage=junk", interrupted[0].getMessage())
+
+    def test_a_real_failure_is_still_an_error_with_a_traceback(self):
+        records = self._capture(RuntimeError)
+        errors = [r for r in records if r.levelno == logging.ERROR]
+        self.assertTrue(errors, "настоящий сбой обязан остаться ERROR")
+        self.assertIsNotNone(errors[0].exc_info)
+        self.assertIn("failed", errors[0].getMessage())
+
+    def test_keyboard_interrupt_is_treated_as_control_flow(self):
+        records = self._capture(KeyboardInterrupt)
+        self.assertNotIn(logging.ERROR, {r.levelno for r in records})
+
+
 if __name__ == "__main__":
     unittest.main()
