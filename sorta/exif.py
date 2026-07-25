@@ -59,7 +59,16 @@ _EXIFTOOL_CMD = ["exiftool"]
 
 # Arguments for each query; in a -stay_open session we additionally declare the
 # stdin-argfile encoding (a Windows-only exiftool option) since we write it in UTF-8.
-_QUERY_ARGS = ["-json", "-n", "-fast2"]
+#
+# F71 — do NOT put `-fast2` back here for speed. `-fast2` makes exiftool stop reading
+# very early, and in HEIC the metadata block sits AFTER the image data: it is never
+# reached. Measured on the production collection (40 287 files): 11 584 files (29%)
+# had no camera_make in the index and exactly 0 of them had GPS — the whole block was
+# lost, not single tags; 62.7% of all HEIC. On 150 such files, metadata was read for
+# 0 of them with `-fast2`, 109 with `-fast`, 109 with no flag at all. The cost of
+# completeness is 1.6x, not the 7.5x of a full read (17.0 -> 27.1 -> 127.3 ms per file),
+# and on 250 mixed files all nine requested tags matched a full read exactly.
+_QUERY_ARGS = ["-json", "-n", "-fast"]
 _SESSION_ARGS = _QUERY_ARGS + (
     ["-charset", "filename=utf8"] if sys.platform == "win32" else []
 )

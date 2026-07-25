@@ -15,7 +15,7 @@ from typing import Callable, Iterator
 
 from .config import Config
 from .dates import resolve_taken_at
-from .exif import read_batch
+from .exif import ExifData, read_batch
 from .hashing import file_hash, resolve_workers
 
 _BATCH = 200
@@ -51,6 +51,17 @@ class IndexStats:
     updated: int = 0
     skipped: int = 0
     errors: int = 0
+
+
+@dataclass
+class RefreshStats:
+    """Result of refresh_exif — deliberately measurable, not "it got better"."""
+    scanned: int = 0          # rows the selection picked up
+    updated: int = 0          # rows where at least one metadata column actually changed
+    recovered_gps: int = 0    # rows that had no GPS and got coordinates
+    recovered_date: int = 0   # rows whose taken_at now comes from EXIF (it did not before)
+    still_empty: int = 0      # rows that really have no EXIF (png/wallpapers/downloads)
+    errors: int = 0           # vanished/unreadable files — counted, never fatal
 
 
 def _walk(cfg: Config) -> Iterator[Path]:
@@ -210,3 +221,103 @@ def index(cfg: Config, conn: sqlite3.Connection,
                 flush(pool)
         flush(pool)
     return stats
+
+
+# Metadata columns refresh_exif is allowed to rewrite. Everything derived from the file
+# CONTENT (hash, hash_algo, phash, dup_of, size, mtime, not_personal, indexed_at) is out
+# of scope: the content did not change, only what we managed to read out of it.
+_REFRESH_COLUMNS = [
+    "gps_lat", "gps_lon", "camera_make", "camera_model", "width", "height",
+    "taken_at", "taken_at_source", "taken_at_confidence",
+]
+
+
+def refresh_exif(cfg: Config, conn: sqlite3.Connection, *, only_missing: bool = True,
+                 progress: Callable[[int, int], None] | None = None) -> RefreshStats:
+    """F71: re-read metadata of already-indexed files without reindexing them.
+
+    A plain `index()` run will not touch these files: `_needs_update` compares
+    path+size+mtime, and none of them changed — only the exiftool flag did (`-fast2`
+    silently dropped the whole metadata block of most HEIC files, see exif._QUERY_ARGS).
+
+    `only_missing=True` picks rows with no EXIF trace at all (camera_make, gps_lat and
+    width all NULL). The criterion is deliberately wide: re-reading a png screenshot
+    costs ~8 ms and breaks nothing, while missing one file with GPS is exactly the cost
+    this feature exists to undo. `only_missing=False` re-reads everything (for the next
+    time the flag changes).
+
+    Only metadata is written; taken_at is recomputed through the same `resolve_taken_at`
+    with the same cfg.dates bounds as `index()` — the two paths must not disagree on
+    dates. Files are never read whole, no hashing happens.
+    """
+    stats = RefreshStats()
+    has_orientation = _has_column(conn, "files", "orientation")
+    columns = _REFRESH_COLUMNS + (["orientation"] if has_orientation else [])
+    # media types exiftool is asked about — the same set the indexer accepts
+    media_types = tuple(cfg.index.extensions)
+    where = ["error IS NULL", f"media_type IN ({','.join('?' * len(media_types))})"]
+    if only_missing:
+        where.append("camera_make IS NULL AND gps_lat IS NULL AND width IS NULL")
+    rows = conn.execute(
+        f"SELECT id, path, mtime, {', '.join(columns)} FROM files"
+        f" WHERE {' AND '.join(where)} ORDER BY id",
+        media_types,
+    ).fetchall()
+
+    total = len(rows)
+    for start in range(0, total, _BATCH):
+        batch = rows[start:start + _BATCH]
+        paths = [Path(r["path"]) for r in batch]
+        exif_map = read_batch(paths)
+        with conn:  # one transaction per batch — Ctrl+C does not break consistency
+            for row, path in zip(batch, paths):
+                stats.scanned += 1
+                try:
+                    _refresh_row(conn, cfg, row, path, exif_map, columns, stats)
+                except Exception:  # a broken row never takes the whole operation down
+                    stats.errors += 1
+        if progress:
+            progress(min(start + _BATCH, total), total)
+    return stats
+
+
+def _refresh_row(conn: sqlite3.Connection, cfg: Config, row: sqlite3.Row, path: Path,
+                 exif_map: dict[str, ExifData], columns: list[str],
+                 stats: RefreshStats) -> None:
+    ex = exif_map.get(str(path.resolve()))
+    if ex is None or ex == ExifData():
+        # Nothing was read: either the file has no EXIF at all, or it is gone/corrupt.
+        # The stat only happens on this branch, so healthy files do not pay for it.
+        try:
+            missing = not path.exists()
+        except OSError:
+            missing = True
+        if missing:
+            stats.errors += 1
+            return
+        ex = ExifData()
+    ta = resolve_taken_at(ex.datetime_original, path.name, row["mtime"],
+                          cfg.dates.min_year, cfg.dates.max_year)
+    new: dict[str, object] = {
+        "gps_lat": ex.gps_lat, "gps_lon": ex.gps_lon,
+        "camera_make": ex.make, "camera_model": ex.model,
+        "width": ex.width, "height": ex.height,
+        "taken_at": ta.dt.isoformat(timespec="seconds"),
+        "taken_at_source": ta.source, "taken_at_confidence": ta.confidence,
+        "orientation": ex.orientation,
+    }
+    changed = {c: new[c] for c in columns if row[c] != new[c]}
+    if changed:
+        conn.execute(
+            f"UPDATE files SET {', '.join(f'{c} = ?' for c in changed)} WHERE id = ?",
+            (*changed.values(), row["id"]),
+        )
+        stats.updated += 1
+    if row["gps_lat"] is None and ex.gps_lat is not None:
+        stats.recovered_gps += 1
+    if ta.source == "exif" and row["taken_at_source"] != "exif":
+        stats.recovered_date += 1
+    # the same criterion the selection uses: such a row will be picked up again on a
+    # repeated run (the selection deliberately does not remember "already tried")
+    if ex.gps_lat is None and ex.make is None and ex.width is None:
+        stats.still_empty += 1
