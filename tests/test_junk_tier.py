@@ -411,9 +411,11 @@ class TestV10MigrationBackfill(unittest.TestCase):
         self.db = Path(self.tmp.name) / "v10.db"
         self.cfg = Config(sources=[Path(self.tmp.name)], database=self.db,
                           naming=_naming_from({}))
-
-    def tearDown(self):
-        self.tmp.cleanup()
+        # Registered as a cleanup rather than in tearDown: cleanups run LIFO and
+        # AFTER tearDown, so a conn.close() the tests register later must fire
+        # before the directory goes away — on Windows an open sqlite handle makes
+        # the rmtree fail with PermissionError.
+        self.addCleanup(self.tmp.cleanup)
 
     def _build_v10_db(self, rows):
         """A DB as v10 left it: media_class without the `tier` column, user_version=10.
