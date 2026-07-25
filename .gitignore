@@ -1,17 +1,55 @@
+# Allowlist .gitignore — ignore everything, then re-include ONLY the publishable set.
+#
+# Rationale: a new or stray file (a personal photo, a DB dump, a scratch note) is
+# ignored by default and can never be committed by accident. To publish something
+# new, add an explicit `!` entry below. Internal files (config.yaml, *.db, CLAUDE.md,
+# briefs/, docs/features/, .claude/) are simply never allow-listed here — and, unlike
+# a denylist, this file does not even reveal their names.
+
+# 1) ignore everything at the repository root
+/*
+
+# 2) re-include the published top-level set
+!/.gitattributes
+!/.gitignore
+!/.github/
+!/CHANGELOG.md
+!/CONTRIBUTING.md
+!/LICENSE
+!/NOTICE
+!/README.md
+!/README.ja.md
+!/README.ru.md
+!/SECURITY.md
+!/config.example.yaml
+!/data/
+!/docs/
+!/pyproject.toml
+!/scripts/
+!/sorta/
+!/tests/
+!/uv.lock
+
+# 3) within docs/, publish only these — internal docs stay unlisted
+/docs/*
+!/docs/ARCHITECTURE.md
+!/docs/assets/
+!/docs/guide/
+
+# 4) build artifacts & local outputs, even inside allow-listed directories
 __pycache__/
 *.py[cod]
-.venv/
 *.db
 *.db-wal
 *.db-shm
-config.yaml
-moves*.jsonl
-sort_plan_*.csv
-sort_plan_*.html
-sort_plan_*_thumbs/
-report_output/
+.venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
 dist/
+moves*.jsonl
+sort_plan_*.csv
+sort_plan_*.html
+sort_plan_*_thumbs/
+report_output/

@@ -69,6 +69,20 @@ for filesystem operations. ML‑heavy paths (faces, CLIP, OCR) are **mocked** in
 2. Ensure `scripts/check.py` is green.
 3. Add/update tests and docs (including the user guide if behavior changes).
 
+## Release process
+
+The version lives in `pyproject.toml` (source of truth), mirrored in
+`sorta/__init__.py` and the top `CHANGELOG.md` entry. Before tagging:
+
+```bash
+python scripts/release.py check     # asserts the three versions agree
+python scripts/release.py notes     # prints the CHANGELOG section for gh release
+```
+
+`.gitignore` is an **allow-list** — everything is ignored unless explicitly
+re-included, so a stray file can't be committed by accident. A genuinely new
+top-level path needs its own `!/path` entry.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the project's
