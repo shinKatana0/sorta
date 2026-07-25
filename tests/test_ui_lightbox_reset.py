@@ -236,14 +236,14 @@ class TestProcessResetEndpoint(ResetTestBase):
         self.start_server()
         status_before, body_before, _ = self.get("/api/plan?mode=city")
         self.assertEqual(status_before, 200)
-        self.assertEqual(len(json.loads(body_before)), 1)
+        self.assertEqual(json.loads(body_before)["total"], 1)
 
         status, _payload = self.post_reset()
         self.assertEqual(status, 200)
 
         status_after, body_after, _ = self.get("/api/plan?mode=city")
         self.assertEqual(status_after, 200)
-        self.assertEqual(json.loads(body_after), [])
+        self.assertEqual(json.loads(body_after)["categories"], [])
 
     def test_reset_while_running_returns_409(self):
         block = threading.Event()

@@ -181,14 +181,14 @@ class TestProcessStartAndProgress(ProcessTestBase):
         )
 
     def test_finished_refreshes_plan_cache_for_city_tab(self):
-        # PlanCache is built once at startup (on an empty DB -> an empty plan);
-        # after a successful /api/process it must be recomputed, not stay frozen at
-        # the startup state (see PlanCache.rebuild, F36).
+        # PlanCache builds a mode once, on its first request (on an empty DB -> an
+        # empty plan); after a successful /api/process it must be recomputed, not
+        # stay frozen at that state (see PlanCache.rebuild, F36/F70).
         self.patch_fast_stages()
         self.start_server()
         status_before, body_before, _ = self.get("/api/plan?mode=city")
         self.assertEqual(status_before, 200)
-        self.assertEqual(json.loads(body_before), [])
+        self.assertEqual(json.loads(body_before)["total"], 0)
 
         self.add_photo_file("a.jpg", country="ru", city="Moscow")
         status, _resp = self.post("/api/process", {"source_dir": str(self.src_dir)})
@@ -197,8 +197,7 @@ class TestProcessStartAndProgress(ProcessTestBase):
 
         status_after, body_after, _ = self.get("/api/plan?mode=city")
         self.assertEqual(status_after, 200)
-        items = json.loads(body_after)
-        self.assertEqual(len(items), 1)
+        self.assertEqual(json.loads(body_after)["total"], 1)
 
 
 class TestProcessValidation(ProcessTestBase):

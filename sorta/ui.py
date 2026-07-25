@@ -47,8 +47,8 @@ via the ready `db.reset_index(conn)` (the same tables as the CLI `sorta reset`:
 metadata, geo, faces/clusters with names, events with names, junk, dedup_choice,
 moves). Blocked with 409 while `/api/process` is still `running` (the same
 `_ProcessState.snapshot()`). Does not touch files on disk or already-sorted folders —
-only the DB contents. PlanCache is recomputed with the same conn right after the reset
-(an empty DB -> an empty plan, see PlanCache).
+only the DB contents. PlanCache is invalidated right after the reset, so the next plan
+request rebuilds it (an empty DB -> an empty plan, see PlanCache).
 
 (9) `POST /api/sort` (F43, the "Cities" tab, the "Sort" button) — the real layout of
 the collection: calls `sorter.plan_and_sort(cfg, conn, "city", dest, apply=True,
@@ -94,10 +94,13 @@ only on a file_id from the JSON body (no paths from the client); before deleting
 `SELECT ... FROM files WHERE id IN (...)` — unknown ids are silently ignored, not
 substituted as a path. The server binds only to 127.0.0.1.
 
-plan_and_sort (sorter, dry-run) — the single source of the plan; besides report.plan
-it, as a side effect, writes CSV/HTML into report_output/ (a plan-only entry point
-without side files is possible later). PlanCache calls it at most once per mode over
-the server process's lifetime.
+plan_and_sort (sorter, dry-run) — the single source of the plan; PlanCache calls it
+with `write_reports=False` (no CSV/HTML side files from the UI path) and at most once
+per mode per cache generation — LAZILY, on the first request for that mode (F70), so
+neither the server start nor a `rebuild` blocks for the ~13 s a mode costs on a 26k
+collection. `GET /api/plan?mode=` answers with a per-target-folder AGGREGATE
+(folder -> count/size, kilobytes); the files of one folder come as an explicit page
+(`&category=&offset=&limit=`), never as the whole 26k-element plan.
 """
 from __future__ import annotations
 
@@ -145,6 +148,10 @@ _CLUSTER_SAMPLE_LIMIT = 6
 _EVENT_SAMPLE_LIMIT = 8
 _SUPPORTED_MODES = ("city", "person", "event")
 _DEFAULT_ALBUM_DIRNAME = "_Альбомы"
+# F70: `/api/plan` never serves a whole mode again — a category page is bounded by a
+# default and a hard maximum, so no query can ask the server for 26k items at once.
+_PLAN_PAGE_DEFAULT_LIMIT = 200
+_PLAN_PAGE_MAX_LIMIT = 1000
 
 # F39: UI switcher languages — the same three as i18n.Lang; self-names for the
 # selector options (not translated — this is a language's name in that language).
@@ -168,35 +175,167 @@ def _plan_item_to_json(item: PlanItem) -> dict:
     }
 
 
+def _plan_category(item: PlanItem) -> str:
+    """The target FOLDER of a plan item — the aggregation key of `/api/plan` (F70).
+
+    `target_rel` is POSIX and always carries at least one directory segment (see
+    sorter._target_parts — every branch returns a non-empty folder list), so the key
+    is never empty; a pathological item without a folder falls back to target_rel.
+    """
+    head, sep, _name = item.target_rel.rpartition("/")
+    return head if sep else item.target_rel
+
+
+class _ModePlan:
+    """One built mode: the plan items plus the per-folder index the routes serve.
+
+    Both the aggregate rows and the per-category buckets are computed once, at build
+    time — a request then only slices a ready list, so `/api/plan` costs milliseconds
+    regardless of the collection size.
+    """
+
+    def __init__(self, items: list[PlanItem], sizes: dict[int, int]) -> None:
+        self.items = items
+        buckets: dict[str, list[PlanItem]] = defaultdict(list)
+        for item in items:
+            buckets[_plan_category(item)].append(item)
+        self.by_category: dict[str, list[PlanItem]] = dict(buckets)
+        self.categories: list[dict] = [
+            {
+                "category": name,
+                "count": len(group),
+                "size": sum(sizes.get(it.file_id, 0) for it in group),
+            }
+            for name, group in sorted(self.by_category.items())
+        ]
+
+
 class PlanCache:
-    """An in-memory cache of report.plan by mode, built at server startup and
-    recomputed explicitly (`rebuild`) — on an empty DB right away and again after
-    `/api/process` (F36) finishes, and NOT on every external DB update.
+    """An in-memory cache of report.plan by mode, built LAZILY — one mode on its
+    first request — and dropped explicitly (`rebuild`) after `/api/process` (F36),
+    a reset, an apply or a folder-language change, and NOT on every external DB update.
+
+    F70: building all three modes eagerly cost ~40 s on a 26k collection, both at
+    `sorta ui` start and on every rebuild, with the user staring at a dead window.
+    Now `__init__`/`rebuild` only record what to build; the work happens on the
+    thread that first asks for that mode, and only for the mode actually opened.
 
     sqlite3 connections are not transferable between threads (`check_same_thread`),
-    and ThreadingHTTPServer serves each request on a new thread — so the plan is
-    built right here, on the caller's thread (at startup — before serve_forever, on
-    rebuild — on the background pipeline thread), using the passed cfg/conn;
-    subsequent requests read the ready list from memory without touching the DB,
-    until someone explicitly calls rebuild.
+    and ThreadingHTTPServer serves each request on a new thread — so a lazy build
+    opens its own short-lived connection from `cfg.database` instead of reusing the
+    connection of whoever created the cache (see `_connect`, the same reason).
+
+    Thread safety: a mode is built under its own lock, so a request burst from
+    several ThreadingHTTPServer threads produces one build and one shared result.
+    A `rebuild` that lands mid-build bumps the generation counter, and the finished
+    (now stale) plan is simply not stored.
     """
 
     def __init__(self, cfg: Config, conn: sqlite3.Connection, dest: Path) -> None:
         self._dest = dest
-        self._by_mode: dict[str, list[PlanItem]] = {}
-        self.rebuild(cfg, conn)
+        self._cfg = cfg
+        self._db_path = Path(cfg.database).resolve()
+        self._by_mode: dict[str, _ModePlan] = {}
+        self._generation = 0
+        self._state_lock = threading.Lock()
+        self._build_locks = {mode: threading.Lock() for mode in _SUPPORTED_MODES}
 
     def rebuild(self, cfg: Config, conn: sqlite3.Connection) -> None:
-        by_mode: dict[str, list[PlanItem]] = {}
-        for mode in _SUPPORTED_MODES:
+        """Invalidate every built mode — the next request recomputes what it needs.
+
+        The signature is kept as-is (the pipeline/sort threads call it with their own
+        cfg/conn), but nothing is computed here anymore: a rebuild that blocks the
+        caller for ~40 s is exactly what F70 removed. `conn` is deliberately unused —
+        it belongs to the calling thread, and the lazy build runs on another one.
+        """
+        with self._state_lock:
+            self._cfg = cfg
+            self._db_path = Path(cfg.database).resolve()
+            self._by_mode = {}
+            self._generation += 1
+
+    def _plan(self, mode: str) -> _ModePlan | None:
+        """The built mode (building it if needed), or None for an unsupported mode."""
+        if mode not in _SUPPORTED_MODES:
+            return None
+        with self._state_lock:
+            built = self._by_mode.get(mode)
+            if built is not None:
+                return built
+        with self._build_locks[mode]:
+            with self._state_lock:
+                built = self._by_mode.get(mode)
+                if built is not None:
+                    return built
+                cfg, generation = self._cfg, self._generation
+            built = self._build(cfg, mode)
+            with self._state_lock:
+                if generation == self._generation:
+                    self._by_mode[mode] = built
+            return built
+
+    def _build(self, cfg: Config, mode: str) -> _ModePlan:
+        """One dry-run plan + the file sizes the aggregate reports, in one connection."""
+        conn = _connect(self._db_path)
+        try:
             report = plan_and_sort(cfg, conn, mode, self._dest, apply=False,
                                    write_reports=False)
-            by_mode[mode] = report.plan
-        self._by_mode = by_mode
+            sizes = {int(row["id"]): int(row["size"] or 0)
+                     for row in conn.execute("SELECT id, size FROM files")}
+        finally:
+            conn.close()
+        return _ModePlan(report.plan, sizes)
 
     def get(self, mode: str) -> list[PlanItem] | None:
         """The list of PlanItem for a mode, or None for an unsupported mode."""
-        return self._by_mode.get(mode)
+        built = self._plan(mode)
+        return None if built is None else built.items
+
+    def aggregate(self, mode: str) -> dict | None:
+        """`GET /api/plan?mode=` — target folders with counts/sizes, no file list."""
+        built = self._plan(mode)
+        if built is None:
+            return None
+        return {"mode": mode, "total": len(built.items),
+                "categories": built.categories}
+
+    def page(self, mode: str, category: str, offset: int, limit: int) -> dict | None:
+        """`GET /api/plan?mode=&category=&offset=&limit=` — one page of one folder.
+
+        An unknown category is an empty page with `total: 0` (not an error): a folder
+        can disappear between an aggregate and a click on it.
+        """
+        built = self._plan(mode)
+        if built is None:
+            return None
+        items = built.by_category.get(category, [])
+        return {
+            "mode": mode,
+            "category": category,
+            "total": len(items),
+            "offset": offset,
+            "limit": limit,
+            "items": [_plan_item_to_json(it) for it in items[offset:offset + limit]],
+        }
+
+
+def _parse_page_window(query: dict[str, list[str]]) -> tuple[int, int] | None:
+    """(offset, limit) for a `/api/plan` category page, or None -> 400.
+
+    A missing parameter falls back to the default; a non-integer or negative one is
+    rejected rather than coerced — the one outcome that must never happen is quietly
+    serving the whole category. A limit above the maximum is clamped, not rejected:
+    an over-eager client gets less data, not an error.
+    """
+    raw_offset = (query.get("offset") or ["0"])[0]
+    raw_limit = (query.get("limit") or [str(_PLAN_PAGE_DEFAULT_LIMIT)])[0]
+    try:
+        offset, limit = int(raw_offset), int(raw_limit)
+    except ValueError:
+        return None
+    if offset < 0 or limit < 0:
+        return None
+    return offset, min(limit, _PLAN_PAGE_MAX_LIMIT)
 
 
 def _resolve_path(db_path: Path, file_id: int) -> Path | None:
@@ -1637,6 +1776,20 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Ошибка загрузки плана: ", "en": "Error loading plan: ",
         "ja": "プラン読み込みエラー: ",
     },
+    # F70: the plan tab loads a folder page by page — the counter and the button
+    # that asks for the next page.
+    "plan_shown_of": {
+        "ru": "показано {n} из {all}", "en": "showing {n} of {all}",
+        "ja": "{all} 件中 {n} 件を表示",
+    },
+    "plan_load_more": {
+        "ru": "Загрузить ещё", "en": "Load more", "ja": "さらに読み込む",
+    },
+    "plan_empty": {
+        "ru": "План пуст — нечего раскладывать.",
+        "en": "The plan is empty — nothing to lay out.",
+        "ja": "プランは空です — 整理する対象がありません。",
+    },
     "error_loading_moves": {
         "ru": "Ошибка загрузки перемещений: ", "en": "Error loading moves: ",
         "ja": "移動読み込みエラー: ",
@@ -2006,6 +2159,8 @@ img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--radius-
 details { margin-left: var(--space-md); }
 summary { cursor: pointer; font-weight: 600; margin: var(--space-sm) 0; overflow-wrap: anywhere; list-style-position: outside; }
 details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% - 1rem); }
+/* F70: «показано N из M» под страницей файлов раскрытой папки. */
+.plan-page-status { margin: 0 0 0.4rem var(--space-md); font-size: 0.8rem; color: var(--muted); }
 
 /* --- кнопки ----------------------------------------------------------- */
 .btn {
@@ -2487,17 +2642,13 @@ label { cursor: pointer; }
 
   initFolderLang();
 
+  // Дерево по списку элементов — осталось для вкладки «Перемещения»: там приходит
+  // ОДИН батч (ограниченный по размеру), а не весь план коллекции, поэтому строить
+  // его из готового списка по-прежнему нормально. План города/людей/событий с F70
+  // ходит другим путём — через агрегат ниже.
   function countFiles(node) {
     var n = node.files.length;
     Object.keys(node.children).forEach(function (k) { n += countFiles(node.children[k]); });
-    return n;
-  }
-
-  // F43: число папок текущего плана — для саммари подтверждения apply.
-  function countDirs(node) {
-    var keys = Object.keys(node.children);
-    var n = keys.length;
-    keys.forEach(function (k) { n += countDirs(node.children[k]); });
     return n;
   }
 
@@ -2512,6 +2663,48 @@ label { cursor: pointer; }
         node = node.children[part];
       });
       node.files.push(item);
+    });
+    return root;
+  }
+
+  // Ленивое построение узла: содержимое папки создаётся ТОЛЬКО при первом
+  // раскрытии <details> — строки со всеми <img> сразу подвешивали вкладку.
+  function renderNode(name, node, depth, renderFilesFn) {
+    var renderFn = renderFilesFn || renderFiles;
+    var details = document.createElement("details");
+    var summary = document.createElement("summary");
+    summary.textContent = name + " (" + countFiles(node) + ")";
+    details.appendChild(summary);
+    var built = false;
+    details.addEventListener("toggle", function () {
+      if (!details.open || built) return;
+      built = true;
+      if (node.files.length) details.appendChild(renderFn(node.files));
+      Object.keys(node.children).sort().forEach(function (childName) {
+        details.appendChild(renderNode(childName, node.children[childName], depth + 1, renderFn));
+      });
+    });
+    return details;
+  }
+
+  // F70: дерево строится из АГРЕГАТА (папка -> количество), а не из списка файлов —
+  // сервер больше не отдаёт 26 тысяч элементов одним куском. Каждый узел знает
+  // суммарное количество файлов в своей ветке; лист (`category`) знает ключ, по
+  // которому у сервера запрашивается страница файлов.
+  function buildCategoryTree(categories) {
+    var root = { count: 0, children: {}, category: null };
+    categories.forEach(function (row) {
+      var parts = String(row.category || "").split("/");
+      var node = root;
+      node.count += row.count;
+      parts.forEach(function (part, i) {
+        if (!node.children[part]) {
+          node.children[part] = { count: 0, children: {}, category: null };
+        }
+        node = node.children[part];
+        node.count += row.count;
+        if (i === parts.length - 1) node.category = row.category;
+      });
     });
     return root;
   }
@@ -2578,10 +2771,56 @@ label { cursor: pointer; }
   // Перемещения/События/Люди) открывает лайтбокс с крупным /preview, а не новую
   // вкладку с сырым /photo. samples/index позволяют листать соседние кадры (для
   // одиночных строк — [fileId]/0). thumbUrl опционален (по умолчанию /thumb/id).
+  // F70: раскрытая папка — это до PLAN_PAGE_SIZE строк, то есть столько же
+  // одновременных GET /thumb/<id>. Сервер ограничивает число параллельных декодов,
+  // но очередь запросов браузера ничем не ограничена. Два простых ограничения:
+  // (1) src ставится только когда картинка реально видна (IntersectionObserver);
+  // (2) одновременно грузится не больше THUMB_CONCURRENCY штук — остальные ждут в
+  // очереди. Слот освобождается по load/error, поэтому очередь не может застрять.
+  var THUMB_CONCURRENCY = 6;
+  var thumbQueue = [];
+  var thumbActive = 0;
+
+  function releaseThumbSlot() {
+    thumbActive -= 1;
+    pumpThumbQueue();
+  }
+
+  function pumpThumbQueue() {
+    while (thumbActive < THUMB_CONCURRENCY && thumbQueue.length) {
+      var next = thumbQueue.shift();
+      thumbActive += 1;
+      next.img.addEventListener("load", releaseThumbSlot);
+      next.img.addEventListener("error", releaseThumbSlot);
+      next.img.src = next.url;
+    }
+  }
+
+  function queueThumb(img, url) {
+    thumbQueue.push({ img: img, url: url });
+    pumpThumbQueue();
+  }
+
+  var thumbObserver = null;
+  if (window.IntersectionObserver) {
+    thumbObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        thumbObserver.unobserve(entry.target);
+        queueThumb(entry.target, entry.target.getAttribute("data-thumb-src"));
+      });
+    }, { rootMargin: "200px" });
+  }
+
+  function loadThumbWhenVisible(img, url) {
+    if (!thumbObserver) { queueThumb(img, url); return; }
+    img.setAttribute("data-thumb-src", url);
+    thumbObserver.observe(img);
+  }
+
   function clickableThumb(fileId, samples, index, thumbUrl) {
     var img = document.createElement("img");
-    img.src = thumbUrl || ("/thumb/" + fileId);
-    img.loading = "lazy";
+    loadThumbWhenVisible(img, thumbUrl || ("/thumb/" + fileId));
     img.alt = "";
     img.className = "clickable-thumb";
     img.title = I18N.lightbox_open;
@@ -2626,50 +2865,97 @@ label { cursor: pointer; }
     return wrapTable(table);
   }
 
-  // Ленивое построение узла дерева: содержимое папки (строки файлов + дочерние
-  // папки) создаётся ТОЛЬКО при первом раскрытии <details>. План города/
-  // перемещений — до тысяч кадров; строить все строки+<img> сразу подвешивало
-  // вкладку. Теперь начальный рендер = только сводки папок верхнего уровня,
-  // миниатюры грузятся (lazy) лишь для раскрытых папок в зоне видимости.
-  function renderNode(name, node, depth, renderFilesFn) {
-    var renderFn = renderFilesFn || renderFiles;
+  // F70: страница файлов одной папки. Первая грузится при раскрытии узла,
+  // следующие — по кнопке «Загрузить ещё»; `total` из ответа показывается как
+  // «показано N из M». DOM-узлы существуют только для реально загруженных строк.
+  var PLAN_PAGE_SIZE = 200;
+
+  function renderCategoryFiles(mode, category) {
+    var wrap = document.createElement("div");
+    var status = document.createElement("div");
+    status.className = "plan-page-status";
+    var moreBtn = makeBtn("ghost", null, I18N.plan_load_more, "btn-sm");
+    moreBtn.style.display = "none";
+    wrap.appendChild(status);
+    wrap.appendChild(moreBtn);
+    var loaded = 0;
+    var busy = false;
+
+    function loadNext() {
+      if (busy) return;
+      busy = true;
+      moreBtn.disabled = true;
+      fetch("/api/plan?mode=" + encodeURIComponent(mode) +
+            "&category=" + encodeURIComponent(category) +
+            "&offset=" + loaded + "&limit=" + PLAN_PAGE_SIZE)
+        .then(function (r) { return r.json(); })
+        .then(function (page) {
+          var items = page.items || [];
+          if (items.length) wrap.insertBefore(renderFiles(items), status);
+          loaded += items.length;
+          busy = false;
+          moreBtn.disabled = false;
+          status.textContent = fmt(I18N.plan_shown_of, { n: loaded, all: page.total });
+          moreBtn.style.display = (items.length && loaded < page.total) ? "" : "none";
+        })
+        .catch(function (err) {
+          busy = false;
+          moreBtn.disabled = false;
+          status.textContent = I18N.error_loading_plan + err;
+        });
+    }
+
+    moreBtn.addEventListener("click", loadNext);
+    loadNext();
+    return wrap;
+  }
+
+  // Ленивое построение узла дерева: содержимое папки (страница файлов + дочерние
+  // папки) создаётся ТОЛЬКО при первом раскрытии <details>, и файлы при этом
+  // запрашиваются у сервера отдельным запросом — до раскрытия ни одного файла
+  // папки в браузере нет вообще.
+  function renderCategoryNode(mode, name, node) {
     var details = document.createElement("details");
     var summary = document.createElement("summary");
-    summary.textContent = name + " (" + countFiles(node) + ")";
+    summary.textContent = name + " (" + node.count + ")";
     details.appendChild(summary);
     var built = false;
     details.addEventListener("toggle", function () {
       if (!details.open || built) return;
       built = true;
-      if (node.files.length) details.appendChild(renderFn(node.files));
+      if (node.category) details.appendChild(renderCategoryFiles(mode, node.category));
       Object.keys(node.children).sort().forEach(function (childName) {
-        details.appendChild(renderNode(childName, node.children[childName], depth + 1, renderFn));
+        details.appendChild(renderCategoryNode(mode, childName, node.children[childName]));
       });
     });
     return details;
   }
 
   // F43: счётчики последнего city-плана — используются саммари подтверждения
-  // apply (не отдельным превью-запросом, дерево уже загружено вкладкой).
+  // apply (не отдельным превью-запросом, агрегат уже загружен вкладкой).
   var cityPlanCount = 0;
   var cityPlanDirCount = 0;
 
-  // renderPlanTab: живое дерево плана режима (city/person/event) — общий код,
-  // переиспользуемый всеми план-вкладками (U2).
+  // renderPlanTab: дерево папок плана режима (city/person/event) из агрегата —
+  // общий код, переиспользуемый всеми план-вкладками (U2).
   function renderPlanTab(mode, containerId) {
     var container = document.getElementById(containerId);
-    fetch("/api/plan?mode=" + mode)
+    fetch("/api/plan?mode=" + encodeURIComponent(mode))
       .then(function (r) { return r.json(); })
-      .then(function (items) {
-        var root = buildTree(items);
+      .then(function (data) {
+        var categories = data.categories || [];
         if (mode === "city") {
-          cityPlanCount = items.length;
-          cityPlanDirCount = countDirs(root);
+          cityPlanCount = data.total || 0;
+          cityPlanDirCount = categories.length;
         }
         container.textContent = "";
-        if (root.files.length) container.appendChild(renderFiles(root.files));
+        if (!categories.length) {
+          container.appendChild(stateEl("empty", I18N.plan_empty));
+          return;
+        }
+        var root = buildCategoryTree(categories);
         Object.keys(root.children).sort().forEach(function (name) {
-          container.appendChild(renderNode(name, root.children[name], 0));
+          container.appendChild(renderCategoryNode(mode, name, root.children[name]));
         });
       })
       .catch(function (err) {
@@ -3811,13 +4097,25 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             self._send_bytes(_index_html_for(lang), "text/html; charset=utf-8")
 
         def _serve_plan(self, query: dict[str, list[str]]) -> None:
+            # F70: two shapes on one route — without `category` an aggregate over the
+            # target folders (kilobytes), with it one bounded page of that folder.
+            # The full plan is not reachable from here anymore, by design.
             mode = (query.get("mode") or [""])[0]
-            items = cache.get(mode)
-            if items is None:
+            category = (query.get("category") or [""])[0]
+            if not category:
+                payload = cache.aggregate(mode)
+            else:
+                window = _parse_page_window(query)
+                if window is None:
+                    self._send_json({"error": "invalid offset/limit"},
+                                    status=HTTPStatus.BAD_REQUEST)
+                    return
+                payload = cache.page(mode, category, window[0], window[1])
+            if payload is None:
                 self._send_json({"error": f"unsupported mode: {mode!r}"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            self._send_json([_plan_item_to_json(it) for it in items])
+            self._send_json(payload)
 
         def _serve_dupes(self) -> None:
             self._send_json(_dupes_payload(db_path, cfg.index.phash_max_distance))

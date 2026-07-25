@@ -111,9 +111,10 @@ class TestSetLanguage(FolderLangServerBase):
         config_path = self._config_file("en")
         self.start_with_config(config_path)
 
-        # before: English folders
+        # before: English folders (F70: the aggregate carries the target folders)
         _s, body, _c = self.get("/api/plan?mode=city")
-        self.assertTrue(json.loads(body)[0]["target_rel"].startswith("Russia/"))
+        self.assertTrue(
+            json.loads(body)["categories"][0]["category"].startswith("Russia/"))
 
         status, payload = self.post("/api/config/language", {"language": "ru"})
         self.assertEqual(status, 200)
@@ -128,7 +129,8 @@ class TestSetLanguage(FolderLangServerBase):
         self.assertIn("# my config", text)
         # the plan preview is rebuilt with Russian folder names
         _s2, body2, _c2 = self.get("/api/plan?mode=city")
-        self.assertTrue(json.loads(body2)[0]["target_rel"].startswith("Россия/"))
+        self.assertTrue(
+            json.loads(body2)["categories"][0]["category"].startswith("Россия/"))
 
     def test_invalid_language_is_400_and_no_change(self):
         self.cfg.raw = {"language": "en"}
