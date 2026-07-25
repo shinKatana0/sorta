@@ -13,6 +13,7 @@ Used:
   - in CI:    the gate step of the workflow (.github/workflows/check.yml).
 """
 
+import os
 import subprocess
 import sys
 
@@ -22,7 +23,10 @@ import sys
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(errors="replace")
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 CHECKS = [
+    ("version sync", [sys.executable, os.path.join(_HERE, "release.py"), "check"]),
     ("ruff (lint)", [sys.executable, "-m", "ruff", "check", "sorta", "tests"]),
     ("mypy (types)", [sys.executable, "-m", "mypy", "sorta"]),
     (
