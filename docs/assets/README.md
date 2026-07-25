@@ -1,5 +1,9 @@
 # Screenshot assets
 
+`hero.gif` and `process.png` (referenced from the top‑level README) are captured on
+a **synthetic** demo collection — generated JPEGs with fake EXIF/GPS labelled "SORTA
+DEMO", no real photos or people. Regenerate them the same way if the UI changes.
+
 The user guides currently ship **without** UI screenshots (text worked‑examples
 with real command output carry the walkthrough instead). To add real screenshots
 later:

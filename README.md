@@ -15,6 +15,10 @@ Sorta runs **locally** (ML models for faces, scenes and text run on your machine
 **never modifies your originals**, and offers both a **CLI** and a guided **local web
 app**.
 
+![Sorta — the local web app: sort by city, switch folder language, review duplicates, undo](docs/assets/hero.gif)
+
+<sub>The local web app (`sorta ui`) on a synthetic demo collection — city tree, live folder‑language switch (en/ru/ja), and duplicate review.</sub>
+
 > ⚡ **For full‑speed use** — face recognition, the deep VLM tier, or large
 > collections — an **NVIDIA GPU (CUDA 13) with ≥ 4 GB VRAM** is recommended
 > (**≥ 8 GB** for the VLM tier). Everything still runs on CPU, just noticeably
@@ -53,6 +57,8 @@ app**.
   overwrites (suffix `_1`, `_2`).
 
 ---
+
+![The Cities tab — the proposed Country / City / Year folder tree, reviewed before anything moves](docs/assets/process.png)
 
 ## System requirements
 
