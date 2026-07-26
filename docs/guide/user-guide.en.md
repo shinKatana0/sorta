@@ -1142,8 +1142,9 @@ that saves any work: an excluded subtree costs no `stat`, no hash and no later s
 On a real 400 GB collection, excluding one `Movies` folder removed 847 files and
 54 GB from every stage of the run.
 
-In the web app the first tab shows the folder tree of the source with checkboxes. From
-the command line:
+In the web app the first tab shows the folder tree of the source. Every folder has three
+states: ☐ process, ◐ don't sort, ☒ don't scan — clicking the mark cycles through them,
+and a folder's state applies to its whole subtree. From the command line:
 
 ```bash
 sorta index --exclude-dir Movies --exclude-dir Screenshots
@@ -1151,15 +1152,25 @@ sorta index --exclude-dir Movies --exclude-dir Screenshots
 
 Both write the same file — `excludes.yaml` next to the database, or wherever
 `index.excludes_file` points — so a folder excluded in one place stays excluded in the
-other. The file is **keyed by source root**:
+other. The file is **keyed by source root**, and within a root by what the exclusion
+means:
 
 ```yaml
 "D:/Photos":
-  - Movies
-  - Screenshots
+  skip_scan:      # do not scan: the files never enter the index
+    - Movies
+    - DCIM3/Screenshots
+  skip_layout:    # do not lay out: indexed, left where they are
+    - foto/Greece
+    - foto/France
 "E:/Archive":
-  - temp
+  skip_scan:
+    - temp
 ```
+
+A folder lands in exactly one section: marking one state clears the other. A file in the
+old shape (a plain list under the root) is read as `skip_scan` — there is nothing to
+rewrite.
 
 Because of that, switching sources needs no decision about old exclusions: each root
 carries its own set and coming back restores it. Note that files already indexed under
