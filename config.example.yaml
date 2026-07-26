@@ -118,7 +118,11 @@ faces:
   infer_workers: 0
   # Threads for prefetch frame decoding; default min(8, cores). Since F87 the decode
   # pool feeds BOTH paths — the parallel sessions no longer decode their own frames,
-  # so this knob now applies on GPU too (measured x1.57 on 4 sessions).
+  # so this knob now applies on GPU too. Measured A/B in one session on a 24-core box
+  # with an RTX 5090 (500 real frames, 4 sessions): 7.1 img/s coupled -> 10.5
+  # decoupled, x1.47. Frames are decoded at full resolution (the ArcFace crop needs
+  # it), and the window is ~2x decode_workers decoded plus ~2x infer_workers waiting
+  # — raise it only if you have the RAM for that many full-size frames in flight.
   decode_workers: 8
 
 # Phase 5 (F6): places without GPS, event naming, junk classification.
