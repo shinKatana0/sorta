@@ -4119,10 +4119,15 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   }
 
   function sourceDirChanged() {
-    stepSourceOpen = false;
-    document.getElementById("excludes-panel").style.display = "none";
+    // Шаг НЕ схлопывается на выборе папки. Исключения относятся к конкретному корню
+    // и являются частью этого же шага, поэтому сворачивать его в момент, когда
+    // пользователь как раз собирается их отметить, — значит заставлять возвращаться
+    // назад через «изменить». Схлопнутым шаг стартует только при загрузке страницы с
+    // уже запомненным источником: там правда нечего делать.
+    stepSourceOpen = true;
     rememberSourceDir();
     loadExcludesInfo();
+    loadSourceTree();
     updateStepLayout();
   }
 
@@ -4200,9 +4205,11 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     return result;
   }
 
-  document.getElementById("process-excludes-btn").addEventListener("click", function () {
+  // Вынесено из обработчика кнопки: дерево показывается и по кнопке, и сразу после
+  // выбора папки — «выбрал источник, вижу его структуру» это один шаг, а не два.
+  function loadSourceTree(announce) {
     var src = currentSourceDir();
-    if (!src) { window.alert(I18N.process_enter_path); return; }
+    if (!src) { if (announce) { window.alert(I18N.process_enter_path); } return; }
     document.getElementById("excludes-panel").style.display = "";
     document.getElementById("excludes-status").textContent = "";
     var container = document.getElementById("excludes-tree");
@@ -4223,6 +4230,10 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
         container.textContent = "";
         container.appendChild(stateEl("error", I18N.excludes_error_prefix + e));
       });
+  }
+
+  document.getElementById("process-excludes-btn").addEventListener("click", function () {
+    loadSourceTree(true);
   });
 
   document.getElementById("excludes-save-btn").addEventListener("click", function () {

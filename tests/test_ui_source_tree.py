@@ -306,3 +306,44 @@ class TestFirstTabLayout(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSourcePickKeepsTheStepOpen(unittest.TestCase):
+    """Picking a folder must not collapse the step that holds the folder tree.
+
+    Reported live: choosing a directory through Explorer jumped straight past the
+    exclusions, and reaching them meant going back via "change". Exclusions belong to
+    a specific root and are part of the same step, so the step stays open — it starts
+    collapsed only on page load with an already-remembered source, where there is
+    genuinely nothing to do.
+    """
+
+    def setUp(self):
+        from sorta import ui
+
+        self.html = ui._render_index_html("ru")
+
+    def _fn(self, name: str) -> str:
+        start = self.html.index("function " + name + "(")
+        depth, i = 0, self.html.index("{", start)
+        for j in range(i, len(self.html)):
+            if self.html[j] == "{":
+                depth += 1
+            elif self.html[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return self.html[start:j + 1]
+        raise AssertionError("не найдено тело " + name)
+
+    def test_choosing_a_source_opens_the_step(self):
+        body = self._fn("sourceDirChanged")
+        self.assertIn("stepSourceOpen = true", body)
+        self.assertNotIn("stepSourceOpen = false", body)
+
+    def test_choosing_a_source_shows_the_tree(self):
+        self.assertIn("loadSourceTree()", self._fn("sourceDirChanged"))
+
+    def test_tree_loader_is_shared_with_the_button(self):
+        """One loader, two entry points — the button and the pick."""
+        self.assertIn("function loadSourceTree(", self.html)
+        self.assertIn("loadSourceTree(true)", self.html)
