@@ -116,8 +116,9 @@ faces:
   # Parallel inference sessions (F12.1): faces is inference-bound; independent
   # FaceAnalysis sessions scale ~x3 on GPU. 0 = auto (4 on CUDA, 1 on CPU).
   infer_workers: 0
-  # Threads for prefetch frame decoding (used only on the CPU / 1-session path);
-  # default min(8, cores). With parallel inference each session decodes its own frames.
+  # Threads for prefetch frame decoding; default min(8, cores). Since F87 the decode
+  # pool feeds BOTH paths — the parallel sessions no longer decode their own frames,
+  # so this knob now applies on GPU too (measured x1.57 on 4 sessions).
   decode_workers: 8
 
 # Phase 5 (F6): places without GPS, event naming, junk classification.

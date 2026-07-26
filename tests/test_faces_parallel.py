@@ -130,7 +130,7 @@ class TestDetectParallelHelper(unittest.TestCase):
         return [{"id": i, "path": f"/photos/img_{i}.jpg", "orientation": None}
                 for i in range(1, n + 1)]
 
-    def collect(self, rows, sessions, workers, decode=fake_decode):
+    def collect(self, rows, sessions, workers, decode=fake_decode, decode_workers=2):
         got: dict[int, object] = {}
         threads: set[int] = set()
 
@@ -138,7 +138,7 @@ class TestDetectParallelHelper(unittest.TestCase):
             threads.add(threading.get_ident())
             got[r["id"]] = hits
 
-        _detect_parallel(rows, decode, sessions, workers, on_result)
+        _detect_parallel(rows, decode, sessions, workers, decode_workers, on_result)
         return got, threads
 
     def test_every_row_once_and_results_on_the_calling_thread(self):
