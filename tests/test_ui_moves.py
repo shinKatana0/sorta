@@ -89,7 +89,8 @@ class TestApiMoves(MovesTestBase):
         payload = json.loads(body)
         self.assertEqual(len(payload["moves"]), 1)
         item = payload["moves"][0]
-        expected_keys = {"file_id", "name", "src", "dst", "target_rel", "status", "thumb_url"}
+        expected_keys = {"file_id", "name", "src", "dst", "target_rel", "status",
+                         "thumb_url", "video"}
         self.assertEqual(expected_keys, set(item.keys()))
         self.assertEqual(item["file_id"], fid)
         self.assertEqual(item["name"], "a.jpg")

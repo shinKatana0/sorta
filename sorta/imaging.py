@@ -15,6 +15,12 @@ frame through PyAV and stores it as an ordinary preview, so the UI gets tiles fo
 clips too. It stays inside the preview layer on purpose — no pipeline stage decodes
 video (they all filter media_type = 'photo' in SQL) and none should start.
 
+F80 widens that one frame into a filmstrip (video_filmstrip / video_frame): one tile
+answers "what is this", six frames answer "is this mine, and was it shot there" —
+which is the question that matters on a collection where whole countries are almost
+only video. Same cache, same JPEG format, same key plus the frame index, and frame 0
+is still the very frame F74 wrote, so nothing already cached is invalidated.
+
 F67 adds a second, DISK-level layer on top of the same decode: decode_rgb_preview.
 The same frame used to be decoded 3-5 times per run (CLIP in landmarks, CLIP/OCR/VLM
 in junk, pHash in dedup) because decode_rgb_cached is bounded and per-process, and
@@ -34,6 +40,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from PIL import Image, ImageOps
 
@@ -251,14 +258,21 @@ def preview_quality() -> int:
     return _env_int(ENV_PREVIEW_QUALITY, PREVIEW_QUALITY)
 
 
-def preview_key(path: str | Path, mtime: float, size: int) -> str:
-    """Stable cache key for (file, mtime, size).
+def preview_key(path: str | Path, mtime: float, size: int, frame: int = 0) -> str:
+    """Stable cache key for (file, mtime, size) — and, for video, a frame index.
 
     A changed file yields a changed key, so invalidation is free — the same
     principle as the in-process decode_rgb_cached key. Stale entries of the old key
     are simply never read again (preview_cache_clear removes them).
+
+    F80: `frame` addresses one frame of a video filmstrip. Frame 0 keeps the key
+    string EXACTLY as it was, so every preview already on disk (including every F74
+    video tile) still hits — a suffix on frame 0 would silently obsolete the whole
+    cache the day this feature landed.
     """
     raw = f"{Path(os.path.abspath(path)).as_posix()}|{mtime}|{size}"
+    if frame:
+        raw = f"{raw}|frame={frame}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -368,6 +382,9 @@ def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
 # comes later and keeps env as an override).
 ENV_VIDEO_PREVIEWS = "SORTA_VIDEO_PREVIEWS"
 ENV_VIDEO_WORKERS = "SORTA_VIDEO_WORKERS"
+# F80: how many frames the lightbox filmstrip is made of. 1 is the documented way to
+# switch the feature off — the UI then shows exactly the single F74 frame.
+ENV_VIDEO_FRAMES = "SORTA_VIDEO_FRAMES"
 
 # Kept deliberately next to the decode layer instead of read from Config: imaging is a
 # leaf module with no access to Config (see the comment on ENV_PREVIEW_CACHE), and a
@@ -386,6 +403,13 @@ VIDEO_WORKERS = 4
 # brightness analysis on purpose — the goal is a recognizable tile, not the best frame.
 VIDEO_FRAME_SECONDS = 1.0
 VIDEO_FRAME_FRACTION = 0.1
+
+# F80: six frames is what it took, on a sample of the collection, to answer "is this
+# Cuba" about as reliably as watching the clip — and it is still one screenful of dots
+# in the lightbox. The last one stops short of the very end: clips fade out, and a
+# truncated file breaks on its last packet more often than anywhere else.
+VIDEO_FRAMES = 6
+VIDEO_LAST_FRACTION = 0.95
 
 # A seek lands on the keyframe at or before the target, and we decode forward from
 # there. The cap is a safety belt for files with minutes between keyframes or with
@@ -407,6 +431,11 @@ def video_previews_enabled() -> bool:
 
 def video_workers() -> int:
     return _env_int(ENV_VIDEO_WORKERS, VIDEO_WORKERS)
+
+
+def video_frames() -> int:
+    """SORTA_VIDEO_FRAMES — frames per filmstrip; 1 degrades to the F74 single frame."""
+    return _env_int(ENV_VIDEO_FRAMES, VIDEO_FRAMES)
 
 
 def is_video_path(path: str | Path) -> bool:
@@ -451,17 +480,21 @@ def _import_av() -> ModuleType | None:
     return av
 
 
-def _target_seconds(container: object, stream: object) -> float:
-    """Where to look for the preview frame, in seconds from the start."""
-    duration: float | None = None
+def _duration_seconds(container: object, stream: object) -> float | None:
+    """Length of the clip in seconds — from the stream, else the container, else None."""
     stream_duration = getattr(stream, "duration", None)
     time_base = getattr(stream, "time_base", None)
     if stream_duration is not None and time_base:
-        duration = float(stream_duration * time_base)
-    else:
-        container_duration = getattr(container, "duration", None)
-        if container_duration is not None:
-            duration = float(container_duration) / 1_000_000  # av.time_base units
+        return float(stream_duration * time_base)
+    container_duration = getattr(container, "duration", None)
+    if container_duration is not None:
+        return float(container_duration) / 1_000_000  # av.time_base units
+    return None
+
+
+def _target_seconds(container: object, stream: object) -> float:
+    """Where to look for the preview frame, in seconds from the start."""
+    duration = _duration_seconds(container, stream)
     if duration is None or duration <= 0:
         return VIDEO_FRAME_SECONDS
     return min(VIDEO_FRAME_SECONDS, duration * VIDEO_FRAME_FRACTION)
@@ -496,6 +529,28 @@ def _rotate_frame(img: Image.Image, rotation: int) -> Image.Image:
     return img.rotate(normalized, expand=True)
 
 
+def _decode_at(container: Any, stream: Any, target: float) -> Any | None:
+    """Seek to `target` seconds and decode forward to the first frame at/after it.
+
+    Split out of _grab_frame for F80: a filmstrip is this loop run once per target
+    inside ONE open container, and both paths must land on the same frame for the
+    same second (frame 0 of the strip IS the F74 preview).
+    """
+    try:
+        container.seek(int(target / stream.time_base), stream=stream)
+    except Exception:
+        # A container that cannot seek (fragmented, streamed, broken index) still
+        # decodes from the start — we simply fall back to the first frame we get.
+        pass
+    frame = None
+    for index, decoded in enumerate(container.decode(stream)):
+        frame = decoded
+        when = getattr(decoded, "time", None)
+        if when is None or when >= target or index + 1 >= _VIDEO_MAX_DECODED_FRAMES:
+            break
+    return frame
+
+
 def _grab_frame(av: ModuleType, path: str | Path) -> Image.Image | None:
     """Decode one representative frame of path, already rotated.
 
@@ -506,19 +561,7 @@ def _grab_frame(av: ModuleType, path: str | Path) -> Image.Image | None:
     with av.open(str(path)) as container:
         stream = container.streams.video[0]  # IndexError on an audio-only file
         stream.thread_type = "AUTO"
-        target = _target_seconds(container, stream)
-        try:
-            container.seek(int(target / stream.time_base), stream=stream)
-        except Exception:
-            # A container that cannot seek (fragmented, streamed, broken index) still
-            # decodes from the start — we simply fall back to the first frame we get.
-            pass
-        frame = None
-        for index, decoded in enumerate(container.decode(stream)):
-            frame = decoded
-            when = getattr(decoded, "time", None)
-            if when is None or when >= target or index + 1 >= _VIDEO_MAX_DECODED_FRAMES:
-                break
+        frame = _decode_at(container, stream, _target_seconds(container, stream))
         if frame is None:
             return None
         return _rotate_frame(frame.to_image(), _frame_rotation(frame, stream))
@@ -661,6 +704,229 @@ def decode_rgb_preview(
     # The cache is unusable (read-only dir, full disk) — render from what we have.
     return _render(
         full, max_edge, orientation, grayscale=grayscale, apply_orientation=apply_orientation)
+
+
+# --- F80: several frames of one clip, so it can be judged without playing it -
+#
+# Why not playback: 68% of the collection is HEVC, which Chrome/Firefox do not decode
+# by default — a <video> tag would show a black rectangle on two clips out of three.
+# Frames work on 100% of the files, because PyAV decodes what the browser will not.
+#
+# Cost on a synthetic 3840x2160 h264 clip, 10 s at 30 fps (measured 2026-07-26):
+# a cold strip of 6 frames — 3.6 s in ONE container open (six opens would re-parse the
+# index six times); the warm strip — 43 ms, and the single frame the lightbox actually
+# asks for — 7 ms. Nothing of this is paid until a lightbox is opened.
+
+
+def _filmstrip_targets(container: object, stream: object, count: int) -> list[float]:
+    """The seconds to grab, ascending — targets[0] is EXACTLY the F74 frame.
+
+    The strip is deliberately "the F74 frame plus count-1 positions spread over the
+    clip" rather than an even split of the whole duration: frame 0 has to keep landing
+    on the frame already in the cache, otherwise every tile in the UI is redrawn and
+    the cache of a 227 GB collection is thrown away for cosmetics. The rest is
+    count-1 evenly spaced fractions ending on VIDEO_LAST_FRACTION — at the default
+    count that is exactly 20/40/60/80/95% of the duration.
+
+    An unknown duration gives a single target: there is nothing to spread over, and
+    decoding a clip to its end just to measure it costs more than the strip is worth.
+    """
+    first = _target_seconds(container, stream)
+    duration = _duration_seconds(container, stream)
+    if count <= 1 or duration is None or duration <= 0:
+        return [first]
+    fractions = [index / (count - 1) for index in range(1, count - 1)]
+    fractions.append(VIDEO_LAST_FRACTION)
+    return [first] + [duration * fraction for fraction in fractions]
+
+
+def _grab_filmstrip(av: ModuleType, path: str | Path, count: int) -> list[Image.Image]:
+    """Up to `count` frames of path, already rotated, in ONE container open.
+
+    Opening a 4K clip six times means parsing its index six times; the seeks run
+    inside a single `with av.open` instead. A target that lands on a frame already
+    taken is skipped rather than returned twice — that is what turns "the clip is
+    shorter than the strip" into fewer frames instead of six copies of its last one.
+
+    A decode that blows up mid-strip keeps the frames collected so far: on a real
+    collection a truncated tail is common, and half a strip still answers the question.
+    """
+    frames: list[Image.Image] = []
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]  # IndexError on an audio-only file
+        stream.thread_type = "AUTO"
+        seen: set[float] = set()
+        for target in _filmstrip_targets(container, stream, count):
+            try:
+                decoded = _decode_at(container, stream, target)
+            except Exception:
+                break
+            if decoded is None:
+                break
+            when = getattr(decoded, "time", None)
+            if when is not None:
+                if when in seen:
+                    continue
+                seen.add(when)
+            frames.append(_rotate_frame(decoded.to_image(), _frame_rotation(decoded, stream)))
+    return frames
+
+
+def _extract_filmstrip(path: str | Path, count: int) -> list[Image.Image]:
+    """The frames of a filmstrip, or []. Never raises.
+
+    The SAME semaphore as F74, held for the whole strip: six 4K frames are ~150 MB of
+    transient pixels, so the number of clips decoded at once must not grow just
+    because each of them now costs more.
+    """
+    av = _import_av()
+    if av is None:
+        return []
+    with _video_gate():
+        try:
+            return _grab_filmstrip(av, path, count)
+        except Exception:
+            # Corrupt / truncated / unsupported file, no video stream, any PyAV error:
+            # the contract of video_filmstrip is [], never an exception.
+            return []
+
+
+def _frame_path(path: str | Path, mtime: float, size: int, index: int) -> Path:
+    return _preview_path(preview_key(path, mtime, size, index))
+
+
+def _read_filmstrip(
+    path: str | Path, mtime: float, size: int, count: int, max_edge: int | None,
+    *, grayscale: bool, apply_orientation: bool,
+) -> list[Image.Image]:
+    """Frames 0..count-1 from the preview cache, stopping at the first gap."""
+    frames: list[Image.Image] = []
+    for index in range(count):
+        img = _read_preview(
+            _frame_path(path, mtime, size, index), max_edge,
+            grayscale=grayscale, apply_orientation=apply_orientation)
+        if img is None:
+            break
+        frames.append(img)
+    return frames
+
+
+def video_filmstrip(
+    path: str | Path,
+    mtime: float,
+    size: int,
+    count: int | None = None,
+    max_edge: int | None = None,
+    *,
+    grayscale: bool = False,
+    apply_orientation: bool = False,
+) -> list[Image.Image]:
+    """Several frames of a video, ascending in time. Never raises.
+
+    Contract:
+      - returns ready PIL images (as decode_rgb_preview does, not paths), oldest
+        first; [] for anything that cannot be decoded — a corrupt or truncated file,
+        no video stream, a missing path, a photo, no PyAV installed, videos switched
+        off. An empty list is a normal answer, never an exception;
+      - element 0 is byte-for-byte the frame F74 already serves, under the very same
+        cache key, so this feature invalidates nothing;
+      - `count` defaults to SORTA_VIDEO_FRAMES (6); <= 1 returns exactly the F74 list
+        of one, which is the supported way to switch the filmstrip off;
+      - a clip with fewer distinct frames than asked for returns fewer, down to [];
+      - every frame is stored in the F67 preview cache as an ordinary JPEG, under the
+        same key plus the frame index — a second call decodes nothing and does not
+        open the container again.
+    """
+    if not is_video_path(path) or not video_previews_enabled():
+        return []
+    wanted = video_frames() if count is None else count
+    if wanted <= 1:
+        single = _video_preview(
+            path, mtime, size, max_edge,
+            grayscale=grayscale, apply_orientation=apply_orientation)
+        return [single] if single is not None else []
+
+    def rendered(frames: list[Image.Image]) -> list[Image.Image]:
+        # Unlike a photo, a frame comes out of the container already rotated, so it
+        # carries no orientation of its own to defer (orientation=1), exactly as F74.
+        return [
+            _render(frame, max_edge, 1,
+                    grayscale=grayscale, apply_orientation=apply_orientation)
+            for frame in frames
+        ]
+
+    if not preview_cache_enabled():
+        # Nothing may be written while the cache is off, but the frames are still
+        # worth returning — the same trade-off as on the F74 path.
+        return rendered(_extract_filmstrip(path, wanted))
+
+    cached = _read_filmstrip(
+        path, mtime, size, wanted, max_edge,
+        grayscale=grayscale, apply_orientation=apply_orientation)
+    # ONE cached frame is not evidence of a built strip: F74 leaves exactly that
+    # behind for every clip whose tile the grid has drawn, which is all of them. Two
+    # or more can only have come from here, so they are the strip — including a short
+    # clip that yielded fewer frames than asked for.
+    if len(cached) >= 2:
+        return cached
+
+    extracted = _extract_filmstrip(path, wanted)
+    if not extracted:
+        return []
+    edge = preview_max_edge()
+    for index, frame in enumerate(extracted):
+        if max(frame.size) > edge:
+            frame.thumbnail((edge, edge))
+        _write_preview(frame, _frame_path(path, mtime, size, index), 1)
+    # Read back what was written, for the same reason as on the photo path: a cold and
+    # a warm call must return the same pixels.
+    stored = _read_filmstrip(
+        path, mtime, size, wanted, max_edge,
+        grayscale=grayscale, apply_orientation=apply_orientation)
+    if len(stored) == len(extracted):
+        return stored
+    # The cache is unusable (read-only dir, full disk) — render from what we have.
+    return rendered(extracted)
+
+
+def video_frame(
+    path: str | Path,
+    mtime: float,
+    size: int,
+    index: int,
+    max_edge: int | None = None,
+    *,
+    grayscale: bool = False,
+    apply_orientation: bool = False,
+) -> Image.Image | None:
+    """Frame `index` of the filmstrip, or None when the clip has no such frame.
+
+    This is what the UI lightbox calls, and it is why the strip is lazy: a frame is
+    decoded only once it is actually looked at, so a grid of thousands of tiles never
+    pays for anything beyond frame 0. A cached frame is read straight back; a miss
+    builds the WHOLE strip once (one container open) and then reads it.
+
+    index 0 is the F74 frame for a clip and the ordinary preview for a photo — the
+    photo lightbox goes through this call completely unchanged.
+    """
+    if index < 0:
+        return None
+    if index == 0:
+        return decode_rgb_preview(
+            path, mtime, size, max_edge,
+            grayscale=grayscale, apply_orientation=apply_orientation)
+    if not is_video_path(path):
+        return None  # a photo has exactly one frame
+    if preview_cache_enabled() and video_previews_enabled():
+        cached = _read_preview(
+            _frame_path(path, mtime, size, index), max_edge,
+            grayscale=grayscale, apply_orientation=apply_orientation)
+        if cached is not None:
+            return cached
+    frames = video_filmstrip(
+        path, mtime, size, max_edge=max_edge,
+        grayscale=grayscale, apply_orientation=apply_orientation)
+    return frames[index] if index < len(frames) else None
 
 
 def preview_cache_clear() -> None:
