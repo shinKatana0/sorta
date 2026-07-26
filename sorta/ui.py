@@ -103,6 +103,20 @@ full rebuild (F70) on every click. The preview plan is built with
 red, unmarkable) even after a rebuild — the sorting plan that actually moves files never
 contains it.
 
+(13) `GET /api/source-tree`, `GET|POST /api/source-tree/excludes` (F81, the source
+block of the "Process" tab) — choosing folders that must NOT be scanned. The GET
+returns the directory structure under a root (folders only, each with a file count and
+the total size of its subtree; metadata via `scandir`/`stat`, contents never read),
+bounded by `_TREE_MAX_NODES`/`_TREE_MAX_DEPTH` with a `truncated` flag rather than a
+silent cut. The POST writes `{"root": str, "excludes": [str, ...]}` into the exclusion
+file (`indexer.save_excludes` — atomic, keyed by root, other roots preserved) and
+reports which entries were refused. Both take a path from the client, so both run it
+through `_validate_tree_root` first — the same "absolute path to an existing
+directory" rule `POST /api/process` applies to `source_dir`; every list entry goes
+through `indexer.normalize_exclude`, which lets an exclusion narrow the walk and
+nothing else. This endpoint touches neither files nor the index: the rows already
+indexed under a new exclusion are removed by the next `index()` run.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -152,7 +166,8 @@ from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
 from .faces import detect_and_cluster
 from .geo import resolve_places
-from .indexer import index as run_index
+from .indexer import excludes_path, index as run_index, load_excludes, normalize_exclude
+from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
@@ -1459,6 +1474,149 @@ def _run_browse_dialog() -> str:
     return result.stdout.strip()
 
 
+# --- F81: the source folder tree ("do not scan") --------------------------------
+
+# The response is bounded on purpose: on a pathological tree it must not blow up.
+# Sizes are still summed over everything below, so the numbers stay truthful — only
+# the node LIST is cut, and the answer says so instead of silently shortening.
+_TREE_MAX_NODES = 2000
+_TREE_MAX_DEPTH = 12
+
+
+def _validate_tree_root(raw: object) -> Path | None:
+    """The tree root arrives from the client, so it is checked before anything is read.
+
+    The same rule the path behind the "Browse…" button meets in
+    `_handle_process_start`: a non-empty ABSOLUTE path to an existing directory.
+    Anything else (a relative path, a file, a directory that is not there) -> None ->
+    400. The server never walks an arbitrary path just because it was asked to.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    path = Path(raw.strip()).expanduser()
+    if not path.is_absolute():
+        return None
+    try:
+        if not path.is_dir():
+            return None
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def _sum_dir(directory: Path) -> tuple[int, int]:
+    """(files, bytes) of a whole subtree — metadata only (`scandir`/`stat`)."""
+    files = size = 0
+    try:
+        with os.scandir(directory) as it:
+            entries = list(it)
+    except OSError:
+        return 0, 0
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                sub_files, sub_size = _sum_dir(Path(entry.path))
+                files += sub_files
+                size += sub_size
+                continue
+            files += 1
+            size += entry.stat(follow_symlinks=False).st_size
+        except OSError:  # a vanished/unreadable entry is not worth failing the tree over
+            continue
+    return files, size
+
+
+def _scan_dir(directory: Path, rel: str, name: str, depth: int,
+              budget: list[int], max_depth: int) -> dict:
+    node: dict = {"name": name, "rel": rel, "files": 0, "size": 0,
+                  "children": [], "truncated": False}
+    try:
+        with os.scandir(directory) as it:
+            entries = sorted(it, key=lambda e: e.name.lower())
+    except OSError:
+        return node
+    for entry in entries:
+        try:
+            is_dir = entry.is_dir(follow_symlinks=False)
+        except OSError:
+            continue
+        if not is_dir:
+            node["files"] += 1
+            try:
+                node["size"] += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                pass
+            continue
+        child_rel = f"{rel}/{entry.name}" if rel else entry.name
+        if depth < max_depth and budget[0] > 0:
+            budget[0] -= 1
+            child = _scan_dir(Path(entry.path), child_rel, entry.name, depth + 1,
+                              budget, max_depth)
+            node["children"].append(child)
+            node["files"] += child["files"]
+            node["size"] += child["size"]
+        else:
+            # over the limit: the folder is not sent, but its files still count
+            sub_files, sub_size = _sum_dir(Path(entry.path))
+            node["files"] += sub_files
+            node["size"] += sub_size
+            node["truncated"] = True
+    return node
+
+
+def _any_truncated(node: dict) -> bool:
+    return bool(node["truncated"]) or any(_any_truncated(c) for c in node["children"])
+
+
+def _source_tree_payload(root: Path, excludes: list[str],
+                         max_nodes: int = _TREE_MAX_NODES,
+                         max_depth: int = _TREE_MAX_DEPTH) -> dict:
+    """§4: the directory structure under `root` — FOLDERS only, each with the number
+    of files and the total size of its subtree. File contents are never read."""
+    budget = [max_nodes]
+    tree = _scan_dir(root, "", root.name or str(root), 0, budget, max_depth)
+    return {
+        "root": root.as_posix(),
+        "tree": tree,
+        "nodes": max_nodes - budget[0] + 1,
+        "limit": max_nodes,
+        "max_depth": max_depth,
+        "truncated": _any_truncated(tree),
+        "excludes": excludes,
+    }
+
+
+def _excludes_payload(cfg: Config, root: Path) -> dict:
+    """What is currently NOT scanned under `root`, with the size it saves — the
+    collapsed one-line summary of the source block needs both."""
+    rels = sorted(load_excludes(excludes_path(cfg)).for_root(root))
+    files = size = 0
+    for rel in rels:
+        sub_files, sub_size = _sum_dir(root.joinpath(*rel.split("/")))
+        files += sub_files
+        size += sub_size
+    return {"root": root.as_posix(), "excludes": rels, "count": len(rels),
+            "files": files, "size": size}
+
+
+def _validate_excludes_payload(payload: object) -> tuple[str, list[object]] | None:
+    """Parse `{"root": str, "excludes": [str, ...]}`. None -> invalid body.
+
+    The entries themselves are not judged here — `indexer.normalize_exclude` is the
+    single place that decides whether a path may narrow the walk, and the handler
+    reports back which ones it refused.
+    """
+    if not isinstance(payload, dict):
+        return None
+    root = payload.get("root")
+    if not isinstance(root, str) or not root.strip():
+        return None
+    values = payload.get("excludes", [])
+    if not isinstance(values, list):
+        return None
+    return root, values
+
+
 def _process_defaults_payload(cfg: Config) -> dict:
     """F57: defaults for the "Process" checkboxes — JS sets .checked by these values
     on page init (otherwise the checkboxes always start empty regardless of
@@ -1823,6 +1981,84 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "geo); for sorting or albums by event.",
         "ja": "時間と場所に基づいて旅行やイベントにグループ化します"
               "（位置情報が必要）。イベントごとの整理やアルバムに使います。",
+    },
+    # --- F81: the three blocks of the first tab + "do not scan" ------------
+    # Wording is deliberately kept apart from the neighbouring mechanisms: this one is
+    # "do not SCAN" (the files never enter the index at all), `sort.exclude_dirs` is
+    # "do not SORT" (indexed, left where they are), and the F77 per-file corrections
+    # ("leave alone") live on the "Cities" tab.
+    "step_source_title": {"ru": "Источник", "en": "Source", "ja": "ソース"},
+    "step_options_title": {
+        "ru": "Параметры запуска", "en": "Run options", "ja": "実行オプション",
+    },
+    "step_actions_title": {"ru": "Действия", "en": "Actions", "ja": "アクション"},
+    "step_change_button": {"ru": "изменить", "en": "change", "ja": "変更"},
+    "step_needs_source_hint": {
+        "ru": "Сначала укажите папку с фото.",
+        "en": "Choose a photo folder first.",
+        "ja": "先に写真フォルダを指定してください。",
+    },
+    "step_options_summary_prefix": {
+        "ru": "Параметры: ", "en": "Options: ", "ja": "オプション: ",
+    },
+    "step_options_summary_default": {
+        "ru": "по умолчанию", "en": "defaults", "ja": "既定",
+    },
+    "excludes_button": {
+        "ru": "Не сканировать…", "en": "Don't scan…", "ja": "スキャンしない…",
+    },
+    "excludes_title": {
+        "ru": "Какие папки не сканировать", "en": "Folders not to scan",
+        "ja": "スキャンしないフォルダ",
+    },
+    "excludes_hint": {
+        "ru": "Отмеченные папки не будут прочитаны совсем: их файлов не будет в "
+              "индексе. Это не «не раскладывать» — те файлы остаются в индексе и "
+              "просто лежат на месте.",
+        "en": "Ticked folders are not read at all: their files never enter the index. "
+              "This is not «don't sort» — those files stay in the index and simply "
+              "stay where they are.",
+        "ja": "チェックしたフォルダは一切読み込まれず、ファイルはインデックスに"
+              "入りません。「振り分けない」とは別です — そちらはインデックスに"
+              "残り、その場に置かれるだけです。",
+    },
+    "excludes_save_button": {"ru": "Сохранить", "en": "Save", "ja": "保存"},
+    "excludes_saved": {
+        "ru": "Сохранено. Исключённое исчезнет из индекса при следующей обработке.",
+        "en": "Saved. What you excluded leaves the index on the next run.",
+        "ja": "保存しました。除外した内容は次回の処理でインデックスから消えます。",
+    },
+    "excludes_error_prefix": {
+        "ru": "Не удалось получить дерево папок: ",
+        "en": "Could not load the folder tree: ",
+        "ja": "フォルダツリーを取得できません: ",
+    },
+    "excludes_save_error_prefix": {
+        "ru": "Не удалось сохранить: ", "en": "Could not save: ", "ja": "保存できません: ",
+    },
+    "excludes_empty": {
+        "ru": "Вложенных папок нет.", "en": "No subfolders here.",
+        "ja": "サブフォルダはありません。",
+    },
+    "excludes_truncated": {
+        "ru": "Дерево очень большое — показаны первые {limit} папок.",
+        "en": "The tree is very large — the first {limit} folders are shown.",
+        "ja": "ツリーが大きいため、最初の {limit} 件のフォルダのみ表示しています。",
+    },
+    "excludes_summary_none": {
+        "ru": "сканируется целиком", "en": "scanned in full", "ja": "全体をスキャン",
+    },
+    "excludes_summary": {
+        "ru": "не сканируется папок: {count} ({size})",
+        "en": "not scanned: {count} folder(s), {size}",
+        "ja": "スキャンしないフォルダ: {count} 件 ({size})",
+    },
+    "excludes_folder_meta": {
+        "ru": "{count} файлов · {size}", "en": "{count} files · {size}",
+        "ja": "{count} 件 · {size}",
+    },
+    "size_units": {
+        "ru": "Б КБ МБ ГБ ТБ", "en": "B KB MB GB TB", "ja": "B KB MB GB TB",
     },
     "process_rerun_optional_button": {
         "ru": "Дозапустить выбранное",
@@ -2495,6 +2731,33 @@ label { cursor: pointer; }
 .process-path-row { display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap; }
 .process-path-row input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
 .process-option { display: flex; flex-direction: column; gap: 2px; }
+/* F81: три блока первой вкладки. Настроенный блок схлопывается в одну строку,
+   ненастроенный остаётся раскрытым; следующие блоки приглушены пояснением, но НЕ
+   заблокированы — экран открывают многократно, и визард наказывает каждый
+   следующий заход. */
+.step { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface);
+      padding: var(--space-md); display: flex; flex-direction: column; gap: var(--space-sm); }
+.step-head { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+.step-title { font-weight: 600; font-size: 0.9rem; }
+.step-summary { display: none; color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.step.collapsed .step-summary { display: inline; }
+.step.collapsed .step-body { display: none; }
+.step-edit-btn { display: none; padding: 3px 8px; font-size: 0.78rem; }
+.step.collapsed .step-edit-btn { display: inline-flex; }
+.step-body { display: flex; flex-direction: column; gap: var(--space-sm); }
+.step-hint { display: none; font-size: 0.8rem; color: var(--muted); }
+.step.step-dimmed { opacity: 0.65; }
+.step.step-dimmed .step-hint { display: block; }
+.excludes-panel { display: flex; flex-direction: column; gap: var(--space-sm);
+      border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-md);
+      background: var(--chip); }
+.excludes-tree { max-height: 22rem; overflow: auto; background: var(--surface);
+      border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm); }
+.excludes-tree ul { list-style: none; margin: 0; padding-left: var(--space-md); }
+.excludes-tree > ul { padding-left: 0; }
+.excludes-tree li { margin: 2px 0; }
+.excludes-row { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
+.excludes-meta { color: var(--muted); font-size: 0.78rem; }
 .process-toggle-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
 .process-toggle-hint { font-size: 0.8rem; color: var(--muted); margin-left: 20px; }
 .process-toggle-warn { color: var(--danger); }
@@ -2603,10 +2866,38 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <section id="tab-process" class="tab-panel active">
 <p class="process-intro">{{process_intro}}</p>
 <div class="process-controls">
+<div class="step" id="step-source">
+<div class="step-head">
+<span class="step-title">{{step_source_title}}</span>
+<span class="step-summary" id="step-source-summary"></span>
+<button type="button" class="btn btn-ghost step-edit-btn" id="step-source-edit">{{step_change_button}}</button>
+</div>
+<div class="step-body">
 <div class="process-path-row">
 <input type="text" id="process-source-dir" placeholder="{{process_path_placeholder}}">
 <button type="button" id="process-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
+<button type="button" id="process-excludes-btn" class="btn btn-ghost">{{excludes_button}}</button>
 </div>
+<div id="excludes-panel" class="excludes-panel" style="display:none">
+<p class="step-title">{{excludes_title}}</p>
+<span class="process-toggle-hint">{{excludes_hint}}</span>
+<div id="excludes-tree" class="excludes-tree"></div>
+<div class="process-actions">
+<button type="button" id="excludes-save-btn" class="btn btn-primary">{{excludes_save_button}}</button>
+<button type="button" id="excludes-close-btn" class="btn btn-ghost">{{process_cancel_button}}</button>
+<span id="excludes-status" class="override-status"></span>
+</div>
+</div>
+</div>
+</div>
+<div class="step" id="step-options">
+<div class="step-head">
+<span class="step-title">{{step_options_title}}</span>
+<span class="step-summary" id="step-options-summary"></span>
+<button type="button" class="btn btn-ghost step-edit-btn" id="step-options-edit">{{step_change_button}}</button>
+</div>
+<span class="step-hint">{{step_needs_source_hint}}</span>
+<div class="step-body">
 <div class="process-option">
 <label class="process-toggle-label"><input type="checkbox" id="process-deep-checkbox"> {{process_deep_label}}</label>
 <span class="process-toggle-hint">{{process_deep_hint}}</span>
@@ -2624,6 +2915,14 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <label class="process-toggle-label"><input type="checkbox" id="process-events-checkbox"> {{process_events_label}}</label>
 <span class="process-toggle-hint">{{process_events_hint}}</span>
 </div>
+</div>
+</div>
+<div class="step" id="step-actions">
+<div class="step-head">
+<span class="step-title">{{step_actions_title}}</span>
+</div>
+<span class="step-hint">{{step_needs_source_hint}}</span>
+<div class="step-body">
 <div class="process-actions">
 <button type="button" id="process-start-btn" class="btn btn-primary">{{process_start_button}}</button>
 <button type="button" id="process-cancel-btn" class="btn btn-ghost process-cancel-btn" style="display:none">{{process_cancel_button}}</button>
@@ -2632,6 +2931,8 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <div class="process-rerun-block">
 <button type="button" id="process-rerun-optional-btn" class="btn btn-ghost" disabled>{{process_rerun_optional_button}}</button>
 <span class="process-rerun-hint">{{process_rerun_optional_hint}}</span>
+</div>
+</div>
 </div>
 </div>
 <progress id="process-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
@@ -3491,6 +3792,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
         document.getElementById("process-geo-online-checkbox").checked = !!data.geo_online;
         vlmAvailable = !!data.vlm_available;
         updateVlmMissingWarning();
+        updateStepLayout();  // сводка блока «Параметры запуска» — по фактическим галочкам
       })
       .catch(function () {});
   }
@@ -3560,7 +3862,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   // у уже идущей обработки бессмысленно, а диалог выбора папки ещё и открывает
   // отдельное окно поверх работающего процесса.
   function updateProcessInputsDisabled() {
-    ["process-browse-btn", "process-source-dir"].forEach(function (id) {
+    ["process-browse-btn", "process-source-dir", "process-excludes-btn"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = processRunning; }
     });
@@ -3674,6 +3976,11 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     var input = document.getElementById("process-source-dir");
     var path = input.value.trim();
     if (!path) { window.alert(I18N.process_enter_path); return; }
+    // запуск = «настроено»: оба блока схлопываются, экран остаётся про прогресс
+    stepSourceOpen = false;
+    stepOptionsOpen = false;
+    rememberSourceDir();
+    updateStepLayout();
     var deep = document.getElementById("process-deep-checkbox").checked;
     var geoOnline = document.getElementById("process-geo-online-checkbox").checked;
     var faces = document.getElementById("process-faces-checkbox").checked;
@@ -3725,8 +4032,251 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   document.getElementById("process-browse-btn").addEventListener("click", function () {
     browseIntoField(this, function (path) {
       document.getElementById("process-source-dir").value = path;
+      sourceDirChanged();
     });
   });
+
+  // --- F81: «не сканировать» + три блока первой вкладки ------------------
+
+  // Путь помнится между открытиями страницы: этот экран открывают многократно, и
+  // вводить один и тот же источник каждый раз — ровно тот штраф, который фича
+  // убирает.
+  var SOURCE_DIR_KEY = "sorta.sourceDir";
+  // Что сейчас не сканируется под текущим источником — для схлопнутой строки блока
+  // «Источник». root пустой = про этот источник ещё не спрашивали.
+  var excludesInfo = { root: "", list: [], count: 0, size: 0 };
+  var stepSourceOpen = false;
+  var stepOptionsOpen = false;
+
+  function currentSourceDir() {
+    return document.getElementById("process-source-dir").value.trim();
+  }
+
+  function formatSize(bytes) {
+    var units = I18N.size_units.split(" ");
+    var value = bytes || 0;
+    var i = 0;
+    while (value >= 1024 && i < units.length - 1) { value = value / 1024; i += 1; }
+    return value.toFixed(i === 0 || value >= 100 ? 0 : 1) + " " + units[i];
+  }
+
+  function excludesSummaryText() {
+    if (excludesInfo.root !== currentSourceDir() || !excludesInfo.count) {
+      return I18N.excludes_summary_none;
+    }
+    return fmt(I18N.excludes_summary,
+               { count: excludesInfo.count, size: formatSize(excludesInfo.size) });
+  }
+
+  function optionsSummaryText() {
+    var on = [];
+    [["process-deep-checkbox", I18N.process_deep_label],
+     ["process-geo-online-checkbox", I18N.process_geo_online_label],
+     ["process-faces-checkbox", I18N.process_faces_label],
+     ["process-events-checkbox", I18N.process_events_label]].forEach(function (pair) {
+      if (document.getElementById(pair[0]).checked) on.push(pair[1]);
+    });
+    return I18N.step_options_summary_prefix +
+        (on.length ? on.join(", ") : I18N.step_options_summary_default);
+  }
+
+  // Настроенный блок — одна строка с «изменить», ненастроенный раскрыт. Следующие
+  // блоки приглушены пояснением, но НЕ заблокированы: кнопка запуска доступна
+  // всегда, когда источник задан (визард штрафует каждый следующий заход).
+  function updateStepLayout() {
+    var src = currentSourceDir();
+    document.getElementById("step-source-summary").textContent =
+        src + " · " + excludesSummaryText();
+    document.getElementById("step-options-summary").textContent = optionsSummaryText();
+    document.getElementById("step-source").classList.toggle(
+        "collapsed", !!src && !stepSourceOpen);
+    var options = document.getElementById("step-options");
+    options.classList.toggle("collapsed", !!src && !stepOptionsOpen);
+    options.classList.toggle("step-dimmed", !src);
+    document.getElementById("step-actions").classList.toggle("step-dimmed", !src);
+  }
+
+  function rememberSourceDir() {
+    try { window.localStorage.setItem(SOURCE_DIR_KEY, currentSourceDir()); } catch (e) {}
+  }
+
+  function loadExcludesInfo() {
+    var src = currentSourceDir();
+    if (!src) {
+      excludesInfo = { root: "", list: [], count: 0, size: 0 };
+      updateStepLayout();
+      return;
+    }
+    fetch("/api/source-tree/excludes?path=" + encodeURIComponent(src))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || data.error) return;
+        excludesInfo = { root: src, list: data.excludes || [],
+                         count: data.count || 0, size: data.size || 0 };
+        updateStepLayout();
+      })
+      .catch(function () {});
+  }
+
+  function sourceDirChanged() {
+    stepSourceOpen = false;
+    document.getElementById("excludes-panel").style.display = "none";
+    rememberSourceDir();
+    loadExcludesInfo();
+    updateStepLayout();
+  }
+
+  function setSubtreeChecked(ul, checked) {
+    var boxes = ul.querySelectorAll("input[type=checkbox]");
+    for (var i = 0; i < boxes.length; i++) {
+      boxes[i].checked = checked;
+      // отмеченное поддерево не редактируется по частям: исключён родитель — исключено всё
+      boxes[i].disabled = checked;
+    }
+  }
+
+  function renderExcludesNode(node, checkedSet, parentChecked) {
+    var li = document.createElement("li");
+    var row = document.createElement("label");
+    row.className = "excludes-row";
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.setAttribute("data-rel", node.rel);
+    box.checked = parentChecked || checkedSet[node.rel] === true;
+    box.disabled = parentChecked;
+    row.appendChild(box);
+    row.appendChild(document.createTextNode(node.name));
+    var meta = document.createElement("span");
+    meta.className = "excludes-meta";
+    meta.textContent = fmt(I18N.excludes_folder_meta,
+                           { count: node.files, size: formatSize(node.size) });
+    row.appendChild(meta);
+    li.appendChild(row);
+    if (node.children && node.children.length) {
+      var ul = document.createElement("ul");
+      node.children.forEach(function (child) {
+        ul.appendChild(renderExcludesNode(child, checkedSet, box.checked));
+      });
+      li.appendChild(ul);
+      box.addEventListener("change", function () { setSubtreeChecked(ul, box.checked); });
+    }
+    return li;
+  }
+
+  function renderExcludesTree(data) {
+    var container = document.getElementById("excludes-tree");
+    container.textContent = "";
+    var checkedSet = {};
+    (data.excludes || []).forEach(function (rel) { checkedSet[rel] = true; });
+    var children = (data.tree && data.tree.children) || [];
+    if (!children.length) {
+      container.appendChild(stateEl("empty", I18N.excludes_empty));
+      return;
+    }
+    var ul = document.createElement("ul");
+    children.forEach(function (child) {
+      ul.appendChild(renderExcludesNode(child, checkedSet, false));
+    });
+    container.appendChild(ul);
+    if (data.truncated) {
+      // ответ ограничен — говорим об этом прямо, а не молча показываем часть дерева
+      var note = document.createElement("p");
+      note.className = "process-toggle-hint";
+      note.textContent = fmt(I18N.excludes_truncated, { limit: data.limit });
+      container.appendChild(note);
+    }
+  }
+
+  function collectExcludes() {
+    // только верхние отмеченные: потомки отмеченной папки заблокированы и не нужны
+    var result = [];
+    var boxes = document.getElementById("excludes-tree")
+        .querySelectorAll("input[type=checkbox]");
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked && !boxes[i].disabled) {
+        result.push(boxes[i].getAttribute("data-rel"));
+      }
+    }
+    return result;
+  }
+
+  document.getElementById("process-excludes-btn").addEventListener("click", function () {
+    var src = currentSourceDir();
+    if (!src) { window.alert(I18N.process_enter_path); return; }
+    document.getElementById("excludes-panel").style.display = "";
+    document.getElementById("excludes-status").textContent = "";
+    var container = document.getElementById("excludes-tree");
+    container.textContent = "";
+    container.appendChild(stateEl("loading", I18N.loading));
+    fetch("/api/source-tree?path=" + encodeURIComponent(src))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || data.error) {
+          container.textContent = "";
+          container.appendChild(stateEl(
+              "error", I18N.excludes_error_prefix + ((data && data.error) || "")));
+          return;
+        }
+        renderExcludesTree(data);
+      })
+      .catch(function (e) {
+        container.textContent = "";
+        container.appendChild(stateEl("error", I18N.excludes_error_prefix + e));
+      });
+  });
+
+  document.getElementById("excludes-save-btn").addEventListener("click", function () {
+    var src = currentSourceDir();
+    if (!src) return;
+    var statusEl = document.getElementById("excludes-status");
+    postJson("/api/source-tree/excludes", { root: src, excludes: collectExcludes() })
+      .then(function (resp) {
+        if (!resp || resp.error) {
+          statusEl.textContent =
+              I18N.excludes_save_error_prefix + ((resp && resp.error) || "");
+          return;
+        }
+        excludesInfo = { root: src, list: resp.excludes || [],
+                         count: resp.count || 0, size: resp.size || 0 };
+        statusEl.textContent = I18N.excludes_saved;
+        updateStepLayout();
+      })
+      .catch(function (e) { statusEl.textContent = I18N.excludes_save_error_prefix + e; });
+  });
+
+  document.getElementById("excludes-close-btn").addEventListener("click", function () {
+    document.getElementById("excludes-panel").style.display = "none";
+  });
+
+  document.getElementById("step-source-edit").addEventListener("click", function () {
+    stepSourceOpen = true;
+    updateStepLayout();
+  });
+
+  document.getElementById("step-options-edit").addEventListener("click", function () {
+    stepOptionsOpen = true;
+    updateStepLayout();
+  });
+
+  document.getElementById("process-source-dir")
+      .addEventListener("input", updateStepLayout);
+  document.getElementById("process-source-dir")
+      .addEventListener("change", sourceDirChanged);
+  ["process-deep-checkbox", "process-geo-online-checkbox", "process-faces-checkbox",
+   "process-events-checkbox"].forEach(function (id) {
+    document.getElementById(id).addEventListener("change", updateStepLayout);
+  });
+
+  (function restoreSourceDir() {
+    var input = document.getElementById("process-source-dir");
+    if (!input.value.trim()) {
+      var saved = null;
+      try { saved = window.localStorage.getItem(SOURCE_DIR_KEY); } catch (e) { saved = null; }
+      if (saved) input.value = saved;
+    }
+    loadExcludesInfo();
+    updateStepLayout();
+  })();
 
   document.getElementById("process-cancel-btn").addEventListener("click", function () {
     this.disabled = true;  // мгновенный фидбэк, не ждём следующего polling-тика
@@ -4492,6 +5042,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"dest": _suggested_sort_dest(cfg, db_path)})
             elif path == "/api/tabs/visibility":
                 self._send_json(_tabs_visibility_payload(db_path))
+            elif path == "/api/source-tree":
+                self._serve_source_tree(parse_qs(parts.query))
+            elif path == "/api/source-tree/excludes":
+                self._serve_source_excludes(parse_qs(parts.query))
             elif path.startswith("/thumb/"):
                 self._serve_thumb(path[len("/thumb/"):])
             elif path.startswith("/preview/"):
@@ -4536,6 +5090,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_set_language()
             elif path == "/api/browse":
                 self._handle_browse()
+            elif path == "/api/source-tree/excludes":
+                self._handle_save_source_excludes()
             elif path == "/api/sort":
                 self._handle_sort_start()
             else:
@@ -4837,6 +5393,52 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
 
         def _handle_browse(self) -> None:
             self._send_json({"path": _browse_for_folder()})
+
+        # --- F81: "do not scan" (the source block of the "Process" tab) ---------
+
+        def _serve_source_tree(self, query: dict[str, list[str]]) -> None:
+            root = _validate_tree_root((query.get("path") or [""])[0])
+            if root is None:
+                self._send_json({"error": "not a directory"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            excludes = sorted(load_excludes(excludes_path(cfg)).for_root(root))
+            self._send_json(_source_tree_payload(root, excludes))
+
+        def _serve_source_excludes(self, query: dict[str, list[str]]) -> None:
+            root = _validate_tree_root((query.get("path") or [""])[0])
+            if root is None:
+                self._send_json({"error": "not a directory"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(_excludes_payload(cfg, root))
+
+        def _handle_save_source_excludes(self) -> None:
+            # Writes the exclusion file, nothing else: the rows already indexed under
+            # a new exclusion are dropped by the next `index()` run (indexer, §3), not
+            # from here — one place decides what "not in the index" means.
+            parsed = _validate_excludes_payload(self._read_json_body())
+            if parsed is None:
+                self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            raw_root, values = parsed
+            root = _validate_tree_root(raw_root)
+            if root is None:
+                self._send_json({"error": "not a directory"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            rejected = [v for v in values if isinstance(v, str)
+                        and normalize_exclude(v) is None]
+            try:
+                save_excludes_file(excludes_path(cfg), root, values)
+            except OSError as exc:
+                self._send_json({"error": f"could not save excludes: {exc}"},
+                                status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            payload = _excludes_payload(cfg, root)
+            payload["ok"] = True
+            payload["rejected"] = rejected
+            self._send_json(payload)
 
         def _serve_sort_status(self) -> None:
             self._send_json(sort_state.snapshot())
