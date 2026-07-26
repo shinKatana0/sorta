@@ -45,6 +45,14 @@ without goes to _Unsorted/downloaded/ with its own reason code, so the two cases
 distinguishable in the CSV. Only the branch where the year could not be determined is
 affected; the order of the checks above it (dedup_delete -> not_personal -> document
 -> product -> junk) is untouched, so a screenshot or a document never reaches here.
+
+F83 does the same for the one verdict that cannot be trusted on those same files: a
+`meme` on a file with no camera trace is routed as `photo` (see
+_is_indistinguishable_meme), because CLIP decides meme-vs-photo there on content alone
+and errs both ways. It is a routing change, not a classification one — the verdict in
+media_class stays as it is — and it deliberately leaves `document` and `screenshot`
+alone: a scan has no camera EXIF either, and those two folders are the ones the user
+reviews by hand.
 """
 from __future__ import annotations
 
@@ -296,6 +304,29 @@ def _looks_like_a_camera_shot(row: sqlite3.Row) -> bool:
                 or row["gps_lat"] is not None)
 
 
+def _is_indistinguishable_meme(row: sqlite3.Row) -> bool:
+    """F83: a `meme` verdict on a file that carries nothing to judge it by.
+
+    Measured on the live collection: 3437 files have no camera trace at all
+    (camera_make, camera_model and gps_lat all NULL) — forwarded and downloaded
+    pictures whose metadata the messenger stripped. For those, `photo` vs `meme` is
+    decided by CLIP on content alone, and it is wrong in BOTH directions, so files of
+    one and the same origin end up in different folders for no reason the user can see.
+
+    This is NOT an accuracy improvement. There is nothing left in these files to tell
+    the two apart; the rule only replaces two coin flips with one predictable outcome.
+    The real fix for them is a manual correction by eye (F77). Do not read this as a
+    classifier and do not try to "improve" it.
+
+    Only `meme` collapses. `document` and `screenshot` keep their own folders: a
+    scanner writes no camera EXIF either, so a scanned document has no trace either,
+    and those are exactly the categories the user opens by hand — documents for
+    privacy, screenshots to delete. Files WITH a camera trace are untouched: among
+    20743 camera shots there were 0 false `meme`.
+    """
+    return row["junk_verdict"] == "meme" and not _looks_like_a_camera_shot(row)
+
+
 def _undated_parts(row: sqlite3.Row, lang: i18n.Lang) -> tuple[list[str], str]:
     """F78: the target for a file whose year could not be determined.
 
@@ -355,7 +386,11 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         # F37-B (deep VLM tier): an item for sale — its own review folder _Товары,
         # not junk and not a memory. Only with vlm_enabled (the fast tier gives no product).
         return [i18n.folder("products", lang)], "product"
-    if verdict is not None and verdict != "photo":
+    if verdict is not None and verdict != "photo" and not _is_indistinguishable_meme(row):
+        # F83: a meme with no camera trace falls through here and is routed like a
+        # photo — down the normal branch below, i.e. into the mode/date layout or, with
+        # no reliable date, into the downloaded folder of F78. media_class keeps the
+        # verdict as it is (reports and the UI still need it), only the route changes.
         return [i18n.folder("unsorted", lang), i18n.folder("junk", lang),
                _sanitize(verdict)], "junk"
     if mode == "event":
