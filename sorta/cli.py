@@ -23,7 +23,7 @@ from .faces import detect_and_cluster, export_contact_sheet, label_cluster
 from .faces import merge as merge_clusters
 from .geo import resolve_places
 from .indexer import index as run_index
-from .indexer import refresh_exif
+from .indexer import excludes_path, refresh_exif, save_excludes
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
@@ -149,6 +149,26 @@ def _cmd_refresh_exif(config_path: str) -> None:
     print(_summarize_refresh(stats))
     if stats.recovered_gps:
         print("Появились новые координаты — перезапустите: sorta geo (и sorta events)")
+
+
+def _cmd_add_excludes(config_path: str, src: str | None, values: list[str]) -> None:
+    """F81: persist --exclude-dir into the excludes file before indexing.
+
+    Written rather than applied for this run only: the UI reads the same file, so a
+    folder excluded from the CLI stays excluded in the web app, and the next run does
+    not silently start scanning it again.
+    """
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    root = Path(src).resolve() if src else (cfg.sources[0] if cfg.sources else None)
+    if root is None:
+        raise SystemExit(
+            "--exclude-dir: не задан источник — укажите каталог позиционно "
+            "или заполните 'sources' в config.yaml")
+    path = excludes_path(cfg)
+    accepted = save_excludes(path, root, values)
+    print(f"Исключено из сканирования ({root}): {', '.join(accepted) or '—'}")
+    print(f"Файл исключений: {path}")
 
 
 def _cmd_geo(config_path: str) -> None:
@@ -425,11 +445,17 @@ try:
             False, "--refresh-exif",
             help="Перечитать метаданные уже проиндексированных файлов "
                  "(вместо сканирования). Содержимое файлов не читается."),
+        exclude_dir: list[str] = typer.Option(
+            None, "--exclude-dir",
+            help="Не сканировать эту папку источника (путь относительно корня). "
+                 "Можно повторять. Сохраняется в файл исключений."),
     ):
         """Сканировать источники, извлечь метаданные, пометить дубликаты."""
         if refresh_exif:
             _cmd_refresh_exif(config)
             return
+        if exclude_dir:
+            _cmd_add_excludes(config, src, exclude_dir)
         _cmd_index(config, src=src)
 
     @app.command()

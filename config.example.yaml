@@ -18,6 +18,12 @@ language: en
 log_level: WARNING
 
 index:
+  # F81: folders that must not be SCANNED at all — no stat, no hash, no later
+  # stage. Different from sort.exclude_dirs, which indexes the files and only
+  # keeps them out of the layout. The file is keyed by source root, so changing
+  # the source picks up its own set; the web app writes it, the CLI reads it,
+  # and `sorta index --exclude-dir <path>` adds an entry.
+  # excludes_file: excludes.yaml   # default: next to the database
   # F72: parallel exiftool sessions. exiftool is a separate process, so it
   # scales almost linearly — measured 11.8 -> 2.0 ms per file going from 1 to 8
   # sessions. 0 = auto min(8, cores). Small batches use fewer sessions.
