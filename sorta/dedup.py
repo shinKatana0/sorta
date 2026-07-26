@@ -68,12 +68,20 @@ def compute_phashes(
     same ThreadPoolExecutor as in indexer.index — Pillow decoding releases the GIL).
     HEIC — if pillow-heif is installed, otherwise such files are silently skipped
     (phash stays NULL, as before).
+
+    Exact duplicates are skipped: `near_duplicate_groups` — the only consumer of
+    phash — selects `dup_of IS NULL`, so a hash computed for a duplicate is never
+    read by anything. On the validation collection that was 12 799 of 37 301 files
+    (34%), and most of them also paid for building a preview that nothing else
+    wanted. Self-healing if roles change later: a file that becomes canonical still
+    has `phash IS NULL` and is picked up by the next run.
     """
     if not _PHASH:
         return 0
     rows = conn.execute(
         """SELECT id, path, mtime, size FROM files
-           WHERE phash IS NULL AND error IS NULL AND media_type = 'photo'"""
+           WHERE phash IS NULL AND error IS NULL AND media_type = 'photo'
+             AND dup_of IS NULL"""
     ).fetchall()
     total = len(rows)
     if total == 0:

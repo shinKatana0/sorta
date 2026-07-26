@@ -33,6 +33,18 @@ from .sorter import plan_album, plan_and_sort
 from .sorter import undo as undo_batch
 
 
+def _configure_runtime() -> None:
+    """Process-wide setup that must happen before any ML import.
+
+    Both of these are read at import time by the libraries they affect, so they
+    cannot be moved next to the model code.
+    """
+    _ensure_utf8_console()
+    from .offline import configure_model_offline
+
+    configure_model_offline()
+
+
 def _ensure_utf8_console() -> None:
     """The Windows console defaults to cp1251 — it does not encode characters like
     `->` arrows, `⚠`, or emoji in the output, which makes print/rich (incl. `--help`)
@@ -700,12 +712,12 @@ try:
                   faces=faces, events=events, src=src)
 
     def main():
-        _ensure_utf8_console()
+        _configure_runtime()
         app()
 
 except ImportError:  # pragma: no cover — fallback without typer
     def main():
-        _ensure_utf8_console()
+        _configure_runtime()
         import argparse
         p = argparse.ArgumentParser(prog="sorta")
         p.add_argument("command", choices=["index", "stats", "dupes", "geo", "phash",
