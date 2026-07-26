@@ -10,6 +10,11 @@ ArcFace crop) is deliberately NOT moved onto this module — it has its own bran
 decode_rgb_cached caches the decode result (a small, max_edge-bounded image) —
 it is the decode that is expensive, not storing the original on disk.
 
+F74 lets that same preview cache serve VIDEO files: decode_rgb_preview extracts one
+frame through PyAV and stores it as an ordinary preview, so the UI gets tiles for
+clips too. It stays inside the preview layer on purpose — no pipeline stage decodes
+video (they all filter media_type = 'photo' in SQL) and none should start.
+
 F67 adds a second, DISK-level layer on top of the same decode: decode_rgb_preview.
 The same frame used to be decoded 3-5 times per run (CLIP in landmarks, CLIP/OCR/VLM
 in junk, pHash in dedup) because decode_rgb_cached is bounded and per-process, and
@@ -22,13 +27,17 @@ frame first creates the preview.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import threading
 from collections import OrderedDict
 from pathlib import Path
+from types import ModuleType
 
 from PIL import Image, ImageOps
+
+_log = logging.getLogger(__name__)
 
 # LRU limit of the in-process decode_rgb_cached cache. Could be moved into config
 # (imaging.cache_max_items) when consumers are wired up.
@@ -353,6 +362,233 @@ def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
             pass
 
 
+# --- F74: one extracted frame as the preview of a video ----------------------
+#
+# Same env-only configuration as the F67 block above (the `imaging:` config section
+# comes later and keeps env as an override).
+ENV_VIDEO_PREVIEWS = "SORTA_VIDEO_PREVIEWS"
+ENV_VIDEO_WORKERS = "SORTA_VIDEO_WORKERS"
+
+# Kept deliberately next to the decode layer instead of read from Config: imaging is a
+# leaf module with no access to Config (see the comment on ENV_PREVIEW_CACHE), and a
+# guess-by-content probe on every non-photo would cost an open per file. Mirrors
+# IndexConfig.extensions["video"].
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mts", ".m2ts", ".3gp", ".mkv")
+
+# PyAV spawns its own decoder threads and the thumb pool already runs up to 8 decodes
+# at once — together that oversubscribes the CPU. A 4K frame is also ~24 MB in RAM, so
+# 8 parallel extractions would be ~200 MB of transient frames. 4 is the compromise.
+VIDEO_WORKERS = 4
+
+# The first frame is black surprisingly often (fade-in, an intro card), which makes a
+# useless tile. ~1 s in is recognizable on virtually any clip; for a short one take 10%
+# of the duration instead, so a 2-second clip is not seeked past its own end. No
+# brightness analysis on purpose — the goal is a recognizable tile, not the best frame.
+VIDEO_FRAME_SECONDS = 1.0
+VIDEO_FRAME_FRACTION = 0.1
+
+# A seek lands on the keyframe at or before the target, and we decode forward from
+# there. The cap is a safety belt for files with minutes between keyframes or with
+# broken timestamps: an earlier frame beats decoding the whole clip for a thumbnail.
+_VIDEO_MAX_DECODED_FRAMES = 300
+
+_av_lock = threading.Lock()
+_av_warned = False
+
+_video_gate_lock = threading.Lock()
+_video_semaphore: threading.Semaphore | None = None
+_video_semaphore_slots = 0
+
+
+def video_previews_enabled() -> bool:
+    """SORTA_VIDEO_PREVIEWS=0 -> decode_rgb_preview returns None on video, as before."""
+    return os.environ.get(ENV_VIDEO_PREVIEWS, "").strip().lower() not in _FALSE_VALUES
+
+
+def video_workers() -> int:
+    return _env_int(ENV_VIDEO_WORKERS, VIDEO_WORKERS)
+
+
+def is_video_path(path: str | Path) -> bool:
+    """True for the extensions we are willing to hand to PyAV (case-insensitive)."""
+    return Path(path).suffix.lower() in VIDEO_EXTENSIONS
+
+
+def _video_gate() -> threading.Semaphore:
+    """The limit on CONCURRENT frame extractions.
+
+    Deliberately around the extraction only, not around decode_rgb_preview as a whole:
+    the photo path must not queue behind video decodes. Rebuilt when the configured
+    number changes — in a run that never happens, but tests set the env per case.
+    """
+    global _video_semaphore, _video_semaphore_slots
+    slots = video_workers()
+    with _video_gate_lock:
+        if _video_semaphore is None or _video_semaphore_slots != slots:
+            _video_semaphore = threading.Semaphore(slots)
+            _video_semaphore_slots = slots
+        return _video_semaphore
+
+
+def _import_av() -> ModuleType | None:
+    """The PyAV module, or None (with a single warning) when it is not installed.
+
+    Lazy, inside the call: importing av loads the FFmpeg libraries, and no command
+    except the UI ever touches a video — `import sorta.imaging` must not pay for it.
+    A missing package degrades to "no video previews", the same way HEIC degrades
+    without pillow-heif, instead of breaking the caller.
+    """
+    global _av_warned
+    try:
+        import av
+    except ImportError:
+        with _av_lock:
+            if not _av_warned:
+                _av_warned = True
+                _log.warning(
+                    "imaging: пакет av не установлен — превью для видео недоступны")
+        return None
+    return av
+
+
+def _target_seconds(container: object, stream: object) -> float:
+    """Where to look for the preview frame, in seconds from the start."""
+    duration: float | None = None
+    stream_duration = getattr(stream, "duration", None)
+    time_base = getattr(stream, "time_base", None)
+    if stream_duration is not None and time_base:
+        duration = float(stream_duration * time_base)
+    else:
+        container_duration = getattr(container, "duration", None)
+        if container_duration is not None:
+            duration = float(container_duration) / 1_000_000  # av.time_base units
+    if duration is None or duration <= 0:
+        return VIDEO_FRAME_SECONDS
+    return min(VIDEO_FRAME_SECONDS, duration * VIDEO_FRAME_FRACTION)
+
+
+def _frame_rotation(frame: object, stream: object) -> int:
+    """Counter-clockwise degrees to apply so the clip stands the way a player shows it.
+
+    Phone clips keep their rotation in the container display matrix, not in the pixels:
+    without applying it every portrait video would show up lying on its side.
+    """
+    try:
+        rotation = int(getattr(frame, "rotation", 0) or 0)
+    except (TypeError, ValueError):
+        rotation = 0
+    if rotation:
+        return rotation
+    # Older containers carry the angle as a `rotate` metadata tag, and there the
+    # convention is CLOCKWISE (rotate=90 -> a player turns the frame 90° CW).
+    try:
+        metadata = getattr(stream, "metadata", None) or {}
+        return -int(float(metadata.get("rotate", 0)))
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def _rotate_frame(img: Image.Image, rotation: int) -> Image.Image:
+    """Apply the container rotation. Pillow rotates counter-clockwise, as does PyAV."""
+    normalized = rotation % 360
+    if normalized == 0:
+        return img
+    return img.rotate(normalized, expand=True)
+
+
+def _grab_frame(av: ModuleType, path: str | Path) -> Image.Image | None:
+    """Decode one representative frame of path, already rotated.
+
+    The container is always closed (`with av.open`) — on a collection of thousands of
+    clips a leaked descriptor per call would exhaust the process. Any AV failure
+    propagates to _extract_video_frame, which turns it into None.
+    """
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]  # IndexError on an audio-only file
+        stream.thread_type = "AUTO"
+        target = _target_seconds(container, stream)
+        try:
+            container.seek(int(target / stream.time_base), stream=stream)
+        except Exception:
+            # A container that cannot seek (fragmented, streamed, broken index) still
+            # decodes from the start — we simply fall back to the first frame we get.
+            pass
+        frame = None
+        for index, decoded in enumerate(container.decode(stream)):
+            frame = decoded
+            when = getattr(decoded, "time", None)
+            if when is None or when >= target or index + 1 >= _VIDEO_MAX_DECODED_FRAMES:
+                break
+        if frame is None:
+            return None
+        return _rotate_frame(frame.to_image(), _frame_rotation(frame, stream))
+
+
+def _extract_video_frame(path: str | Path) -> Image.Image | None:
+    """A preview-worthy frame of a video file, or None. Never raises."""
+    av = _import_av()
+    if av is None:
+        return None
+    with _video_gate():
+        try:
+            return _grab_frame(av, path)
+        except Exception:
+            # Corrupt / truncated / unsupported file, no video stream, any PyAV error:
+            # the contract of decode_rgb_preview is None, never an exception.
+            return None
+
+
+def _video_preview(
+    path: str | Path,
+    mtime: float,
+    size: int,
+    max_edge: int | None,
+    *,
+    grayscale: bool,
+    apply_orientation: bool,
+) -> Image.Image | None:
+    """decode_rgb_preview for a video: one extracted frame, in the very same cache.
+
+    Same key (path+mtime+size), same directory, same JPEG format as for photos — the
+    consumer must not need to know whether the tile came from a photo or from a clip.
+    Unlike a photo, the frame is stored ALREADY rotated (orientation=1): the rotation
+    comes from the container, so there is no exif on the source to defer it to.
+    """
+    if not video_previews_enabled():
+        return None
+    if not preview_cache_enabled():
+        # Nothing may be written while the cache is off, but the frame is still worth
+        # returning — the alternative is a video tile that is simply missing.
+        frame = _extract_video_frame(path)
+        if frame is None:
+            return None
+        return _render(
+            frame, max_edge, 1, grayscale=grayscale, apply_orientation=apply_orientation)
+
+    dest = _preview_path(preview_key(path, mtime, size))
+    cached = _read_preview(
+        dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+    if cached is not None:
+        return cached
+
+    frame = _extract_video_frame(path)
+    if frame is None:
+        return None
+    edge = preview_max_edge()
+    if max(frame.size) > edge:
+        frame.thumbnail((edge, edge))
+    _write_preview(frame, dest, 1)
+    # Read back what was written, for the same reason as on the photo path: a cold and
+    # a warm call must return the same pixels.
+    stored = _read_preview(
+        dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
+    if stored is not None:
+        return stored
+    # The cache is unusable (read-only dir, full disk) — render from what we have.
+    return _render(
+        frame, max_edge, 1, grayscale=grayscale, apply_orientation=apply_orientation)
+
+
 def decode_rgb_preview(
     path: str | Path,
     mtime: float,
@@ -377,7 +613,16 @@ def decode_rgb_preview(
     max_edge=None on a cache hit returns the PREVIEW-sized frame, not the original
     resolution — this layer is for the small-frame consumers (all of them pass
     max_edge). Full resolution (faces) still goes through decode_rgb.
+
+    F74: a video path is served by one frame extracted through PyAV (_video_preview),
+    stored in the same cache under the same key. decode_rgb is NOT touched — it stays
+    image-only, so the sorter thumbnails behave exactly as before.
     """
+    if is_video_path(path):
+        return _video_preview(
+            path, mtime, size, max_edge,
+            grayscale=grayscale, apply_orientation=apply_orientation)
+
     if not preview_cache_enabled():
         return decode_rgb(path, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
 
