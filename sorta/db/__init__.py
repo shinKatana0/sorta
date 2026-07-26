@@ -43,6 +43,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             " WHEN 'ocr' THEN 'clip' WHEN 'vlm' THEN 'vlm'"
             " WHEN 'heuristic' THEN 'heuristic' ELSE 'clip' END"
         )
+    # v12 (manual_overrides) — a new table, created by executescript below
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

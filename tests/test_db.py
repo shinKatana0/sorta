@@ -28,7 +28,7 @@ class TestMigrations(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("dedup_choice", tbls)
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 11)
+            self.assertEqual(v, 12)
             conn.close()
 
     def test_v1_db_migrates_to_v2(self):
@@ -82,7 +82,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("city_geonameid", pl_cols)  # added by the v6 migration
             self.assertIn("country_name", pl_cols)     # added by the v10 migration
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 11)
+            self.assertEqual(v, 12)
             row = conn.execute("SELECT * FROM files").fetchone()
             self.assertEqual(row["path"], "/a.jpg")
             self.assertIsNone(row["orientation"])
@@ -157,6 +157,28 @@ class TestMigrations(unittest.TestCase):
             conn.close()
 
 
+    def test_manual_overrides_table_exists_and_is_wiped_by_reset(self):
+        """v12 (F77): manual corrections live by the same rule as every other manual
+        decision — a from-scratch reindex starts clean."""
+        from sorta.db import reset_index
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "m.db")
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(manual_overrides)")}
+            self.assertEqual(cols, {"file_id", "action", "target", "updated_at"})
+            conn.execute(
+                "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
+                "VALUES ('/x.jpg', 1, 0.0, 'jpg', 'photo', 'now')")
+            conn.execute(
+                "INSERT INTO manual_overrides (file_id, action, target, updated_at) "
+                "VALUES (1, 'exclude', NULL, 'now')")
+            conn.commit()
+            reset_index(conn)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0], 0)
+            conn.close()
+
+
 class TestReset(unittest.TestCase):
     def test_reset_index_clears_data_keeps_schema(self):
         from sorta.db import reset_index
@@ -170,7 +192,7 @@ class TestReset(unittest.TestCase):
             reset_index(conn)
             # data wiped, schema alive (tables + user_version)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0], 0)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 12)
             tables = {r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("media_class", tables)

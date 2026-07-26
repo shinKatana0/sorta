@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 11;
+PRAGMA user_version = 12;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -101,6 +101,21 @@ CREATE TABLE IF NOT EXISTS media_class (
 CREATE TABLE IF NOT EXISTS dedup_choice (
     file_id INTEGER PRIMARY KEY REFERENCES files(id),
     action TEXT NOT NULL,                 -- keep | to_delete
+    updated_at TEXT NOT NULL
+);
+
+-- v12 (F77): manual corrections made in the web app, which outrank every automatic
+-- rule — the user looked at the frame, the classifier did not. One row per file: it
+-- is either excluded from the layout or reassigned, never both. Wiped by
+-- `reset_index` like every other manual decision (face labels, event names, dedup
+-- choices): a from-scratch reindex starts from a clean slate.
+CREATE TABLE IF NOT EXISTS manual_overrides (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),
+    action TEXT NOT NULL,                 -- exclude | reassign
+    -- reassign: destination folder relative to the sort root, POSIX separators.
+    -- NULL for exclude. Comes from outside, so the sorter must validate it before
+    -- building a path from it.
+    target TEXT,
     updated_at TEXT NOT NULL
 );
 
