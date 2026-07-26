@@ -8,11 +8,10 @@ stored.
 
 Two shapes are measured, because they are not the same pipeline:
 
-  parallel   — what `detect_faces` does today when infer_workers > 1: each worker
-               thread DECODES a frame and then infers it. Decode and inference are
-               coupled: while a thread reads a 40 MB RAW its inference session idles,
-               and `faces.decode_workers` is not consulted at all on this path (it
-               feeds the single-session path only, see faces.py:416-422).
+  pipeline   — the real `faces._detect_parallel`, whatever shape it is in right now.
+               Before F87 decode and inference were coupled in one thread (while a
+               worker read a 40 MB RAW its session idled, and `faces.decode_workers`
+               was not consulted at all on that path); F87 split them.
   decoupled  — a prototype of the F64 shape that CLIP already uses: a pool of D
                decode threads feeding N inference sessions. Same sessions, same
                decode, only the coupling removed. If this is faster, the fix is in
@@ -74,8 +73,17 @@ def warm_os_cache(rows: list[sqlite3.Row]) -> float:
     return time.perf_counter() - started
 
 
-def run_parallel(rows: list[sqlite3.Row], factory, workers: int) -> int:
-    """The shape the pipeline uses today (faces._detect_parallel)."""
+def run_pipeline(rows: list[sqlite3.Row], factory, workers: int,
+                 decode_workers: int) -> int:
+    """The real `faces._detect_parallel` — whatever shape it currently is.
+
+    Before F87 it decoded inside its inference workers and took no decode_workers
+    argument. Measuring the merged pipeline (not the prototype below) is what makes
+    this an acceptance check; to compare against the old shape, check the pre-F87
+    files out into the tree and run this script from that same session — the spread
+    BETWEEN sessions (±14%) is larger than the effect, so only within-session
+    comparisons mean anything.
+    """
     found = 0
 
     def on_result(_row: sqlite3.Row, hits) -> None:
@@ -83,7 +91,8 @@ def run_parallel(rows: list[sqlite3.Row], factory, workers: int) -> int:
         if hits:
             found += len(hits)
 
-    faces._detect_parallel(rows, faces._decode_for_faces, factory, workers, on_result)
+    faces._detect_parallel(rows, faces._decode_for_faces, factory, workers,
+                           decode_workers, on_result)
     return found
 
 
@@ -161,7 +170,8 @@ def main() -> None:
         results.append((shape, workers, elapsed, len(rows) / elapsed, found))
 
     for workers in args.infer_workers:
-        measure("parallel", workers, lambda w=workers: run_parallel(rows, factory, w))
+        measure("pipeline", workers,
+                lambda w=workers: run_pipeline(rows, factory, w, args.decode_workers))
         if not args.skip_decoupled:
             measure("decoupled", workers,
                     lambda w=workers: run_decoupled(rows, factory, w, args.decode_workers))
