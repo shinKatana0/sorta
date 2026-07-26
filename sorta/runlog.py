@@ -52,9 +52,15 @@ _DATEFMT = "%Y-%m-%dT%H:%M:%S"
 # config.py) — lets tests and repeated calls tell them from foreign handlers.
 _HANDLER_MARK = "_sorta_runlog_handler"
 
-# Mirrors `geodata._DEFAULT_DATA_DIR`. Deliberately not imported: `geodata` pulls in
-# numpy/scipy at import time, and the environment header must stay cheap and safe.
-_GEO_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "geo"
+# Mirrors `geodata._DEFAULT_DATA_DIR` and its legacy fallback, in that order.
+# Deliberately not imported: `geodata` pulls in numpy/scipy at import time, and the
+# environment header must stay cheap and safe. The package directory comes FIRST — it
+# is where F65 ships the data; probing only the repository-root path (which is what
+# this did until 2026-07-26) made the header report a missing base on every correct
+# install, which is worse than useless in the one line meant to catch a real one.
+_GEO_DATA_DIR = Path(__file__).resolve().parent / "data" / "geo"
+_LEGACY_GEO_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "geo"
+_PLACES_FILE = "places.tsv"
 
 
 def default_log_path() -> Path:
@@ -272,12 +278,21 @@ def _gpu_line() -> str:
         return f"недоступны ({exc})"
 
 
+def _geo_data_dir() -> Path:
+    """Where the resolver will actually read the base from — package dir, else legacy."""
+    if (_LEGACY_GEO_DATA_DIR / _PLACES_FILE).is_file() \
+            and not (_GEO_DATA_DIR / _PLACES_FILE).is_file():
+        return _LEGACY_GEO_DATA_DIR
+    return _GEO_DATA_DIR
+
+
 def _geo_line() -> str:
     """The bundled geo data: path + whether it is actually there (F65)."""
     try:
-        directory = "yes" if _GEO_DATA_DIR.is_dir() else "no"
-        places = "yes" if (_GEO_DATA_DIR / "places.tsv").is_file() else "no"
-        return f"{_GEO_DATA_DIR} (каталог: {directory}, places.tsv: {places})"
+        data_dir = _geo_data_dir()
+        directory = "yes" if data_dir.is_dir() else "no"
+        places = "yes" if (data_dir / _PLACES_FILE).is_file() else "no"
+        return f"{data_dir} (каталог: {directory}, places.tsv: {places})"
     except Exception as exc:
         return f"{_GEO_DATA_DIR} (проверка не удалась: {exc})"
 

@@ -383,6 +383,48 @@ class TestLogEnvironment:
 
         assert "places.tsv:" in caplog.records[0].getMessage()
 
+    def test_reports_the_directory_the_resolver_actually_reads(self, caplog):
+        """The header probed <repo>/data/geo while F65 ships the base in the package,
+        so a correct install was reported as a missing base — in the very line that
+        exists to catch a missing one. Asserting the substring was not enough."""
+        from sorta.geodata import GeoResolver
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            runlog.log_environment()
+
+        assert str(GeoResolver().data_dir) in caplog.records[0].getMessage()
+
+    def test_the_bundled_base_is_reported_as_present(self, caplog):
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            runlog.log_environment()
+
+        assert "places.tsv: yes" in caplog.records[0].getMessage()
+
+    def test_falls_back_to_the_legacy_directory(self, caplog, tmp_path, monkeypatch):
+        """A pre-F65 layout (the base in <repo>/data/geo) is still reported honestly."""
+        legacy = tmp_path / "legacy"
+        legacy.mkdir()
+        (legacy / "places.tsv").write_text("", encoding="utf-8")
+        monkeypatch.setattr(runlog, "_GEO_DATA_DIR", tmp_path / "absent")
+        monkeypatch.setattr(runlog, "_LEGACY_GEO_DATA_DIR", legacy)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            runlog.log_environment()
+
+        message = caplog.records[0].getMessage()
+        assert str(legacy) in message
+        assert "places.tsv: yes" in message
+
+    def test_a_missing_base_is_still_reported_as_missing(self, caplog, tmp_path,
+                                                         monkeypatch):
+        monkeypatch.setattr(runlog, "_GEO_DATA_DIR", tmp_path / "absent")
+        monkeypatch.setattr(runlog, "_LEGACY_GEO_DATA_DIR", tmp_path / "also-absent")
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            runlog.log_environment()
+
+        assert "places.tsv: no" in caplog.records[0].getMessage()
+
     def test_goes_into_the_file(self, tmp_path):
         path = tmp_path / "x.log"
         runlog.setup_file_logging(path)
