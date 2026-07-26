@@ -62,7 +62,7 @@ app**.
 
 ## System requirements
 
-| | CPU profile (`--extra cpu`) | GPU profile (`--extra gpu`) |
+| | CPU profile (the `cpu` extra) | GPU profile (the `gpu` extra) |
 |---|---|---|
 | Hardware | Any x86‑64 machine | NVIDIA GPU + driver supporting **CUDA 13** |
 | VRAM | n/a | **~3 GB** base + faces (measured on RTX 5090: CLIP ViT‑L 2.0 GB + buffalo_l 0.6 GB) — **≥ 4 GB** comfortable, **≥ 8 GB** for the deep VLM tier (Qwen2.5‑VL‑3B, ~7 GB est.) |
@@ -83,10 +83,14 @@ RAM/VRAM notes, in the [user guide](docs/guide/user-guide.en.md#2-requirements).
 ## Quick start
 
 ```bash
-# Install once — pick the profile that matches your hardware
-uv tool install ".[cpu]"                # no NVIDIA GPU — puts `sorta` on PATH
-# or
-uv tool install ".[gpu]"                # NVIDIA GPU + CUDA 13 driver
+# Install once — pick ONE of these. The extra goes INSIDE the package spec and
+# selects your hardware profile (`cpu` and `gpu` are mutually exclusive).
+uv tool install "C:\path\to\sorta[cpu]"       # no NVIDIA GPU — puts `sorta` on PATH
+uv tool install "C:\path\to\sorta[gpu]"       # NVIDIA GPU + CUDA 13 driver
+uv tool install "C:\path\to\sorta[gpu,vlm]"   # ...also the deep VLM tier
+uv tool install -e "C:\path\to\sorta[gpu]"    # editable — for local code changes
+
+sorta doctor                            # check what you actually installed (do this first)
 cp config.example.yaml config.yaml      # set `sources` and `language`
 # exiftool is required for HEIC/RAW/video — install it first (see Requirements)
 
@@ -102,11 +106,23 @@ sorta sort --by city --dest /path/to/sorted --copy --apply   # apply (copy = non
 sorta undo                              # reverse the last batch if needed
 ```
 
-Developing on the code instead? Use a project venv (`uv sync --extra cpu --extra
+> **`uv tool install` has no `--extra` flag** — the extra belongs in the quoted
+> package spec, as above. Installed without it, you silently get the **CPU** profile
+> (`torch==2.13.0+cpu`) on a GPU machine. `sorta doctor` is how you catch that: it
+> prints the torch build, the onnxruntime providers, the geo database, and the log
+> and preview‑cache paths.
+
+Developing on the code instead? Use a project venv (`uv sync --extra gpu --extra
 dev`, activate it, then run the same `sorta …` commands with live edits) — see
 [Installation](docs/guide/user-guide.en.md#3-installation) in the user guide for
-both set‑once paths, how to switch profiles, and why a bare `uv run sorta …` isn't
-one of them.
+every install variant, `sorta doctor` output explained, the `onnxruntime`/
+`onnxruntime-gpu` trap, and why a bare `uv run sorta …` isn't one of the paths.
+
+Two things worth knowing before a big run: Sorta keeps a **preview cache** (one
+decode per frame, ≈150 KB per photo — gigabytes on a large collection; inspect with
+`sorta cache`, clear with `sorta cache --clear`) and writes a **run log** with
+per‑stage timings to `%LOCALAPPDATA%\sorta\logs\sorta.log`
+(`~/.cache/sorta/logs/sorta.log` elsewhere). Details in the user guide.
 
 Full walkthrough (with real command output), command reference and config reference
 are in the [user guide](docs/guide/user-guide.en.md).
