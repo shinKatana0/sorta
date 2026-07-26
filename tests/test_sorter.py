@@ -377,7 +377,9 @@ class TestPlanDryRun(SorterTestBase):
         self.assertEqual(header, expected_cols)
 
     def test_junk_overrides_any_mode(self):
-        self.add_file("meme.jpg", junk_verdict="meme")
+        # camera_make: F83 routes a meme with NO camera trace as a photo, so a fixture
+        # about the junk branch itself must be a file the verdict is trusted on.
+        self.add_file("meme.jpg", junk_verdict="meme", camera_make="Apple")
         for mode in ("city", "person", "event"):
             report = plan_and_sort(self.cfg, self.conn, mode, self.dest, apply=False)
             self.assertEqual(report.plan[0].reason, "junk")
@@ -574,7 +576,7 @@ class TestApplyAndJournal(SorterTestBase):
         self.assertEqual(seen_status_at_transfer_time["status"], "planned")
 
     def test_junk_verdict_moves_under_unsorted(self):
-        fid = self.add_file("meme.jpg", junk_verdict="meme")
+        fid = self.add_file("meme.jpg", junk_verdict="meme", camera_make="Apple")
         plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=True)
         self.assertTrue((self.dest / "_Unsorted" / "junk" / "meme" / "meme.jpg").exists())
         self.assertNotIn("src", self.path_of(fid))
@@ -1041,7 +1043,7 @@ class TestHtmlReport(SorterTestBase):
         self.assertIn("низкая точность", html)
 
     def test_leaf_table_category_shows_junk_and_document_verdict(self):
-        self.add_file("meme.jpg", junk_verdict="meme")
+        self.add_file("meme.jpg", junk_verdict="meme", camera_make="Apple")
         self.add_file("doc.jpg", junk_verdict="document")
         report = plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=False)
         html = report.html_path.read_text(encoding="utf-8")
