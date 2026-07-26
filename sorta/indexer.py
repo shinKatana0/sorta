@@ -2,21 +2,33 @@
 
 Invariant: original files are never modified.
 A re-run skips files with matching path+size+mtime.
+
+F81: source folders can be excluded BEFORE the walk reaches them (`excludes.yaml`,
+keyed by source root — see `load_excludes`). An excluded subtree is never entered, so
+its files cost no stat, no hash and no later stage; rows already indexed under such a
+path are deleted from the index at the start of `index()`, because "do not scan" and
+"is in the index" cannot both be true.
 """
 from __future__ import annotations
 
+import logging
+import os
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator
+
+import yaml
 
 from .config import Config
 from .dates import resolve_taken_at
 from .exif import ExifData, read_batch, resolve_exif_workers
 from .hashing import file_hash, resolve_workers
+
+_log = logging.getLogger(__name__)
 
 _BATCH = 200
 
@@ -51,6 +63,238 @@ class IndexStats:
     updated: int = 0
     skipped: int = 0
     errors: int = 0
+    # F81: what the walk refused to enter, and what it evicted because of that.
+    excluded_dirs: int = 0      # pruned subtrees
+    excluded_files: int = 0     # files inside them (counted from directory entries only)
+    removed_excluded: int = 0   # already-indexed rows deleted because they now sit under an exclusion
+
+
+# --- F81: excluded source folders -----------------------------------------------
+
+_EXCLUDES_FILENAME = "excludes.yaml"
+
+# Tables that reference files(id). A file leaving the index must not leave a row
+# behind in any of them. The move journal (moves/move_batches) is deliberately NOT
+# here: it is the history of operations that really happened, not index state.
+_DEPENDENT_TABLES = (
+    "places", "media_class", "faces", "event_files", "dedup_choice", "manual_overrides",
+)
+
+
+@dataclass
+class Excludes:
+    """Directories the walk must not enter, keyed by SOURCE ROOT.
+
+    An exclusion is meaningless outside its root ("Movies" belongs to D:/Photos, not
+    to the world), so the file groups the relative paths per root. Changing the source
+    therefore needs no migration question: the new root has its own set, the old one
+    keeps its own, and coming back restores it.
+    """
+    by_root: dict[str, list[str]] = field(default_factory=dict)  # normalized root -> rel paths
+
+    def for_root(self, root: str | Path) -> frozenset[str]:
+        return frozenset(self.by_root.get(_norm_root(root), ()))
+
+    def __bool__(self) -> bool:
+        return any(self.by_root.values())
+
+
+def excludes_path(cfg: Config) -> Path:
+    """Location of the exclusion file.
+
+    `index.excludes_file` is read straight from `cfg.raw` — the same arrangement as
+    `index.workers` in `hashing.resolve_workers`: no typed field is added to
+    config.py for it. Default: `excludes.yaml` next to the database file.
+    """
+    idx = (cfg.raw or {}).get("index")
+    value = idx.get("excludes_file") if isinstance(idx, dict) else None
+    if isinstance(value, str) and value.strip():
+        return Path(value.strip()).expanduser()
+    return Path(cfg.database).expanduser().resolve().parent / _EXCLUDES_FILENAME
+
+
+def _norm_root(root: str | Path) -> str:
+    """Lookup key of a source root: resolved + normcase.
+
+    The same root reaches us from config.yaml, from the CLI and from the web app, in
+    whatever spelling the user typed; on Windows it also differs in case and in the
+    separator. One canonical form is what makes those the same key.
+    """
+    try:
+        resolved = Path(root).expanduser().resolve()
+    except OSError:  # pragma: no cover — resolve() barely ever raises with strict=False
+        resolved = Path(root)
+    return os.path.normcase(str(resolved))
+
+
+def _display_root(root: str | Path) -> str:
+    """How a root is written INTO the file: absolute, POSIX separators (`D:/Photos`) —
+    the file is machine-written but has to stay readable."""
+    return Path(root).expanduser().resolve().as_posix()
+
+
+def normalize_exclude(value: object) -> str | None:
+    """One list entry -> a relative POSIX path, or None if it is rejected.
+
+    The value comes from a file the web app writes, i.e. from OUTSIDE the program (the
+    same class of risk as `manual_overrides.target` in F77). An exclusion may only
+    NARROW the walk, never move it elsewhere, so anything that could point out of the
+    root is refused: a non-string, an empty value, a backslash or a colon (`..\\x`,
+    `C:/windows`, UNC), a leading `/` (`/etc`), and any `..` segment.
+    """
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if (not raw or "\\" in raw or ":" in raw or raw.startswith("/")
+            or ".." in [seg.strip() for seg in raw.split("/")]):
+        return None
+    parts = [seg.strip() for seg in raw.split("/")]
+    parts = [seg for seg in parts if seg and seg != "."]
+    if not parts:
+        return None
+    return "/".join(parts)
+
+
+def _read_excludes_file(path: Path) -> dict:
+    """The raw mapping from disk. A missing file is not an error; a broken one is a
+    warning and an empty result — losing a whole run over a damaged settings file is
+    not an acceptable trade."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        _log.warning("index: файл исключений %s не прочитан (%s) — работаем без исключений",
+                     path, exc)
+        return {}
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        _log.warning("index: файл исключений %s испорчен (%s) — работаем без исключений",
+                     path, exc)
+        return {}
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        _log.warning("index: файл исключений %s имеет неожиданную структуру (%s вместо "
+                     "словаря по корням) — работаем без исключений", path, type(data).__name__)
+        return {}
+    return data
+
+
+def load_excludes(path: str | Path) -> Excludes:
+    """Read the exclusion file (§1 of F81) into a root-keyed, validated set."""
+    p = Path(path)
+    by_root: dict[str, list[str]] = {}
+    for root, values in _read_excludes_file(p).items():
+        if not isinstance(root, str) or not root.strip():
+            _log.warning("index: ключ %r в %s не похож на корень источника — пропущен", root, p)
+            continue
+        if not isinstance(values, list):
+            _log.warning("index: значение для корня %s в %s не список — пропущено", root, p)
+            continue
+        rels = by_root.setdefault(_norm_root(root), [])
+        for value in values:
+            rel = normalize_exclude(value)
+            if rel is None:
+                _log.warning("index: исключение %r для корня %s отклонено — оно уводит "
+                             "обход за пределы корня", value, root)
+                continue
+            if rel not in rels:
+                rels.append(rel)
+    return Excludes(by_root)
+
+
+def save_excludes(path: str | Path, root: str | Path, values: Iterable[object]) -> list[str]:
+    """Write the exclusion list of ONE root, preserving every other root's entry.
+
+    Returns the accepted (normalized) list; entries `normalize_exclude` rejects are
+    dropped. The write is atomic — a temp file next to the target + `os.replace`, like
+    `imaging._write_preview`: the file is read by a run that may start at any moment,
+    and nobody may ever observe half of it.
+    """
+    p = Path(path)
+    data = _read_excludes_file(p)
+    # drop whatever spelling of this root the file already had — one root, one key
+    kept = {k: v for k, v in data.items()
+            if not (isinstance(k, str) and _norm_root(k) == _norm_root(root))}
+    accepted: list[str] = []
+    for value in values:
+        rel = normalize_exclude(value)
+        if rel is None:
+            _log.warning("index: исключение %r не сохранено — оно уводит обход за "
+                         "пределы корня", value)
+            continue
+        if rel not in accepted:
+            accepted.append(rel)
+    if accepted:
+        kept[_display_root(root)] = sorted(accepted)
+    text = yaml.safe_dump(kept, allow_unicode=True, sort_keys=True, default_flow_style=False)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+    return sorted(accepted)
+
+
+def _excluded_prefixes(cfg: Config, excludes: Excludes) -> list[str]:
+    """Absolute, normcase'd paths of every excluded subtree of every source."""
+    prefixes: list[str] = []
+    for src in cfg.sources:
+        root = Path(src).expanduser().resolve()
+        for rel in sorted(excludes.for_root(src)):
+            prefixes.append(os.path.normcase(str(root.joinpath(*rel.split("/")))))
+    return prefixes
+
+
+def _under_any(path: str, prefixes: list[str]) -> bool:
+    return any(path == prefix or path.startswith(prefix + os.sep) for prefix in prefixes)
+
+
+def _existing_tables(conn: sqlite3.Connection) -> set[str]:
+    return {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
+def drop_excluded_rows(cfg: Config, conn: sqlite3.Connection, excludes: Excludes) -> int:
+    """Delete indexed rows that now sit under an exclusion, with their dependents.
+
+    "Do not scan" means "not in the index": leaving the 847 rows of a folder the user
+    just excluded would make the state contradict the setting. Dependent rows go with
+    them (see `_DEPENDENT_TABLES`), and `files.dup_of` references to a deleted row are
+    cleared — a surviving file must not point at an id that no longer exists.
+    """
+    prefixes = _excluded_prefixes(cfg, excludes)
+    if not prefixes:
+        return 0
+    doomed = [row["id"] for row in conn.execute("SELECT id, path FROM files")
+              if _under_any(os.path.normcase(row["path"]), prefixes)]
+    if not doomed:
+        return 0
+    tables = [t for t in _DEPENDENT_TABLES if t in _existing_tables(conn)]
+    # `moves.file_id` also references files(id), but the move journal is history, not
+    # index state, and must survive (§3) — with foreign keys enforced the DELETE below
+    # would be refused because of it. So the constraint is lifted for this operation
+    # only, and every table that IS index state is cleaned explicitly above. The
+    # PRAGMA is a no-op inside a transaction, hence outside the `with`.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with conn:  # one transaction — a Ctrl+C leaves no half-deleted file
+            for start in range(0, len(doomed), _BATCH):
+                chunk = doomed[start:start + _BATCH]
+                ph = ",".join("?" * len(chunk))
+                for table in tables:
+                    conn.execute(f"DELETE FROM {table} WHERE file_id IN ({ph})", chunk)
+                conn.execute(f"UPDATE files SET dup_of = NULL WHERE dup_of IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM files WHERE id IN ({ph})", chunk)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+    _log.info("index: удалено из индекса %d строк под исключёнными папками", len(doomed))
+    return len(doomed)
 
 
 @dataclass
@@ -64,15 +308,13 @@ class RefreshStats:
     errors: int = 0           # vanished/unreadable files — counted, never fatal
 
 
-def _walk(cfg: Config) -> Iterator[Path]:
+def _walk(cfg: Config, excludes: Excludes | None = None,
+          stats: IndexStats | None = None) -> Iterator[Path]:
     skip = set(cfg.index.skip_dirs)
     min_size = cfg.index.min_file_size_kb * 1024
     for src in cfg.sources:
-        for p in sorted(src.rglob("*")):
-            if any(part in skip or part.startswith(".") for part in p.parts):
-                continue
-            if not p.is_file():
-                continue
+        excluded = excludes.for_root(src) if excludes is not None else frozenset()
+        for p in _walk_root(src, skip, excluded, stats):
             if cfg.index.media_type_of(p.suffix) is None:
                 continue
             try:
@@ -81,6 +323,76 @@ def _walk(cfg: Config) -> Iterator[Path]:
             except OSError:
                 continue
             yield p
+
+
+def _walk_root(src: Path, skip: set[str], excluded: frozenset[str],
+               stats: IndexStats | None) -> Iterator[Path]:
+    """Files under one source root, with excluded subtrees pruned.
+
+    Replaces the previous `sorted(src.rglob("*"))`: rglob offers no way to stop before
+    descending, and the whole point of F81 is that an excluded subtree is never
+    entered. The name filter is unchanged — every component of the FULL path is still
+    matched against skip_dirs / a leading dot, the components of the root included
+    (hence the check on `src.parts` here).
+    """
+    if any(part in skip or part.startswith(".") for part in src.parts):
+        return
+    yield from _walk_dir(src, "", skip, excluded, stats)
+
+
+def _walk_dir(directory: Path, prefix: str, skip: set[str], excluded: frozenset[str],
+              stats: IndexStats | None) -> Iterator[Path]:
+    try:
+        with os.scandir(directory) as it:
+            entries = sorted(it, key=lambda e: e.name)
+    except OSError:  # unreadable directory — the run does not stop over one folder
+        return
+    for entry in entries:
+        rel = f"{prefix}/{entry.name}" if prefix else entry.name
+        if rel in excluded:
+            # Excluded first, before is_file()/stat()/open(): from here on the subtree
+            # costs nothing but the directory entries that count it.
+            _count_excluded(entry, stats)
+            continue
+        if entry.name in skip or entry.name.startswith("."):
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            yield from _walk_dir(Path(entry.path), rel, skip, excluded, stats)
+        elif entry.is_file():
+            yield Path(entry.path)
+
+
+def _count_excluded(entry: os.DirEntry[str], stats: IndexStats | None) -> None:
+    """Count what the walk refused to enter — without numbers the effect of an
+    exclusion is not observable (§2).
+
+    Only directory ENTRIES are read (names from `scandir`, `is_dir` off the entry the
+    listing already carries): no `stat`, no `open`, no hashing, and no later stage
+    ever sees these files. That is the cost this feature exists to remove; listing
+    names is what makes the removal reportable.
+    """
+    if stats is None:
+        return
+    if not entry.is_dir(follow_symlinks=False):
+        stats.excluded_files += 1
+        return
+    stats.excluded_dirs += 1
+    stats.excluded_files += _count_entries(Path(entry.path))
+
+
+def _count_entries(directory: Path) -> int:
+    total = 0
+    try:
+        with os.scandir(directory) as it:
+            entries = list(it)
+    except OSError:
+        return 0
+    for entry in entries:
+        if entry.is_dir(follow_symlinks=False):
+            total += _count_entries(Path(entry.path))
+        else:
+            total += 1
+    return total
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -122,6 +434,10 @@ def _hash_one(item: tuple[Path, str]) -> _HashResult:
 def index(cfg: Config, conn: sqlite3.Connection,
           progress: Callable[[IndexStats], None] | None = None) -> IndexStats:
     stats = IndexStats()
+    # F81: the exclusions are read here, not in cli.py — every entry point (CLI, web
+    # app) goes through index() and must obey the same file.
+    excludes = load_excludes(excludes_path(cfg))
+    stats.removed_excluded = drop_excluded_rows(cfg, conn, excludes)
     pending: list[tuple[Path, str]] = []  # (path, 'add'|'update')
     # Orientation is always extracted, but written only if the column has already been
     # added to the schema (schema migration runs separately).
@@ -214,7 +530,7 @@ def index(cfg: Config, conn: sqlite3.Connection,
             progress(stats)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for p in _walk(cfg):
+        for p in _walk(cfg, excludes, stats):
             stats.scanned += 1
             st = p.stat()
             action = _needs_update(conn, str(p.resolve()), st.st_size, st.st_mtime)
