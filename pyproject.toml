@@ -24,6 +24,11 @@ dependencies = [
     "open-clip-torch>=3.3.0",
     "pillow-heif>=1.4.0",
     "easyocr>=1.7.2",
+    # F74/F80: one frame out of a video, so clips get a tile in the web app. Was used
+    # without being declared — it happened to be present in the dev venv (pulled in
+    # transitively), so the gates were green while a real `uv tool install` produced an
+    # environment with no `av` at all and video previews silently did nothing.
+    "av>=14.0",
 ]
 
 [project.optional-dependencies]
