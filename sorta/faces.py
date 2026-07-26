@@ -151,6 +151,12 @@ def _decode_for_faces(path: str, orientation: int | None) -> np.ndarray:
 
 
 def _decode_workers(cfg: Config) -> int:
+    """Threads that decode frames — the same knob on both paths since F87.
+
+    Until F87 the parallel path decoded inside its inference workers and never read
+    this setting, so tuning it did nothing on a GPU machine; now it sizes the decode
+    pool that feeds the sessions as well.
+    """
     n = (cfg.raw.get("faces") or {}).get("decode_workers")
     if n:
         return max(1, int(n))
@@ -191,14 +197,27 @@ def _detect_parallel(
     decode: Callable[[str, int | None], np.ndarray],
     infer_factory: InferFactory,
     workers: int,
+    decode_workers: int,
     on_result: Callable[[sqlite3.Row, list[FaceHit] | None], None],
 ) -> None:
-    """Decode + infer `rows` in a pool of `workers` threads, results on the caller's thread.
+    """Decode pool feeding `workers` inference sessions; results on the caller's thread.
 
-    Every worker builds its OWN inference session on first use (thread-local): the
+    F87: decode and inference used to be one unit of work per thread — while a worker
+    read a 40 MB RAW its own GPU session sat idle, and on a real run the card stayed
+    at 2-5% load. They are decoupled here into the shape F64 gave CLIP:
+    `decode_workers` threads decode (the ready `_prefetch_decode` pool, so there is
+    one such pool in the file, not two) and `workers` sessions do nothing but infer.
+    Measured ×1.57 on 4 sessions (8.14 → 12.78 img/s, 500 real frames, RTX 5090
+    Laptop) with the same 300 faces found and no extra VRAM.
+
+    Every inference worker builds its OWN session on first use (thread-local): the
     onnxruntime session is not thread-safe, independent sessions share no state and
-    run in parallel safely. Decoding happens inside the worker as well — that
-    subsumes the prefetch-decode of the serial path.
+    run in parallel safely.
+
+    The in-flight window is bounded on BOTH sides — full-res frames are heavy, and an
+    unbounded decode pool would simply read the whole collection into memory:
+    `_prefetch_decode` keeps at most ~2×decode_workers frames decoded, and at most
+    ~2×workers of them wait for a session here.
 
     `on_result(row, hits)` is called strictly from this (the main) thread as frames
     complete — hence writes to SQLite stay single-writer. hits=None means the frame
@@ -210,23 +229,28 @@ def _detect_parallel(
     workers = max(1, workers)
     window = workers * 2  # bounded in-flight window: full-res frames are heavy
     local = threading.local()
-    it = iter(rows)
+    frames = _prefetch_decode(rows, decode, decode_workers)
 
-    def process(r: sqlite3.Row) -> list[FaceHit]:
+    def process(img: np.ndarray) -> list[FaceHit]:
         infer: Infer | None = getattr(local, "infer", None)
         if infer is None:
             infer = local.infer = infer_factory()
-        return infer(decode(r["path"], r["orientation"]))
+        return infer(img)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         pending: dict[Future, sqlite3.Row] = {}
 
         def _fill() -> None:
+            """Top the inference queue up from the decode pool (this thread only)."""
             while len(pending) < window:
-                r = next(it, None)
-                if r is None:
+                nxt = next(frames, None)
+                if nxt is None:
                     return
-                pending[pool.submit(process, r)] = r
+                r, img, err = nxt
+                if img is None or err is not None:  # undecodable frame — report, go on
+                    on_result(r, None)
+                    continue
+                pending[pool.submit(process, img)] = r
 
         _fill()
         while pending:
@@ -249,8 +273,9 @@ def _prefetch_decode(
     """Decode frames in a thread pool with a bounded window (~2×max_workers in flight).
 
     Yields (row, image, error) as decoding completes — input order is not preserved
-    (faces rows are independent, which is fine). GPU inference stays entirely on the
-    caller's side (the main thread) — only decoding happens here.
+    (faces rows are independent, which is fine). No inference happens here: the
+    caller decides where the frame is inferred — on its own thread (the 1-session
+    path) or in the session pool of `_detect_parallel` (F87).
     """
     from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
@@ -369,10 +394,11 @@ def detect_faces(
 
     The mock path (an `analyzer` passed, as in tests) is strictly serial, decode and
     inference in one call, behaviour unchanged. The real path (analyzer=None) runs
-    `_infer_workers(cfg)` inference sessions in parallel, one per thread (F12.1);
-    with a single worker (the CPU profile) it keeps the previous pipeline — a
-    prefetch-decode pool feeding one session on this thread. `infer_factory` builds
-    a session; in production it is `_insightface_infer`, tests inject a fake one.
+    `_infer_workers(cfg)` inference sessions in parallel, one per thread (F12.1), fed
+    by a pool of `_decode_workers(cfg)` decoding threads (F87); with a single worker
+    (the CPU profile) it keeps the previous pipeline — the same decode pool feeding
+    one session on this thread. `infer_factory` builds a session; in production it is
+    `_insightface_infer`, tests inject a fake one.
 
     SQLite is written only from this thread in both cases (single-writer), one
     transaction per file; the order of faces rows does not matter.
@@ -415,12 +441,15 @@ def detect_faces(
             progress(done, len(rows))
 
     workers = _infer_workers(cfg)
+    decode_workers = _decode_workers(cfg)
     if workers > 1:
-        _detect_parallel(rows, _decode_for_faces, factory, workers, on_result)
+        _detect_parallel(
+            rows, _decode_for_faces, factory, workers, decode_workers, on_result
+        )
         return stats
 
     infer = factory()
-    for r, img, err in _prefetch_decode(rows, _decode_for_faces, _decode_workers(cfg)):
+    for r, img, err in _prefetch_decode(rows, _decode_for_faces, decode_workers):
         frame_hits: list[FaceHit] | None = None
         if err is None:
             assert img is not None
