@@ -269,7 +269,9 @@ class TestNoOverridesRegression(OverridesTestBase):
     def test_files_without_a_correction_keep_the_f5_layout(self):
         city = self.add_file("a.jpg", country="FR", city="Paris")
         document = self.add_file("b.jpg", junk_verdict="document")
-        undated = self.add_file("c.jpg", taken_at=None)
+        # camera_make — F78: an undated file without a camera trace lands in
+        # `downloaded`; this one is here to cover the low_date branch.
+        undated = self.add_file("c.jpg", taken_at=None, camera_make="Apple")
         person_file = self.add_file("d.jpg", country="FR", city="Paris")
         self.add_person(person_file, "Аня")
         expected = {

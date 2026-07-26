@@ -87,7 +87,8 @@ class SorterTestBase(unittest.TestCase):
                 place_confidence: str | None = None, junk_verdict: str | None = None,
                 junk_source: str | None = None, gps_lat: float | None = None,
                 gps_lon: float | None = None, city_geonameid: int | None = None,
-                district_geonameid: int | None = None, country_name: str | None = None) -> int:
+                district_geonameid: int | None = None, country_name: str | None = None,
+                camera_make: str | None = None, camera_model: str | None = None) -> int:
         self._n += 1
         p = self.write_file(rel, content)
         digest, algo = file_hash(p)
@@ -95,9 +96,11 @@ class SorterTestBase(unittest.TestCase):
         cur = self.conn.execute(
             """INSERT INTO files (path, size, mtime, ext, media_type, hash, hash_algo,
                    taken_at, taken_at_source, taken_at_confidence, gps_lat, gps_lon,
-                   indexed_at)
-               VALUES (?, ?, 0, 'jpg', 'photo', ?, ?, ?, 'exif', ?, ?, ?, '2026-01-01')""",
-            (path, len(content), digest, algo, taken_at, confidence, gps_lat, gps_lon),
+                   camera_make, camera_model, indexed_at)
+               VALUES (?, ?, 0, 'jpg', 'photo', ?, ?, ?, 'exif', ?, ?, ?, ?, ?,
+                   '2026-01-01')""",
+            (path, len(content), digest, algo, taken_at, confidence, gps_lat, gps_lon,
+             camera_make, camera_model),
         )
         file_id = cur.lastrowid
         if country is not None or city is not None or place_confidence is not None:
@@ -353,8 +356,11 @@ class TestPlanDryRun(SorterTestBase):
         self.add_file("ok.jpg", country="RU", city="Moskva")
         self.add_file("noplace.jpg")  # no places row
         self.add_file("junk.jpg", junk_verdict="screenshot", junk_source="heuristic")
-        self.add_file("nodate.jpg", taken_at=None)
-        self.add_file("lowconf.jpg", confidence="low")
+        # camera_make — F78: an undated file WITHOUT a camera trace is a downloaded
+        # picture now (reason `downloaded`, see test_sorter_undated.py); these two are
+        # here for the low_date branch.
+        self.add_file("nodate.jpg", taken_at=None, camera_make="Apple")
+        self.add_file("lowconf.jpg", confidence="low", camera_make="Apple")
         report = plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=False)
         rows = {r["path"].split(os.sep)[-1].split("/")[-1]: r for r in self.read_csv(report.csv_path)}
         self.assertEqual(rows["ok.jpg"]["reason"], "city")
@@ -485,15 +491,17 @@ class TestPlanDryRun(SorterTestBase):
 
     def test_person_mode_low_confidence_regression_low_date(self):
         # Regression: only event mode uses the event year; person still goes to
-        # low_date with a low-confidence file date.
-        fid = self.add_file("lowconf.jpg", confidence="low")
+        # low_date with a low-confidence file date. camera_make — F78: without a
+        # camera trace such a file goes to `downloaded` instead.
+        fid = self.add_file("lowconf.jpg", confidence="low", camera_make="Apple")
         self.add_person(fid, "Мама")
         report = plan_and_sort(self.cfg, self.conn, "person", self.dest, apply=False)
         self.assertEqual(report.plan[0].reason, "low_date")
         self.assertEqual(report.plan[0].target_rel, "_Unsorted/low_date/lowconf.jpg")
 
     def test_city_mode_low_confidence_regression_low_date(self):
-        self.add_file("lowconf.jpg", confidence="low", country="France", city="Paris")
+        self.add_file("lowconf.jpg", confidence="low", country="France", city="Paris",
+                      camera_make="Apple")
         report = plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=False)
         self.assertEqual(report.plan[0].reason, "low_date")
         self.assertEqual(report.plan[0].target_rel, "_Unsorted/low_date/lowconf.jpg")

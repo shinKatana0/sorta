@@ -35,6 +35,16 @@ from events.started_at, not from its own date, so low-confidence/undated files o
 manual events are laid out under <event_year>/<name>/, not low_date; low_date for
 event mode remains only as a fallback in case of an unparsable started_at (should
 not happen — the column is NOT NULL, ISO).
+
+F78 splits that undated bucket in two. Measured on the live collection, 1057 of the
+1059 undated files carried no camera trace at all (no camera_make/camera_model, no
+GPS) and had numeric messenger-cache names — the bucket is not "my shots whose date
+was lost", it is forwarded and downloaded pictures. So a file with any camera trace
+(see _looks_like_a_camera_shot) stays in _Unsorted/low_date/ as before, and one
+without goes to _Unsorted/downloaded/ with its own reason code, so the two cases are
+distinguishable in the CSV. Only the branch where the year could not be determined is
+affected; the order of the checks above it (dedup_delete -> not_personal -> document
+-> product -> junk) is untouched, so a screenshot or a document never reaches here.
 """
 from __future__ import annotations
 
@@ -251,6 +261,34 @@ def _manual_target_parts(target: str | None, src: str) -> list[str] | None:
     return parts
 
 
+def _looks_like_a_camera_shot(row: sqlite3.Row) -> bool:
+    """F78: does the file carry ANY trace of having been shot by a camera?
+
+    Any one of camera_make / camera_model / gps_lat is enough — messengers strip most
+    of the EXIF from a forwarded photo, so demanding several signals would push real
+    (if metadata-poor) shots into the downloaded folder. The mirror image of
+    junk._is_real_photo, minus the face signal: here the question is only "was this
+    taken by a device", not "is this a memory".
+
+    gps_lat is compared to None on purpose — 0.0 is a valid latitude (see the
+    Null Island guard in geo.py), so a truthiness test would drop it.
+    """
+    return bool(row["camera_make"] or row["camera_model"]
+                or row["gps_lat"] is not None)
+
+
+def _undated_parts(row: sqlite3.Row, lang: i18n.Lang) -> tuple[list[str], str]:
+    """F78: the target for a file whose year could not be determined.
+
+    A real shot with an unread date keeps the historical _Unsorted/low_date/; anything
+    without a camera trace — the overwhelming majority of this bucket — goes to
+    _Unsorted/downloaded/ under its own reason, so the report tells the two apart.
+    """
+    if _looks_like_a_camera_shot(row):
+        return [i18n.folder("unsorted", lang), i18n.folder("low_date", lang)], "low_date"
+    return [i18n.folder("unsorted", lang), i18n.folder("downloaded", lang)], "downloaded"
+
+
 def _year_of(taken_at: str | None, confidence: str | None) -> str | None:
     if not taken_at or len(taken_at) < 4 or not taken_at[:4].isdigit():
         return None
@@ -308,18 +346,18 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
             # folder.
             year = _year_of(row["taken_at"], row["taken_at_confidence"])
             if year is None:
-                return [i18n.folder("unsorted", lang), i18n.folder("low_date", lang)], "low_date"
+                return _undated_parts(row, lang)
             taken_at = row["taken_at"] or ""
             month = taken_at[5:7] if len(taken_at) >= 7 and taken_at[5:7].isdigit() else None
             return ([year, month] if month else [year]), "no_event"
         event_name, event_year = event
         year = event_year or _year_of(row["taken_at"], row["taken_at_confidence"])
         if year is None:
-            return [i18n.folder("unsorted", lang), i18n.folder("low_date", lang)], "low_date"
+            return _undated_parts(row, lang)
         return [year, _sanitize(event_name)], "event"
     year = _year_of(row["taken_at"], row["taken_at_confidence"])
     if year is None:
-        return [i18n.folder("unsorted", lang), i18n.folder("low_date", lang)], "low_date"
+        return _undated_parts(row, lang)
     if mode == "city":
         if row["city"] is None or (row["place_confidence"] or "unknown") == "unknown":
             return [i18n.folder("unsorted", lang), i18n.folder("no_place", lang)], "no_place"
@@ -517,7 +555,7 @@ class PlanItem:
     in_place: bool
     target_rel: str            # path relative to dest, POSIX separators
     reason: str                # city|person|person_primary|person_shared|event
-    #                            | no_place|no_faces|no_event|junk|low_date
+    #                            | no_place|no_faces|no_event|junk|low_date|downloaded
     #                            | dedup_delete|manual_reassign
     #                            | manual_exclude (preview only, see keep_manual_excluded)
     taken_at: str | None
@@ -1069,6 +1107,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     rows = conn.execute(
         _CTE + f"""SELECT f.id, f.path, f.taken_at, f.taken_at_confidence,
                f.hash, f.hash_algo, f.not_personal, f.gps_lat, f.gps_lon,
+               f.camera_make, f.camera_model,
                p.country, p.country_name, p.city, p.confidence AS place_confidence,
                p.city_geonameid, p.district_geonameid, p.district_name,
                mc.verdict AS junk_verdict, mc.source AS junk_source,

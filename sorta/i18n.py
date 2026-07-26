@@ -40,6 +40,7 @@ FOLDER_KEYS: tuple[str, ...] = (
     "junk",
     "no_place",
     "low_date",
+    "downloaded",
     "not_personal",
     "no_event",
     "no_faces",
@@ -56,6 +57,9 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     "junk": {"ru": "мусор", "en": "junk", "ja": "ゴミ"},
     "no_place": {"ru": "без_места", "en": "no_place", "ja": "場所不明"},
     "low_date": {"ru": "без_даты", "en": "low_date", "ja": "日付不明"},
+    # F78: neither junk nor a lost shot — forwarded/downloaded pictures the user may
+    # well want to look through, so the name must not read as a verdict.
+    "downloaded": {"ru": "скачанное", "en": "downloaded", "ja": "ダウンロード"},
     "not_personal": {"ru": "не_личное", "en": "not_personal", "ja": "非個人"},
     "no_event": {"ru": "без_события", "en": "no_event", "ja": "イベント不明"},
     "no_faces": {"ru": "без_лиц", "en": "no_faces", "ja": "顔なし"},
