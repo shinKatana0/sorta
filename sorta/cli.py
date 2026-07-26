@@ -19,7 +19,15 @@ from .diagnostics import (
     warn_if_gpu_mismatch,
 )
 from .events import add_manual_event, build_events, rename_event
-from .faces import detect_and_cluster, export_contact_sheet, label_cluster
+from .faces import (
+    CLUSTER_PHASE_CLUSTER,
+    CLUSTER_PHASE_INHERIT,
+    CLUSTER_PHASE_READ,
+    CLUSTER_PHASE_WRITE,
+    detect_and_cluster,
+    export_contact_sheet,
+    label_cluster,
+)
 from .faces import merge as merge_clusters
 from .geo import resolve_places
 from .indexer import index as run_index
@@ -79,6 +87,17 @@ def _summarize_landmarks(stats) -> str:
     for name, n in sorted(stats.by_landmark.items(), key=lambda kv: -kv[1]):
         lines.append(f"  {name}: {n}")
     return "\n".join(lines)
+
+
+# F84: captions for the phases `cluster_faces` reports — the rich bar shows them in
+# its description, so the `faces` step no longer goes silent for the whole of
+# clustering. Keys: sorta.faces.CLUSTER_PHASE_*.
+_CLUSTER_PHASE_LABELS = {
+    CLUSTER_PHASE_READ: "кластеры: чтение эмбеддингов",
+    CLUSTER_PHASE_CLUSTER: "кластеры: группировка лиц (без процента)",
+    CLUSTER_PHASE_INHERIT: "кластеры: перенос имён",
+    CLUSTER_PHASE_WRITE: "кластеры: запись",
+}
 
 
 def _summarize_faces(face_stats, cl_stats) -> str:
@@ -184,7 +203,7 @@ def _cmd_faces(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     conn = connect(cfg.database)
-    with progress_task("faces: детекция") as cb:
+    with progress_task("faces: детекция", phase_labels=_CLUSTER_PHASE_LABELS) as cb:
         face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb)
     print(_summarize_faces(face_stats, cl_stats))
 
@@ -345,7 +364,8 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
             print(f"[этап {i}/{len(steps)}] {name}")
             # F69: the per-stage timing goes to the run log, so "which stage ate the
             # three hours" is answerable after the fact instead of by eye.
-            with stage_timer(name), progress_task(name) as cb:
+            with stage_timer(name), progress_task(
+                    name, phase_labels=_CLUSTER_PHASE_LABELS) as cb:
                 summary = fn(cfg, conn, cb)  # type: ignore[operator]
             for line in str(summary).splitlines():
                 print(f"  {line}")
