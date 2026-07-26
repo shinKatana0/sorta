@@ -143,7 +143,7 @@ class TestApiPlan(UiServerTestBase):
         items = page["items"]
         self.assertEqual({it["file_id"] for it in items}, {fid1, fid2})
         expected_keys = {"file_id", "name", "target_rel", "reason", "date",
-                         "geo", "category", "thumb_url", "src_dir", "src_path"}
+                         "geo", "category", "thumb_url", "src_dir", "src_path", "video"}
         for item in items:
             self.assertEqual(expected_keys, set(item.keys()))
             self.assertEqual(item["thumb_url"], f"/thumb/{item['file_id']}")

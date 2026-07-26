@@ -60,7 +60,9 @@ class TestLightboxHtml(UiServerTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn("function clickableThumb(", html)
-        self.assertIn("openLightbox(samples || [fileId], index || 0)", html)
+        # F80 appends a third argument (how many frames a clip has), the call itself
+        # is still the single shared entry point into the lightbox.
+        self.assertIn("openLightbox(samples || [fileId], index || 0", html)
         # the lists (Cities/Duplicates/Moves/Events) no longer open a new tab with
         # the raw /photo — target="_blank" was removed from the frames
         self.assertNotIn('a.target = "_blank"', html)

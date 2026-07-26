@@ -2530,6 +2530,7 @@ name = "sorta"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "av" },
     { name = "blake3" },
     { name = "easyocr" },
     { name = "hdbscan" },
@@ -2583,6 +2584,7 @@ vlm = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", marker = "extra == 'vlm'", specifier = ">=0.34" },
+    { name = "av", specifier = ">=14.0" },
     { name = "blake3", specifier = ">=0.4" },
     { name = "easyocr", specifier = ">=1.7.2" },
     { name = "hdbscan", specifier = ">=0.8.44" },

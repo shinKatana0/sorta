@@ -221,6 +221,10 @@ def _plan_item_to_json(item: PlanItem,
         "geo": geo,
         "category": item.reason,
         "thumb_url": f"/thumb/{item.file_id}",
+        # F80: video and photo tiles used to be indistinguishable in the grid. The
+        # extension is enough (the indexer decides media_type the same way) and costs
+        # no query — the plan carries no media_type of its own.
+        "video": imaging.is_video_path(item.src),
     }
     if override is not None:
         # F77: only a corrected file carries the mark — the frontend draws a frame off
@@ -470,7 +474,10 @@ _THUMB_DECODE_CONCURRENCY = max(2, min(8, os.cpu_count() or 4))
 _PREVIEW_MAX_EDGE = 1600
 _PREVIEW_CACHE_MAX_ITEMS = 64
 
-_ImgCacheKey = tuple[int, float]
+# F80: the key carries the frame index too — a clip has one tile but a whole
+# filmstrip behind the lightbox, and every frame of it is a separate JPEG. Photos and
+# tiles are simply always frame 0.
+_ImgCacheKey = tuple[int, float, int]
 _ThumbCacheKey = _ImgCacheKey  # name backward-compatibility
 _thumb_cache: OrderedDict[_ImgCacheKey, bytes] = OrderedDict()
 _thumb_cache_lock = threading.Lock()
@@ -494,13 +501,13 @@ def _thumb_cache_clear() -> None:
 def _encode_jpeg_cached(
     file_id: int, path: Path, *, max_edge: int, quality: int,
     cache: OrderedDict[_ImgCacheKey, bytes], cache_lock: threading.Lock,
-    cache_max: int,
+    cache_max: int, frame: int = 0,
 ) -> bytes | None:
     """Ready JPEG bytes of a frame (decoded to max_edge), from cache or by decoding.
 
-    The key (file_id, mtime) — a change of mtime naturally invalidates the entry.
-    A cache miss is rechecked AFTER acquiring the semaphore (another thread may have
-    decoded and cached the same key while the current one waited in the queue) —
+    The key (file_id, mtime, frame) — a change of mtime naturally invalidates the
+    entry. A cache miss is rechecked AFTER acquiring the semaphore (another thread may
+    have decoded and cached the same key while the current one waited in the queue) —
     avoids a needless re-decode under a request spike for one frame.
     """
     try:
@@ -508,7 +515,7 @@ def _encode_jpeg_cached(
     except OSError:
         return None
     mtime = stat.st_mtime
-    key: _ImgCacheKey = (file_id, mtime)
+    key: _ImgCacheKey = (file_id, mtime, frame)
     with cache_lock:
         cached = cache.get(key)
         if cached is not None:
@@ -524,8 +531,10 @@ def _encode_jpeg_cached(
         # F67: a gallery of thousands of tiles used to pay a full decode of the
         # ORIGINAL per tile (180-470 ms) — the preview cache turns that into a few ms
         # once the frame has been touched by any stage.
-        img = imaging.decode_rgb_preview(
-            path, mtime, stat.st_size, max_edge=max_edge)
+        # F80: video_frame with frame=0 IS decode_rgb_preview (photos included), so
+        # every tile and the whole photo path stay on exactly the previous code.
+        img = imaging.video_frame(
+            path, mtime, stat.st_size, frame, max_edge=max_edge)
         if img is None:
             return None
         buf = io.BytesIO()
@@ -548,12 +557,16 @@ def _thumb_bytes(file_id: int, path: Path) -> bytes | None:
         cache_max=_THUMB_CACHE_MAX_ITEMS)
 
 
-def _preview_bytes(file_id: int, path: Path) -> bytes | None:
-    """A large decoded JPEG for the lightbox (HEIC/RAW are rendered too)."""
+def _preview_bytes(file_id: int, path: Path, frame: int = 0) -> bytes | None:
+    """A large decoded JPEG for the lightbox (HEIC/RAW are rendered too).
+
+    F80: `frame` > 0 asks for that frame of a clip's filmstrip — the same cache, one
+    entry per frame (a strip is at most SORTA_VIDEO_FRAMES of them).
+    """
     return _encode_jpeg_cached(
         file_id, path, max_edge=_PREVIEW_MAX_EDGE, quality=88,
         cache=_preview_cache, cache_lock=_preview_cache_lock,
-        cache_max=_PREVIEW_CACHE_MAX_ITEMS)
+        cache_max=_PREVIEW_CACHE_MAX_ITEMS, frame=frame)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -851,6 +864,7 @@ def _moves_payload(db_path: Path, batch_id: int | None) -> dict:
             "target_rel": _target_rel(r["dst"], dest_root),
             "status": r["status"],
             "thumb_url": f"/thumb/{r['file_id']}",
+            "video": imaging.is_video_path(r["dst"]),  # F80, as in _plan_item_to_json
         }
         for r in move_rows
     ]
@@ -2210,6 +2224,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "lightbox_close": {"ru": "Закрыть", "en": "Close", "ja": "閉じる"},
     "lightbox_open": {"ru": "Открыть превью", "en": "Open preview", "ja": "プレビューを開く"},
+    # F80: the filmstrip of a clip — the tile marker and the frame pager.
+    "video_badge": {"ru": "Видео", "en": "Video", "ja": "動画"},
+    "video_open": {
+        "ru": "Открыть кадры видео", "en": "Open video frames", "ja": "動画のフレームを開く",
+    },
+    "frame_prev": {"ru": "Предыдущий кадр", "en": "Previous frame", "ja": "前のフレーム"},
+    "frame_next": {"ru": "Следующий кадр", "en": "Next frame", "ja": "次のフレーム"},
+    "frame_of": {
+        "ru": "Кадр {n} из {all}", "en": "Frame {n} of {all}", "ja": "フレーム {all} 中 {n}",
+    },
     "delete_remember_label": {
         "ru": "Не спрашивать подтверждение удаления в этой сессии",
         "en": "Don't ask for delete confirmation this session",
@@ -2783,6 +2807,14 @@ label { cursor: pointer; }
 /* фон-плейсхолдер виден, пока lazy-<img> не загрузился — отклик вместо «пусто» */
 .clickable-thumb { cursor: zoom-in; background: var(--track); }
 .clickable-thumb:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* F80: в сетке видео и фото были неотличимы. Значок «плёнки» поверх угла плитки —
+   обёртка появляется ТОЛЬКО у видео, у фото плитка остаётся голым <img>. */
+.thumb-video { position: relative; display: inline-block; line-height: 0; }
+.thumb-video-badge { position: absolute; left: 3px; bottom: 3px; display: inline-flex;
+      align-items: center; gap: 3px; padding: 1px 4px; border-radius: var(--radius-sm);
+      background: rgba(10,14,22,.72); color: #fff; font-size: 0.7rem; line-height: 1.4;
+      pointer-events: none; }
+.thumb-video-badge svg { width: 11px; height: 11px; display: block; }
 .thumb-name { display: block; font-size: 0.8rem; color: var(--muted); word-break: break-all; margin-top: 2px; }
 .event-name-input { width: 100%; margin-bottom: var(--space-sm); box-sizing: border-box; }
 .process-intro { max-width: 46rem; color: var(--muted); }
@@ -2900,6 +2932,22 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 .lightbox img { width: auto; height: auto; max-width: 100%; max-height: 100%;
       object-fit: contain; cursor: default;
       border-radius: var(--radius-md); box-shadow: var(--shadow-lg); background: var(--surface); }
+
+/* --- F80: листалка кадров видео внутри лайтбокса (у фото скрыта) --- */
+.lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+      padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(10,14,22,.55); }
+.lightbox-nav:hover { background: rgba(10,14,22,.85); }
+.lightbox-nav[hidden] { display: none; }
+.lightbox-nav svg { width: 22px; height: 22px; }
+.lightbox-prev { left: var(--space-md); }
+.lightbox-next { right: var(--space-md); }
+.lightbox-dots { position: absolute; left: 0; right: 0; bottom: var(--space-md);
+      display: flex; justify-content: center; gap: 7px; }
+.lightbox-dots[hidden] { display: none; }
+.lightbox-dot { width: 10px; height: 10px; padding: 0; border-radius: 50%; cursor: pointer;
+      border: 1px solid rgba(255,255,255,.75); background: transparent; }
+.lightbox-dot.active { background: #fff; }
 
 @media (max-width: 640px) {
   body { padding: var(--space-md); }
@@ -3091,12 +3139,25 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 {{back_to_top}}</button>
 <div id="lightbox" class="lightbox" hidden title="{{lightbox_close}}">
 <img id="lightbox-img" src="" alt="">
+<button type="button" id="lightbox-prev" class="lightbox-nav lightbox-prev" hidden
+        title="{{frame_prev}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        ><path d="M15 18l-6-6 6-6"/></svg></button>
+<button type="button" id="lightbox-next" class="lightbox-nav lightbox-next" hidden
+        title="{{frame_next}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        ><path d="M9 6l6 6-6 6"/></svg></button>
+<div id="lightbox-dots" class="lightbox-dots" hidden></div>
 </div>
 <script>window.I18N = {{i18n_json}};</script>
+<script>window.VIDEO_FRAMES = {{video_frames}};</script>
 <script>
 (function () {
   var I18N = window.I18N;
   var THEME_KEY = "sorta-ui-theme";
+  // F80: сколько кадров ленты может листать лайтбокс (SORTA_VIDEO_FRAMES). У
+  // короткого ролика кадров реально меньше — это выясняется по первому 404.
+  var VIDEO_FRAMES = window.VIDEO_FRAMES || 1;
 
   // --- инлайн-SVG иконки (U1: без иконочных шрифтов/эмодзи) --------------
   var ICONS = {
@@ -3124,6 +3185,9 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
         'stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/>' +
         '<path d="M12 8h.01M11 11.5h1v5.5h1"/></svg>',
+    film: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+        'stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" ' +
+        'height="14" rx="2"/><path d="M7 5v14M17 5v14M3 12h18"/></svg>',
   };
 
   function icon(name) {
@@ -3425,16 +3489,33 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     thumbObserver.observe(img);
   }
 
-  function clickableThumb(fileId, samples, index, thumbUrl) {
+  // F80: у видео плитка получает значок — до этого ролик в сетке был неотличим от
+  // фото. Обёртка создаётся ТОЛЬКО для видео: у фото в ячейке остаётся тот же голый
+  // <img>, что и раньше, поэтому вёрстка фото-строк не меняется вовсе.
+  function videoBadge() {
+    var badge = document.createElement("span");
+    badge.className = "thumb-video-badge";
+    var mark = icon("film");
+    if (mark) badge.appendChild(mark);
+    badge.appendChild(document.createTextNode(I18N.video_badge));
+    return badge;
+  }
+
+  function clickableThumb(fileId, samples, index, thumbUrl, isVideo) {
     var img = document.createElement("img");
     loadThumbWhenVisible(img, thumbUrl || ("/thumb/" + fileId));
     img.alt = "";
     img.className = "clickable-thumb";
-    img.title = I18N.lightbox_open;
+    img.title = isVideo ? I18N.video_open : I18N.lightbox_open;
     img.addEventListener("click", function () {
-      openLightbox(samples || [fileId], index || 0);
+      openLightbox(samples || [fileId], index || 0, isVideo ? VIDEO_FRAMES : 0);
     });
-    return img;
+    if (!isVideo) return img;
+    var wrap = document.createElement("span");
+    wrap.className = "thumb-video";
+    wrap.appendChild(img);
+    wrap.appendChild(videoBadge());
+    return wrap;
   }
 
   // --- F77: ручные правки раскладки (не трогать / перенести в папку) -----
@@ -3611,7 +3692,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       tdSelect.appendChild(checkbox);
       tr.appendChild(tdSelect);
       var tdThumb = document.createElement("td");
-      tdThumb.appendChild(clickableThumb(item.file_id, null, 0, item.thumb_url));
+      tdThumb.appendChild(clickableThumb(item.file_id, null, 0, item.thumb_url, item.video));
       var nameEl = document.createElement("span");
       nameEl.className = "thumb-name";
       nameEl.textContent = item.name;
@@ -4560,7 +4641,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     files.forEach(function (item) {
       var tr = document.createElement("tr");
       var tdThumb = document.createElement("td");
-      tdThumb.appendChild(clickableThumb(item.file_id, null, 0, item.thumb_url));
+      tdThumb.appendChild(clickableThumb(item.file_id, null, 0, item.thumb_url, item.video));
       var nameEl = document.createElement("span");
       nameEl.className = "thumb-name";
       nameEl.textContent = item.name;
@@ -4685,20 +4766,65 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   // --- лайтбокс (F42): один переиспользуемый оверлей поверх /photo/<id> ---
   // Заполняется по клику (не N скрытых оверлеев). Клик по фону/Esc закрывает;
   // стрелки ←/→ листают переданный список sample-кадров (опц., F42).
+  //
+  // F80: у ВИДЕО те же стрелки листают кадры ОДНОГО ролика (/frame/<id>/<i>), а не
+  // соседние файлы: воспроизведения нет, и несколько кадров — единственный способ
+  // понять, что там снято. Для фото поведение не меняется ни на шаг: lightboxFrames
+  // остаётся нулём, кадр берётся всё тем же /preview/<id>.
+  //
+  // Кадры тянутся лениво: src ставится ровно одному кадру, тому, что показан. Сетка
+  // плиток по-прежнему знает только /thumb — шесть кадров на плитку никто не грузит.
 
   var lightboxEl = document.getElementById("lightbox");
   var lightboxImg = document.getElementById("lightbox-img");
+  var lightboxPrev = document.getElementById("lightbox-prev");
+  var lightboxNext = document.getElementById("lightbox-next");
+  var lightboxDots = document.getElementById("lightbox-dots");
   var lightboxSamples = null;
   var lightboxIndex = 0;
+  var lightboxFrames = 0;   // > 0 <=> открыто видео, столько кадров у ленты
+  var lightboxFrame = 0;
+
+  function renderLightboxDots() {
+    lightboxDots.textContent = "";
+    for (var i = 0; i < lightboxFrames; i++) {
+      var dot = document.createElement("button");
+      dot.type = "button";
+      dot.className = "lightbox-dot" + (i === lightboxFrame ? " active" : "");
+      dot.title = fmt(I18N.frame_of, { n: i + 1, all: lightboxFrames });
+      dot.addEventListener("click", (function (frame) {
+        return function (e) { e.stopPropagation(); showLightboxFrame(frame); };
+      })(i));
+      lightboxDots.appendChild(dot);
+    }
+    var multi = lightboxFrames > 1;
+    lightboxDots.hidden = !multi;
+    lightboxPrev.hidden = !multi;
+    lightboxNext.hidden = !multi;
+  }
+
+  function showLightboxFrame(frame) {
+    lightboxFrame = frame;
+    lightboxImg.src = "/frame/" + lightboxSamples[lightboxIndex] + "/" + frame;
+    renderLightboxDots();
+  }
 
   function showLightboxAt(index) {
     lightboxIndex = index;
+    if (lightboxFrames) { showLightboxFrame(0); return; }
     // /preview — крупный ДЕКОДИРОВАННЫЙ JPEG (HEIC/RAW рендерятся), не сырой /photo
     lightboxImg.src = "/preview/" + lightboxSamples[index];
   }
 
-  function openLightbox(samples, index) {
+  function stepLightboxFrame(delta) {
+    showLightboxFrame((lightboxFrame + delta + lightboxFrames) % lightboxFrames);
+  }
+
+  function openLightbox(samples, index, videoFrames) {
     lightboxSamples = samples;
+    lightboxFrames = videoFrames || 0;
+    lightboxFrame = 0;
+    renderLightboxDots();
     showLightboxAt(index);
     lightboxEl.hidden = false;
   }
@@ -4707,13 +4833,38 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     lightboxEl.hidden = true;
     lightboxImg.src = "";
     lightboxSamples = null;
+    lightboxFrames = 0;
+    lightboxFrame = 0;
+    renderLightboxDots();
   }
+
+  // Короткий ролик отдаёт меньше кадров, чем настроено, и недостающий индекс — это
+  // честный 404. Обрезаем ленту по первому промаху и возвращаемся на прошлый кадр:
+  // сервер не обязан заранее знать, сколько кадров вытащится из конкретного файла.
+  lightboxImg.addEventListener("error", function () {
+    if (!lightboxFrames || lightboxFrame < 1) return;
+    lightboxFrames = lightboxFrame;
+    showLightboxFrame(lightboxFrame - 1);
+  });
 
   lightboxEl.addEventListener("click", closeLightbox);
   lightboxImg.addEventListener("click", function (e) { e.stopPropagation(); });
+  lightboxPrev.addEventListener("click", function (e) {
+    e.stopPropagation();
+    stepLightboxFrame(-1);
+  });
+  lightboxNext.addEventListener("click", function (e) {
+    e.stopPropagation();
+    stepLightboxFrame(1);
+  });
   document.addEventListener("keydown", function (e) {
     if (lightboxEl.hidden) return;
     if (e.key === "Escape") { closeLightbox(); return; }
+    if (lightboxFrames > 1) {
+      if (e.key === "ArrowRight") stepLightboxFrame(1);
+      else if (e.key === "ArrowLeft") stepLightboxFrame(-1);
+      return;
+    }
     if (!lightboxSamples || lightboxSamples.length < 2) return;
     if (e.key === "ArrowRight") showLightboxAt((lightboxIndex + 1) % lightboxSamples.length);
     else if (e.key === "ArrowLeft") {
@@ -5116,6 +5267,9 @@ def _render_index_html(lang: i18n.Lang) -> str:
     )
     html = _INDEX_HTML_TEMPLATE.replace("{{lang}}", lang)
     html = html.replace("{{lang_options}}", lang_options)
+    # F80: how many frames the lightbox may page through. The real strip of a short
+    # clip can be shorter — the pager finds that out from the first 404 and clamps.
+    html = html.replace("{{video_frames}}", str(imaging.video_frames()))
     html = html.replace("{{i18n_json}}", json.dumps(i18n_map, ensure_ascii=False))
     for key, value in i18n_map.items():
         html = html.replace("{{" + key + "}}", value)
@@ -5190,6 +5344,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_thumb(path[len("/thumb/"):])
             elif path.startswith("/preview/"):
                 self._serve_preview(path[len("/preview/"):])
+            elif path.startswith("/frame/"):
+                self._serve_frame(path[len("/frame/"):])
             elif path.startswith("/photo/"):
                 self._serve_photo(path[len("/photo/"):])
             else:
@@ -5636,6 +5792,25 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             data = _preview_bytes(file_id, path)
+            if data is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_bytes(data, "image/jpeg")
+
+        def _serve_frame(self, raw: str) -> None:
+            # F80: `/frame/<file_id>/<index>` — one frame of a clip's filmstrip. The
+            # path is resolved from the DB by file_id exactly as /thumb and /preview
+            # do; no path ever comes in from outside. An index that the clip does not
+            # have (a short clip, a photo, a number past the strip) is a 404, not a
+            # 500 — the lightbox uses it to find out how long the strip really is.
+            raw_id, _, raw_index = raw.partition("/")
+            file_id = _parse_file_id(raw_id)
+            index = _parse_file_id(raw_index)
+            path = self._resolve(raw_id)
+            if file_id is None or index is None or index < 0 or path is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            data = _preview_bytes(file_id, path, frame=index)
             if data is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return

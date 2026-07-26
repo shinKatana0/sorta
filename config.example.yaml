@@ -197,3 +197,9 @@ imaging:
   # SORTA_VIDEO_WORKERS.
   # video_previews: true
   # video_workers: 4
+  # F80: the lightbox pages through several frames of a clip instead of the single
+  # tile — one frame says what it is, six say whether it is yours and where it was
+  # shot. Extracted in one pass and cached like any other preview, only when the
+  # lightbox is actually opened. 1 switches the filmstrip off (back to the F74 single
+  # frame). Env override: SORTA_VIDEO_FRAMES.
+  # video_frames: 6
