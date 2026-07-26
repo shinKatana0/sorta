@@ -2032,6 +2032,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "step_actions_title": {"ru": "Действия", "en": "Actions", "ja": "アクション"},
     "step_change_button": {"ru": "изменить", "en": "change", "ja": "変更"},
+    # The same button folds the step back: opening one and finding nothing to change
+    # is the common case, and it used to leave the block open with no way back.
+    "step_collapse_button": {"ru": "свернуть", "en": "collapse", "ja": "折りたたむ"},
     "step_needs_source_hint": {
         "ru": "Сначала укажите папку с фото.",
         "en": "Choose a photo folder first.",
@@ -2838,7 +2841,10 @@ label { cursor: pointer; }
 .step.collapsed .step-summary { display: inline; }
 .step.collapsed .step-body { display: none; }
 .step-edit-btn { display: none; padding: 3px 8px; font-size: 0.78rem; }
-.step.collapsed .step-edit-btn { display: inline-flex; }
+/* Кнопка видна всегда, когда шаг МОЖНО свернуть (источник задан): в свёрнутом
+   виде она «изменить», в раскрытом — «свернуть». Раньше её показывал только
+   .collapsed, поэтому раскрытый шаг обратно не складывался. */
+.step.can-collapse .step-edit-btn { display: inline-flex; }
 .step-body { display: flex; flex-direction: column; gap: var(--space-sm); }
 .step-hint { display: none; font-size: 0.8rem; color: var(--muted); }
 .step.step-dimmed { opacity: 0.65; }
@@ -4023,9 +4029,14 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 
   // Всё, что задаёт вход пайплайна, на время прогона недоступно: менять источник
   // у уже идущей обработки бессмысленно, а диалог выбора папки ещё и открывает
-  // отдельное окно поверх работающего процесса.
+  // отдельное окно поверх работающего процесса. Галки шагов и ярусов — там же:
+  // параметры уходят на сервер один раз, в момент старта, поэтому снятая на
+  // середине прогона галка «лица» ничего не отменяет, а выглядит так, будто
+  // отменила — и это выясняется через час, когда лица всё-таки посчитались.
   function updateProcessInputsDisabled() {
-    ["process-browse-btn", "process-source-dir", "process-excludes-btn"].forEach(function (id) {
+    ["process-browse-btn", "process-source-dir", "process-excludes-btn",
+     "process-deep-checkbox", "process-geo-online-checkbox",
+     "process-faces-checkbox", "process-events-checkbox"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = processRunning; }
     });
@@ -4074,6 +4085,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     startBtn.disabled = processRunning;
     rerunBtn.disabled = processRunning || !rerunSelectedAllowed();
     updateProcessInputsDisabled();
+    updateBusyControlsDisabled();  // раскладка и «начать заново» — пока идёт прогон
     cancelBtn.style.display = data.running ? "" : "none";
     cancelBtn.disabled = !!data.cancel_requested;
     bar.style.display = data.running ? "" : "none";
@@ -4253,15 +4265,28 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   // Настроенный блок — одна строка с «изменить», ненастроенный раскрыт. Следующие
   // блоки приглушены пояснением, но НЕ заблокированы: кнопка запуска доступна
   // всегда, когда источник задан (визард штрафует каждый следующий заход).
+  // Кнопка шага — переключатель, а не «открыть»: открыл, посмотрел, ничего не менял
+  // — и складываешь обратно тем же местом, куда нажал. Сворачивание чисто визуальное
+  // и НИЧЕГО не отменяет: введённый путь и снятые галки остаются как есть (иначе это
+  // была бы «отмена», а она в шаге, который применяется сразу, только путает).
+  // Сворачивать нечего, пока источник не задан, — там кнопка скрыта.
+  function updateStepToggle(stepId, buttonId, open, canCollapse) {
+    var step = document.getElementById(stepId);
+    var button = document.getElementById(buttonId);
+    step.classList.toggle("collapsed", canCollapse && !open);
+    step.classList.toggle("can-collapse", canCollapse);
+    button.textContent = open ? I18N.step_collapse_button : I18N.step_change_button;
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
   function updateStepLayout() {
     var src = currentSourceDir();
     document.getElementById("step-source-summary").textContent =
         src + " · " + excludesSummaryText();
     document.getElementById("step-options-summary").textContent = optionsSummaryText();
-    document.getElementById("step-source").classList.toggle(
-        "collapsed", !!src && !stepSourceOpen);
+    updateStepToggle("step-source", "step-source-edit", stepSourceOpen, !!src);
+    updateStepToggle("step-options", "step-options-edit", stepOptionsOpen, !!src);
     var options = document.getElementById("step-options");
-    options.classList.toggle("collapsed", !!src && !stepOptionsOpen);
     options.classList.toggle("step-dimmed", !src);
     document.getElementById("step-actions").classList.toggle("step-dimmed", !src);
   }
@@ -4470,12 +4495,17 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   });
 
   document.getElementById("step-source-edit").addEventListener("click", function () {
-    stepSourceOpen = true;
+    stepSourceOpen = !stepSourceOpen;
+    // Свернули источник — панель исключений уходит вместе с ним: она часть этого
+    // шага и висеть отдельно от него не должна.
+    if (!stepSourceOpen) {
+      document.getElementById("excludes-panel").style.display = "none";
+    }
     updateStepLayout();
   });
 
   document.getElementById("step-options-edit").addEventListener("click", function () {
-    stepOptionsOpen = true;
+    stepOptionsOpen = !stepOptionsOpen;
     updateStepLayout();
   });
 
@@ -4551,12 +4581,32 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     return text;
   }
 
+  // Раскладка во время прогона запрещена и на сервере (409 «process is running»
+  // под общим busy_lock), но кнопка до этого оставалась живой — про запрет
+  // узнавали кликом. Хуже другое: на середине прогона плана попросту нет.
+  // geo чистит places перед записью, junk ещё не заполнил media_class — то есть
+  // раскладка, начатая сейчас, разложила бы коллекцию по недостроенному индексу.
+  var sortRunning = false;
+
+  // Кнопки, которые обязаны быть мертвы, пока занят ЛЮБОЙ из двух процессов
+  // (прогон пайплайна или раскладка). Сервер их и так отбивает 409 под общим
+  // busy_lock, но «Начать заново» сперва показывает страшное подтверждение и
+  // только потом ошибку, а раскладка на середине прогона разложила бы коллекцию
+  // по недостроенному индексу (places очищены, media_class ещё пуст).
+  function updateBusyControlsDisabled() {
+    ["sort-apply-btn", "sort-browse-btn", "sort-dest",
+     "process-reset-btn"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.disabled = sortRunning || processRunning; }
+    });
+  }
+
   function renderSortStatus(data) {
-    var btn = document.getElementById("sort-apply-btn");
     var bar = document.getElementById("sort-progress");
     var statusEl = document.getElementById("sort-status");
     var warnEl = document.getElementById("sort-warning");
-    btn.disabled = !!data.running;
+    sortRunning = !!data.running;
+    updateBusyControlsDisabled();
     bar.style.display = data.running ? "" : "none";
     if (data.running) {
       bar.max = data.total || 0;

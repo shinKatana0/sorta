@@ -250,21 +250,50 @@ class TestFirstTabLayout(unittest.TestCase):
 
     def test_configured_block_collapses_to_one_line(self):
         self.assertIn("function updateStepLayout()", self.html)
-        self.assertIn('"collapsed", !!src && !stepSourceOpen)', self.html)
-        self.assertIn('options.classList.toggle("collapsed", !!src && !stepOptionsOpen)',
-                      self.html)
+        self.assertIn('updateStepToggle("step-source", "step-source-edit", '
+                      'stepSourceOpen, !!src)', self.html)
+        self.assertIn('updateStepToggle("step-options", "step-options-edit", '
+                      'stepOptionsOpen, !!src)', self.html)
         self.assertIn('id="step-source-summary"', self.html)
         self.assertIn('id="step-options-summary"', self.html)
-        # a collapsed block hides its body and shows the summary + "change"
+        # a collapsed block hides its body and shows the summary
         self.assertIn(".step.collapsed .step-body { display: none; }", self.html)
         self.assertIn(".step.collapsed .step-summary { display: inline; }", self.html)
-        self.assertIn(".step.collapsed .step-edit-btn { display: inline-flex; }", self.html)
 
-    def test_change_buttons_reopen_a_collapsed_block(self):
+    def test_change_buttons_toggle_a_block_both_ways(self):
+        """Opened a step, found nothing to change — the same button folds it back.
+
+        It used to only ever open: `stepSourceOpen = true`, and the button was drawn
+        by `.step.collapsed` alone, so an expanded step had no way back short of
+        reloading the page.
+        """
         for btn in ("step-source-edit", "step-options-edit"):
             self.assertIn(f'id="{btn}"', self.html)
-        self.assertIn("stepSourceOpen = true;", self.html)
-        self.assertIn("stepOptionsOpen = true;", self.html)
+        self.assertIn("stepSourceOpen = !stepSourceOpen;", self.html)
+        self.assertIn("stepOptionsOpen = !stepOptionsOpen;", self.html)
+        # the button is on screen whenever the step CAN be folded, not only when it is
+        self.assertIn(".step.can-collapse .step-edit-btn { display: inline-flex; }",
+                      self.html)
+        self.assertIn('step.classList.toggle("can-collapse", canCollapse)', self.html)
+
+    def test_the_button_says_what_it_will_do(self):
+        self.assertIn("button.textContent = open ? I18N.step_collapse_button "
+                      ": I18N.step_change_button;", self.html)
+        self.assertIn('button.setAttribute("aria-expanded", open ? "true" : "false")',
+                      self.html)
+
+    def test_nothing_to_fold_before_a_source_is_picked(self):
+        """canCollapse is `!!src`: with no source the step is open and the button gone
+        — folding away the only field that has to be filled in would be a trap."""
+        self.assertIn('updateStepToggle("step-source", "step-source-edit", '
+                      'stepSourceOpen, !!src)', self.html)
+        self.assertIn('step.classList.toggle("collapsed", canCollapse && !open)',
+                      self.html)
+
+    def test_folding_the_source_closes_the_exclusions_panel(self):
+        """The tree belongs to that step — it must not stay on screen without it."""
+        handler = self.html.split('getElementById("step-source-edit")')[1][:600]
+        self.assertIn('getElementById("excludes-panel").style.display = "none"', handler)
 
     def test_next_blocks_are_dimmed_not_blocked(self):
         self.assertIn('options.classList.toggle("step-dimmed", !src)', self.html)
