@@ -1369,6 +1369,85 @@ class TestCityDropUnlocalizedDistrict(SorterTestBase):
         self.assertEqual(report.plan[0].target_rel, "Турция/Стамбул/2022/Бешикташ/ist.jpg")
 
 
+class TestCountryWithoutCity(SorterTestBase):
+    """F86: a resolved country with no city lays the file out at country level
+    (<Country>/<year>/, reason `country_only`) instead of _Unsorted/no_place/.
+
+    On the live collection that is 1 596 files whose country was known exactly — hiding
+    them in "unsorted" threw away a signal the pipeline already had. Only a file without
+    a country at all (place_confidence='unknown') still goes to no_place.
+    """
+
+    def _plan(self, cfg=None):
+        with patch("sorta.sorter.GeoResolver", return_value=_FakeGeoResolver()):
+            return plan_and_sort(cfg or self.cfg, self.conn, "city", self.dest,
+                                 apply=False)
+
+    def test_country_only_goes_to_the_country_level(self):
+        self.add_file("a.jpg", country="RU", city=None)
+        report = self._plan()
+        self.assertEqual(report.plan[0].target_rel, "Russia/2022/a.jpg")
+        self.assertEqual(report.plan[0].reason, "country_only")
+
+    def test_country_only_localized(self):
+        cfg = Config(sources=[self.src_dir], database=self.root / "test.db",
+                    raw={"language": "ru"})
+        self.add_file("a.jpg", country="RU", city=None)
+        self.assertEqual(self._plan(cfg).plan[0].target_rel, "Россия/2022/a.jpg")
+
+    def test_online_country_name_used_at_the_country_level_too(self):
+        # G6: an online places row already carries the full country name
+        self.add_file("a.jpg", country="ID", city=None, country_name="Индонезия")
+        self.assertEqual(self._plan().plan[0].target_rel, "Индонезия/2022/a.jpg")
+
+    def test_inherited_place_without_city_also_goes_to_the_country(self):
+        # session_inferred is a resolved place too — only 'unknown' means no country
+        self.add_file("a.jpg", country="TH", city=None, place_confidence="session_inferred")
+        self.assertEqual(self._plan().plan[0].target_rel, "Thailand/2022/a.jpg")
+
+    def test_unknown_place_confidence_still_goes_to_no_place(self):
+        self.add_file("a.jpg", country="RU", city=None, place_confidence="unknown")
+        report = self._plan()
+        self.assertEqual(report.plan[0].target_rel, "_Unsorted/no_place/a.jpg")
+        self.assertEqual(report.plan[0].reason, "no_place")
+
+    def test_no_places_row_at_all_still_goes_to_no_place(self):
+        self.add_file("a.jpg")
+        self.assertEqual(self._plan().plan[0].reason, "no_place")
+
+    def test_undated_file_without_a_city_keeps_the_undated_branch(self):
+        # the year check runs before the city branch and is not affected by F86
+        self.add_file("a.jpg", taken_at=None, country="RU", city=None, camera_make="Apple")
+        self.assertEqual(self._plan().plan[0].target_rel, "_Unsorted/low_date/a.jpg")
+
+    def test_a_city_is_still_laid_out_exactly_as_before(self):
+        # the regression guard: the branch above must not change the working case
+        self.add_file("city.jpg", country="RU", city="Saint Petersburg",
+                      city_geonameid=_GID_SPB, district_geonameid=_GID_AKADEM)
+        self.add_file("nocity.jpg", country="RU", city=None)
+        by_name = {it.src.name: it for it in self._plan().plan}
+        self.assertEqual(by_name["city.jpg"].target_rel,
+                         "Russia/Saint Petersburg/2022/Akademicheskoe/city.jpg")
+        self.assertEqual(by_name["city.jpg"].reason, "city")
+        self.assertEqual(by_name["nocity.jpg"].target_rel, "Russia/2022/nocity.jpg")
+
+    def test_reason_reaches_the_csv(self):
+        self.add_file("a.jpg", country="RU", city=None)
+        report = self._plan()
+        rows = self.read_csv(report.csv_path)
+        self.assertEqual(rows[0]["reason"], "country_only")
+        self.assertEqual(rows[0]["target"], "Russia/2022/a.jpg")
+
+    def test_apply_moves_the_file_to_the_country_folder(self):
+        fid = self.add_file("a.jpg", country="RU", city=None)
+        with patch("sorta.sorter.GeoResolver", return_value=_FakeGeoResolver()):
+            report = plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=True)
+        moved = self.dest / "Russia" / "2022" / "a.jpg"
+        self.assertTrue(moved.exists())
+        self.assertEqual(report.moved, 1)
+        self.assertEqual(self.path_of(fid), str(moved))
+
+
 class TestLocalizedWhereFilter(SorterTestBase):
     """F46: --where country=Россия/city=Москва (lang=ru) selects the same files
     as the canonical --where country=RU/city=Moscow."""
