@@ -151,5 +151,7 @@ target-version = "py311"
 ignore_missing_imports = true
 
 [tool.coverage.report]
-# Ratchet: raise to 80 after covering cli.py and implementing the phase 2-5 stubs.
-fail_under = 65
+# Ratchet: the phase 2-5 stubs are implemented and the suite sits at ~92%, so the
+# floor moves 65 -> 85. Kept a few points below the actual number on purpose — a
+# threshold that tracks the last run turns every unrelated change into a gate failure.
+fail_under = 85

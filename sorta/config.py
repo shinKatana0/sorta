@@ -293,6 +293,12 @@ _IMAGING_ENV = {
     "preview_dir": "SORTA_PREVIEW_DIR",
     "preview_max_edge": "SORTA_PREVIEW_MAX_EDGE",
     "preview_quality": "SORTA_PREVIEW_QUALITY",
+    # F74/F80: video tiles and the lightbox filmstrip sit in the same leaf module and
+    # were env-only until now, so config.example.yaml documented keys that nothing
+    # read. They seed their vars exactly like the preview ones — env still wins.
+    "video_previews": "SORTA_VIDEO_PREVIEWS",
+    "video_workers": "SORTA_VIDEO_WORKERS",
+    "video_frames": "SORTA_VIDEO_FRAMES",
 }
 
 

@@ -80,5 +80,36 @@ class TestImagingConfigSection(unittest.TestCase):
             self.assertNotIn(imaging.ENV_PREVIEW_DIR, os.environ)
 
 
+class TestVideoConfigSection(unittest.TestCase):
+    """F74/F80 follow-up: the video keys config.example.yaml documents are now read.
+
+    They lived in imaging as env vars only, so `video_frames: 3` in the config file
+    was silently ignored — the lightbox kept paging six frames.
+    """
+
+    def test_video_keys_reach_imaging(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            _apply_imaging_config({"video_previews": False, "video_workers": 2,
+                                   "video_frames": 3})
+            self.assertEqual(os.environ[imaging.ENV_VIDEO_PREVIEWS], "0")
+            self.assertEqual(os.environ[imaging.ENV_VIDEO_WORKERS], "2")
+            self.assertEqual(os.environ[imaging.ENV_VIDEO_FRAMES], "3")
+            self.assertFalse(imaging.video_previews_enabled())
+            self.assertEqual(imaging.video_workers(), 2)
+            self.assertEqual(imaging.video_frames(), 3)
+
+    def test_environment_still_wins(self):
+        with unittest.mock.patch.dict(
+                os.environ, {imaging.ENV_VIDEO_FRAMES: "1"}, clear=True):
+            _apply_imaging_config({"video_frames": 6})
+            self.assertEqual(imaging.video_frames(), 1)
+
+    def test_defaults_hold_when_the_section_says_nothing(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            _apply_imaging_config({})
+            self.assertNotIn(imaging.ENV_VIDEO_FRAMES, os.environ)
+            self.assertEqual(imaging.video_frames(), imaging.VIDEO_FRAMES)
+
+
 if __name__ == "__main__":
     unittest.main()
