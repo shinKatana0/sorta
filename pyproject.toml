@@ -87,6 +87,32 @@ conflicts = [
     ],
 ]
 
+# F76: insightface depends on plain `onnxruntime`, so under the gpu profile BOTH
+# `onnxruntime` and `onnxruntime-gpu` were resolved. They unpack into the same
+# site-packages/onnxruntime/ directory, whichever installs last wins, and faces ended
+# up on the CPU by coin flip (~40 min vs hours on 24.5k frames).
+# `override-dependencies`/`constraint-dependencies` cannot express this: they are
+# global, and under the cpu profile the transitive `onnxruntime` is exactly what we
+# want. Replacing insightface's declared metadata is per-package instead of
+# per-profile, which is what actually fits: under `cpu` onnxruntime stays a DIRECT
+# dependency of the extra, so dropping it from insightface changes nothing there (the
+# cpu resolution is byte-identical), while under `gpu` only onnxruntime-gpu remains.
+# The list below is insightface 1.0.1's own requires-dist minus `onnxruntime`; pinning
+# the version keeps it from going stale silently on an upgrade — refresh it when the
+# insightface pin moves, and `sorta doctor` shouts if this ever regresses.
+[[tool.uv.dependency-metadata]]
+name = "insightface"
+version = "1.0.1"
+requires-dist = [
+    "numpy",
+    "onnx",
+    "opencv-python",
+    "tqdm",
+    "requests",
+    "scipy",
+    "scikit-image",
+]
+
 # torch/torchvision: under extra=gpu — from the PyTorch cu130 index (CUDA 13, for
 # Blackwell sm_120, compatible with the nvidia-*-cu13 packages of onnxruntime-gpu);
 # under extra=cpu — from the CPU PyTorch index (resolves cleaner than the default
