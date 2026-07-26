@@ -86,7 +86,11 @@ class TestBrowseEndpoint(UiServerTestBase):
             f"{self.base_url}/api/browse", data=b"{}", method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        # 5 s was not enough under the load of the full suite: this test spins up a
+        # real HTTP server, and on a busy machine the handler thread does not always
+        # get scheduled in time. Isolated runs never failed; only the whole-suite run
+        # did, which made every gate a coin flip.
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read())
 
     def test_returns_selected_path(self):
