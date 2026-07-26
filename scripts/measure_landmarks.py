@@ -37,7 +37,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sorta.config import load_config  # noqa: E402
-from sorta.landmarks import _NEGATIVE_PROMPTS, batched, clip_classifier, load_landmarks  # noqa: E402
+from sorta.landmarks import batched, clip_classifier, landmark_prompts, load_landmarks  # noqa: E402
 from sorta.naming import naming_settings  # noqa: E402
 
 THRESHOLDS = (0.50, 0.70, 0.80, 0.85, 0.90, 0.95, 0.99)
@@ -80,7 +80,7 @@ def main() -> None:
     cfg = load_config(args.config)
     settings = naming_settings(cfg)
     landmarks = load_landmarks(settings.landmarks_file)
-    prompts = [lm.prompt for lm in landmarks] + list(_NEGATIVE_PROMPTS)
+    prompts = landmark_prompts(landmarks)  # the same set the pipeline scores against
     covered = {lm.country for lm in landmarks}
     random.seed(args.seed)
 

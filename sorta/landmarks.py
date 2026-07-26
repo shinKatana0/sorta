@@ -4,6 +4,13 @@ Contract: reads files and places, writes ONLY into places and STRICTLY into rows
 with confidence='unknown' (exact_gps / session_inferred / visual are not overwritten;
 run order: geo always before landmarks).
 
+F75: a single CLIP score does not separate a real Charles Bridge from a nice photo of
+some other European street — measured on the live collection, the wrong cities scored
+0.980 against 0.991 for the right one, so no threshold splits them. Three independent
+signals do the job instead (see `_ANTI_PROMPTS`, `_group_minority`, `_folder_hint`):
+the score only ever proposes a match, and the two corroboration rules run between the
+proposal and the DB write.
+
 The CLIP model (open_clip, the same as in junk.py) is mocked in tests via the
 classifier parameter; the real load happens only in clip_classifier().
 GPU: torch is installed as a CPU wheel (the project's CUDA wheels are only for
@@ -13,16 +20,19 @@ finished in Phase 6.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Callable, Iterator, Sequence, TypeVar
 
 import numpy as np
 import yaml
 
-from . import imaging
+from . import i18n, imaging
 from .config import Config
+from .geodata import GeoResolver
 from .naming import NamingSettings, naming_settings, utcnow_iso
 
 # (image paths, text prompts) -> softmax probabilities (n_img, n_prompt);
@@ -41,6 +51,27 @@ _NEGATIVE_PROMPTS = (
     "a photo",
     "an indoor photo of people",
     "a snapshot of everyday life",
+)
+
+# F75 anti-classes. DO NOT DELETE AS "REDUNDANT" — each line here was measured on the
+# live collection and each one buys something the plain negatives above do not:
+# * the render/wallpaper/poster/figurine lines catch pictures OF a landmark that were
+#   never taken at it (a video-game skyline scored 0.924 for Times Square; with these
+#   it drops to 0.631);
+# * the two generic-European lines catch the opposite error — a real photo of real
+#   architecture that simply has no entry in our ten-landmark list, so CLIP hands it to
+#   the nearest one it does know (17 Berlin fires went from a median 0.980 to 0.433).
+# They cost the true positives some score too (Prague 0.991 -> 0.894), which is why the
+# threshold is a config value and not a constant: adding or removing a line here shifts
+# the whole distribution and `naming.landmark_threshold` has to be re-measured with
+# `scripts/measure_landmarks.py`.
+_ANTI_PROMPTS = (
+    "a screenshot from a video game",
+    "a desktop wallpaper",
+    "a souvenir figurine of a famous landmark",
+    "a poster or a painting of a landmark",
+    "an ordinary building in a European city",
+    "a street in an old European town",
 )
 
 _T = TypeVar("_T")
@@ -124,6 +155,17 @@ def load_landmarks(path: str | Path) -> list[Landmark]:
                                country=str(e["country"]), city=str(e["city"]),
                                geonameid=geonameid))
     return result
+
+
+def landmark_prompts(landmarks: Sequence[Landmark]) -> list[str]:
+    """The prompt list for one CLIP pass: landmarks first, distractors after them.
+
+    The order is part of the contract — argmax is taken over the first len(landmarks)
+    entries only, so the negative and anti classes can drain probability mass but can
+    never win. `scripts/measure_landmarks.py` builds its prompts through here as well,
+    otherwise it would measure a threshold for a prompt set the pipeline does not use.
+    """
+    return [lm.prompt for lm in landmarks] + list(_NEGATIVE_PROMPTS) + list(_ANTI_PROMPTS)
 
 
 @dataclass
@@ -288,17 +330,211 @@ class LandmarkStats:
     scanned: int = 0                  # files with places.confidence='unknown'
     matched: int = 0                  # got confidence='visual'
     by_landmark: dict[str, int] = field(default_factory=dict)
+    # F75 corroboration: without these the feature cannot be measured, and it has to be
+    # re-measured every time the prompts or the thresholds move. Each match above the
+    # threshold falls into exactly one of these buckets or into `matched`.
+    dropped_by_group: int = 0            # a minority city inside its own directory
+    dropped_by_folder_name: int = 0      # the path names a different country
+    confirmed_by_folder_name: int = 0    # the path names this country/city (kept)
+
+
+# --- F75: corroboration of a CLIP match by its place in the tree -----------------
+
+# A folder name may be compound ("чехия-австрия", "Франция Париж"), so besides the
+# component itself every run of LETTERS in it is tried as well. Digits never belong to
+# a place name here, so "100D3300" contributes only itself and the useless "D".
+_WORD_RE = re.compile(r"[^\W\d_]+")
+
+# Shorter components are not looked up at all: three letters collide with some city in
+# a world-wide geo base far too easily ("Сад", "Море", "DCI"), and a false country would
+# silently discard correct matches.
+_MIN_COMPONENT_LEN = 4
+
+
+@dataclass(frozen=True)
+class _Match:
+    """A landmark proposed by CLIP for a file, before corroboration.
+
+    `folder` — the directory the file lies in; both rules are about the neighbours,
+    so it is the grouping key and the source of the name hints.
+    """
+
+    file_id: int
+    folder: str
+    landmark: Landmark
+
+
+@dataclass(frozen=True)
+class _FolderHint:
+    """What the directories above a file claim about where it was taken.
+
+    Countries and cities are kept apart on purpose: a country name in the path is a
+    deliberate human statement and may REFUTE a match, while a city name is only
+    allowed to confirm one — "York", "Nice" or "Split" turn up inside perfectly
+    innocent folder names, and a refutation on that basis would throw away good data.
+    """
+
+    countries: frozenset[str] = frozenset()       # ISO cc — confirm and refute
+    city_countries: frozenset[str] = frozenset()  # ISO cc of a named city — confirm only
+    city_ids: frozenset[int] = frozenset()        # geonameid of a named city — confirm only
+
+
+def _parent_dir(path: str) -> str:
+    return str(PurePath(path).parent)
+
+
+def _folder_tokens(directory: str) -> list[str]:
+    """Directory path -> candidate place names, in order, without repeats."""
+    tokens: list[str] = []
+    for part in PurePath(directory).parts:
+        for token in (part, *_WORD_RE.findall(part)):
+            token = token.strip()
+            if len(token) >= _MIN_COMPONENT_LEN:
+                tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
+def _folder_hint(directory: str, resolver: GeoResolver, lang: i18n.Lang) -> _FolderHint:
+    """Recognize countries/cities in a directory path via the bundled geo base.
+
+    The geo base is the whole point: `names.tsv` holds the localized names, so
+    "Франция", "France" and "フランス" resolve identically for the matching
+    `cfg.language`, and technical components (DCIM, 100D3300, Camera, SORT) resolve to
+    nothing simply because they are not places — no blocklist to maintain.
+    """
+    countries: set[str] = set()
+    city_countries: set[str] = set()
+    city_ids: set[int] = set()
+    for token in _folder_tokens(directory):
+        cc = resolver.country_cc_by_name(token, lang)
+        if cc:
+            countries.add(cc)
+            continue
+        for gid in resolver.city_ids_by_name(token, lang):
+            city_ids.add(gid)
+            region = resolver.region_key_of(gid)
+            if region:
+                city_countries.add(region[0])
+    return _FolderHint(frozenset(countries), frozenset(city_countries), frozenset(city_ids))
+
+
+_shared_geo: GeoResolver | None = None
+
+
+def _default_resolver() -> GeoResolver:
+    """One resolver per process, built on first use.
+
+    The bundled base is read-only and costs ~12 MB plus a parse to load, while the
+    stage can run several times inside one `sorta ui` session — a fresh resolver per
+    call would pay for it every time.
+    """
+    global _shared_geo
+    if _shared_geo is None:
+        _shared_geo = GeoResolver()
+    return _shared_geo
+
+
+def _folder_hints(matches: Sequence[_Match], resolver: GeoResolver | None,
+                  lang: i18n.Lang) -> list[_FolderHint]:
+    """A hint per match, computed once per directory.
+
+    Without the bundled geo data (`places.tsv` missing) every hint is empty and the
+    folder-name rule simply does not fire — the stage degrades to the group rule
+    instead of failing.
+    """
+    if resolver is None or not resolver.data_available():
+        return [_FolderHint()] * len(matches)
+    cache: dict[str, _FolderHint] = {}
+    hints: list[_FolderHint] = []
+    for m in matches:
+        hint = cache.get(m.folder)
+        if hint is None:
+            hint = cache[m.folder] = _folder_hint(m.folder, resolver, lang)
+        hints.append(hint)
+    return hints
+
+
+def _group_minority(matches: Sequence[_Match], min_group: int,
+                    dominance: float) -> set[int]:
+    """Indices of matches whose city is a minority inside its own directory.
+
+    One card dump, one trip: you cannot physically have been in Prague and in Berlin
+    within a single folder, so where a directory agrees on one city strongly enough,
+    the odd ones out are the classifier being wrong — this alone removed 16 of the 17
+    false Berlins that neither the threshold nor the anti-classes could touch.
+
+    Deliberately NOT a reassignment to the dominant city: a folder called
+    "чехия-австрия" makes Prague likely but Vienna just as possible, and inventing a
+    place is worse than admitting we do not know one. Groups below `min_group` or
+    without a clear majority are left completely alone — a two-photo folder says
+    nothing.
+    """
+    groups: dict[str, list[int]] = {}
+    for i, m in enumerate(matches):
+        groups.setdefault(m.folder, []).append(i)
+    minority: set[int] = set()
+    for idxs in groups.values():
+        if len(idxs) < min_group:
+            continue
+        counts = Counter((matches[i].landmark.country, matches[i].landmark.city)
+                         for i in idxs)
+        top, n = counts.most_common(1)[0]
+        if n < dominance * len(idxs):
+            continue
+        minority.update(i for i in idxs
+                        if (matches[i].landmark.country, matches[i].landmark.city) != top)
+    return minority
+
+
+def _corroborate(matches: Sequence[_Match], hints: Sequence[_FolderHint],
+                 min_group: int, dominance: float,
+                 stats: LandmarkStats) -> list[_Match]:
+    """Matches above the threshold -> the ones that survive both corroboration rules.
+
+    Order (brief §4): the group rule decides first, the folder name is applied on top
+    of it — an explicit human label on the path outranks the statistics of the
+    neighbouring files and may bring back a match the group rule had discarded. A
+    country in the path that contradicts the match wins over both: that is the case
+    the user spotted by eye, and no amount of local agreement makes it right.
+    """
+    minority = _group_minority(matches, min_group, dominance)
+    kept: list[_Match] = []
+    for i, m in enumerate(matches):
+        hint = hints[i]
+        lm = m.landmark
+        confirmed = (
+            lm.country in hint.countries
+            or lm.country in hint.city_countries
+            or (lm.geonameid is not None and lm.geonameid in hint.city_ids)
+        )
+        if hint.countries and not confirmed:
+            stats.dropped_by_folder_name += 1
+            continue
+        if confirmed:
+            stats.confirmed_by_folder_name += 1
+            kept.append(m)
+            continue
+        if i in minority:
+            stats.dropped_by_group += 1
+            continue
+        kept.append(m)
+    return kept
 
 
 def detect_landmarks(
     cfg: Config, conn: sqlite3.Connection,
     classifier: Classifier | None = None,
     progress: Callable[[int, int], None] | None = None,
+    resolver: GeoResolver | None = None,
 ) -> LandmarkStats:
     """CLIP zero-shot over the landmark list for files without a resolved place.
 
     Incrementality for free: matched files get confidence='visual' and do not enter
     the next run (the selection is only for 'unknown').
+
+    F75: the classifier only proposes. Every match above the threshold is collected
+    first, corroborated against its folder (see `_corroborate`) and only then written —
+    a discarded match leaves the row 'unknown', it is never moved to another city.
     """
     s = naming_settings(cfg)
     landmarks = load_landmarks(s.landmarks_file)
@@ -314,29 +550,47 @@ def detect_landmarks(
     if classifier is None:
         classifier = clip_classifier(s)  # pragma: no cover — ML, smoke test
 
-    prompts = [lm.prompt for lm in landmarks] + list(_NEGATIVE_PROMPTS)
-    now = utcnow_iso()
+    prompts = landmark_prompts(landmarks)
+    matches: list[_Match] = []
     done = 0
     if progress:
         progress(0, len(rows))  # total right away, even if the stage is small/fast (#37)
+    for chunk in batched(rows, s.clip_batch_size):
+        probs = classifier([r["path"] for r in chunk], prompts)
+        for r, p in zip(chunk, probs):
+            best = int(np.argmax(p[: len(landmarks)]))
+            if float(p[best]) < s.landmark_threshold:
+                continue
+            matches.append(_Match(file_id=r["id"], folder=_parent_dir(r["path"]),
+                                  landmark=landmarks[best]))
+        done += len(chunk)
+        if progress:
+            progress(done, len(rows))
+    if not matches:
+        return stats
+
+    # The thresholds are read through getattr: the fields live in config.py, which this
+    # module does not own (the F30/F37/F64 pattern) — an older settings object keeps
+    # working on the measured defaults.
+    min_group = int(getattr(s, "landmark_group_min", 5))
+    dominance = float(getattr(s, "landmark_group_dominance", 0.6))
+    if resolver is None:
+        resolver = _default_resolver()
+    lang = i18n.normalize_lang(cfg.language)
+    kept = _corroborate(matches, _folder_hints(matches, resolver, lang),
+                        min_group, dominance, stats)
+
+    now = utcnow_iso()
     with conn:
-        for chunk in batched(rows, s.clip_batch_size):
-            probs = classifier([r["path"] for r in chunk], prompts)
-            for r, p in zip(chunk, probs):
-                best = int(np.argmax(p[: len(landmarks)]))
-                if float(p[best]) < s.landmark_threshold:
-                    continue
-                lm = landmarks[best]
-                cur = conn.execute(
-                    """UPDATE places SET country = ?, city = ?, city_geonameid = ?,
-                           confidence = 'visual', updated_at = ?
-                       WHERE file_id = ? AND confidence = 'unknown'""",
-                    (lm.country, lm.city, lm.geonameid, now, r["id"]),
-                )
-                if cur.rowcount:
-                    stats.matched += 1
-                    stats.by_landmark[lm.name] = stats.by_landmark.get(lm.name, 0) + 1
-            done += len(chunk)
-            if progress:
-                progress(done, len(rows))
+        for m in kept:
+            lm = m.landmark
+            cur = conn.execute(
+                """UPDATE places SET country = ?, city = ?, city_geonameid = ?,
+                       confidence = 'visual', updated_at = ?
+                   WHERE file_id = ? AND confidence = 'unknown'""",
+                (lm.country, lm.city, lm.geonameid, now, m.file_id),
+            )
+            if cur.rowcount:
+                stats.matched += 1
+                stats.by_landmark[lm.name] = stats.by_landmark.get(lm.name, 0) + 1
     return stats
