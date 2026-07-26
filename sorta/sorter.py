@@ -68,6 +68,7 @@ from .config import Config
 from .dedup import near_duplicate_groups
 from .geodata import GeoResolver
 from .hashing import file_hash
+from .indexer import excludes_path, load_excludes
 
 _log = logging.getLogger(__name__)
 
@@ -110,15 +111,33 @@ _CTE = """WITH RECURSIVE _roots(id, root) AS (
 )
 """
 
-def _resolve_excludes(cfg: Config, exclude: Sequence[str] | None) -> list[Path]:
-    """Exclude directories from --exclude (repeatable) + config sort.exclude_dirs.
+def _layout_excluded_dirs(cfg: Config) -> list[Path]:
+    """F82: the `skip_layout` section of the exclusion file, as absolute directories.
 
-    Both sources are combined, paths are coerced to absolute resolved form for
-    comparison by directory boundary (see _is_excluded).
+    Entries there are relative to a source root (the same key the "do not scan" section
+    uses), so they are resolved against every source. Reading only — the file belongs to
+    the indexer and to the web app; `sort` never writes it.
+    """
+    excludes = load_excludes(excludes_path(cfg))
+    dirs: list[Path] = []
+    for src in cfg.sources:
+        root = Path(src).expanduser().resolve()
+        for rel in sorted(excludes.layout_for_root(src)):
+            dirs.append(root.joinpath(*rel.split("/")))
+    return dirs
+
+
+def _resolve_excludes(cfg: Config, exclude: Sequence[str] | None) -> list[Path]:
+    """Exclude directories from --exclude (repeatable) + config sort.exclude_dirs
+    + the `skip_layout` folders ticked in the web app (F82).
+
+    All three sources are COMBINED — the tree in the UI adds to what config.yaml and
+    the command line say, it does not replace either. Paths are coerced to absolute
+    resolved form for comparison by directory boundary (see _is_excluded).
     """
     dirs = list(exclude or [])
     dirs += list(cfg.sort.exclude_dirs)
-    return [Path(d).resolve() for d in dirs]
+    return [Path(d).resolve() for d in dirs] + _layout_excluded_dirs(cfg)
 
 
 def _is_excluded(path: Path, excludes: list[Path]) -> bool:

@@ -105,13 +105,13 @@ class TestSourceTreeEndpoint(SourceTreeTestBase):
     def test_saved_excludes_come_back_with_the_tree(self):
         self.make_file("Movies/a.mp4")
         self.excludes_file.write_text(
-            yaml.safe_dump({self.src_dir.resolve().as_posix(): ["Movies"]}),
+            yaml.safe_dump({self.src_dir.resolve().as_posix(): {"skip_scan": ["Movies"]}}),
             encoding="utf-8")
         self.start_server()
 
         _status, data = self.get_tree(self.src_dir)
 
-        self.assertEqual(data["excludes"], ["Movies"])
+        self.assertEqual(data["skip_scan"], ["Movies"])
 
     def test_response_size_is_limited_and_says_so(self):
         for i in range(12):
@@ -119,7 +119,7 @@ class TestSourceTreeEndpoint(SourceTreeTestBase):
         self.start_server()
         root = self.src_dir.resolve()
 
-        payload = ui._source_tree_payload(root, [], max_nodes=5, max_depth=3)
+        payload = ui._source_tree_payload(root, [], [], max_nodes=5, max_depth=3)
 
         emitted = self._count_nodes(payload["tree"])
         self.assertLessEqual(emitted, 6)  # 5 folders + the root node
@@ -132,7 +132,7 @@ class TestSourceTreeEndpoint(SourceTreeTestBase):
         self.make_file("a/b/c/d/deep.jpg", size=5)
         root = self.src_dir.resolve()
 
-        payload = ui._source_tree_payload(root, [], max_nodes=100, max_depth=2)
+        payload = ui._source_tree_payload(root, [], [], max_nodes=100, max_depth=2)
 
         node = payload["tree"]["children"][0]           # a
         self.assertEqual(node["name"], "a")
@@ -162,15 +162,15 @@ class TestRootValidation(SourceTreeTestBase):
     def test_saving_with_an_arbitrary_root_is_rejected(self):
         self.start_server()
         status, data = self.post("/api/source-tree/excludes",
-                                 {"root": "../elsewhere", "excludes": ["Movies"]})
+                                 {"root": "../elsewhere", "skip_scan": ["Movies"]})
         self.assertEqual(status, 400)
         self.assertIn("error", data)
         self.assertFalse(self.excludes_file.exists())
 
     def test_invalid_bodies_are_rejected(self):
         self.start_server()
-        for payload in ({}, {"root": ""}, {"root": str(self.src_dir), "excludes": "Movies"},
-                        {"excludes": ["Movies"]}):
+        for payload in ({}, {"root": ""}, {"root": str(self.src_dir), "skip_scan": "Movies"},
+                        {"skip_scan": ["Movies"]}):
             with self.subTest(payload=payload):
                 status, _data = self.post("/api/source-tree/excludes", payload)
                 self.assertEqual(status, 400)
@@ -182,11 +182,11 @@ class TestRootValidation(SourceTreeTestBase):
 
         status, data = self.post("/api/source-tree/excludes", {
             "root": str(self.src_dir),
-            "excludes": ["Movies", "../outside", "/etc", "C:/windows"],
+            "skip_scan": ["Movies", "../outside", "/etc", "C:/windows"],
         })
 
         self.assertEqual(status, 200)
-        self.assertEqual(data["excludes"], ["Movies"])
+        self.assertEqual(data["skip_scan"], ["Movies"])
         self.assertEqual(sorted(data["rejected"]), ["../outside", "/etc", "C:/windows"])
         self.assertEqual(
             load_excludes(self.excludes_file).for_root(self.src_dir), {"Movies"})
@@ -199,11 +199,12 @@ class TestSavingExcludes(SourceTreeTestBase):
         self.start_server()
 
         status, data = self.post("/api/source-tree/excludes", {
-            "root": str(self.src_dir), "excludes": ["Movies", "Screenshots"]})
+            "root": str(self.src_dir), "skip_scan": ["Movies", "Screenshots"]})
 
         self.assertEqual(status, 200)
         raw = yaml.safe_load(self.excludes_file.read_text(encoding="utf-8"))
-        self.assertEqual(raw, {self.src_dir.resolve().as_posix(): ["Movies", "Screenshots"]})
+        self.assertEqual(raw, {self.src_dir.resolve().as_posix():
+                               {"skip_scan": ["Movies", "Screenshots"]}})
         self.assertEqual((data["count"], data["files"], data["size"]), (2, 2, 42))
 
     def test_resaving_one_root_keeps_the_other_roots(self):
@@ -213,10 +214,10 @@ class TestSavingExcludes(SourceTreeTestBase):
         self.start_server()
 
         self.post("/api/source-tree/excludes",
-                  {"root": str(self.src_dir), "excludes": ["Movies"]})
-        self.post("/api/source-tree/excludes", {"root": str(other), "excludes": ["temp"]})
+                  {"root": str(self.src_dir), "skip_scan": ["Movies"]})
+        self.post("/api/source-tree/excludes", {"root": str(other), "skip_scan": ["temp"]})
         self.post("/api/source-tree/excludes",
-                  {"root": str(self.src_dir), "excludes": []})
+                  {"root": str(self.src_dir), "skip_scan": []})
 
         loaded = load_excludes(self.excludes_file)
         self.assertEqual(loaded.for_root(self.src_dir), frozenset())
@@ -227,13 +228,13 @@ class TestSavingExcludes(SourceTreeTestBase):
         self.make_file("keep.jpg", size=8)
         self.start_server()
         self.post("/api/source-tree/excludes",
-                  {"root": str(self.src_dir), "excludes": ["Movies"]})
+                  {"root": str(self.src_dir), "skip_scan": ["Movies"]})
 
         status, data = self.get(
             "/api/source-tree/excludes?path=" + urllib.parse.quote(str(self.src_dir)))
 
         self.assertEqual(status, 200)
-        self.assertEqual(data["excludes"], ["Movies"])
+        self.assertEqual(data["skip_scan"], ["Movies"])
         self.assertEqual((data["count"], data["files"], data["size"]), (1, 1, 64))
 
 
@@ -284,9 +285,11 @@ class TestFirstTabLayout(unittest.TestCase):
         self.assertNotIn("preview_cache", self.html)
 
     def test_do_not_scan_is_worded_apart_from_do_not_sort(self):
-        self.assertEqual(ui._t("excludes_button", "ru"), "Не сканировать…")
+        # F82 put the two side by side in one tree, so the difference now lives in the
+        # state labels rather than in a warning attached to the panel.
+        self.assertEqual(ui._t("tri_scan_label", "ru"), "не сканировать")
+        self.assertEqual(ui._t("tri_layout_label", "ru"), "не раскладывать")
         self.assertEqual(ui._t("override_exclude_button", "ru"), "Не трогать")
-        self.assertIn("не «не раскладывать»", ui._t("excludes_hint", "ru"))
         for key in ("excludes_button", "excludes_title", "excludes_hint",
                     "step_source_title", "step_options_title", "step_actions_title",
                     "excludes_summary", "excludes_summary_none"):
@@ -300,8 +303,8 @@ class TestFirstTabLayout(unittest.TestCase):
         self.assertIn('postJson("/api/source-tree/excludes"', self.html)
         self.assertIn('id="excludes-panel"', self.html)
         self.assertIn("function collectExcludes()", self.html)
-        # ticking a parent ticks its subtree
-        self.assertIn("function setSubtreeChecked(ul, checked)", self.html)
+        # marking a parent marks its subtree
+        self.assertIn("function setSubtreeState(ul, state)", self.html)
 
 
 if __name__ == "__main__":

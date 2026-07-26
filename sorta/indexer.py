@@ -8,6 +8,12 @@ keyed by source root — see `load_excludes`). An excluded subtree is never ente
 its files cost no stat, no hash and no later stage; rows already indexed under such a
 path are deleted from the index at the start of `index()`, because "do not scan" and
 "is in the index" cannot both be true.
+
+F82: the same file also carries the OTHER kind of exclusion — "do not lay out"
+(`skip_layout`), which the indexer never looks at: those files are scanned and indexed
+as usual, `sorter._resolve_excludes` is what leaves them where they lie. Two sections
+of one file rather than two files, so a folder can be moved between the two meanings
+without moving between formats.
 """
 from __future__ import annotations
 
@@ -69,9 +75,14 @@ class IndexStats:
     removed_excluded: int = 0   # already-indexed rows deleted because they now sit under an exclusion
 
 
-# --- F81: excluded source folders -----------------------------------------------
+# --- F81/F82: excluded source folders --------------------------------------------
 
 _EXCLUDES_FILENAME = "excludes.yaml"
+
+# The two sections of a root's entry. `skip_scan` is F81 ("never entered by the walk"),
+# `skip_layout` is F82 ("indexed as usual, but never laid out" — read by sorter.py).
+_SKIP_SCAN = "skip_scan"
+_SKIP_LAYOUT = "skip_layout"
 
 # Tables that reference files(id). A file leaving the index must not leave a row
 # behind in any of them. The move journal (moves/move_batches) is deliberately NOT
@@ -83,20 +94,30 @@ _DEPENDENT_TABLES = (
 
 @dataclass
 class Excludes:
-    """Directories the walk must not enter, keyed by SOURCE ROOT.
+    """Excluded directories, keyed by SOURCE ROOT, in two independent meanings.
 
     An exclusion is meaningless outside its root ("Movies" belongs to D:/Photos, not
     to the world), so the file groups the relative paths per root. Changing the source
     therefore needs no migration question: the new root has its own set, the old one
     keeps its own, and coming back restores it.
+
+    `by_root` is "do not scan" (F81): the walk never enters it, its files are not in the
+    index at all. `layout_by_root` is "do not lay out" (F82): the files ARE indexed —
+    they take part in dedup, statistics and the web app — they are only left where they
+    lie by `sorter`. The two are mutually exclusive per folder; `load_excludes` resolves
+    a hand-written overlap in favour of "do not scan", the stronger of the two.
     """
     by_root: dict[str, list[str]] = field(default_factory=dict)  # normalized root -> rel paths
+    layout_by_root: dict[str, list[str]] = field(default_factory=dict)
 
     def for_root(self, root: str | Path) -> frozenset[str]:
         return frozenset(self.by_root.get(_norm_root(root), ()))
 
+    def layout_for_root(self, root: str | Path) -> frozenset[str]:
+        return frozenset(self.layout_by_root.get(_norm_root(root), ()))
+
     def __bool__(self) -> bool:
-        return any(self.by_root.values())
+        return any(self.by_root.values()) or any(self.layout_by_root.values())
 
 
 def excludes_path(cfg: Config) -> Path:
@@ -182,53 +203,99 @@ def _read_excludes_file(path: Path) -> dict:
     return data
 
 
-def load_excludes(path: str | Path) -> Excludes:
-    """Read the exclusion file (§1 of F81) into a root-keyed, validated set."""
-    p = Path(path)
-    by_root: dict[str, list[str]] = {}
-    for root, values in _read_excludes_file(p).items():
-        if not isinstance(root, str) or not root.strip():
-            _log.warning("index: ключ %r в %s не похож на корень источника — пропущен", root, p)
-            continue
-        if not isinstance(values, list):
-            _log.warning("index: значение для корня %s в %s не список — пропущено", root, p)
-            continue
-        rels = by_root.setdefault(_norm_root(root), [])
-        for value in values:
-            rel = normalize_exclude(value)
-            if rel is None:
-                _log.warning("index: исключение %r для корня %s отклонено — оно уводит "
-                             "обход за пределы корня", value, root)
-                continue
-            if rel not in rels:
-                rels.append(rel)
-    return Excludes(by_root)
+def _root_sections(value: object, root: str, path: Path) -> tuple[list, list]:
+    """One root's raw value -> its (skip_scan, skip_layout) entries, still unvalidated.
 
-
-def save_excludes(path: str | Path, root: str | Path, values: Iterable[object]) -> list[str]:
-    """Write the exclusion list of ONE root, preserving every other root's entry.
-
-    Returns the accepted (normalized) list; entries `normalize_exclude` rejects are
-    dropped. The write is atomic — a temp file next to the target + `os.replace`, like
-    `imaging._write_preview`: the file is read by a run that may start at any moment,
-    and nobody may ever observe half of it.
+    A plain LIST is the F81 spelling of the file and means `skip_scan`. It has to keep
+    working: the file on the user's disk was written before `skip_layout` existed and is
+    the only record of what they already excluded, so reading it as anything else (or
+    not at all) would silently throw that away.
     """
-    p = Path(path)
-    data = _read_excludes_file(p)
-    # drop whatever spelling of this root the file already had — one root, one key
-    kept = {k: v for k, v in data.items()
-            if not (isinstance(k, str) and _norm_root(k) == _norm_root(root))}
+    if isinstance(value, list):
+        return value, []
+    if not isinstance(value, dict):
+        _log.warning("index: значение для корня %s в %s не список и не разделы "
+                     "%s/%s — пропущено", root, path, _SKIP_SCAN, _SKIP_LAYOUT)
+        return [], []
+    sections: list[list] = []
+    for key in (_SKIP_SCAN, _SKIP_LAYOUT):
+        section = value.get(key, [])
+        if section is None:
+            section = []
+        if not isinstance(section, list):
+            _log.warning("index: раздел %s корня %s в %s не список — пропущен",
+                         key, root, path)
+            section = []
+        sections.append(section)
+    return sections[0], sections[1]
+
+
+def _accept_all(values: Iterable[object], root: str) -> list[str]:
+    """Validated, de-duplicated relative paths; rejected entries are logged, not fatal."""
     accepted: list[str] = []
     for value in values:
         rel = normalize_exclude(value)
         if rel is None:
-            _log.warning("index: исключение %r не сохранено — оно уводит обход за "
-                         "пределы корня", value)
+            _log.warning("index: исключение %r для корня %s отклонено — оно уводит "
+                         "обход за пределы корня", value, root)
             continue
         if rel not in accepted:
             accepted.append(rel)
+    return accepted
+
+
+def load_excludes(path: str | Path) -> Excludes:
+    """Read the exclusion file (§1 of F81/F82) into a root-keyed, validated set."""
+    p = Path(path)
+    by_root: dict[str, list[str]] = {}
+    layout_by_root: dict[str, list[str]] = {}
+    for root, value in _read_excludes_file(p).items():
+        if not isinstance(root, str) or not root.strip():
+            _log.warning("index: ключ %r в %s не похож на корень источника — пропущен", root, p)
+            continue
+        raw_scan, raw_layout = _root_sections(value, root, p)
+        key = _norm_root(root)
+        scan = by_root.setdefault(key, [])
+        scan += [rel for rel in _accept_all(raw_scan, root) if rel not in scan]
+        layout = layout_by_root.setdefault(key, [])
+        # a folder listed in both sections is not scanned: the file may be hand-edited,
+        # and "not in the index" cannot be reconciled with "laid out, only differently"
+        layout += [rel for rel in _accept_all(raw_layout, root)
+                   if rel not in layout and rel not in scan]
+    return Excludes(by_root, layout_by_root)
+
+
+def save_excludes(path: str | Path, root: str | Path, values: Iterable[object],
+                  layout: Iterable[object] | None = None) -> list[str]:
+    """Write the exclusions of ONE root, preserving every other root's entry.
+
+    `values` is the "do not scan" section, `layout` the "do not lay out" one;
+    `layout=None` leaves whatever the file already had there (that is what
+    `sorta index --exclude-dir` does — it has no opinion about the other section).
+    Returns the accepted (normalized) "do not scan" list; entries `normalize_exclude`
+    rejects are dropped. The write is atomic — a temp file next to the target +
+    `os.replace`, like `imaging._write_preview`: the file is read by a run that may
+    start at any moment, and nobody may ever observe half of it.
+    """
+    p = Path(path)
+    data = _read_excludes_file(p)
+    display = _display_root(root)
+    if layout is None:
+        layout = load_excludes(p).layout_for_root(root)
+    # drop whatever spelling of this root the file already had — one root, one key
+    kept = {k: v for k, v in data.items()
+            if not (isinstance(k, str) and _norm_root(k) == _norm_root(root))}
+    accepted = _accept_all(values, display)
+    # the two states exclude each other (§2): "do not scan" wins, so ticking it clears
+    # a "do not lay out" left on the same folder instead of writing a contradiction
+    accepted_layout = [rel for rel in _accept_all(layout, display) if rel not in accepted]
+    sections: dict[str, list[str]] = {}
     if accepted:
-        kept[_display_root(root)] = sorted(accepted)
+        sections[_SKIP_SCAN] = sorted(accepted)
+    if accepted_layout:
+        sections[_SKIP_LAYOUT] = sorted(accepted_layout)
+    if sections:
+        kept[display] = sections
     text = yaml.safe_dump(kept, allow_unicode=True, sort_keys=True, default_flow_style=False)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")

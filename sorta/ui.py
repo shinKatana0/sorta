@@ -103,19 +103,25 @@ full rebuild (F70) on every click. The preview plan is built with
 red, unmarkable) even after a rebuild — the sorting plan that actually moves files never
 contains it.
 
-(13) `GET /api/source-tree`, `GET|POST /api/source-tree/excludes` (F81, the source
-block of the "Process" tab) — choosing folders that must NOT be scanned. The GET
-returns the directory structure under a root (folders only, each with a file count and
-the total size of its subtree; metadata via `scandir`/`stat`, contents never read),
-bounded by `_TREE_MAX_NODES`/`_TREE_MAX_DEPTH` with a `truncated` flag rather than a
-silent cut. The POST writes `{"root": str, "excludes": [str, ...]}` into the exclusion
+(13) `GET /api/source-tree`, `GET|POST /api/source-tree/excludes` (F81/F82, the source
+block of the "Process" tab) — choosing folders to leave out, in either of the two
+meanings the program has for that. The GET returns the directory structure under a root
+(folders only, each with a file count and the total size of its subtree; metadata via
+`scandir`/`stat`, contents never read), bounded by `_TREE_MAX_NODES`/`_TREE_MAX_DEPTH`
+with a `truncated` flag rather than a silent cut. The POST writes
+`{"root": str, "skip_scan": [str, ...], "skip_layout": [str, ...]}` into the exclusion
 file (`indexer.save_excludes` — atomic, keyed by root, other roots preserved) and
-reports which entries were refused. Both take a path from the client, so both run it
-through `_validate_tree_root` first — the same "absolute path to an existing
-directory" rule `POST /api/process` applies to `source_dir`; every list entry goes
-through `indexer.normalize_exclude`, which lets an exclusion narrow the walk and
-nothing else. This endpoint touches neither files nor the index: the rows already
-indexed under a new exclusion are removed by the next `index()` run.
+reports which entries were refused. `skip_scan` is "do not scan" (F81): those files
+never enter the index at all. `skip_layout` is "do not lay out" (F82): they are indexed
+as usual — searchable, counted, deduplicated — and only `sort` leaves them alone. A
+folder is in at most one of the two: the tree carries one state per node, and
+`save_excludes` resolves an overlap in favour of "do not scan". Both endpoints take a
+path from the client, so both run it through `_validate_tree_root` first — the same
+"absolute path to an existing directory" rule `POST /api/process` applies to
+`source_dir`; every list entry goes through `indexer.normalize_exclude`, which lets an
+exclusion narrow the walk and nothing else. This endpoint touches neither files nor the
+index: the rows already indexed under a new "do not scan" are removed by the next
+`index()` run.
 
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
@@ -1568,11 +1574,14 @@ def _any_truncated(node: dict) -> bool:
     return bool(node["truncated"]) or any(_any_truncated(c) for c in node["children"])
 
 
-def _source_tree_payload(root: Path, excludes: list[str],
+def _source_tree_payload(root: Path, skip_scan: list[str], skip_layout: list[str],
                          max_nodes: int = _TREE_MAX_NODES,
                          max_depth: int = _TREE_MAX_DEPTH) -> dict:
     """§4: the directory structure under `root` — FOLDERS only, each with the number
-    of files and the total size of its subtree. File contents are never read."""
+    of files and the total size of its subtree. File contents are never read.
+
+    Both exclusion lists ride along so the tree can be drawn with the state each folder
+    already has (F82), in one request instead of two."""
     budget = [max_nodes]
     tree = _scan_dir(root, "", root.name or str(root), 0, budget, max_depth)
     return {
@@ -1582,25 +1591,36 @@ def _source_tree_payload(root: Path, excludes: list[str],
         "limit": max_nodes,
         "max_depth": max_depth,
         "truncated": _any_truncated(tree),
-        "excludes": excludes,
+        "skip_scan": skip_scan,
+        "skip_layout": skip_layout,
     }
 
 
 def _excludes_payload(cfg: Config, root: Path) -> dict:
-    """What is currently NOT scanned under `root`, with the size it saves — the
-    collapsed one-line summary of the source block needs both."""
-    rels = sorted(load_excludes(excludes_path(cfg)).for_root(root))
+    """What is currently left out under `root`, in both meanings — the collapsed
+    one-line summary of the source block shows the two numbers separately (§3).
+
+    The size is measured for "do not scan" only: that is disk work the run will not do.
+    A "do not lay out" folder is read and indexed exactly as before, so its size saves
+    nothing and printing it would suggest otherwise.
+    """
+    excludes = load_excludes(excludes_path(cfg))
+    scan = sorted(excludes.for_root(root))
+    layout = sorted(excludes.layout_for_root(root))
     files = size = 0
-    for rel in rels:
+    for rel in scan:
         sub_files, sub_size = _sum_dir(root.joinpath(*rel.split("/")))
         files += sub_files
         size += sub_size
-    return {"root": root.as_posix(), "excludes": rels, "count": len(rels),
-            "files": files, "size": size}
+    return {"root": root.as_posix(), "skip_scan": scan, "count": len(scan),
+            "files": files, "size": size,
+            "skip_layout": layout, "layout_count": len(layout)}
 
 
-def _validate_excludes_payload(payload: object) -> tuple[str, list[object]] | None:
-    """Parse `{"root": str, "excludes": [str, ...]}`. None -> invalid body.
+def _validate_excludes_payload(
+        payload: object) -> tuple[str, list[object], list[object]] | None:
+    """Parse `{"root": str, "skip_scan": [str, ...], "skip_layout": [str, ...]}`.
+    None -> invalid body.
 
     The entries themselves are not judged here — `indexer.normalize_exclude` is the
     single place that decides whether a path may narrow the walk, and the handler
@@ -1611,10 +1631,13 @@ def _validate_excludes_payload(payload: object) -> tuple[str, list[object]] | No
     root = payload.get("root")
     if not isinstance(root, str) or not root.strip():
         return None
-    values = payload.get("excludes", [])
-    if not isinstance(values, list):
-        return None
-    return root, values
+    sections: list[list[object]] = []
+    for key in ("skip_scan", "skip_layout"):
+        values = payload.get(key, [])
+        if not isinstance(values, list):
+            return None
+        sections.append(values)
+    return root, sections[0], sections[1]
 
 
 def _process_defaults_payload(cfg: Config) -> dict:
@@ -1982,11 +2005,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "時間と場所に基づいて旅行やイベントにグループ化します"
               "（位置情報が必要）。イベントごとの整理やアルバムに使います。",
     },
-    # --- F81: the three blocks of the first tab + "do not scan" ------------
-    # Wording is deliberately kept apart from the neighbouring mechanisms: this one is
-    # "do not SCAN" (the files never enter the index at all), `sort.exclude_dirs` is
-    # "do not SORT" (indexed, left where they are), and the F77 per-file corrections
-    # ("leave alone") live on the "Cities" tab.
+    # --- F81/F82: the three blocks of the first tab + the exclusion tree ------
+    # F82: the two mechanisms are now side by side in one tree, so the wording carries
+    # the whole difference between them — "do not SCAN" (the files never enter the index
+    # at all) and "do not LAY OUT" (`sort.exclude_dirs`: indexed, searched, deduplicated,
+    # simply left where they are). Each gets a one-line explanation, because this is
+    # exactly the distinction a live user got wrong. The F77 per-file corrections
+    # ("leave alone") are a third thing and live on the "Cities" tab.
     "step_source_title": {"ru": "Источник", "en": "Source", "ja": "ソース"},
     "step_options_title": {
         "ru": "Параметры запуска", "en": "Run options", "ja": "実行オプション",
@@ -2005,28 +2030,59 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "по умолчанию", "en": "defaults", "ja": "既定",
     },
     "excludes_button": {
-        "ru": "Не сканировать…", "en": "Don't scan…", "ja": "スキャンしない…",
+        "ru": "Исключить папки…", "en": "Leave folders out…", "ja": "フォルダを除外…",
     },
     "excludes_title": {
-        "ru": "Какие папки не сканировать", "en": "Folders not to scan",
-        "ja": "スキャンしないフォルダ",
+        "ru": "Какие папки исключить", "en": "Folders to leave out",
+        "ja": "除外するフォルダ",
     },
     "excludes_hint": {
-        "ru": "Отмеченные папки не будут прочитаны совсем: их файлов не будет в "
-              "индексе. Это не «не раскладывать» — те файлы остаются в индексе и "
-              "просто лежат на месте.",
-        "en": "Ticked folders are not read at all: their files never enter the index. "
-              "This is not «don't sort» — those files stay in the index and simply "
-              "stay where they are.",
-        "ja": "チェックしたフォルダは一切読み込まれず、ファイルはインデックスに"
-              "入りません。「振り分けない」とは別です — そちらはインデックスに"
-              "残り、その場に置かれるだけです。",
+        "ru": "Нажимайте на значок слева от папки, чтобы переключить её состояние. "
+              "Состояние родителя действует на всё поддерево.",
+        "en": "Click the mark to the left of a folder to switch its state. A folder's "
+              "state applies to its whole subtree.",
+        "ja": "フォルダ左のマークをクリックして状態を切り替えます。親の状態は"
+              "サブツリー全体に適用されます。",
+    },
+    # The three states, each with the one line that says what it actually does.
+    "tri_none_label": {
+        "ru": "обрабатывать", "en": "process", "ja": "処理する",
+    },
+    "tri_none_hint": {
+        "ru": "как обычно: сканируется и раскладывается",
+        "en": "as usual: scanned and laid out",
+        "ja": "通常どおり: スキャンして振り分けます",
+    },
+    "tri_layout_label": {
+        "ru": "не раскладывать", "en": "don't sort", "ja": "振り分けない",
+    },
+    "tri_layout_hint": {
+        "ru": "уже разобрано руками: файлы остаются в индексе и на месте, "
+              "дубликаты по ним ищутся, но раскладка их не трогает",
+        "en": "already sorted by hand: the files stay in the index and where they "
+              "are, duplicates still find them, the layout leaves them alone",
+        "ja": "手作業で整理済み: ファイルはインデックスに残り、その場に置かれます。"
+              "重複検索の対象にはなりますが、振り分けは行いません",
+    },
+    "tri_scan_label": {
+        "ru": "не сканировать", "en": "don't scan", "ja": "スキャンしない",
+    },
+    "tri_scan_hint": {
+        "ru": "не нужно совсем: папка не читается, её файлов не будет в индексе, "
+              "они не попадут ни в поиск дубликатов, ни в статистику",
+        "en": "not needed at all: the folder is not read, its files never enter the "
+              "index and take part in neither duplicate search nor statistics",
+        "ja": "まったく不要: フォルダは読み込まれず、ファイルはインデックスに"
+              "入らないため、重複検索にも統計にも含まれません",
     },
     "excludes_save_button": {"ru": "Сохранить", "en": "Save", "ja": "保存"},
     "excludes_saved": {
-        "ru": "Сохранено. Исключённое исчезнет из индекса при следующей обработке.",
-        "en": "Saved. What you excluded leaves the index on the next run.",
-        "ja": "保存しました。除外した内容は次回の処理でインデックスから消えます。",
+        "ru": "Сохранено. «Не сканировать» исчезнет из индекса при следующей "
+              "обработке, «не раскладывать» подействует на следующей раскладке.",
+        "en": "Saved. «Don't scan» leaves the index on the next run, «don't sort» "
+              "applies on the next layout.",
+        "ja": "保存しました。「スキャンしない」は次回の処理でインデックスから消え、"
+              "「振り分けない」は次回の振り分けから適用されます。",
     },
     "excludes_error_prefix": {
         "ru": "Не удалось получить дерево папок: ",
@@ -2046,12 +2102,19 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "ツリーが大きいため、最初の {limit} 件のフォルダのみ表示しています。",
     },
     "excludes_summary_none": {
-        "ru": "сканируется целиком", "en": "scanned in full", "ja": "全体をスキャン",
+        "ru": "обрабатывается целиком", "en": "processed in full", "ja": "全体を処理",
     },
+    # Two numbers, never merged into one (§3): they mean different things, and one
+    # total would hide which mechanism a folder ended up in.
     "excludes_summary": {
         "ru": "не сканируется папок: {count} ({size})",
         "en": "not scanned: {count} folder(s), {size}",
         "ja": "スキャンしないフォルダ: {count} 件 ({size})",
+    },
+    "excludes_summary_layout": {
+        "ru": "не раскладывается папок: {count}",
+        "en": "not sorted: {count} folder(s)",
+        "ja": "振り分けないフォルダ: {count} 件",
     },
     "excludes_folder_meta": {
         "ru": "{count} файлов · {size}", "en": "{count} files · {size}",
@@ -2758,6 +2821,20 @@ label { cursor: pointer; }
 .excludes-tree li { margin: 2px 0; }
 .excludes-row { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
 .excludes-meta { color: var(--muted); font-size: 0.78rem; }
+/* F82: три состояния узла. Значок + подпись прямо в кнопке — состояние должно
+   читаться взглядом по дереву, без наведения и без легенды под рукой; цвет —
+   вторая, а не единственная опора (те же две роли, что у строк плана в F77). */
+.tri-state { font: inherit; font-size: 0.85rem; line-height: 1.2; cursor: pointer;
+      padding: 1px 7px; border-radius: var(--radius-pill); border: 1px solid var(--line);
+      background: var(--surface); color: var(--muted); white-space: nowrap; }
+.tri-state[data-state="layout"] { border-color: var(--accent); background: var(--accent-soft);
+      color: var(--accent); font-weight: 500; }
+.tri-state[data-state="scan"] { border-color: var(--danger); background: var(--danger-soft);
+      color: var(--danger); font-weight: 500; }
+.tri-state:disabled { cursor: default; opacity: 0.55; }
+.excludes-legend { list-style: none; margin: 0; padding: 0; font-size: 0.8rem;
+      color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+.excludes-legend .tri-mark { font-weight: 600; color: var(--ink); }
 .process-toggle-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
 .process-toggle-hint { font-size: 0.8rem; color: var(--muted); margin-left: 20px; }
 .process-toggle-warn { color: var(--danger); }
@@ -2881,6 +2958,11 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <div id="excludes-panel" class="excludes-panel" style="display:none">
 <p class="step-title">{{excludes_title}}</p>
 <span class="process-toggle-hint">{{excludes_hint}}</span>
+<ul class="excludes-legend" id="excludes-legend">
+<li><span class="tri-mark">&#9744; {{tri_none_label}}</span> — {{tri_none_hint}}</li>
+<li><span class="tri-mark">&#9680; {{tri_layout_label}}</span> — {{tri_layout_hint}}</li>
+<li><span class="tri-mark">&#9746; {{tri_scan_label}}</span> — {{tri_scan_hint}}</li>
+</ul>
 <div id="excludes-tree" class="excludes-tree"></div>
 <div class="process-actions">
 <button type="button" id="excludes-save-btn" class="btn btn-primary">{{excludes_save_button}}</button>
@@ -4042,9 +4124,11 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   // вводить один и тот же источник каждый раз — ровно тот штраф, который фича
   // убирает.
   var SOURCE_DIR_KEY = "sorta.sourceDir";
-  // Что сейчас не сканируется под текущим источником — для схлопнутой строки блока
-  // «Источник». root пустой = про этот источник ещё не спрашивали.
-  var excludesInfo = { root: "", list: [], count: 0, size: 0 };
+  // Что сейчас исключено под текущим источником — для схлопнутой строки блока
+  // «Источник». Два числа хранятся раздельно: «не сканировать» и «не раскладывать» —
+  // разные вещи. root пустой = про этот источник ещё не спрашивали.
+  var excludesInfo = { root: "", scan: [], count: 0, size: 0,
+                       layout: [], layoutCount: 0 };
   var stepSourceOpen = false;
   var stepOptionsOpen = false;
 
@@ -4061,11 +4145,16 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   }
 
   function excludesSummaryText() {
-    if (excludesInfo.root !== currentSourceDir() || !excludesInfo.count) {
-      return I18N.excludes_summary_none;
+    if (excludesInfo.root !== currentSourceDir()) return I18N.excludes_summary_none;
+    var parts = [];
+    if (excludesInfo.count) {
+      parts.push(fmt(I18N.excludes_summary,
+                     { count: excludesInfo.count, size: formatSize(excludesInfo.size) }));
     }
-    return fmt(I18N.excludes_summary,
-               { count: excludesInfo.count, size: formatSize(excludesInfo.size) });
+    if (excludesInfo.layoutCount) {
+      parts.push(fmt(I18N.excludes_summary_layout, { count: excludesInfo.layoutCount }));
+    }
+    return parts.length ? parts.join(" · ") : I18N.excludes_summary_none;
   }
 
   function optionsSummaryText() {
@@ -4100,10 +4189,16 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     try { window.localStorage.setItem(SOURCE_DIR_KEY, currentSourceDir()); } catch (e) {}
   }
 
+  function excludesInfoOf(src, data) {
+    return { root: src, scan: data.skip_scan || [], count: data.count || 0,
+             size: data.size || 0, layout: data.skip_layout || [],
+             layoutCount: data.layout_count || 0 };
+  }
+
   function loadExcludesInfo() {
     var src = currentSourceDir();
     if (!src) {
-      excludesInfo = { root: "", list: [], count: 0, size: 0 };
+      excludesInfo = { root: "", scan: [], count: 0, size: 0, layout: [], layoutCount: 0 };
       updateStepLayout();
       return;
     }
@@ -4111,8 +4206,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || data.error) return;
-        excludesInfo = { root: src, list: data.excludes || [],
-                         count: data.count || 0, size: data.size || 0 };
+        excludesInfo = excludesInfoOf(src, data);
         updateStepLayout();
       })
       .catch(function () {});
@@ -4131,25 +4225,49 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     updateStepLayout();
   }
 
-  function setSubtreeChecked(ul, checked) {
-    var boxes = ul.querySelectorAll("input[type=checkbox]");
-    for (var i = 0; i < boxes.length; i++) {
-      boxes[i].checked = checked;
-      // отмеченное поддерево не редактируется по частям: исключён родитель — исключено всё
-      boxes[i].disabled = checked;
+  // F82: три состояния узла — "" обрабатывать, "layout" не раскладывать, "scan" не
+  // сканировать. Одно поле на узел, поэтому «отмечено и то и другое» невозможно по
+  // построению: переключение на одно автоматически снимает другое.
+  var TRI_STATES = ["", "layout", "scan"];
+
+  function triText(state) {
+    if (state === "scan") return "☒ " + I18N.tri_scan_label;
+    if (state === "layout") return "◐ " + I18N.tri_layout_label;
+    return "☐";
+  }
+
+  function triHint(state) {
+    if (state === "scan") return I18N.tri_scan_hint;
+    if (state === "layout") return I18N.tri_layout_hint;
+    return I18N.tri_none_hint;
+  }
+
+  function setTriState(btn, state) {
+    btn.setAttribute("data-state", state);
+    btn.textContent = triText(state);
+    btn.title = triHint(state);
+  }
+
+  function setSubtreeState(ul, state) {
+    var marks = ul.querySelectorAll("button.tri-state");
+    for (var i = 0; i < marks.length; i++) {
+      setTriState(marks[i], state);
+      // исключённое поддерево не редактируется по частям: состояние родителя — состояние всего
+      marks[i].disabled = !!state;
     }
   }
 
-  function renderExcludesNode(node, checkedSet, parentChecked) {
+  function renderExcludesNode(node, states, parentState) {
     var li = document.createElement("li");
-    var row = document.createElement("label");
+    var row = document.createElement("div");
     row.className = "excludes-row";
-    var box = document.createElement("input");
-    box.type = "checkbox";
-    box.setAttribute("data-rel", node.rel);
-    box.checked = parentChecked || checkedSet[node.rel] === true;
-    box.disabled = parentChecked;
-    row.appendChild(box);
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tri-state";
+    btn.setAttribute("data-rel", node.rel);
+    setTriState(btn, parentState || states[node.rel] || "");
+    btn.disabled = !!parentState;
+    row.appendChild(btn);
     row.appendChild(document.createTextNode(node.name));
     var meta = document.createElement("span");
     meta.className = "excludes-meta";
@@ -4157,22 +4275,31 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
                            { count: node.files, size: formatSize(node.size) });
     row.appendChild(meta);
     li.appendChild(row);
+    var ul = null;
     if (node.children && node.children.length) {
-      var ul = document.createElement("ul");
+      ul = document.createElement("ul");
       node.children.forEach(function (child) {
-        ul.appendChild(renderExcludesNode(child, checkedSet, box.checked));
+        ul.appendChild(renderExcludesNode(child, states, btn.getAttribute("data-state")));
       });
       li.appendChild(ul);
-      box.addEventListener("change", function () { setSubtreeChecked(ul, box.checked); });
     }
+    btn.addEventListener("click", function () {
+      var next = TRI_STATES[(TRI_STATES.indexOf(btn.getAttribute("data-state")) + 1)
+                            % TRI_STATES.length];
+      setTriState(btn, next);
+      if (ul) setSubtreeState(ul, next);
+    });
     return li;
   }
 
   function renderExcludesTree(data) {
     var container = document.getElementById("excludes-tree");
     container.textContent = "";
-    var checkedSet = {};
-    (data.excludes || []).forEach(function (rel) { checkedSet[rel] = true; });
+    var states = {};
+    (data.skip_layout || []).forEach(function (rel) { states[rel] = "layout"; });
+    // «не сканировать» пишется вторым: при странном файле, где папка попала в оба
+    // раздела, сервер уже решил в пользу scan — дерево не должно спорить с ним
+    (data.skip_scan || []).forEach(function (rel) { states[rel] = "scan"; });
     var children = (data.tree && data.tree.children) || [];
     if (!children.length) {
       container.appendChild(stateEl("empty", I18N.excludes_empty));
@@ -4180,7 +4307,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     }
     var ul = document.createElement("ul");
     children.forEach(function (child) {
-      ul.appendChild(renderExcludesNode(child, checkedSet, false));
+      ul.appendChild(renderExcludesNode(child, states, ""));
     });
     container.appendChild(ul);
     if (data.truncated) {
@@ -4194,13 +4321,14 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 
   function collectExcludes() {
     // только верхние отмеченные: потомки отмеченной папки заблокированы и не нужны
-    var result = [];
-    var boxes = document.getElementById("excludes-tree")
-        .querySelectorAll("input[type=checkbox]");
-    for (var i = 0; i < boxes.length; i++) {
-      if (boxes[i].checked && !boxes[i].disabled) {
-        result.push(boxes[i].getAttribute("data-rel"));
-      }
+    var result = { skip_scan: [], skip_layout: [] };
+    var marks = document.getElementById("excludes-tree")
+        .querySelectorAll("button.tri-state");
+    for (var i = 0; i < marks.length; i++) {
+      if (marks[i].disabled) continue;
+      var state = marks[i].getAttribute("data-state");
+      if (state === "scan") result.skip_scan.push(marks[i].getAttribute("data-rel"));
+      else if (state === "layout") result.skip_layout.push(marks[i].getAttribute("data-rel"));
     }
     return result;
   }
@@ -4240,15 +4368,16 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     var src = currentSourceDir();
     if (!src) return;
     var statusEl = document.getElementById("excludes-status");
-    postJson("/api/source-tree/excludes", { root: src, excludes: collectExcludes() })
+    var picked = collectExcludes();
+    postJson("/api/source-tree/excludes",
+             { root: src, skip_scan: picked.skip_scan, skip_layout: picked.skip_layout })
       .then(function (resp) {
         if (!resp || resp.error) {
           statusEl.textContent =
               I18N.excludes_save_error_prefix + ((resp && resp.error) || "");
           return;
         }
-        excludesInfo = { root: src, list: resp.excludes || [],
-                         count: resp.count || 0, size: resp.size || 0 };
+        excludesInfo = excludesInfoOf(src, resp);
         statusEl.textContent = I18N.excludes_saved;
         updateStepLayout();
       })
@@ -5405,7 +5534,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
         def _handle_browse(self) -> None:
             self._send_json({"path": _browse_for_folder()})
 
-        # --- F81: "do not scan" (the source block of the "Process" tab) ---------
+        # --- F81/F82: "do not scan" / "do not lay out" (the source block) --------
 
         def _serve_source_tree(self, query: dict[str, list[str]]) -> None:
             root = _validate_tree_root((query.get("path") or [""])[0])
@@ -5413,8 +5542,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "not a directory"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            excludes = sorted(load_excludes(excludes_path(cfg)).for_root(root))
-            self._send_json(_source_tree_payload(root, excludes))
+            excludes = load_excludes(excludes_path(cfg))
+            self._send_json(_source_tree_payload(
+                root, sorted(excludes.for_root(root)),
+                sorted(excludes.layout_for_root(root))))
 
         def _serve_source_excludes(self, query: dict[str, list[str]]) -> None:
             root = _validate_tree_root((query.get("path") or [""])[0])
@@ -5426,22 +5557,22 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
 
         def _handle_save_source_excludes(self) -> None:
             # Writes the exclusion file, nothing else: the rows already indexed under
-            # a new exclusion are dropped by the next `index()` run (indexer, §3), not
-            # from here — one place decides what "not in the index" means.
+            # a new "do not scan" are dropped by the next `index()` run (indexer, §3),
+            # not from here — one place decides what "not in the index" means.
             parsed = _validate_excludes_payload(self._read_json_body())
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            raw_root, values = parsed
+            raw_root, values, layout = parsed
             root = _validate_tree_root(raw_root)
             if root is None:
                 self._send_json({"error": "not a directory"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            rejected = [v for v in values if isinstance(v, str)
+            rejected = [v for v in values + layout if isinstance(v, str)
                         and normalize_exclude(v) is None]
             try:
-                save_excludes_file(excludes_path(cfg), root, values)
+                save_excludes_file(excludes_path(cfg), root, values, layout)
             except OSError as exc:
                 self._send_json({"error": f"could not save excludes: {exc}"},
                                 status=HTTPStatus.INTERNAL_SERVER_ERROR)
