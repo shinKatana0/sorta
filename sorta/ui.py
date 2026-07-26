@@ -186,6 +186,14 @@ def _plan_item_to_json(item: PlanItem,
     payload = {
         "file_id": item.file_id,
         "name": item.src.name,
+        # Where the file came FROM. Only the basename used to reach the UI, yet the
+        # source folder is often the best evidence there is about a frame: 41% of this
+        # collection sits in hand-named directories ("Тайланд 04.2025",
+        # "Турция. Белек") — a person's own labelling of place and date. It is also
+        # what you need in order to judge a wrong guess: a Colosseum match is plainly
+        # wrong once you can see the file lives under "рускеала".
+        "src_dir": item.src.parent.name,
+        "src_path": str(item.src.parent),
         "target_rel": item.target_rel,
         "reason": item.reason,
         "date": item.taken_at,
@@ -3224,12 +3232,16 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       var nameEl = document.createElement("span");
       nameEl.className = "thumb-name";
       nameEl.textContent = item.name;
+      nameEl.title = item.src_path ? item.src_path + "\\\\" + item.name : item.name;
       tdThumb.appendChild(nameEl);
       tr.appendChild(tdThumb);
       var tdMeta = document.createElement("td");
       tdMeta.className = "plan-meta";
-      tdMeta.textContent = [item.date, item.geo, item.category]
+      // Исходная папка идёт первой: по ней чаще всего и видно, верна ли догадка
+      // («Колизей» из папки «рускеала» — очевидная ошибка). Полный путь — в тултипе.
+      tdMeta.textContent = [item.src_dir, item.date, item.geo, item.category]
           .filter(Boolean).join(" \\u00b7 ");
+      if (item.src_path) { tdMeta.title = item.src_path; }
       tr.appendChild(tdMeta);
       var tdActions = document.createElement("td");
       var btnDelete = makeBtn("danger", "trash", I18N.delete, "btn-sm");
