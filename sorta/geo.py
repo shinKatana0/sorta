@@ -14,7 +14,9 @@ file must not look confidently placed nor become a donor for session inheritance
 
 The provider is chosen by `cfg.geo.provider`: offline (default) — bundled GeoNames
 via geodata.GeoResolver; online (G2b) — Nominatim/OSM reverse geocoding, names as
-text already in cfg.language (no geonameids).
+text already in cfg.language (no geonameids). Online answers that carry a country but
+no city are completed from the bundled offline base (F86, see _CityFallbackResolver) —
+the online provider stays the primary source, the offline one is only the insurance.
 
 Canonically we write geonameid (city_geonameid/district_geonameid) + the English/
 asciiname anchor `city` (for --where/CSV/landmark fallback). Localizing names into
@@ -49,6 +51,10 @@ _INHERIT_CONFIDENCE = ("high", "medium")
 _CANONICAL_LANG: Lang = "en"  # the city anchor is always English/asciiname — not localized here
 _NOMINATIM_MIN_INTERVAL = 1.0  # OSM policy: no more than 1 request/sec
 # coordinate rounding for the in-memory cache — now from cfg.geo.cache_coord_digits
+# F86: how often the "an answer came back without a city" warning is written. Per file
+# it would be thousands of lines on a real collection; silence is what let the defect
+# live through a full production run (zero warnings for 1 596 lost cities).
+_CITY_MISSING_WARN_EVERY = 50
 
 
 @dataclass
@@ -196,8 +202,13 @@ class _NominatimResolver:
             return _UNKNOWN_PLACE
 
         country_code = address.get("country_code")
+        # F86: outside cities Nominatim names the settlement with whatever key fits it —
+        # hamlet/locality/isolated_dwelling for the countryside. `county`/`state` are
+        # deliberately NOT read: an administrative region is not a city, and putting a
+        # file into a folder named after an oblast would be worse than the country level.
         city = address.get("city") or address.get("town") or address.get("village") \
-            or address.get("municipality")
+            or address.get("municipality") or address.get("hamlet") \
+            or address.get("locality") or address.get("isolated_dwelling")
         district = address.get("suburb") or address.get("city_district") \
             or address.get("neighbourhood") or address.get("quarter")
         return _Place(
@@ -228,17 +239,93 @@ class _NominatimResolver:
         return places
 
 
+class _CityFallbackResolver:
+    """F86: the online provider first, the bundled offline base as insurance for the city.
+
+    Nominatim answers for suburbs and the countryside without any of the city keys it
+    is read by, and the place used to end up as "country known, city NULL". On the live
+    collection that is 1 596 files (1 471 exact_gps + 125 inherited) that the sorter then
+    hid in _Unsorted/no_place — while the SAME coordinates resolve to a city in the
+    bundled GeoNames data (55.4138, 37.8976 -> Домодедово; -8.79806, 115.2349 ->
+    Jabajero). Turning the online provider on made the result worse than offline; here
+    the online answer stays primary and only a missing city is completed offline, which
+    is bundled anyway and costs neither a request nor a second.
+
+    Country, city and district always come from ONE source: an offline city replaces the
+    whole place, so a Nominatim country name never gets glued onto a GeoNames city. If
+    the two providers disagree about the country, the offline answer is dropped — a
+    nearest-neighbour city in the wrong country is exactly the silent misplacement F75
+    guards against; the file keeps the online country and is laid out at country level.
+
+    A place with no country at all (a failed request, an empty address) is NOT asked
+    offline: there the provider gave no answer to complete, and F65 keeps its meaning —
+    such coordinates stay `unknown` instead of quietly switching provider mid-run.
+    """
+
+    def __init__(self, primary: _PlaceBatchResolver, offline: _OfflineBatchResolver) -> None:
+        self._primary = primary
+        self._offline = offline
+        self._city_missing = 0
+        self._city_recovered = 0
+
+    def _offline_place(self, coord: tuple[float, float], online: _Place) -> _Place:
+        """The offline place for the coordinate, or `online` unchanged if it does not help."""
+        offline = self._offline.resolve_places([coord])[0]
+        if offline.city is None or offline.country != online.country:
+            return online
+        return offline
+
+    def resolve_places(
+        self, coords: list[tuple[float, float]],
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[_Place]:
+        places = list(self._primary.resolve_places(coords, progress=progress))
+        for i, place in enumerate(places):
+            if place.city is not None or place.country is None:
+                continue
+            self._city_missing += 1
+            completed = self._offline_place(coords[i], place)
+            if completed is not place:
+                self._city_recovered += 1
+                places[i] = completed
+            if (self._city_missing == 1
+                    or self._city_missing % _CITY_MISSING_WARN_EVERY == 0):
+                _log.warning(
+                    "geo: провайдер вернул ответ без города для (%s, %s), страна %s — "
+                    "случай %d, из них с городом из оффлайн-базы: %d",
+                    coords[i][0], coords[i][1], place.country,
+                    self._city_missing, self._city_recovered,
+                )
+        if self._city_missing:
+            _log.warning(
+                "geo: ответов без города: %d, из них город найден в оффлайн-базе: %d "
+                "(остальные останутся на уровне страны)",
+                self._city_missing, self._city_recovered,
+            )
+        return places
+
+
 def _resolver_for(cfg: Config) -> _PlaceBatchResolver:
     """Provider abstraction by `cfg.geo.provider`.
 
     offline -> geodata.GeoResolver (bundled GeoNames, no network).
-    online  -> Nominatim/OSM reverse geocoding (G2b) — names as text, no geonameids.
+    online  -> Nominatim/OSM reverse geocoding (G2b) — names as text, no geonameids,
+               wrapped in the offline city fallback of F86 (only if the bundled data is
+               actually there: online must keep working on an install without it).
     """
     provider = cfg.geo.provider
     if provider == "offline":
         return _OfflineBatchResolver(GeoResolver())
     if provider == "online":
-        return _NominatimResolver(cfg)
+        online = _NominatimResolver(cfg)
+        offline = GeoResolver()
+        if not offline.data_available():
+            _log.warning(
+                "geo: оффлайн-база недоступна (%s) — города, которых нет в ответе "
+                "провайдера, восстановить не получится", offline.data_dir,
+            )
+            return online
+        return _CityFallbackResolver(online, _OfflineBatchResolver(offline))
     raise ValueError(f"geo: неизвестный geo.provider={provider!r} (ожидается offline|online)")
 
 

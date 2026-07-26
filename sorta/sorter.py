@@ -53,6 +53,11 @@ and errs both ways. It is a routing change, not a classification one — the ver
 media_class stays as it is — and it deliberately leaves `document` and `screenshot`
 alone: a scan has no camera EXIF either, and those two folders are the ones the user
 reviews by hand.
+
+F86 does the same for city mode: a file whose country resolved but whose city no
+provider knows goes to <Country>/<year>/ (reason `country_only`) instead of
+_Unsorted/no_place/. Only a file without a country at all (place_confidence='unknown')
+still lands in no_place.
 """
 from __future__ import annotations
 
@@ -413,12 +418,21 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
     if year is None:
         return _undated_parts(row, lang)
     if mode == "city":
-        if row["city"] is None or (row["place_confidence"] or "unknown") == "unknown":
+        country_known = bool(row["country"] or row["country_name"])
+        if (row["place_confidence"] or "unknown") == "unknown" or (
+                row["city"] is None and not country_known):
             return [i18n.folder("unsorted", lang), i18n.folder("no_place", lang)], "no_place"
         # online (G6): the full country name from Nominatim is already in the config
         # language; offline — localize the ISO cc via the curated dict i18n.country
         country_name = row["country_name"] or (
             i18n.country(row["country"], lang) if row["country"] else "Unknown")
+        if row["city"] is None:
+            # F86: the country is resolved, only the city is missing (no provider knows a
+            # settlement for these coordinates — mid-ocean, a desert road). The file goes
+            # to the country level: hiding it in _Unsorted/no_place would throw away the
+            # one place signal we do have. Guessing a city by the nearest one is not an
+            # option here — that is the F75 misplacement.
+            return [_sanitize(country_name), year], "country_only"
         city_gid = row["city_geonameid"]
         city_name = resolver.name(city_gid, lang) if city_gid is not None else row["city"]
         parts = [_sanitize(country_name), _sanitize(city_name), year]
@@ -608,8 +622,8 @@ class PlanItem:
     dst: Path
     in_place: bool
     target_rel: str            # path relative to dest, POSIX separators
-    reason: str                # city|person|person_primary|person_shared|event
-    #                            | no_place|no_faces|no_event|junk|low_date|downloaded
+    reason: str                # city|country_only|person|person_primary|person_shared
+    #                            | event|no_place|no_faces|no_event|junk|low_date|downloaded
     #                            | dedup_delete|manual_reassign
     #                            | manual_exclude (preview only, see keep_manual_excluded)
     taken_at: str | None
