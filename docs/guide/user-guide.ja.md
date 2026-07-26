@@ -34,8 +34,12 @@ Sorta は、大規模な写真・動画コレクション（60 GB 以上で検�
 13. [不要写真・スクショ・書類](#14-不要写真スクショ書類)
 14. [安全性・取り消し・プライバシー](#15-安全性取り消しプライバシー)
 15. [コマンド一覧](#16-コマンド一覧)
-16. [設定リファレンス](#17-設定リファレンス)
-17. [トラブルシューティング](#18-トラブルシューティング)
+16. [メンテナンスと診断](#17-メンテナンスと診断)
+17. [プレビューキャッシュ](#18-プレビューキャッシュ)
+18. [実行ログ](#19-実行ログ)
+19. [モデルのオフライン動作](#20-モデルのオフライン動作)
+20. [設定リファレンス](#21-設定リファレンス)
+21. [トラブルシューティング](#22-トラブルシューティング)
 
 ---
 
@@ -53,7 +57,7 @@ Sorta の ML バックエンド（顔検出、不要写真分類用の CLIP/OCR�
 2 つのインストールプロファイル**のいずれかで導入します — ハードウェアに合わせて
 選んでください:
 
-| | CPU プロファイル (`--extra cpu`) | GPU プロファイル (`--extra gpu`) |
+| | CPU プロファイル（`cpu` エクストラ） | GPU プロファイル（`gpu` エクストラ） |
 |---|---|---|
 | ハードウェア | 任意の x86‑64 マシン、GPU 不要 | NVIDIA GPU + **CUDA 13** 対応ドライバ（Blackwell/RTX 5090 で検証済み） |
 | バックエンド | `onnxruntime`（CPU）+ CPU ビルドの torch/torchvision | `onnxruntime-gpu` + CUDA 13/cuDNN 9 ランタイム（pip wheel）+ CUDA ビルドの torch/torchvision |
@@ -69,6 +73,8 @@ Sorta の ML バックエンド（顔検出、不要写真分類用の CLIP/OCR�
 
 ## 3. インストール
 
+### 3.1 インストール前に
+
 ```bash
 git clone https://github.com/shinKatana0/sorta.git
 cd sorta
@@ -82,71 +88,166 @@ cd sorta
 cp config.example.yaml config.yaml
 ```
 
-Sorta の ML バックエンド(顔検出、CLIP/OCR)には、ハードウェア用プロファイルが
-ちょうど1つ必要です — `cpu` か `gpu`、互いに排他的です(§2 参照)。導入方法は
-2 つサポートされており、どちらも**「一度だけセットアップすれば、あとは `sorta`
-を実行するだけ」**— 用途に応じて選んでください:
+`exiftool` が無いと Sorta は Pillow にフォールバックします: 読めるのは
+JPEG/PNG/TIFF/WEBP だけで、動画は一切読めず、HEIC/RAW からは日付・GPS・向きも
+取得できません。スマホのコレクションでは、Sorta が振り分けに使うメタデータの
+ほとんどがそれに当たります。任意ではなく必須と考えてください。
 
-### A) `uv tool install` によるグローバルインストール(通常利用に推奨)
+### 3.2 ハードウェアプロファイルを選ぶ
+
+Sorta の ML バックエンド（顔検出、CLIP/OCR）には、ハードウェア用プロファイルが
+ちょうど 1 つ必要です。`cpu` と `gpu` は**互いに排他的な**エクストラです
+（`pyproject.toml` の `tool.uv.conflicts`）— どちらか一方だけを入れ、両方は
+入れません。各組み合わせで実際に入るもの（2026‑07‑26 に `uv pip compile` の
+解決で確認）:
+
+| エクストラ | 入るもの |
+|---|---|
+| `cpu` | `torch==2.13.0+cpu`、`onnxruntime` |
+| `gpu` | `torch==2.13.0+cu130`、`onnxruntime-gpu` |
+| `gpu,vlm` | `gpu` の内容 + `transformers==4.51.3` |
+| `cpu,vlm` | `cpu` の内容 + `transformers==4.51.3` |
+
+`vlm` は任意の深い VLM 分類ティア（`naming.vlm_enabled` / `--deep`、§8 参照）です。
+無い場合、そのティアは黙って高速 CLIP ティアへフォールバックします。`dev` は
+品質ゲート用ツール（ruff、mypy、pytest）を追加します — `scripts/check.py` や
+テストスイートを実行する場合にのみ必要です。
+
+### 3.3 `sorta` コマンドのインストール（`uv tool install`）
+
+> **`uv tool install` に `--extra` フラグはありません。** エクストラは*パッケージ
+> 指定の内側*、つまりパスと同じ引用符付き引数の中に書きます:
+> `uv tool install "C:\path\to\sorta[gpu]"`。実際の利用者がつまずいたのはまさに
+> ここでした: エクストラ無しで実行した結果、素のパッケージが解決されて
+> **CPU プロファイル**が黙って組み上がり、まともな GPU があるマシンなのに torch
+> は `+cpu` で入ってしまいました。
 
 ```bash
-uv tool install ".[cpu]"        # NVIDIA GPU なし
-# または
-uv tool install ".[gpu]"        # NVIDIA GPU + CUDA 13 ドライバ
+# CPU のみ
+uv tool install "C:\path\to\sorta[cpu]"
+
+# GPU（NVIDIA / CUDA 13）
+uv tool install "C:\path\to\sorta[gpu]"
+
+# GPU + 深い VLM ティア
+uv tool install "C:\path\to\sorta[gpu,vlm]"
+
+# CPU + 深い VLM ティア
+uv tool install "C:\path\to\sorta[cpu,vlm]"
+
+# …いずれも editable で（ローカルでコードを触る場合）
+uv tool install -e "C:\path\to\sorta[gpu]"
 ```
 
-これは `pyproject.toml` のプロファイル/インデックス設定(`pytorch-cu130` /
-`pytorch-cpu` インデックス)を `uv sync` と同じように解決し、`sorta` コマンドを
-PATH に追加します — `gpu` プロファイルで実際に CUDA 13 ビルドの torch になることを
-確認済みです(`torch.cuda.is_available()` → `True`)。以降は、どのターミナルの
-どのディレクトリからでも `sorta ui`、`sorta index …` などをそのまま実行できます
-— `uv run` も、venv のアクティベートも不要です。
+`C:\path\to\sorta` はチェックアウトのパスです。すでにその中にいるなら `.` でも
+構いません（`uv tool install ".[gpu]"`）。引数全体は必ず引用符で囲んでください —
+多くのシェルでは引用されない `[...]` は glob として解釈されます。
 
-- **プロファイルの切り替え**(別のハードウェアに移した、または選び間違えた場合)
-  — `--force` と別の extra で再インストール:
-  `uv tool install --force ".[gpu]"`(または `".[cpu]"`)。
-- **`git pull` 後の更新** — `uv tool install --force ".[<プロファイル>]"`。
-  これは現在のコードの新しいスナップショットをインストールします。editable
-  インストールでは**ない**ため、ローカルの変更を自動反映させたい場合は下記の
-  パス B を使ってください。
-- Sorta が PyPI に公開されたら、同じ考え方が
-  `uv tool install "sorta[gpu]"`(または `"sorta[cpu]"`)になります —
-  ローカルのチェックアウトは不要です。
+- **コードを編集するなら `-e` を使ってください。** editable でないインストールは
+  インストール時点のスナップショットです: ファイルを直して `sorta` を実行しても
+  古いコピーの挙動のままで、理由を示すものは画面のどこにも出ません。`-e` なら
+  編集は即座に反映され、忘れがちな再インストール手順そのものが無くなります。
+- **プロファイルの切り替え、または `git pull` 後の非 editable インストールの更新**
+  — 目的のエクストラを付けて `--force` で再インストール:
+  `uv tool install --force "C:\path\to\sorta[gpu]"`。
+- Sorta が PyPI に公開されたら、同じ形が `uv tool install "sorta[gpu]"` になります
+  — ローカルのチェックアウトは不要です。
 
-### B) `uv sync` によるプロジェクト venv(コードを開発する場合)
+これは `pyproject.toml` のプロファイル/インデックス設定（`pytorch-cu130` /
+`pytorch-cpu` インデックス）を `uv sync` と同じように解決し、`sorta` コマンドを
+PATH に追加します。以降は、どのターミナルのどのディレクトリからでも `sorta ui`、
+`sorta index …` などをそのまま実行できます — `uv run` も、venv のアクティベートも
+不要です。
+
+### 3.4 開発用の環境（`uv sync`）
 
 ```bash
-uv sync --extra cpu --extra dev      # NVIDIA GPU なし
-# または
 uv sync --extra gpu --extra dev      # NVIDIA GPU + CUDA 13 ドライバ
+# または
+uv sync --extra cpu --extra dev      # NVIDIA GPU なし
 
 # シェルセッションごとに一度アクティベート:
 .\.venv\Scripts\Activate.ps1         # Windows PowerShell
 source .venv/bin/activate            # Linux/macOS/bash
 ```
 
-venv がアクティブな状態では、`sorta …` はチェックアウトから直接(editable
-インストールとして)実行されます — コードの変更は即座に反映され、再インストール
-は不要です。
+`--extra` をフラグとして受け取るのはこの `uv sync` の方で、しかもプロファイルは
+同じくらい明示が必要です: `--extra cpu` か `--extra gpu` を必ず自分で指定して
+ください（自動では選ばれません）。GPU wheel は CUDA 13 ランタイムを通常の pip
+パッケージとして取得するので、システムに CUDA Toolkit を入れる必要はありません。
+venv がアクティブな状態では `sorta …` はチェックアウトから直接実行され、コードの
+変更は即座に反映されます。
 
 > **`uv run sorta …` を日常的なコマンドとして使わないでください。** `uv run
 > <cmd>` は実行のたびに、環境を `pyproject.toml` の基本依存関係セットへ
 > 再同期します — そのコマンドで毎回 `--extra <プロファイル>` を繰り返し指定
 > しない限り、この再同期は実行のたびに GPU パッケージを黙って外し(torch は
-> CPU ビルドにフォールバック)ます。パス A(`uv tool install`)とパス B
-> (アクティベートした venv)はどちらもこれを完全に回避します — `uv run` 経由
-> の実行ではなく一度だけインストールする理由はまさにここにあります。
+> CPU ビルドにフォールバック)ます。`uv tool install`（§3.3）とアクティベート
+> した venv はどちらもこれを完全に回避します — `uv run` 経由の実行ではなく
+> 一度だけインストールする理由はまさにここにあります。
 
-どちらのパスでも、必ず `--extra cpu` か `--extra gpu` を明示してください —
-`pyproject.toml` で互いに排他的とマークされており、これにより `uv` が正しい
-torch/onnxruntime のビルドを解決します(GPU wheel は CUDA 13 ランタイムを通常の
-pip パッケージとして取得するので、システムに CUDA Toolkit を入れる必要は
-ありません)。プロファイルは自動では選ばれません。
+### 3.5 インストール直後に — `sorta doctor`
 
-`--extra dev` は dev ツール(ruff、mypy、pytest)を追加します — `scripts/check.py`
-やテストスイートを実行する場合に必要で、`sorta` を動かすだけなら不要です。深い
-VLM 分類ティア用の任意の `--extra vlm`(`naming.vlm_enabled`)もあります。無くても
-そのティアは自動的に高速 CLIP ティアへフォールバックします。
+`sorta doctor` は、ほかの何よりも先に実行すべきコマンドです。データベースには
+触れず、何もダウンロードせず、インストールが実際にどうなったかだけを報告します:
+
+```
+$ sorta doctor
+torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop GPU)
+onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
+mismatch: no
+geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
+Лог прогона: C:\Users\you\AppData\Local\sorta\logs\sorta.log
+Кэш превью: C:\Users\you\AppData\Local\sorta\previews
+```
+
+各行の読み方:
+
+- **`torch: …（CUDA available: yes|no）`** — 実際に入ったビルド。`gpu` プロファイル
+  なら `+cu130` かつ `CUDA available: yes` でなければなりません。`+cpu` ビルドなら、
+  エクストラがインストールコマンドに届いていません（§3.3）。
+- **`onnxruntime providers: …`** — 顔検出が動ける実行環境。`CUDAExecutionProvider`
+  が一覧にあれば GPU を使えます。無ければ顔検出は CPU で動きます（§3.6）。
+- **`mismatch: yes`** — torch は CPU 専用ビルドなのに onnxruntime には CUDA がある
+  状態。顔検出は GPU、CLIP と OCR は黙って CPU という、遅く静かな失敗であり、この
+  行はまさにそれを捕まえるために存在します。
+- **`geo data: …places.tsv (N MB)`** — 同梱の GeoNames データベース。都市別振り分け
+  が座標を解決する相手です。存在し、かつ空でない必要があります。行頭に `⚠` が付き
+  FILE NOT FOUND / FILE IS EMPTY と出る場合、すべての座標が空の場所に解決されます。
+  対処は再インストール（チェックアウトなら `python scripts/build_geodata.py`）です。
+- **`Лог прогона:`**（実行ログ）— 実行ログの出力先（§19）。
+- **`Кэш превью:`**（プレビューキャッシュ）— デコード済みプレビューの保存先（§18）。
+  末尾の ` (ОТКЛЮЧЁН)` はキャッシュが無効という意味です。
+
+他の CLI メッセージと同じく、最後の 2 つのラベルは固定のロシア語です（§4）。
+`sorta doctor` は `config.yaml` を読まないため、表示されるプレビューのパスは既定値
+（および環境変数 `SORTA_PREVIEW_DIR`）に基づきます。
+
+### 3.6 既知の落とし穴: `onnxruntime` が `onnxruntime-gpu` を上書きする
+
+`insightface`（顔検出）は素の `onnxruntime` パッケージに依存し、`gpu` エクストラは
+`onnxruntime-gpu` を入れます。この 2 つは別々の配布物でありながら*同じ*
+`onnxruntime` ディレクトリに展開されるため、後から入った方が勝ちます。勝ったのが
+CPU 版だと、顔検出はどこにもエラーを出さないまま静かに CPU へ移ります。
+
+兆候は `sorta doctor` に出ます — プロバイダ一覧に `CUDAExecutionProvider` が
+**無い**状態です。例:
+
+```
+onnxruntime providers: AzureExecutionProvider, CPUExecutionProvider (CUDA: no)
+```
+
+回避策は、pip に依存関係を再解決させずに GPU パッケージを上書き再インストールする
+ことです:
+
+```bash
+python -m pip install --force-reinstall --no-deps onnxruntime-gpu
+```
+
+`--no-deps` は省略できません。付けないと pip が `insightface` を再解決し、CPU 版
+`onnxruntime` をまた引き戻します。Sorta がインストールされている環境（アクティブ
+にしたプロジェクト venv）で実行し、その後 `sorta doctor` をもう一度実行して
+`CUDAExecutionProvider` が一覧に戻ったことを確認してください。
 
 ---
 
@@ -170,9 +271,9 @@ language: ja             # UI／フォルダ言語: ru | en | ja（既定 ru）
 > **注意:** `language` は CLI 自体のコンソールメッセージ（`Готово: +13 новых, ...`
 > のような進捗表示）には影響**しません** — これらは設定に関係なく固定のテキスト
 > です。フォルダ名と Web UI は完全にローカライズされます。実際の CLI 出力がどう
-> 見えるかは §9 の実例を、`????` のように文字化けする場合は §18 を参照してください。
+> 見えるかは §9 の実例を、`????` のように文字化けする場合は §22 を参照してください。
 
-全オプションは[設定リファレンス](#17-設定リファレンス)を参照。
+全オプションは[設定リファレンス](#21-設定リファレンス)を参照。
 
 ---
 
@@ -516,7 +617,7 @@ person モードにはまず**名前付きの顔クラスタ**（§11）が必�
 sorta sort --by person --dest /path/to/sorted --apply
 ```
 
-これにより、その人物が（あるいは主たる人物 — §17 の `sort.multi_person` 参照）
+これにより、その人物が（あるいは主たる人物 — §21 の `sort.multi_person` 参照）
 名前付きの顔である写真すべてが `<dest>/<人物名>/<file>.jpg` に振り分けられます。
 名前付きの人物がいない写真にもどこかへの行き先が必要なので、`_未分類/` に
 フォールバックします。junk/スクリーンショットの振り分けや
@@ -725,6 +826,7 @@ $ sorta junk -c config.yaml
 
 ```
 sorta index [DIR]                 sources（または DIR）をスキャン → メタデータ・ハッシュ・完全重複
+sorta index --refresh-exif        インデックス済みファイルのメタデータを読み直す（§17）
 sorta run [--src DIR] [--faces] [--events] [--deep/--no-deep] [--geo offline|online]
           [--by city|person|event] [--dest DIR]
                                   基本パイプライン（index→geo→landmarks→junk）;
@@ -756,13 +858,198 @@ sorta reset [--yes]               インデックス（DB）を消去してや�
                                   振り分け済みフォルダには触れません（人物/イベント名
                                   と重複判定は失われます）
 sorta ui [--port 8756]            ローカル Web アプリ（処理／都市／重複／人物／イベント／移動）
+sorta doctor                      環境診断: torch/onnxruntime、GPU、地理データ、
+                                  ログのパス、プレビューキャッシュのパス（§3.5）
+sorta cache [--clear]             プレビューキャッシュ: サイズ表示、または削除（§18）
 ```
 
-各コマンドは `-c/--config <path>`（既定 `config.yaml`）を受け付けます。
+各コマンドは `-c/--config <path>`（既定 `config.yaml`）を受け付けます — ただし
+`sorta doctor` だけは設定ファイルを一切読みません。
 
 ---
 
-## 17. 設定リファレンス
+## 17. メンテナンスと診断
+
+パイプラインには含まれないものの、日常的に使う 3 つのコマンドです。
+
+### `sorta doctor`
+
+§3.5 で説明したインストール／環境の診断です: torch と onnxruntime のデバイス、
+同梱の地理データベース、実行ログのパス、プレビューキャッシュのパス。インストール
+やプロファイル変更のたびに、また「妙に遅い」と感じたときは真っ先に実行してくだ
+さい。
+
+### `sorta index --refresh-exif`
+
+**すでにインデックスにあるファイル**のメタデータを、再インデックスせずに読み直し
+ます。要約行の形は次のとおりです（`<N>` は実行ごとのカウンタ）:
+
+```
+$ sorta index --refresh-exif -c config.yaml
+Перечитано: <N> файлов, обновлено <N>; вернулось координат: <N>, дат съёмки: <N>; без EXIF: <N>, ошибок: <N>
+Появились новые координаты — перезапустите: sorta geo (и sorta events)
+```
+
+- **なぜ必要か。** 通常の `sorta index` はこれらのファイルを意図的にスキップします:
+  パス + サイズ + mtime を比較しており、そのどれも変わっていないからです。変わった
+  のが*読み取り側*（メタデータ抽出を修正した Sorta の更新など）である場合、通常の
+  実行では二度と再訪されません。
+- **いつ実行するか。** EXIF／メタデータの読み取りに触れた更新のあと、あるいは
+  `sorta stats` の GPS・EXIF 日付の件数が想定より少ないときです。
+- **何が書き換わるか。** GPS、カメラのメーカー／機種、寸法、撮影日時、向きだけです。
+  ハッシュ、pHash、重複マークには**触れません** — ファイルの内容は変わっておらず、
+  変わったのは「そこから読み取れた内容」だけだからです。ファイル全体の読み込みも
+  再ハッシュも行いません。
+- **その後に。** 座標が復活したということは、場所を解決し直す必要があるという
+  ことです: `sorta geo` を、イベントを使っているなら `sorta events` も実行して
+  ください。実際に座標が戻った場合、コマンド自身がその旨を表示します。
+
+### `sorta cache`
+
+プレビューキャッシュ（§18）の状況を表示、または削除します:
+
+```
+$ sorta cache -c config.yaml
+Кэш превью: C:\Users\you\AppData\Local\sorta\previews
+  файлов: 34887, размер: 12.60 ГБ
+
+$ sorta cache --clear -c config.yaml
+Кэш превью удалён: C:\Users\you\AppData\Local\sorta\previews
+```
+
+キャッシュはいつ削除しても安全です: 遅延生成なので、そのフレームを次に必要とした
+段階が 1 枚ずつ作り直します。コストは、そのフレームをオリジナルからもう一度
+デコードすることだけです。
+
+---
+
+## 18. プレビューキャッシュ
+
+**何をするものか。** 各フレームのデコードは**一度だけ**。その結果（長辺 1536 px に
+縮小した JPEG）が共有キャッシュディレクトリに書かれ、以降の段階（pHash、CLIP、OCR、
+深い VLM ティア、UI のサムネイル）はオリジナルを再デコードせずにその小さなコピーを
+読みます。
+
+**なぜ。** これらの段階が実際に時間を使っているのはデコードだからです。HEIC の
+フルデコードは約 470 ms、同じフレームをプレビューキャッシュから読むと 1 桁 ms
+（約 8 ms）です。以前は段階が順番に走るため、同じ写真が 1 回の実行で 3〜5 回
+デコードされていました。
+
+**保存場所。**
+
+| OS | パス |
+|---|---|
+| Windows | `%LOCALAPPDATA%\sorta\previews` |
+| Linux / macOS | `~/.cache/sorta/previews` |
+
+**容量の目安: 1 枚あたり約 150 KB、合計はギガバイト単位です。** 150 KB は 1536 px
+q88 の JPEG としての設計値で、精細なフレームはもっと大きくなります。実測では
+34,887 件のプレビューで **12.60 GB**（1 件あたり約 360 KB）でした。数万枚規模の
+コレクションでは数ギガバイトのディスクを使うということであり、誤差ではありません。
+これはユーザー領域のキャッシュで、写真コレクションの中には決して書き込まれません。
+現在のサイズはいつでも `sorta cache` で確認できます（§17）。
+
+**小さい画像はキャッシュされません。** オリジナルが既に `preview_max_edge` 以下なら、
+プレビューは節約ではなく単なるコピーになるためスキップされます — スクリーンショット
+ばかりのコレクションはここで容量を使いません。
+
+**設定** — `config.yaml` の `imaging:` セクション:
+
+```yaml
+imaging:
+  preview_cache: true     # false → 各段階が毎回オリジナルをデコードし直す
+  # preview_dir: D:/sorta-previews   # 既定は上の表のとおり
+  preview_max_edge: 1536  # キャッシュする JPEG の長辺
+  preview_quality: 88     # キャッシュする JPEG の品質
+```
+
+各キーには同じ形の環境変数（`SORTA_PREVIEW_CACHE`、`SORTA_PREVIEW_DIR`、
+`SORTA_PREVIEW_MAX_EDGE`、`SORTA_PREVIEW_QUALITY`）があり、両方指定されている場合は
+**環境変数が優先**されます。
+
+---
+
+## 19. 実行ログ
+
+長い実行の記録はコンソールには残りません — とくに `sorta ui` は誰も見ていない
+バックグラウンドのウィンドウで何時間も動き続けます。そのため、どのコマンドも
+ログファイルを書き出します。
+
+| OS | パス |
+|---|---|
+| Windows | `%LOCALAPPDATA%\sorta\logs\sorta.log` |
+| Linux / macOS | `~/.cache/sorta/logs/sorta.log` |
+
+ローテーションは **5 MB × 5 世代**（`sorta.log.1` … `sorta.log.5`）なので、無制限に
+増えることはありません。パイプラインの実行（`sorta run`）と `sorta ui` の起動時には、
+さらに環境ヘッダ（Sorta と Python のバージョン、プラットフォーム、`sorta` パッケージ
+の読み込み元、GPU の状態、地理データ、作業ディレクトリ）が記録されます —
+`sorta doctor` が表示するのと同じ事実を、実行時点のスナップショットとして残した
+ものです。
+
+**段階ごとの所要時間。** パイプライン実行（`sorta run` または UI の「処理」ボタン）の
+各段階は `stage=<名前> … elapsed=<秒>` という安定した形の行を出力するため、文章を
+解析しなくても実行のプロファイルが読めます。2026‑07‑25 の実際の実行のプロファイル:
+
+```
+2026-07-25T23:37:10.345 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=index started
+2026-07-25T23:37:43.854 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=index elapsed=33.509
+2026-07-25T23:37:43.855 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=geo started
+2026-07-25T23:37:47.727 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=geo elapsed=3.872
+2026-07-25T23:37:47.727 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=landmarks started
+2026-07-25T23:41:34.228 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=landmarks elapsed=226.501
+2026-07-25T23:41:34.229 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=junk started
+2026-07-26T00:10:34.736 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=junk elapsed=1740.508
+2026-07-26T00:10:34.736 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=phash started
+2026-07-26T00:26:09.900 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=phash elapsed=935.164
+```
+
+そのまま読み取れます: `junk` が 29 分、`phash` が 15.6 分で、この 2 つだけで 49 分の
+実行の 91 %。`index`（33 秒）と `geo`（4 秒）は誤差です。`gpu` エクストラでのインストール、
+`naming.clip.decode_workers`、`naming.ocr_workers`（§21）を投入すべき先はそこだと
+分かりますし、「固まった」のか「遅い段階の途中」なのかもこれで区別できます。
+
+同じ行の別の形: `stage=<名前> failed elapsed=…`（直後にトレースバック）と、
+キャンセルされた実行の `stage=<名前> interrupted (…) elapsed=…` — UI の「キャンセル」
+はエラーではありません。件数を報告する段階では ` processed=<n> rate=<n>/s` も
+付きます。
+
+**上書き設定。**
+
+- `SORTA_LOG_FILE=<パス>` — ログの出力先を変更。
+- `SORTA_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR` — **ファイル**側のレベル（既定 `INFO`）。
+
+ファイル側のレベルはコンソール側とは独立です: `config.yaml` の `log_level` が
+制御するのはコンソール出力だけ（既定 `WARNING` — 警告とエラー）で、ファイルには
+段階ごとの所要時間を含む `INFO` の詳細が残ります。コンソールを静かにしても、
+ログファイルは静かになりません。
+
+---
+
+## 20. モデルのオフライン動作
+
+ML モデル（CLIP、easyocr、使用していれば VLM ティア）のダウンロードは**一度だけ**
+です。それ以降、これらのためにネットワークは一切不要になります — 「既定でローカル」
+が実際に意味するのはこういうことです。
+
+切り替えは自動です: Hugging Face のキャッシュにダウンロード済みモデルが 1 つでも
+あれば、Sorta は各コマンドをオフラインモード（`HF_HUB_OFFLINE` /
+`TRANSFORMERS_OFFLINE`）で開始し、すでにディスクにある重みのリビジョン確認のために
+Hub へ問い合わせる段階は 1 つもありません。キャッシュが空の新しいマシンはそのまま
+なので、最初のダウンロードは従来どおり行えます。
+
+- `SORTA_ALLOW_MODEL_DOWNLOAD=1` で自動切り替えを**無効化**できます — 他のモデルが
+  すでにキャッシュされているマシンで*新しい*モデルを取得したいとき（VLM ティアを
+  初めて有効にする場合など）に使います。
+- `HF_HUB_OFFLINE` や `TRANSFORMERS_OFFLINE` を自分で設定している場合、Sorta が
+  その値を上書きすることはありません。
+
+なお、顔検出（insightface/`buffalo_l`）は `~/.insightface/models` に独自の
+キャッシュを持ち、これらの環境変数の影響は受けません。
+
+---
+
+## 21. 設定リファレンス
 
 `config.yaml` の主なセクション（完全なテンプレートは `config.example.yaml`）:
 
@@ -774,6 +1061,7 @@ language: ja                   # ru | en | ja — フォルダと UI の言語
 index:
   min_file_size_kb: 5          # 極小ファイルを無視
   workers: 8                   # 並列ハッシュ計算
+  exif_workers: 8              # 並列 exiftool セッション（0/未指定 = 自動 min(8, コア数)）
   skip_dirs: [".thumbnails", "@eaDir", "$RECYCLE.BIN", "System Volume Information"]
 
 geo:
@@ -805,14 +1093,48 @@ naming:
   document_threshold: 0.9      # 書類の CLIP しきい値
   text_frac_document: 0.15     # テキスト面積比がこれ以上なら写真 → 書類
   text_rescue_docscore_min: 0.3  # doc-score がこれ以上の写真のみ OCR で再判定
-  vlm_enabled: false           # 深い VLM 分類ティア（`--extra vlm` が必要）;
+  ocr_workers: 4               # 並列 OCR 検出器（既定 min(4, コア数)）
+  vlm_enabled: false           # 深い VLM 分類ティア（`vlm` エクストラが必要）;
                                #   `--deep` / UI の「詳細解析」チェックボックスと同じ
+  clip:
+    batch_size: 16             # GPU での CLIP フォワードのバッチサイズ
+    decode_workers: 0          # CLIP 用デコードスレッド; 0 = 自動 min(コア数, 16)
+
+imaging:                       # プレビューキャッシュ — §18 参照
+  preview_cache: true
+  preview_max_edge: 1536
+  preview_quality: 88
+
+log_level: WARNING             # コンソールのみ; 実行ログは INFO のまま（§19）
 ```
+
+### スループット関連の設定
+
+重い段階の速度を決めるつまみは 4 つです。いずれも任意で、既定値は控えめな
+ハードウェアでも問題が出ないように選ばれています。詳しい解説と実測値は
+`config.example.yaml` にあります。
+
+| 設定 | 何をするか | いつ触るか |
+|---|---|---|
+| `index.exif_workers` | `index` 段階での並列 `exiftool` セッション数。exiftool は別プロセスなのでほぼ線形にスケールします（実測: 1 → 8 セッションで 1 ファイルあたり 11.8 → 2.0 ms）。既定は自動 `min(8, コア数)`。 | ログで `stage=index` が支配的なら、コア数の多いマシンで増やす。 |
+| `naming.ocr_workers` | `junk` 段階の並列 OCR 検出器数。各ワーカーが**自分の**モデルを VRAM に持つため、既定はあえて控えめな `min(4, コア数)`。 | VRAM に余裕があるときだけ増やす。OCR でメモリが足りなくなるなら減らす。 |
+| `naming.clip.batch_size` | GPU 上の CLIP フォワードのバッチサイズ。CLIP 経路はデコード律速なので、ほとんど効きません。既定 16。 | 変更が必要になることはほぼありません。 |
+| `naming.clip.decode_workers` | CLIP に供給するデコードスレッド数 — `junk`/`landmarks` の速度を左右する本命のつまみ。既定は自動 `min(コア数, 16)`。 | `stage=junk`/`stage=landmarks` が支配的で GPU が遊んでいるなら増やす。 |
 
 ---
 
-## 18. トラブルシューティング
+## 22. トラブルシューティング
 
+- **GPU 搭載機なのに `sorta doctor` が `torch: 2.13.0+cpu` と表示する** — エクストラ
+  がインストールコマンドに届いていません。`uv tool install` に `--extra` フラグは
+  無く、エクストラは引用符付きの指定の内側に書きます:
+  `uv tool install --force "C:\path\to\sorta[gpu]"`（§3.3）。
+- **torch は CUDA を認識しているのに `sorta doctor` に `CUDAExecutionProvider` が無い**
+  — `insightface` が連れてくる素の `onnxruntime` が `onnxruntime-gpu` を上書きし、
+  顔検出が CPU で動いています。説明と回避策は §3.6。
+- **コードを変更しても反映されない** — editable でない `uv tool install` は
+  インストール時点のスナップショットです。`-e` を付けて入れ直す（§3.3）か、
+  プロジェクト venv を使ってください（§3.4）。
 - **`uv sync`（extra 無し）で `sorta faces`/`sorta junk` が壊れる、または一貫しない**
   — 想定どおりです。必ず明示的なプロファイルでインストールしてください:
   `uv sync --extra cpu --extra dev` または `uv sync --extra gpu --extra dev`
@@ -853,6 +1175,15 @@ naming:
   junction）が実行間で維持されるようにしてください。
 - **`database is locked`** — 別の Sorta プロセスが書込み中（例: パイプライン実行）。完了
   を待ち、書込みを 2 つ同時に走らせないこと。
+- **実行中にディスクの空きがギガバイト単位で減った** — おそらくプレビュー
+  キャッシュ（§18）です: 1 枚あたり約 150 KB 以上。`sorta cache` で確認し、
+  `sorta cache --clear` で削除、`imaging.preview_dir` で移動、
+  `imaging.preview_cache: false` で無効化できます（無効化すると各段階で毎回
+  デコードし直すコストがかかります）。
+- **他のモデルが既にあるマシンで新しいモデルがダウンロードされない** — 想定どおり
+  です: キャッシュが空でなくなった時点で Sorta は Hugging Face をオフラインに
+  切り替えます（§20）。`SORTA_ALLOW_MODEL_DOWNLOAD=1` を付けて一度実行すれば、
+  新しい重みを取得できます。
 - **非 ASCII 名（例: キリル文字）のフォルダが OCR でスキップされたように見える** — 修正
   済み。画像は Unicode 安全なパスでデコードされます。最新版へ更新を。
 - **`language: en`/`ru` でも CLI のコンソールメッセージがロシア語で表示される** —

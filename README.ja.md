@@ -66,7 +66,7 @@ Sorta は**すべてローカルで動作**し（顔・シーン・テキスト�
 
 ## システム要件
 
-| | CPU プロファイル (`--extra cpu`) | GPU プロファイル (`--extra gpu`) |
+| | CPU プロファイル（`cpu` エクストラ） | GPU プロファイル（`gpu` エクストラ） |
 |---|---|---|
 | ハードウェア | 任意の x86‑64 マシン | NVIDIA GPU + **CUDA 13** 対応ドライバ |
 | VRAM | 不要 | **~3 GB** 基本 + 顔検出（RTX 5090 で実測: CLIP ViT‑L 2.0 GB + buffalo_l 0.6 GB）— **≥ 4 GB** で快適、深い VLM ティアには **≥ 8 GB**（Qwen2.5‑VL‑3B、約 7 GB 見込み） |
@@ -82,17 +82,21 @@ Pillow にフォールバックし、JPEG/PNG/TIFF/WEBP のみ読み取り可能
 
 上記のタイミングは当方の環境での参考値であり、保証するものではありません。
 RAM/VRAM に関する詳細を含む完全な内訳は
-[ユーザーガイド](docs/guide/user-guide.ja.md#2-要件) を参照してください。
+[ユーザーガイド](docs/guide/user-guide.ja.md#2-必要要件) を参照してください。
 
 ---
 
 ## クイックスタート
 
 ```bash
-# 一度だけインストール — お使いのハードウェアに合ったプロファイルを選択
-uv tool install ".[cpu]"                # NVIDIA GPU なし — `sorta` を PATH に追加
-# または
-uv tool install ".[gpu]"                # NVIDIA GPU + CUDA 13 ドライバ
+# 一度だけインストール — 以下から 1 つを選びます。エクストラはパッケージ指定の
+# 「内側」に書き、ハードウェアプロファイルを決めます（`cpu` と `gpu` は排他）。
+uv tool install "C:\path\to\sorta[cpu]"       # NVIDIA GPU なし — `sorta` を PATH に追加
+uv tool install "C:\path\to\sorta[gpu]"       # NVIDIA GPU + CUDA 13 ドライバ
+uv tool install "C:\path\to\sorta[gpu,vlm]"   # ...深い VLM ティアも
+uv tool install -e "C:\path\to\sorta[gpu]"    # editable — ローカルでコードを触る場合
+
+sorta doctor                            # 実際に何が入ったかを確認（最初にこれ）
 cp config.example.yaml config.yaml      # `sources` と `language` を設定
 # exiftool は HEIC/RAW/動画に必須 — 先にインストールしてください（「要件」参照）
 
@@ -108,12 +112,25 @@ sorta sort --by city --dest /path/to/sorted --copy --apply   # 適用（copy は
 sorta undo                              # 必要なら直前のバッチを取り消し
 ```
 
+> **`uv tool install` に `--extra` フラグはありません** — エクストラは上記のとおり
+> 引用符付きのパッケージ指定の内側に書きます。付け忘れると、GPU 搭載機でも黙って
+> **CPU プロファイル**（`torch==2.13.0+cpu`）が入ります。それを見つける手段が
+> `sorta doctor` です: torch のビルド、onnxruntime のプロバイダ、地理データベース、
+> ログとプレビューキャッシュのパスを表示します。
+
 コードを開発する場合は、プロジェクトの venv を使ってください（`uv sync --extra
-cpu --extra dev` の後にアクティベートし、同じ `sorta …` コマンドをそのまま実行
-すればコードの変更が即反映されます）。2 つの set‑once パス、プロファイルの切り
-替え方、そして素の `uv run sorta …` がその 1 つでは*ない*理由は、ユーザー
-ガイドの[「インストール」](docs/guide/user-guide.ja.md#3-インストール)を参照して
-ください。
+gpu --extra dev` の後にアクティベートし、同じ `sorta …` コマンドをそのまま実行
+すればコードの変更が即反映されます）。すべてのインストール方法、`sorta doctor` の
+出力の読み方、`onnxruntime`/`onnxruntime-gpu` の落とし穴、そして素の
+`uv run sorta …` がその 1 つでは*ない*理由は、ユーザーガイドの
+[「インストール」](docs/guide/user-guide.ja.md#3-インストール)を参照してください。
+
+大きな実行の前に知っておくとよいことが 2 つあります。Sorta は**プレビュー
+キャッシュ**（フレームごとに 1 回だけデコード、1 枚あたり約 150 KB — 大規模
+コレクションではギガバイト単位。確認は `sorta cache`、削除は `sorta cache --clear`）
+を持ち、段階ごとの所要時間を含む**実行ログ**を
+`%LOCALAPPDATA%\sorta\logs\sorta.log`（他 OS では `~/.cache/sorta/logs/sorta.log`）
+に書き出します。詳細はユーザーガイドにあります。
 
 実際のコマンド出力付きの完全なウォークスルー、コマンドリファレンス、設定
 リファレンスは [ユーザーガイド](docs/guide/user-guide.ja.md) にあります。

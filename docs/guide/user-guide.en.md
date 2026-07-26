@@ -34,8 +34,12 @@ full safety guarantees (dry‑run by default, a move journal, and one‑command 
 13. [Junk, screenshots & documents](#14-junk-screenshots--documents)
 14. [Safety, undo & privacy](#15-safety-undo--privacy)
 15. [Full command reference](#16-full-command-reference)
-16. [Configuration reference](#17-configuration-reference)
-17. [Troubleshooting](#18-troubleshooting)
+16. [Maintenance & diagnostics](#17-maintenance--diagnostics)
+17. [Preview cache](#18-preview-cache)
+18. [The run log](#19-the-run-log)
+19. [Offline models](#20-offline-models)
+20. [Configuration reference](#21-configuration-reference)
+21. [Troubleshooting](#22-troubleshooting)
 
 ---
 
@@ -52,11 +56,11 @@ full safety guarantees (dry‑run by default, a move journal, and one‑command 
 Sorta's ML backend (faces, CLIP/OCR for junk classification) is installed via one of
 two **mutually exclusive install profiles** — pick the one matching your hardware:
 
-| | CPU profile (`--extra cpu`) | GPU profile (`--extra gpu`) |
+| | CPU profile (the `cpu` extra) | GPU profile (the `gpu` extra) |
 |---|---|---|
 | Hardware | Any x86‑64 machine, no GPU needed | NVIDIA GPU + driver supporting **CUDA 13** (verified on Blackwell/RTX 5090) |
 | Backend | `onnxruntime` (CPU) + CPU‑build torch/torchvision | `onnxruntime-gpu` + CUDA 13/cuDNN 9 runtime (pip wheels) + CUDA‑build torch/torchvision |
-| Faces / CLIP speed | Works, correctly, just **slow** — expect hours of `faces`/`junk`/`landmarks` on a large collection. Fine for city‑sorting + duplicates (faces/events are opt‑in anyway, see §8), usable for smaller collections with faces/events on. | Fast. Reference timings from our own 6,298‑photo test collection, faces+events+junk enabled: **≈ 45 min** (fast/CLIP tier), **≈ 77 min** with the optional deep VLM tier (`naming.vlm_enabled` / `uv sync --extra vlm`). |
+| Faces / CLIP speed | Works, correctly, just **slow** — expect hours of `faces`/`junk`/`landmarks` on a large collection. Fine for city‑sorting + duplicates (faces/events are opt‑in anyway, see §8), usable for smaller collections with faces/events on. | Fast. Reference timings from our own 6,298‑photo test collection, faces+events+junk enabled: **≈ 45 min** (fast/CLIP tier), **≈ 77 min** with the optional deep VLM tier (`naming.vlm_enabled` + the `vlm` extra). |
 | RAM | 8 GB+ recommended (indexing/hashing is the RAM‑heavy part, independent of profile) | Same, plus whatever the GPU driver reserves |
 | VRAM | n/a | **~3 GB** for base + faces (measured on RTX 5090: CLIP ViT‑L ≈2.0 GB + buffalo_l ≈0.6 GB) — a **≥4 GB** GPU is comfortable. The optional deep VLM tier (Qwen2.5‑VL‑3B) adds ≈7 GB (estimated from the 3B fp16 model, not measured) → **≥8 GB** total |
 
@@ -67,6 +71,8 @@ faces per photo are the main cost drivers).
 ---
 
 ## 3. Installation
+
+### 3.1 Before you install
 
 ```bash
 git clone https://github.com/shinKatana0/sorta.git
@@ -81,67 +87,166 @@ cd sorta
 cp config.example.yaml config.yaml
 ```
 
-Sorta's ML backend (faces, CLIP/OCR) needs exactly one hardware profile installed
-— `cpu` or `gpu`, mutually exclusive (see §2). There are two supported ways to
-install it, both **"set once, then just run `sorta`"** — pick based on what you're
-doing:
+Without `exiftool` Sorta falls back to Pillow, which reads JPEG/PNG/TIFF/WEBP only:
+no video at all, and no dates, GPS or orientation from HEIC/RAW. On a phone
+collection that is most of the metadata Sorta sorts by, so treat it as required, not
+optional.
 
-### A) Global install with `uv tool install` (recommended for regular use)
+### 3.2 Pick a hardware profile
+
+Sorta's ML backend (faces, CLIP/OCR) needs exactly one hardware profile. `cpu` and
+`gpu` are **mutually exclusive** extras (`tool.uv.conflicts` in `pyproject.toml`) —
+install one, never both. What each combination actually resolves to (checked with
+`uv pip compile` on 2026‑07‑26):
+
+| Extra | What gets installed |
+|---|---|
+| `cpu` | `torch==2.13.0+cpu`, `onnxruntime` |
+| `gpu` | `torch==2.13.0+cu130`, `onnxruntime-gpu` |
+| `gpu,vlm` | the `gpu` set + `transformers==4.51.3` |
+| `cpu,vlm` | the `cpu` set + `transformers==4.51.3` |
+
+`vlm` is the optional deep VLM classification tier (`naming.vlm_enabled` / `--deep`,
+see §8); without it that tier silently falls back to the fast CLIP tier. `dev` adds
+the quality-gate tools (ruff, mypy, pytest) — needed only to run `scripts/check.py`
+or the test suite.
+
+### 3.3 Install the `sorta` command (`uv tool install`)
+
+> **`uv tool install` has no `--extra` flag.** The extra goes *inside the package
+> specification*, in the same quoted argument as the path:
+> `uv tool install "C:\path\to\sorta[gpu]"`. This is exactly where a real install
+> went wrong: the command was run without the extra, so it resolved the plain
+> package, quietly built the **CPU** profile, and torch arrived as `+cpu` on a
+> machine with a perfectly good GPU.
 
 ```bash
-uv tool install ".[cpu]"        # no NVIDIA GPU
-# or
-uv tool install ".[gpu]"        # NVIDIA GPU + CUDA 13 driver
+# CPU only
+uv tool install "C:\path\to\sorta[cpu]"
+
+# GPU (NVIDIA / CUDA 13)
+uv tool install "C:\path\to\sorta[gpu]"
+
+# GPU + the deep VLM tier
+uv tool install "C:\path\to\sorta[gpu,vlm]"
+
+# CPU + the deep VLM tier
+uv tool install "C:\path\to\sorta[cpu,vlm]"
+
+# …any of them editable, for local code changes
+uv tool install -e "C:\path\to\sorta[gpu]"
 ```
 
+`C:\path\to\sorta` is your checkout; `.` works when you are already inside it
+(`uv tool install ".[gpu]"`). Always quote the whole argument — unquoted `[...]` is
+glob syntax in most shells.
+
+- **Use `-e` if you are going to edit the code.** A non‑editable install is a
+  snapshot: you change a file, run `sorta` again, and it keeps behaving like the old
+  copy, with nothing on screen to explain why. With `-e` your edits are live and no
+  reinstall step exists to forget.
+- **Switching profile, or updating a non‑editable install after `git pull`** —
+  reinstall with `--force` and the extra you want:
+  `uv tool install --force "C:\path\to\sorta[gpu]"`.
+- Once Sorta is published to PyPI, the same shape becomes
+  `uv tool install "sorta[gpu]"` — no local checkout needed.
+
 This resolves `pyproject.toml`'s profile/index setup (the `pytorch-cu130` /
-`pytorch-cpu` indexes) exactly like `uv sync` does, and installs a `sorta` command
-onto your PATH — verified to give a real CUDA 13 torch build on the `gpu` profile
-(`torch.cuda.is_available()` → `True`). From here on, just run `sorta ui`, `sorta
-index …`, etc. from any terminal, in any directory — no `uv run`, no active
-virtualenv.
+`pytorch-cpu` indexes) exactly like `uv sync` does, and puts a `sorta` command on
+your PATH: from here on run `sorta ui`, `sorta index …` and the rest from any
+terminal, in any directory — no `uv run`, no activated virtualenv.
 
-- **Switch profile** (moved to different hardware, or picked the wrong one) —
-  reinstall with `--force` and the other extra:
-  `uv tool install --force ".[gpu]"` (or `".[cpu]"`).
-- **Update after `git pull`** — `uv tool install --force ".[<profile>]"`. This
-  installs a fresh snapshot of the current code; it is **not** an editable
-  install, so local edits need path B below to be picked up automatically.
-- Once Sorta is published to PyPI, the same idea becomes
-  `uv tool install "sorta[gpu]"` (or `"sorta[cpu]"`) — no local checkout needed.
-
-### B) Project venv with `uv sync` (for developing on the code)
+### 3.4 A development environment (`uv sync`)
 
 ```bash
-uv sync --extra cpu --extra dev      # no NVIDIA GPU
-# or
 uv sync --extra gpu --extra dev      # NVIDIA GPU + CUDA 13 driver
+# or
+uv sync --extra cpu --extra dev      # no NVIDIA GPU
 
 # Activate it once per shell session:
 .\.venv\Scripts\Activate.ps1         # Windows PowerShell
 source .venv/bin/activate            # Linux/macOS/bash
 ```
 
-With the venv active, `sorta …` runs straight out of your checkout (editable
-install) — code edits are visible immediately, no reinstall step.
+`uv sync` is the one that takes `--extra` as a flag, and it needs the profile spelled
+out just as much: pass `--extra cpu` or `--extra gpu` explicitly, because neither is
+chosen for you. GPU wheels pull the CUDA 13 runtime as ordinary pip packages — no
+system CUDA Toolkit required. With the venv active, `sorta …` runs straight out of
+your checkout and code edits are visible immediately.
 
 > **Don't run `uv run sorta …` as your everyday command.** `uv run <cmd>`
 > re‑syncs the environment against `pyproject.toml`'s base dependency set before
 > every invocation — unless you repeat `--extra <profile>` on that exact command
 > every single time, the resync silently drops your GPU packages (torch falls
-> back to a CPU build) each time you run it. Path A (`uv tool install`) and path B
-> (an activated venv) both sidestep this entirely, which is the whole point of
-> installing once instead of invoking through `uv run`.
+> back to a CPU build) each time you run it. A tool install (§3.3) and an activated
+> venv both sidestep this entirely, which is the whole point of installing once
+> instead of invoking through `uv run`.
 
-Always pass an explicit `--extra cpu` or `--extra gpu` in either path — they're
-marked mutually exclusive in `pyproject.toml` so `uv` resolves the right
-torch/onnxruntime build (GPU wheels pull the CUDA 13 runtime as regular pip
-packages, no system CUDA Toolkit needed). Neither profile is chosen for you.
+### 3.5 Right after installing: `sorta doctor`
 
-`--extra dev` adds the dev tools (ruff, mypy, pytest) — needed if you'll run
-`scripts/check.py` or the test suite, not required just to run `sorta`. There's also
-an optional `--extra vlm` for the deep VLM classification tier (`naming.vlm_enabled`);
-without it, that tier gracefully falls back to the fast CLIP tier.
+`sorta doctor` is the one command to run before anything else. It touches no
+database and downloads nothing — it just reports what the install actually became:
+
+```
+$ sorta doctor
+torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop GPU)
+onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
+mismatch: no
+geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
+Лог прогона: C:\Users\you\AppData\Local\sorta\logs\sorta.log
+Кэш превью: C:\Users\you\AppData\Local\sorta\previews
+```
+
+How to read it, line by line:
+
+- **`torch: … (CUDA available: yes|no)`** — the build you ended up with. On the `gpu`
+  profile this must say `+cu130` and `CUDA available: yes`. A `+cpu` build here means
+  the extra never made it into the install command (§3.3).
+- **`onnxruntime providers: …`** — what face detection can run on. `CUDAExecutionProvider`
+  in the list means the GPU is available to it; a list without it means faces run on
+  the CPU (§3.6).
+- **`mismatch: yes`** — torch is a CPU‑only build while onnxruntime does have CUDA.
+  Faces would still use the GPU while CLIP and OCR quietly run on the CPU, which is
+  the slow, silent failure this line exists to catch.
+- **`geo data: …places.tsv (N MB)`** — the bundled GeoNames database, the thing city
+  sorting resolves coordinates against. It must exist and be non‑empty; if the line is
+  prefixed with `⚠` and says FILE NOT FOUND / FILE IS EMPTY, every coordinate resolves
+  to an empty place and the fix is a reinstall (or `python scripts/build_geodata.py`
+  in a checkout).
+- **`Лог прогона:`** ("run log") — where the run log is written (§19).
+- **`Кэш превью:`** ("preview cache") — where decoded previews are cached (§18); a
+  ` (ОТКЛЮЧЁН)` suffix means the cache is switched off.
+
+Like every other CLI message, the last two labels are fixed Russian text (see §4);
+`sorta doctor` itself reads no `config.yaml`, so the preview path it prints is the
+default one plus any `SORTA_PREVIEW_DIR` in the environment.
+
+### 3.6 Known trap: `onnxruntime` overwriting `onnxruntime-gpu`
+
+`insightface` (face detection) depends on the plain `onnxruntime` package, while the
+`gpu` extra installs `onnxruntime-gpu`. They are two different distributions that
+unpack into the *same* `onnxruntime` directory, so whichever is installed last wins —
+and if that is the CPU one, face detection quietly moves to the CPU with no error
+anywhere.
+
+The symptom is visible in `sorta doctor`: the providers line has **no**
+`CUDAExecutionProvider`, e.g.
+
+```
+onnxruntime providers: AzureExecutionProvider, CPUExecutionProvider (CUDA: no)
+```
+
+The workaround is to reinstall the GPU package on top, without letting pip resolve
+dependencies again:
+
+```bash
+python -m pip install --force-reinstall --no-deps onnxruntime-gpu
+```
+
+`--no-deps` is not optional here — without it pip re‑resolves `insightface` and drags
+the CPU `onnxruntime` right back in. Run it inside the environment Sorta is installed
+into (your activated project venv), then re‑run `sorta doctor` and confirm that
+`CUDAExecutionProvider` is back in the list.
 
 ---
 
@@ -165,10 +270,10 @@ language: ru             # UI/folder language: ru | en | ja  (default ru)
 > **Note:** `language` does **not** affect the CLI's own console messages (progress
 > lines like `Готово: +13 новых, ...`) — those are fixed text, independent of config.
 > Folder names and the web UI *are* fully localized. See the worked examples in §9
-> for what real CLI output looks like, and §18 if it renders as `????` in your
+> for what real CLI output looks like, and §22 if it renders as `????` in your
 > terminal.
 
-See the [Configuration reference](#17-configuration-reference) for every option.
+See the [Configuration reference](#21-configuration-reference) for every option.
 
 ---
 
@@ -513,7 +618,7 @@ sorta sort --by person --dest /path/to/sorted --apply
 ```
 
 producing `<dest>/<PersonName>/<file>.jpg` for every photo where that person is the
-(or the primary, see `sort.multi_person` in §17) named face — everything else that
+(or the primary, see `sort.multi_person` in §21) named face — everything else that
 lacks a named person still needs a place to go, so unnamed‑person photos fall back to
 `_Unsorted/`. Junk/screenshot routing and `--where`/`--copy`/`--move`/`--apply` all
 work exactly as in the city/event examples above.
@@ -723,6 +828,7 @@ $ sorta junk -c config.yaml
 
 ```
 sorta index [DIR]                 Scan sources (or DIR) → metadata, hashes, exact dupes
+sorta index --refresh-exif        Re-read metadata of already-indexed files (§17)
 sorta run [--src DIR] [--faces] [--events] [--deep/--no-deep] [--geo offline|online]
           [--by city|person|event] [--dest DIR]
                                   Base pipeline (index→geo→landmarks→junk); --src
@@ -754,13 +860,200 @@ sorta reset [--yes]               Wipe the index (DB) and start over — leaves 
                                   photos and any already-sorted folders untouched
                                   (names of people/events and dup decisions are lost)
 sorta ui [--port 8756]            Local web app (Process / Cities / Duplicates / People / Events / Moves)
+sorta doctor                      Environment check: torch/onnxruntime, GPU, geo data,
+                                  log path, preview cache path (§3.5)
+sorta cache [--clear]             Preview cache: size, or delete it (§18)
 ```
 
-Every command takes `-c/--config <path>` (default `config.yaml`).
+Every command takes `-c/--config <path>` (default `config.yaml`) — except
+`sorta doctor`, which reads no config at all.
 
 ---
 
-## 17. Configuration reference
+## 17. Maintenance & diagnostics
+
+Three commands that are not part of the pipeline but come up in day‑to‑day use.
+
+### `sorta doctor`
+
+The install/environment check described in §3.5: torch and onnxruntime devices, the
+bundled geo database, the run‑log path and the preview‑cache path. Run it after every
+install or profile change, and first whenever something is unexpectedly slow.
+
+### `sorta index --refresh-exif`
+
+Re‑reads the metadata of files **that are already in the index**, without reindexing
+them. The summary line has this shape (`<…>` are the counters of your run):
+
+```
+$ sorta index --refresh-exif -c config.yaml
+Перечитано: <N> файлов, обновлено <N>; вернулось координат: <N>, дат съёмки: <N>; без EXIF: <N>, ошибок: <N>
+Появились новые координаты — перезапустите: sorta geo (и sorta events)
+```
+
+(*"Re‑read: N files, N updated; coordinates recovered: N, capture dates: N; no EXIF:
+N, errors: N"* — the second line only appears when coordinates actually came back.)
+
+- **Why it exists.** A plain `sorta index` skips those files on purpose: it compares
+  path + size + mtime, and none of them changed. If the *reader* improved — a Sorta
+  update that fixed metadata extraction — a normal run will never revisit them.
+- **When to run it.** After an update whose notes mention EXIF/metadata reading, or
+  whenever `sorta stats` shows fewer files with GPS or EXIF dates than you expect.
+- **What it touches.** GPS, camera make/model, dimensions, capture date and
+  orientation only. Hashes, pHashes and duplicate marks are **left alone** — the file
+  content did not change, only what could be read out of it. Files are never read
+  whole and nothing is re‑hashed.
+- **Afterwards.** New coordinates mean places have to be resolved again: run
+  `sorta geo`, and `sorta events` too if events matter to you. The command prints
+  that reminder itself when it actually recovered coordinates.
+
+### `sorta cache`
+
+Reports the preview cache (§18), or clears it:
+
+```
+$ sorta cache -c config.yaml
+Кэш превью: C:\Users\you\AppData\Local\sorta\previews
+  файлов: 34887, размер: 12.60 ГБ
+
+$ sorta cache --clear -c config.yaml
+Кэш превью удалён: C:\Users\you\AppData\Local\sorta\previews
+```
+
+Deleting the cache is safe at any moment: it is lazy and rebuilds itself, one frame
+at a time, in whichever stage next needs that frame. The only cost is that those
+frames get decoded from the originals once more.
+
+---
+
+## 18. Preview cache
+
+**What it is.** Each frame is decoded **once**. The result — a downscaled JPEG,
+1536 px on the long edge — is written to a shared cache directory, and every later
+stage (pHash, CLIP, OCR, the deep VLM tier, UI thumbnails) reads that small copy
+instead of decoding the original again.
+
+**Why.** Decoding is what those stages actually spend their time on. A full HEIC
+decode costs ≈470 ms; the same frame out of the preview cache costs single‑digit
+milliseconds (≈8 ms). The same photo used to be decoded three to five times per run,
+because the stages run one after another.
+
+**Where it lives.**
+
+| OS | Path |
+|---|---|
+| Windows | `%LOCALAPPDATA%\sorta\previews` |
+| Linux / macOS | `~/.cache/sorta/previews` |
+
+**How much space it takes: budget ≈150 KB per photo, and expect gigabytes.** That is
+the design figure for a 1536 px q88 JPEG; detailed frames run larger. A real cache
+measured here held 34,887 previews in **12.60 GB** (≈360 KB each), so on a collection
+of tens of thousands of photos this is several gigabytes of disk, not a rounding
+error. It is a user‑level cache, never written inside your photo collection, and
+`sorta cache` tells you the current size at any time (§17).
+
+**Small images are never cached.** If the source is already no larger than
+`preview_max_edge`, a preview would be a copy rather than a saving, so it is skipped —
+a collection of screenshots costs nothing here.
+
+**Configuration** — the `imaging:` section of `config.yaml`:
+
+```yaml
+imaging:
+  preview_cache: true     # false → every stage decodes originals again
+  # preview_dir: D:/sorta-previews   # default: see the table above
+  preview_max_edge: 1536  # long edge of the cached JPEG
+  preview_quality: 88     # JPEG quality of the cached copy
+```
+
+Each key has an environment variable of the same shape — `SORTA_PREVIEW_CACHE`,
+`SORTA_PREVIEW_DIR`, `SORTA_PREVIEW_MAX_EDGE`, `SORTA_PREVIEW_QUALITY` — and the
+variable **wins** over `config.yaml` when both are set.
+
+---
+
+## 19. The run log
+
+Nothing of a long run survives on the console — `sorta ui` in particular lives for
+hours in a background window nobody watches. Every command therefore also writes a
+log file.
+
+| OS | Path |
+|---|---|
+| Windows | `%LOCALAPPDATA%\sorta\logs\sorta.log` |
+| Linux / macOS | `~/.cache/sorta/logs/sorta.log` |
+
+It rotates at **5 MB, keeping 5 files** (`sorta.log.1` … `sorta.log.5`), so it cannot
+grow without bound. A pipeline run (`sorta run`) and every `sorta ui` start also write
+an environment header (Sorta and Python versions, platform, where the `sorta` package
+was imported from, GPU state, geo data, working directory) — the same facts
+`sorta doctor` prints, recorded at the moment of the run.
+
+**Stage timings.** Every stage of a pipeline run (`sorta run` or the UI **Process**
+button) writes a machine‑greppable pair of lines with a stable
+`stage=<name> … elapsed=<seconds>` shape, so a profile of a run can be read without
+parsing prose. A real profile from a run on 2026‑07‑25:
+
+```
+2026-07-25T23:37:10.345 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=index started
+2026-07-25T23:37:43.854 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=index elapsed=33.509
+2026-07-25T23:37:43.855 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=geo started
+2026-07-25T23:37:47.727 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=geo elapsed=3.872
+2026-07-25T23:37:47.727 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=landmarks started
+2026-07-25T23:41:34.228 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=landmarks elapsed=226.501
+2026-07-25T23:41:34.229 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=junk started
+2026-07-26T00:10:34.736 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=junk elapsed=1740.508
+2026-07-26T00:10:34.736 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=phash started
+2026-07-26T00:26:09.900 INFO sorta.runlog [Thread-23 (_run_pipeline)] stage=phash elapsed=935.164
+```
+
+Read straight off: `junk` took 29 minutes and `phash` 15.6 — together 91 % of the
+49‑minute run — while `index` (33 s) and `geo` (4 s) are noise. That is where to point a
+`--extra gpu` install, `naming.clip.decode_workers` or `naming.ocr_workers` (§21), and
+it is also how you tell "it hung" from "it is in the slow stage".
+
+Other shapes of the same line: `stage=<name> failed elapsed=…` (with the traceback
+after it) and `stage=<name> interrupted (…) elapsed=…` for a cancelled run — pressing
+**Cancel** in the UI is not an error. A stage that reports a count also appends
+` processed=<n> rate=<n>/s`.
+
+**Overrides.**
+
+- `SORTA_LOG_FILE=<path>` — write the log somewhere else.
+- `SORTA_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR` — the level of the **file** sink
+  (default `INFO`).
+
+The file level is independent of the console one: `log_level` in `config.yaml`
+controls only what the console prints (default `WARNING` — warnings and errors), while
+the file keeps the `INFO` detail including the stage timings. Turning the console
+quiet does not make the log file quiet.
+
+---
+
+## 20. Offline models
+
+The ML models (CLIP, easyocr, and the VLM tier if you use it) are downloaded **once**.
+After that Sorta needs no network for them at all — which is what "local by default"
+has to mean in practice.
+
+The switch is automatic: as soon as the Hugging Face cache holds at least one
+downloaded model, Sorta starts every command with offline mode on
+(`HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE`), so no stage phones the Hub to check a
+revision for weights that are already on disk. A fresh machine with an empty cache is
+left alone, so the first download still works.
+
+- `SORTA_ALLOW_MODEL_DOWNLOAD=1` turns the automatic switch **off** — use it when you
+  need to fetch a *new* model on a machine that already has others cached (e.g.
+  enabling the VLM tier for the first time).
+- If you set `HF_HUB_OFFLINE` or `TRANSFORMERS_OFFLINE` yourself, Sorta never
+  overrides your value.
+
+Note that face detection (insightface/`buffalo_l`) keeps its own cache in
+`~/.insightface/models` and is not affected by these variables.
+
+---
+
+## 21. Configuration reference
 
 Key sections of `config.yaml` (see `config.example.yaml` for the full template):
 
@@ -772,6 +1065,7 @@ language: ru                   # ru | en | ja — folder & UI language
 index:
   min_file_size_kb: 5          # ignore tiny files
   workers: 8                   # parallel hashing
+  exif_workers: 8              # parallel exiftool sessions (0/absent = auto min(8, cores))
   skip_dirs: [".thumbnails", "@eaDir", "$RECYCLE.BIN", "System Volume Information"]
 
 geo:
@@ -803,14 +1097,48 @@ naming:
   document_threshold: 0.9      # CLIP threshold for documents
   text_frac_document: 0.15     # text-area fraction above which a photo → document
   text_rescue_docscore_min: 0.3  # only run OCR on photos with this doc-score+
-  vlm_enabled: false           # deep VLM classification tier (needs `--extra vlm`);
+  ocr_workers: 4               # parallel OCR detectors (default min(4, cores))
+  vlm_enabled: false           # deep VLM classification tier (needs the `vlm` extra);
                                #   same as `--deep` / the UI "Deep analysis" checkbox
+  clip:
+    batch_size: 16             # GPU forward batch for CLIP
+    decode_workers: 0          # CLIP decode threads; 0 = auto min(cores, 16)
+
+imaging:                       # the preview cache — see §18
+  preview_cache: true
+  preview_max_edge: 1536
+  preview_quality: 88
+
+log_level: WARNING             # console verbosity only; the run log stays at INFO (§19)
 ```
+
+### Throughput settings
+
+Four knobs decide how fast the heavy stages run. All of them are optional — the
+defaults are chosen to be safe on modest hardware, and `config.example.yaml` carries
+the full commentary and the measurements behind them.
+
+| Setting | What it does | When to touch it |
+|---|---|---|
+| `index.exif_workers` | Parallel `exiftool` sessions during `index`. exiftool is a separate process, so this scales almost linearly (measured 11.8 → 2.0 ms per file going from 1 to 8 sessions). Default: auto, `min(8, cores)`. | Raise on a many‑core machine if `stage=index` dominates your log. |
+| `naming.ocr_workers` | Parallel OCR detectors in `junk`. Each worker holds its **own** model copy in VRAM, so the default is deliberately conservative: `min(4, cores)`. | Raise only with VRAM to spare; lower it if OCR is what runs you out of memory. |
+| `naming.clip.batch_size` | CLIP forward batch on the GPU. The CLIP path is decode‑bound, so this barely moves the needle. Default: 16. | Rarely worth changing. |
+| `naming.clip.decode_workers` | Decode threads feeding CLIP — the real lever for `junk`/`landmarks` speed. Default: auto, `min(cores, 16)`. | Raise if `stage=junk` / `stage=landmarks` dominate and the GPU is idle. |
 
 ---
 
-## 18. Troubleshooting
+## 22. Troubleshooting
 
+- **`sorta doctor` says `torch: 2.13.0+cpu` on a GPU machine** — the extra never
+  reached the install command. `uv tool install` has no `--extra` flag; the extra
+  belongs inside the quoted spec: `uv tool install --force "C:\path\to\sorta[gpu]"`
+  (§3.3).
+- **`sorta doctor` shows no `CUDAExecutionProvider`** while torch reports CUDA — the
+  plain `onnxruntime` (pulled in by `insightface`) overwrote `onnxruntime-gpu`, so
+  face detection is on the CPU. Fix and explanation in §3.6.
+- **Your code changes have no effect** — a non‑editable `uv tool install` is a
+  snapshot of the code at install time. Reinstall with `-e` (§3.3) or use a project
+  venv (§3.4).
 - **`uv sync` (no extras) leaves `sorta faces`/`sorta junk` broken or inconsistent**
   — expected. Always install with an explicit profile: `uv sync --extra cpu --extra
   dev` or `uv sync --extra gpu --extra dev` (§2/§3). `cpu`/`gpu` are mutually
@@ -848,6 +1176,15 @@ naming:
   path (or a symlink/junction to wherever you keep the model) persists across runs.
 - **`database is locked`** — another Sorta process is writing (e.g. a pipeline run).
   Wait for it to finish; don't run two writers at once.
+- **Free disk space dropped by gigabytes during a run** — most likely the preview
+  cache (§18): ≈150 KB per photo and up. Check it with `sorta cache`, delete it with
+  `sorta cache --clear`, move it elsewhere with `imaging.preview_dir`, or switch it
+  off with `imaging.preview_cache: false` (at the cost of decoding every frame again
+  in every stage).
+- **A model refuses to download on a machine that already has other models** —
+  expected: Sorta switches Hugging Face to offline mode once its cache is non‑empty
+  (§20). Run the command once with `SORTA_ALLOW_MODEL_DOWNLOAD=1` to fetch the new
+  weights.
 - **A folder with non‑ASCII name (e.g. Cyrillic) seemed skipped by OCR** — fixed:
   images are decoded via an Unicode‑safe path; update to the latest version.
 - **CLI console messages print in Russian even with `language: en`/`ja`** — expected,
