@@ -130,6 +130,20 @@ naming:
     batch_size: 16       # GPU forward batch; the CLIP path is decode-bound, so this barely matters
     decode_workers: 0    # F64: decode-pool threads. 0 = auto min(cpu, 16) — the real lever for junk/landmarks speed
   landmark_threshold: 0.85   # conservative: 0.35 gave false matches (a wrong city
+
+  # F75: a score alone does not separate a right city from a wrong one — measured on a
+  # real collection, wrong cities scored 0.980 against 0.991 for the right one. So a
+  # match is corroborated by its neighbours: inside one directory, a city held by less
+  # than `dominance` of at least `min` matches drops back to unknown (one card dump is
+  # one trip — you cannot be in Prague and Berlin at once). Raise either to fire less.
+  # landmark_group_min: 5
+  # landmark_group_dominance: 0.6
+
+  # F73: threads running the OCR text detector, each with its own easyocr Reader (one
+  # Reader is not thread-safe). OCR was the whole cost of the junk stage — 29 min of a
+  # 49 min run — because it ran serially while 20 decode workers idled. Each Reader
+  # holds a model in VRAM, so the default is deliberately modest.
+  # ocr_workers: 4
   #                            is worse than unknown). Proper fix — a geo model, backlog #11
   junk_threshold: 0.85       # CLIP threshold for screenshot/meme (high:
   #                            photos with camera EXIF/GPS/faces are not marked junk)
@@ -176,3 +190,10 @@ imaging:
   # preview_dir: D:/sorta-previews   # default: %LOCALAPPDATA%\sorta\previews
   preview_max_edge: 1536
   preview_quality: 88
+  # F74: a video gets a tile too — one frame, extracted with PyAV into the same
+  # cache. 68% of a real collection turned out to be HEVC, which browsers do not
+  # play, so a frame is what works everywhere. Only the UI ever asks for these: no
+  # pipeline stage decodes video. Env overrides: SORTA_VIDEO_PREVIEWS,
+  # SORTA_VIDEO_WORKERS.
+  # video_previews: true
+  # video_workers: 4

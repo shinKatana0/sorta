@@ -19,7 +19,7 @@ from pathlib import Path, PurePath
 
 import numpy as np
 
-from sorta.config import Config, NamingConfig, _naming_from
+from sorta.config import Config, _naming_from
 from sorta.db import connect
 from sorta.geodata import GeoResolver
 from sorta.landmarks import (
@@ -123,15 +123,17 @@ class PathClassifier:
 
 
 @dataclasses.dataclass(frozen=True)
-class NamingWithGroupSettings(NamingConfig):
-    """The settings object as it will look once the orchestrator adds the fields.
+class NamingWithoutGroupSettings:
+    """A settings object that LACKS the group fields.
 
-    landmarks.py reads them through getattr, so both shapes have to work: the plain
-    NamingConfig (the measured defaults) and this one.
+    landmarks.py reads them through getattr, and that has to keep working for a
+    hand-built settings object or one from an older config — the fields themselves now
+    exist on NamingConfig, so the interesting case is their absence, not their presence.
     """
 
-    landmark_group_min: int = 3
-    landmark_group_dominance: float = 0.5
+    landmark_threshold: float = 0.85
+    landmarks_file: str = "data/landmarks.yaml"
+    clip_batch_size: int = 16
 
 
 class CorroborationCase(unittest.TestCase):
@@ -267,11 +269,29 @@ class TestFolderAgreement(CorroborationCase):
         self.run_stage()
         self.assertEqual(self.place_of(berlin)[3], "visual")
 
+    def test_settings_without_the_fields_fall_back_to_defaults(self) -> None:
+        """The thresholds are read with getattr, so an object lacking them must work.
+
+        NamingConfig carries the fields now, but a hand-built settings object or one
+        from an older config does not — and that path has to keep behaving, not raise.
+        """
+        base = self.cfg.naming
+        self.cfg.naming = NamingWithoutGroupSettings(
+            landmark_threshold=base.landmark_threshold,
+            landmarks_file=base.landmarks_file,
+            clip_batch_size=base.clip_batch_size,
+        )
+        self.add("/photos/DCIM/100D3300", PRAGUE, n=9)
+        berlin = self.add("/photos/DCIM/100D3300", BERLIN, n=1)
+        stats = self.run_stage()
+        # defaults are min_group=5, dominance=0.6 — a 9:1 split still drops the odd one
+        self.assertEqual(stats.dropped_by_group, 1)
+        self.assertEqual(self.place_of(berlin)[3], "unknown")
+
     def test_thresholds_come_from_settings(self) -> None:
         """min_group/dominance are read off the settings object, not hardcoded."""
-        base = self.cfg.naming
-        self.cfg.naming = NamingWithGroupSettings(
-            **{f.name: getattr(base, f.name) for f in dataclasses.fields(base)})
+        self.cfg.naming = dataclasses.replace(
+            self.cfg.naming, landmark_group_min=3, landmark_group_dominance=0.5)
         self.add("/photos/DCIM/100D3300", PRAGUE, n=2)
         berlin = self.add("/photos/DCIM/100D3300", BERLIN, n=1)
         stats = self.run_stage()

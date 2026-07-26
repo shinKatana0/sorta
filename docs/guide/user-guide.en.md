@@ -1127,6 +1127,83 @@ the full commentary and the measurements behind them.
 
 ---
 
+## 21a. Skipping folders, and correcting the layout by hand
+
+Two different problems, two different tools. Getting them the wrong way round is the
+usual source of confusion, so the wording is deliberate:
+
+- **"do not scan"** — the files never enter the index at all.
+- **"do not lay out"** — the files are indexed, but stay where they are.
+
+### Excluding source folders before the scan
+
+A source folder can be excluded *before* the walk reaches it, which is the only option
+that saves any work: an excluded subtree costs no `stat`, no hash and no later stage.
+On a real 400 GB collection, excluding one `Movies` folder removed 847 files and
+54 GB from every stage of the run.
+
+In the web app the first tab shows the folder tree of the source with checkboxes. From
+the command line:
+
+```bash
+sorta index --exclude-dir Movies --exclude-dir Screenshots
+```
+
+Both write the same file — `excludes.yaml` next to the database, or wherever
+`index.excludes_file` points — so a folder excluded in one place stays excluded in the
+other. The file is **keyed by source root**:
+
+```yaml
+"D:/Photos":
+  - Movies
+  - Screenshots
+"E:/Archive":
+  - temp
+```
+
+Because of that, switching sources needs no decision about old exclusions: each root
+carries its own set and coming back restores it. Note that files already indexed under
+a newly excluded path are **removed from the index** on the next `index` run — "do not
+scan" and "is in the index" cannot both be true. The move journal is never touched.
+
+### Correcting individual files
+
+Automatic rules cannot see what you see. In the web app any file (or a selection) can
+be:
+
+- **excluded from the layout** — it is not copied or moved, and does not appear in the
+  plan at all;
+- **reassigned** — sent to any folder of the current layout.
+
+Both outrank every automatic rule: the duplicate decision, the junk verdict, geo. They
+live in the index and are wiped by a from-scratch reindex, like face labels and event
+names.
+
+### Where a file came from
+
+Each row shows the folder the file was taken from, with the full path in the tooltip.
+This is usually the fastest way to judge a wrong guess: a Colosseum match is plainly
+wrong once you can see the file lives under a folder named after a Karelian park.
+
+---
+
+## 21b. Files with no reliable date
+
+A photo whose date could not be established does not go into the same bucket as a
+downloaded picture. The split is by whether there is any trace of a camera at all
+(make, model or GPS):
+
+- a camera shot with a lost date — the "no date" folder;
+- no camera trace whatsoever — the **downloaded** folder.
+
+On the validation collection this line fell almost perfectly: of 1 059 undated files,
+1 057 had no camera trace and were messenger cache with names like
+`10083666931142353280.JPG`; exactly 2 were real shots. The folder is deliberately not
+named as a verdict — forwarded pictures are often worth looking through.
+
+
+---
+
 ## 22. Troubleshooting
 
 - **`sorta doctor` says `torch: 2.13.0+cpu` on a GPU machine** — the extra never

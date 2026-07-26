@@ -154,6 +154,14 @@ class NamingConfig:
     landmark_threshold: float = 0.85     # CLIP threshold for places — conservative: 0.35
     #                                      gave false matches (cafe→Istanbul), and a wrong
     #                                      city is worse than unknown. Proper fix — a geo model (backlog #11)
+    # F75: a single CLIP score does not separate a right city from a wrong one — on the
+    # live collection the wrong ones scored 0.980 against 0.991 for the right one — so a
+    # match is corroborated by its neighbours: within one directory, a city held by less
+    # than `dominance` of at least `min` matches is dropped back to unknown (one card
+    # dump is one trip; you cannot be in Prague and Berlin at once). Raising `min` or
+    # `dominance` makes the rule fire less often.
+    landmark_group_min: int = 5
+    landmark_group_dominance: float = 0.6
     junk_threshold: float = 0.85         # CLIP threshold for junk classes (high: CLIP
     #                                      zero-shot readily mislabels real photos)
     document_threshold: float = 0.9      # CLIP threshold for the "documents" category (F15,
@@ -191,6 +199,9 @@ def _naming_from(raw: dict) -> NamingConfig:
     return NamingConfig(
         provider=str(raw.get("provider", d.provider)),
         landmark_threshold=float(raw.get("landmark_threshold", d.landmark_threshold)),
+        landmark_group_min=int(raw.get("landmark_group_min", d.landmark_group_min)),
+        landmark_group_dominance=float(
+            raw.get("landmark_group_dominance", d.landmark_group_dominance)),
         junk_threshold=float(raw.get("junk_threshold", d.junk_threshold)),
         document_threshold=float(raw.get("document_threshold", d.document_threshold)),
         text_frac_min=float(raw.get("text_frac_min", d.text_frac_min)),
