@@ -154,6 +154,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone
@@ -1370,6 +1371,8 @@ class _ProcessState:
         self.error: str | None = None
         self.finished = False
         self.source_dir: str | None = None
+        self.phase: str | None = None
+        self._phase_started = 0.0
         self._cancel_requested = False
 
     def try_start(self, source_dir: str) -> bool:
@@ -1392,21 +1395,38 @@ class _ProcessState:
             self.stage = name
             self.done = 0
             self.total = 0
+            self.phase = None
+            self._phase_started = 0.0
 
     def set_progress(self, done: int, total: int | None = None) -> None:
         """A signature superset of all stage ProgressCB variants (done, total|None).
 
         If cancellation is requested — raises _PipelineCancelled right from the
         callback: stages call progress often, so cancellation fires almost
-        immediately (mid-stage), not only between stages."""
+        immediately (mid-stage), not only between stages.
+
+        `total=None` zeroes the total instead of keeping the previous one (F84): a
+        stage can go from a measurable phase to an unmeasurable one (faces: detection
+        by frames -> HDBSCAN), and a total left over from the previous phase would
+        keep drawing a filled bar with numbers that mean nothing.
+        """
         with self._lock:
             cancel = self._cancel_requested
             if not cancel:
                 self.done = done
-                if total is not None:
-                    self.total = total
+                self.total = total if total is not None else 0
         if cancel:
             raise _PipelineCancelled()
+
+    def set_phase(self, phase: str | None) -> None:
+        """The named sub-phase of the current stage (F84), or None — no phase.
+
+        The clock starts over on every change: on a phase without a percent the
+        elapsed time is the only honest sign of life the bar can show.
+        """
+        with self._lock:
+            self.phase = phase
+            self._phase_started = time.monotonic() if phase else 0.0
 
     def request_cancel(self) -> None:
         with self._lock:
@@ -1422,6 +1442,8 @@ class _ProcessState:
             self.running = False
             self.finished = True
             self.error = error
+            self.phase = None  # a finished run is not in any phase (F84)
+            self._phase_started = 0.0
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -1436,7 +1458,31 @@ class _ProcessState:
                 "finished": self.finished,
                 "cancel_requested": self._cancel_requested,
                 "source_dir": self.source_dir,
+                # F84: the sub-phase of the current stage and how long it has been
+                # running. phase=None -> the stage reports no phases (every stage but
+                # faces), and the client draws exactly what it drew before.
+                "phase": self.phase,
+                "phase_elapsed": (round(time.monotonic() - self._phase_started, 1)
+                                  if self.phase else 0.0),
             }
+
+
+class _StageProgress:
+    """The callback a pipeline stage gets: `(done, total)` plus a `phase` channel (F84).
+
+    Stages that know nothing about phases just call it, exactly as they called
+    `state.set_progress` before. `faces` reports the phases of clustering through
+    `.phase(name)` — the same duck-typed channel `progress.TaskProgress` gives the CLI.
+    """
+
+    def __init__(self, state: _ProcessState) -> None:
+        self._state = state
+
+    def __call__(self, done: int, total: int | None = None) -> None:
+        self._state.set_progress(done, total)
+
+    def phase(self, name: str) -> None:
+        self._state.set_phase(name)
 
 
 _BROWSE_DIALOG_TIMEOUT_S = 120
@@ -1790,7 +1836,7 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                 # nobody watching the console — the per-stage timing has to reach the
                 # run log, or "which stage ate the time" stays a guess.
                 with stage_timer(name):
-                    fn(run_cfg, conn, state.set_progress)
+                    fn(run_cfg, conn, _StageProgress(state))
             except _PipelineCancelled:
                 completed = False  # mid-stage cancellation via the progress callback
                 break
@@ -2199,6 +2245,29 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "process_start_error_prefix": {
         "ru": "Не удалось запустить: ", "en": "Failed to start: ", "ja": "開始できません: ",
+    },
+    # F84: the sub-phases of clustering inside the `faces` stage. The keys mirror
+    # faces.CLUSTER_PHASE_* ("process_phase_" + the key from /api/process/status).
+    "process_phase_cluster_read": {
+        "ru": "кластеры: чтение эмбеддингов", "en": "clusters: reading embeddings",
+        "ja": "クラスタ: 埋め込みを読み込み中",
+    },
+    "process_phase_cluster_hdbscan": {
+        "ru": "кластеры: группировка лиц", "en": "clusters: grouping faces",
+        "ja": "クラスタ: 顔をグループ化中",
+    },
+    "process_phase_cluster_inherit": {
+        "ru": "кластеры: перенос имён", "en": "clusters: carrying names over",
+        "ja": "クラスタ: 名前を引き継ぎ中",
+    },
+    "process_phase_cluster_write": {
+        "ru": "кластеры: запись", "en": "clusters: saving",
+        "ja": "クラスタ: 保存中",
+    },
+    "process_phase_elapsed": {  # a phase with no percent — the clock is the sign of life
+        "ru": "{phase} — идёт {seconds} с",
+        "en": "{phase} — {seconds}s so far",
+        "ja": "{phase} — 経過 {seconds} 秒",
     },
     "process_stage_index": {"ru": "индексация", "en": "indexing", "ja": "インデックス作成"},
     "process_stage_geo": {"ru": "гео", "en": "geo", "ja": "位置情報"},
@@ -2898,6 +2967,10 @@ label { cursor: pointer; }
 }
 @keyframes process-indeterminate { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 .process-status { margin: var(--space-sm) 0; color: var(--muted); }
+/* F84: caption of the current sub-phase, right under the bar — on a phase without a
+   percent (clustering) it is the only thing that says the run is alive. */
+.process-phase { margin: calc(-1 * var(--space-sm)) 0 var(--space-sm); font-size: 0.85rem;
+      color: var(--muted); }
 /* F64: инфо-баннер о CPU-профиле (амбер, читается в обеих темах через --ink) */
 .env-warning { margin-top: var(--space-md); padding: 10px 13px; font-size: 0.85rem;
       border-radius: var(--radius-md); color: var(--ink); line-height: 1.45;
@@ -3072,6 +3145,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 </div>
 </div>
 <progress id="process-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
+<div id="process-phase" class="process-phase" style="display:none"></div>
 <div id="process-stages" class="stage-chips"></div>
 <div id="process-status" class="process-status"></div>
 <div id="env-cpu-warning" class="env-warning" style="display:none">⚠ {{env_cpu_warning}}</div>
@@ -4066,6 +4140,23 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     });
   }
 
+  // F84: a stage can name the phase it is in (clustering inside "faces"); an empty
+  // phase means the stage reports none — then nothing is drawn and the screen looks
+  // exactly as it did before. On an unmeasurable phase (total is unknown, HDBSCAN is
+  // one blocking call) there is no honest percent to show, so the caption carries a
+  // stopwatch instead: an invented percent would discredit the bar for good.
+  function renderProcessPhase(data) {
+    var el = document.getElementById("process-phase");
+    var key = data.running && !data.cancel_requested ? data.phase : null;
+    var label = key ? (I18N["process_phase_" + key] || key) : "";
+    if (!label) { el.textContent = ""; el.style.display = "none"; return; }
+    el.textContent = data.total > 0 ? label : fmt(I18N.process_phase_elapsed, {
+      phase: label,
+      seconds: Math.round(data.phase_elapsed || 0),
+    });
+    el.style.display = "";
+  }
+
   function refreshTabsAfterProcess() {
     dupesLoaded = false;
     clustersLoaded = false;
@@ -4091,6 +4182,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     bar.style.display = data.running ? "" : "none";
     if (!data.running) bar.classList.remove("indeterminate");
     renderStageChips(data);
+    renderProcessPhase(data);
     if (data.running) {
       if (data.cancel_requested) {
         // отмена запрошена — показываем фидбэк, пока стадия прерывается/дорабатывает
@@ -4532,6 +4624,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   document.getElementById("process-cancel-btn").addEventListener("click", function () {
     this.disabled = true;  // мгновенный фидбэк, не ждём следующего polling-тика
     document.getElementById("process-status").textContent = I18N.process_cancel_requested;
+    renderProcessPhase({});  // the phase caption is stale now, do not wait for a tick
     postJson("/api/process/cancel", {});
   });
 

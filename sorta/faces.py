@@ -29,6 +29,7 @@ from urllib.parse import quote
 import numpy as np
 
 from .config import Config
+from .progress import PhaseCB, ProgressCB
 
 _NO_FACES_BBOX = "[]"  # the "processed, no faces" marker
 EMBED_DIM = 512
@@ -356,7 +357,7 @@ def _write_hits(
 
 def detect_faces(
     cfg: Config, conn: sqlite3.Connection,
-    progress: Callable[[int, int], None] | None = None,
+    progress: ProgressCB | None = None,
     analyzer: Analyzer | None = None,
     infer_factory: InferFactory | None = None,
 ) -> FaceStats:
@@ -433,6 +434,74 @@ def detect_faces(
 
 # --- Clustering ------------------------------------------------------------
 
+# F84: the phases `cluster_faces` reports. Stable identifiers, not captions — the
+# served UI localizes them (ui._UI_STRINGS), the CLI labels them for the rich bar
+# (cli._CLUSTER_PHASE_LABELS). CLUSTER is the only unmeasurable one: HDBSCAN is a
+# single blocking call, and a percent guessed from elapsed time would be a lie on any
+# collection that is not the one it was calibrated on.
+CLUSTER_PHASE_READ = "cluster_read"
+CLUSTER_PHASE_CLUSTER = "cluster_hdbscan"
+CLUSTER_PHASE_INHERIT = "cluster_inherit"
+CLUSTER_PHASE_WRITE = "cluster_write"
+
+# Rows between progress ticks on the measurable phases: on the reference run
+# (13 237 faces) that is ~66 updates — enough for a moving bar, not enough to spam
+# the lock behind the callback.
+_PROGRESS_EVERY = 200
+
+
+class _PhaseProgress:
+    """Phase + `(done, total)` reporting for `cluster_faces` (F84).
+
+    `progress` is the ordinary stage callback; the phase channel is optional and
+    duck-typed — a callback that can show a caption exposes `phase(name)`
+    (progress.TaskProgress, ui._StageProgress), a bare `(done, total)` function simply
+    gets no phases. Without a callback at all every method is a no-op, so
+    `cluster_faces(cfg, conn)` behaves exactly as it did before.
+    """
+
+    def __init__(self, progress: ProgressCB | None) -> None:
+        self._progress = progress
+        phase = getattr(progress, "phase", None)
+        self._phase: PhaseCB | None = phase if callable(phase) else None
+        self._total: int | None = None
+
+    def start(self, name: str, total: int | None) -> None:
+        """Enter a phase: `total=None` marks it as unmeasurable (indeterminate bar)."""
+        self._total = total
+        if self._phase is not None:
+            self._phase(name)
+        self.step(0)
+
+    def step(self, done: int) -> None:
+        if self._progress is not None:
+            self._progress(done, self._total)
+
+
+def _read_face_rows(conn: sqlite3.Connection, report: _PhaseProgress) -> list[sqlite3.Row]:
+    """The faces to cluster (embeddings + their current cluster), as a measurable phase.
+
+    The count is asked for separately so the bar has a total from the first tick;
+    rows are then pulled off the cursor instead of `fetchall()` — otherwise the whole
+    read is one silent call again.
+    """
+    total = conn.execute(
+        "SELECT COUNT(*) FROM faces WHERE bbox != ?", (_NO_FACES_BBOX,)
+    ).fetchone()[0]
+    report.start(CLUSTER_PHASE_READ, int(total))
+    rows: list[sqlite3.Row] = []
+    cursor = conn.execute(
+        "SELECT id, cluster_id, embedding FROM faces WHERE bbox != ? ORDER BY id",
+        (_NO_FACES_BBOX,),
+    )
+    for row in cursor:
+        rows.append(row)
+        if len(rows) % _PROGRESS_EVERY == 0:
+            report.step(len(rows))
+    report.step(len(rows))
+    return rows
+
+
 def _hdbscan_labels(x: np.ndarray, s: FacesSettings) -> np.ndarray:
     """HDBSCAN over normalized vectors: euclidean on the unit sphere is monotonic
     with cosine distance (d_e = sqrt(2*d_cos)) — hdbscan cannot do cosine directly.
@@ -483,13 +552,20 @@ def _root_of(merged_into: dict[int, int | None], cid: int) -> int:
     return cid
 
 
-def cluster_faces(cfg: Config, conn: sqlite3.Connection) -> ClusterStats:
-    """Full recomputation of clusters over all embeddings, preserving labels."""
+def cluster_faces(cfg: Config, conn: sqlite3.Connection,
+                  progress: ProgressCB | None = None) -> ClusterStats:
+    """Full recomputation of clusters over all embeddings, preserving labels.
+
+    F84: `progress` is the same `(done, total|None)` callback the other stages take —
+    the step used to go silent here for as long as clustering ran, which from the
+    outside is indistinguishable from a hang. The phases are read → HDBSCAN →
+    inheritance of labels → write; HDBSCAN reports `total=None` (indeterminate), the
+    rest are measurable. Called without a callback the function works exactly as
+    before.
+    """
     s = _settings(cfg)
-    rows = conn.execute(
-        "SELECT id, cluster_id, embedding FROM faces WHERE bbox != ? ORDER BY id",
-        (_NO_FACES_BBOX,),
-    ).fetchall()
+    report = _PhaseProgress(progress)
+    rows = _read_face_rows(conn, report)
     stats = ClusterStats(faces=len(rows))
     if not rows:
         with conn:
@@ -512,11 +588,19 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection) -> ClusterStats:
             conn.execute("DELETE FROM face_clusters")
         return stats
 
+    report.start(CLUSTER_PHASE_CLUSTER, None)  # unmeasurable: one blocking call
     x = np.stack([np.frombuffer(r["embedding"], dtype="<f4") for r in rows]).astype(np.float64)
     norms = np.linalg.norm(x, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     labels = _hdbscan_labels(x / norms, s)
+    report.step(len(rows))
 
+    groups: dict[int, list[int]] = defaultdict(list)  # new label -> [face_id]
+    for r, lab in zip(rows, labels):
+        if lab >= 0:
+            groups[int(lab)].append(r["id"])
+
+    report.start(CLUSTER_PHASE_INHERIT, len(groups))
     # old state: face.id -> root old cluster, and its label
     old_clusters = {
         r["id"]: (r["label"], r["merged_into"])
@@ -528,14 +612,10 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection) -> ClusterStats:
         for r in rows if r["cluster_id"] is not None
     }
 
-    groups: dict[int, list[int]] = defaultdict(list)  # new label -> [face_id]
-    for r, lab in zip(rows, labels):
-        if lab >= 0:
-            groups[int(lab)].append(r["id"])
-
     # label inheritance: the old cluster with the largest intersection and share > 50%
     inherited: dict[int, str | None] = {}
-    for lab, face_ids in groups.items():
+    for done, (lab, face_ids) in enumerate(groups.items(), 1):
+        report.step(done)
         overlap = Counter(
             old_root_of_face[fid] for fid in face_ids if fid in old_root_of_face
         )
@@ -545,10 +625,11 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection) -> ClusterStats:
         if best_n * 2 > len(face_ids):
             inherited[lab] = old_clusters[best_root][0] if best_root in old_clusters else None
 
+    report.start(CLUSTER_PHASE_WRITE, len(groups))
     with conn:
         conn.execute("UPDATE faces SET cluster_id = NULL")
         conn.execute("DELETE FROM face_clusters")
-        for lab in sorted(groups):
+        for written, lab in enumerate(sorted(groups), 1):
             label = inherited.get(lab)
             cur = conn.execute(
                 "INSERT INTO face_clusters (label, merged_into) VALUES (?, NULL)", (label,)
@@ -559,6 +640,7 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection) -> ClusterStats:
             )
             if label is not None:
                 stats.labels_kept += 1
+            report.step(written)
     stats.clusters = len(groups)
     stats.noise = int((labels < 0).sum())
     return stats
@@ -566,12 +648,17 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection) -> ClusterStats:
 
 def detect_and_cluster(
     cfg: Config, conn: sqlite3.Connection,
-    progress: Callable[[int, int], None] | None = None,
+    progress: ProgressCB | None = None,
     analyzer: Analyzer | None = None,
 ) -> tuple[FaceStats, ClusterStats]:
-    """Full phase-3 pass: detection of new files + cluster recomputation."""
+    """Full phase-3 pass: detection of new files + cluster recomputation.
+
+    The same callback drives both halves — detection counts frames, clustering
+    reports its phases (F84), so the bar keeps moving across the boundary instead of
+    freezing on `24196/24196` for the rest of the step.
+    """
     face_stats = detect_faces(cfg, conn, progress=progress, analyzer=analyzer)
-    return face_stats, cluster_faces(cfg, conn)
+    return face_stats, cluster_faces(cfg, conn, progress=progress)
 
 
 # --- Manual operations on clusters -----------------------------------------

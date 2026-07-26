@@ -153,7 +153,8 @@ class TestProcessStartAndProgress(ProcessTestBase):
         self.assertEqual(
             set(data.keys()),
             {"running", "stage", "stage_index", "stage_total", "done", "total",
-             "error", "finished", "cancel_requested", "source_dir"},
+             "error", "finished", "cancel_requested", "source_dir",
+             "phase", "phase_elapsed"},
         )
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])
