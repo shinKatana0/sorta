@@ -9,6 +9,7 @@ import numpy as np
 from sorta.config import Config, _naming_from
 from sorta.db import connect
 from sorta.landmarks import (
+    DEFAULT_LANDMARKS_FILE,
     CachingFeatureClassifier,
     Landmark,
     detect_landmarks,
@@ -359,3 +360,49 @@ class TestRealClipSmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLandmarkGeonameid(unittest.TestCase):
+    """A landmark match must land in the SAME folder as a GPS photo of that place.
+
+    The sorter localizes a city name by geonameid; landmarks carried none, so their
+    rows stayed unlocalized and "Paris" appeared beside "Париж" as a second folder
+    for one city.
+    """
+
+    def test_bundled_list_has_a_geonameid_for_every_entry(self):
+        for lm in load_landmarks(DEFAULT_LANDMARKS_FILE):
+            self.assertIsNotNone(lm.geonameid, f"{lm.name}: нет geonameid")
+
+    def test_geonameid_matches_what_gps_at_that_place_resolves_to(self):
+        """The ids are only useful if they agree with the GPS path."""
+        from sorta.geodata import GeoResolver
+
+        resolver = GeoResolver()
+        landmarks = {lm.name: lm for lm in load_landmarks(DEFAULT_LANDMARKS_FILE)}
+        for name, (lat, lon) in (
+            ("Эйфелева башня", (48.8584, 2.2945)),
+            ("Красная площадь", (55.7539, 37.6208)),
+            ("Карлов мост", (50.0865, 14.4114)),
+            ("Бурдж-Халифа", (25.1972, 55.2744)),
+        ):
+            with self.subTest(name):
+                self.assertEqual(landmarks[name].geonameid,
+                                 resolver.resolve(lat, lon).city_id)
+
+    def test_missing_geonameid_is_allowed_in_a_user_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mine.yaml"
+            path.write_text(
+                'landmarks:\n  - prompt: p\n    name: n\n    country: FR\n    city: Paris\n',
+                encoding="utf-8")
+            self.assertIsNone(load_landmarks(path)[0].geonameid)
+
+    def test_non_numeric_geonameid_is_rejected_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.yaml"
+            path.write_text(
+                'landmarks:\n  - prompt: p\n    name: n\n    country: FR\n'
+                '    city: Paris\n    geonameid: "не число"\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_landmarks(path)

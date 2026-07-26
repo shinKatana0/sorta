@@ -14,48 +14,58 @@ landmarks:
     name: "Эйфелева башня"
     country: FR
     city: Paris
+    geonameid: 2988507
 
   - prompt: "a photo of Red Square and Saint Basil's Cathedral in Moscow"
     name: "Красная площадь"
     country: RU
     city: Moscow
+    geonameid: 524901
 
   - prompt: "a photo of the Colosseum amphitheatre in Rome"
     name: "Колизей"
     country: IT
     city: Rome
+    geonameid: 3169070
 
   - prompt: "a photo of the Brandenburg Gate in Berlin"
     name: "Бранденбургские ворота"
     country: DE
     city: Berlin
+    geonameid: 2950159
 
   - prompt: "a photo of Sagrada Familia basilica in Barcelona"
     name: "Саграда Фамилия"
     country: ES
     city: Barcelona
+    geonameid: 3128760
 
   - prompt: "a photo of the Charles Bridge in Prague"
     name: "Карлов мост"
     country: CZ
     city: Prague
+    geonameid: 3067696
 
   - prompt: "a photo of Hagia Sophia in Istanbul"
     name: "Айя-София"
     country: TR
     city: Istanbul
+    geonameid: 745044
 
   - prompt: "a photo of the Burj Khalifa tower in Dubai"
     name: "Бурдж-Халифа"
     country: AE
     city: Dubai
+    geonameid: 292223
 
   - prompt: "a photo of Times Square in New York City"
     name: "Таймс-сквер"
     country: US
     city: "New York"
+    geonameid: 5125771
 
   - prompt: "a photo of Tower Bridge in London"
     name: "Тауэрский мост"
     country: GB
     city: London
+    geonameid: 2643741

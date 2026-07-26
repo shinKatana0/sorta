@@ -57,6 +57,13 @@ class Landmark:
     name: str      # place name for reports
     country: str   # ISO code (reverse_geocoder format, the cc field)
     city: str
+    # GeoNames id of the city, so a landmark match lands in the SAME folder as a GPS
+    # photo of the same place. Without it the sorter cannot localize the name — the
+    # translation is looked up by geonameid — and "Paris" appeared next to "Париж" as
+    # a second folder for one city. The ids are the ones a GPS photo taken AT the
+    # landmark resolves to, which is what makes the two paths agree.
+    # Optional: a user-supplied list without the field still works, just unlocalized.
+    geonameid: int | None = None
 
 
 # F65 follow-up: the same packaging trap the geo database fell into. The historical
@@ -105,8 +112,17 @@ def load_landmarks(path: str | Path) -> list[Landmark]:
         missing = [k for k in ("prompt", "name", "country", "city") if not e.get(k)]
         if missing:
             raise ValueError(f"{path}: запись #{i + 1} без полей {missing}")
+        raw_id = e.get("geonameid")
+        try:
+            geonameid = int(raw_id) if raw_id is not None else None
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{path}: запись #{i + 1} ({e['name']}): geonameid должен быть числом, "
+                f"получено {raw_id!r}"
+            ) from None
         result.append(Landmark(prompt=str(e["prompt"]), name=str(e["name"]),
-                               country=str(e["country"]), city=str(e["city"])))
+                               country=str(e["country"]), city=str(e["city"]),
+                               geonameid=geonameid))
     return result
 
 
@@ -312,10 +328,10 @@ def detect_landmarks(
                     continue
                 lm = landmarks[best]
                 cur = conn.execute(
-                    """UPDATE places SET country = ?, city = ?, confidence = 'visual',
-                           updated_at = ?
+                    """UPDATE places SET country = ?, city = ?, city_geonameid = ?,
+                           confidence = 'visual', updated_at = ?
                        WHERE file_id = ? AND confidence = 'unknown'""",
-                    (lm.country, lm.city, now, r["id"]),
+                    (lm.country, lm.city, lm.geonameid, now, r["id"]),
                 )
                 if cur.rowcount:
                     stats.matched += 1

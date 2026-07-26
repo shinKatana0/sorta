@@ -93,6 +93,19 @@ def _coord(v: object) -> float | None:
         return None
 
 
+def _is_null_island(lat: float, lon: float) -> bool:
+    """Exactly (0, 0) — a camera writing zeros because it never got a fix.
+
+    The pair matters, not the individual values: latitude 0 is the equator and
+    longitude 0 is Greenwich, both perfectly real on their own. Only both at once is
+    the sentinel. Left unfiltered it is worse than a missing place, because the
+    nearest land to 0°N 0°E is Ghana and a nearest-neighbour resolver answers
+    confidently — 35 files landed in a country the user has never visited, and 16
+    more inherited it through the time-session rule.
+    """
+    return lat == 0.0 and lon == 0.0
+
+
 class _OfflineBatchResolver:
     """A wrapper over geodata.GeoResolver: resolve coordinates + the canonical (en) city anchor.
 
@@ -273,7 +286,7 @@ def resolve_places(
     coords: list[tuple[float, float]] = []
     for r in rows:
         lat, lon = _coord(r["gps_lat"]), _coord(r["gps_lon"])
-        if lat is not None and lon is not None:
+        if lat is not None and lon is not None and not _is_null_island(lat, lon):
             gps_rows.append(r)
             coords.append((lat, lon))
     resolved: dict[int, tuple[_Place, str]] = {}
