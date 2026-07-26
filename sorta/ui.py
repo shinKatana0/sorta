@@ -84,6 +84,25 @@ the user in a native dialog on their own machine, there is no injection).
 indexed files; see `_suggested_sort_dest`). JS prefills the `#sort-dest` field only if
 the user has not entered anything yet.
 
+(12) `POST /api/overrides` (F77, the "Cities" tab) — the user's manual corrections to
+the layout: `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear",
+"target": str?}`. `exclude` — "leave alone": the file is not moved anywhere by the next
+`sort --apply`; `reassign` — lay it out into `target` (a folder of the current plan,
+relative to the sort root) instead of wherever the automatic rules put it; `clear` —
+drop the correction. One row per file in `manual_overrides` (PRIMARY KEY file_id), a
+repeated correction overwrites it. Like every other write route, the body carries only
+ints and (for reassign) a target string — no paths from the client to a file: the
+target is a folder INSIDE the layout, and `sorter._manual_target_parts` validates it
+against the sort root before any destination is built from it. This endpoint moves
+nothing on disk — the physical move happens in the shared `sort --apply`.
+The mark is served back LIVE (`_overrides_map`, read per request in `PlanCache`) rather
+than baked into the built plan: a correction has to show up in the UI the moment it is
+saved, while invalidating a mode's plan would make the next tab interaction pay for a
+full rebuild (F70) on every click. The preview plan is built with
+`keep_manual_excluded=True`, so a frame marked "leave alone" stays in the list (framed
+red, unmarkable) even after a rebuild — the sorting plan that actually moves files never
+contains it.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -161,9 +180,10 @@ _LANG_SELF_NAMES: dict[str, str] = {"ru": "Русский", "en": "English", "ja
 _ProgressCB = Callable[[int, "int | None"], None]  # (done, total|None) — compatible with progress.ProgressCB
 
 
-def _plan_item_to_json(item: PlanItem) -> dict:
+def _plan_item_to_json(item: PlanItem,
+                       override: tuple[str, str | None] | None = None) -> dict:
     geo = "/".join(p for p in (item.country, item.city) if p) or None
-    return {
+    payload = {
         "file_id": item.file_id,
         "name": item.src.name,
         "target_rel": item.target_rel,
@@ -173,6 +193,12 @@ def _plan_item_to_json(item: PlanItem) -> dict:
         "category": item.reason,
         "thumb_url": f"/thumb/{item.file_id}",
     }
+    if override is not None:
+        # F77: only a corrected file carries the mark — the frontend draws a frame off
+        # the presence of the key, so an uncorrected row must not carry a null.
+        payload["override"] = override[0]
+        payload["override_target"] = override[1]
+    return payload
 
 
 def _plan_category(item: PlanItem) -> str:
@@ -184,6 +210,22 @@ def _plan_category(item: PlanItem) -> str:
     """
     head, sep, _name = item.target_rel.rpartition("/")
     return head if sep else item.target_rel
+
+
+def _overrides_map(db_path: Path) -> dict[int, tuple[str, str | None]]:
+    """F77: file_id -> (action, target) from `manual_overrides` — the live marks.
+
+    Read per request instead of being stored in the built plan: a correction must be
+    visible right after it is saved, and invalidating the plan of a mode would make the
+    next request pay for a full rebuild (see PlanCache). The table holds one row per
+    corrected file, so it is tiny next to the plan itself.
+    """
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute("SELECT file_id, action, target FROM manual_overrides").fetchall()
+    finally:
+        conn.close()
+    return {int(r["file_id"]): (r["action"], r["target"]) for r in rows}
 
 
 class _ModePlan:
@@ -275,11 +317,17 @@ class PlanCache:
             return built
 
     def _build(self, cfg: Config, mode: str) -> _ModePlan:
-        """One dry-run plan + the file sizes the aggregate reports, in one connection."""
+        """One dry-run plan + the file sizes the aggregate reports, in one connection.
+
+        keep_manual_excluded=True (F77): a file marked "leave alone" is not moved by
+        `sort --apply` (the sorter drops it from any plan that moves anything), but it
+        must stay VISIBLE and unmarkable here — otherwise marking a frame would make it
+        vanish from the grid on the next rebuild, with no way back.
+        """
         conn = _connect(self._db_path)
         try:
             report = plan_and_sort(cfg, conn, mode, self._dest, apply=False,
-                                   write_reports=False)
+                                   write_reports=False, keep_manual_excluded=True)
             sizes = {int(row["id"]): int(row["size"] or 0)
                      for row in conn.execute("SELECT id, size FROM files")}
         finally:
@@ -292,11 +340,23 @@ class PlanCache:
         return None if built is None else built.items
 
     def aggregate(self, mode: str) -> dict | None:
-        """`GET /api/plan?mode=` — target folders with counts/sizes, no file list."""
+        """`GET /api/plan?mode=` — target folders with counts/sizes, no file list.
+
+        F77: the totals also say how many of the plan's files carry a manual correction
+        (`overridden`) and how many of those are "leave alone" (`excluded`). The latter
+        are LISTED (see `_build`) but will not be moved, so the apply confirmation counts
+        `total - excluded`. Counted per request from the live table; the per-folder rows
+        keep their existing shape (folder/count/size) — the marks themselves travel with
+        the files, on the category page.
+        """
         built = self._plan(mode)
         if built is None:
             return None
+        marks = _overrides_map(self._db_path)
+        actions = [marks[it.file_id][0] for it in built.items if it.file_id in marks]
         return {"mode": mode, "total": len(built.items),
+                "overridden": len(actions),
+                "excluded": sum(1 for a in actions if a == "exclude"),
                 "categories": built.categories}
 
     def page(self, mode: str, category: str, offset: int, limit: int) -> dict | None:
@@ -309,13 +369,15 @@ class PlanCache:
         if built is None:
             return None
         items = built.by_category.get(category, [])
+        page = items[offset:offset + limit]
+        marks = _overrides_map(self._db_path) if page else {}
         return {
             "mode": mode,
             "category": category,
             "total": len(items),
             "offset": offset,
             "limit": limit,
-            "items": [_plan_item_to_json(it) for it in items[offset:offset + limit]],
+            "items": [_plan_item_to_json(it, marks.get(it.file_id)) for it in page],
         }
 
 
@@ -840,6 +902,71 @@ def _validate_file_ids_payload(payload: object) -> list[int] | None:
             seen.add(v)
             ids.append(v)
     return ids
+
+
+_OVERRIDE_ACTIONS = ("exclude", "reassign", "clear")
+
+
+def _validate_overrides_payload(payload: object) -> tuple[list[int], str, str | None] | None:
+    """Parse the body `POST /api/overrides` (F77):
+    `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear", "target": str?}`.
+
+    None -> invalid (400): not an object, an unknown/absent action, file_ids that is not
+    a non-empty list of ints (bool excluded, like everywhere else), or `reassign`
+    without a non-empty target. The target is NOT resolved into a path here — it is a
+    folder of the layout, and sorter._manual_target_parts validates it against the sort
+    root before a destination is built from it.
+    """
+    if not isinstance(payload, dict):
+        return None
+    action = payload.get("action")
+    if action not in _OVERRIDE_ACTIONS:
+        return None
+    ids = _validate_file_ids_payload(payload)
+    if ids is None:
+        return None
+    if action == "reassign":
+        target = payload.get("target")
+        if not isinstance(target, str) or not target.strip():
+            return None
+        return ids, action, target.strip()
+    return ids, action, None
+
+
+def _apply_overrides(db_path: Path, file_ids: list[int], action: str,
+                     target: str | None) -> list[int]:
+    """Write (or, for 'clear', delete) the manual marks; returns the affected file_ids.
+
+    One row per file: a repeated correction of the same file overwrites it via ON
+    CONFLICT rather than adding a second row. Ids outside `files` are silently skipped
+    (the same rule as `_trash_files`; the FK on manual_overrides.file_id would reject
+    them anyway). One transaction for the whole selection — a bulk correction either
+    lands entirely or not at all.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(file_ids))
+        known = [r["id"] for r in conn.execute(
+            f"SELECT id FROM files WHERE id IN ({placeholders})", file_ids)]
+        if not known:
+            return []
+        ph = ",".join("?" * len(known))
+        with conn:
+            if action == "clear":
+                conn.execute(
+                    f"DELETE FROM manual_overrides WHERE file_id IN ({ph})", known)
+            else:
+                conn.executemany(
+                    """INSERT INTO manual_overrides (file_id, action, target, updated_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(file_id) DO UPDATE SET
+                           action = excluded.action, target = excluded.target,
+                           updated_at = excluded.updated_at""",
+                    [(fid, action, target, now) for fid in known])
+    finally:
+        conn.close()
+    return known
 
 
 def _clusters_payload(db_path: Path, sample_limit: int = _CLUSTER_SAMPLE_LIMIT) -> list[dict]:
@@ -2021,6 +2148,52 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "sort_start_error_prefix": {
         "ru": "Не удалось запустить: ", "en": "Failed to start: ", "ja": "開始できません: ",
     },
+    # --- F77: manual corrections to the layout (the "Cities" tab) ----------
+    "override_exclude_button": {
+        "ru": "Не трогать", "en": "Leave alone", "ja": "そのままにする",
+    },
+    "override_clear_button": {
+        "ru": "Снять правку", "en": "Clear correction", "ja": "修正を解除",
+    },
+    "override_move_button": {
+        "ru": "Перенести в…", "en": "Move to…", "ja": "移動先…",
+    },
+    "override_target_placeholder": {
+        "ru": "папка раскладки…", "en": "layout folder…", "ja": "振り分け先フォルダ…",
+    },
+    "override_exclude_folder_button": {
+        "ru": "Не трогать папку", "en": "Leave folder alone", "ja": "フォルダをそのままに",
+    },
+    "override_exclude_folder_confirm": {
+        "ru": "Исключить из раскладки все файлы этой папки ({n})? Они останутся там, "
+              "где лежат.",
+        "en": "Exclude all {n} files of this folder from the layout? They stay exactly "
+              "where they are.",
+        "ja": "このフォルダの {n} 件すべてを振り分けから除外しますか? "
+              "ファイルは現在の場所に残ります。",
+    },
+    "override_excluded_mark": {
+        "ru": "не трогать", "en": "left alone", "ja": "移動しない",
+    },
+    "override_reassigned_mark": {
+        "ru": "перенос → {target}", "en": "moved → {target}", "ja": "移動先 → {target}",
+    },
+    "override_hint": {
+        "ru": "Ручные правки сильнее автоматики: помеченные «не трогать» остаются на "
+              "месте, перенесённые уходят в выбранную папку при раскладке.",
+        "en": "Manual corrections outrank the automatic rules: files marked «leave "
+              "alone» stay put, moved ones go to the chosen folder when you apply.",
+        "ja": "手動の修正は自動判定より優先されます。「そのままにする」を付けた"
+              "ファイルは移動せず、移動先を指定したものは振り分け時にそのフォルダへ入ります。",
+    },
+    "override_alert_choose_target": {
+        "ru": "Выберите папку для переноса.", "en": "Choose a destination folder.",
+        "ja": "移動先のフォルダを選択してください。",
+    },
+    "override_error_prefix": {
+        "ru": "Не удалось сохранить правку: ", "en": "Could not save the correction: ",
+        "ja": "修正を保存できません: ",
+    },
 }
 
 
@@ -2350,6 +2523,22 @@ label { cursor: pointer; }
 .stage-chip.done { background: var(--good-soft); color: var(--good); border-color: transparent; }
 .stage-chip.now { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
 
+/* --- F77: ручные правки раскладки ------------------------------------- */
+/* Два РАЗНЫХ состояния строки, которые нельзя путать: «не трогать» — красная
+   рамка (предложение пользователя), «перенесено» — синяя пунктирная. Рамка на
+   строке, а не на превью: список плана — таблица, и обводка целой строки заметнее
+   при взгляде по сетке. */
+tr.override-exclude, tr.override-exclude:hover { outline: 2px solid var(--danger);
+      outline-offset: -2px; background: var(--danger-soft); }
+tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--accent);
+      outline-offset: -2px; background: var(--accent-soft); }
+.override-mark { margin-left: var(--space-sm); }
+.override-folder-btn { margin-left: var(--space-sm); font-weight: 500; }
+.override-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: 0 0 var(--space-md) 0; }
+.override-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); margin: 0; }
+.override-status { font-size: 0.8rem; color: var(--danger); }
+
 .sort-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; margin: var(--space-md) 0; }
 .sort-controls input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
 .sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
@@ -2461,6 +2650,14 @@ label { cursor: pointer; }
 <button type="button" class="btn btn-ghost expand-all-btn">{{expand_all}}</button>
 <button type="button" class="btn btn-ghost collapse-all-btn">{{collapse_all}}</button>
 <button type="button" id="city-delete-selected-btn" class="btn btn-danger" disabled>{{delete_selected}}<span id="city-delete-selected-count"></span></button>
+</div>
+<div class="override-controls">
+<button type="button" id="city-override-exclude-btn" class="btn btn-danger" disabled>{{override_exclude_button}}<span id="city-override-count"></span></button>
+<select id="city-override-target"><option value="">{{override_target_placeholder}}</option></select>
+<button type="button" id="city-override-move-btn" class="btn" disabled>{{override_move_button}}</button>
+<button type="button" id="city-override-clear-btn" class="btn btn-ghost" disabled>{{override_clear_button}}</button>
+<span id="override-status" class="override-status"></span>
+<p class="override-hint">{{override_hint}}</p>
 </div>
 <div id="tree-city"><div class="state-msg state-loading">{{loading}}</div></div>
 </section>
@@ -2849,6 +3046,167 @@ label { cursor: pointer; }
     return img;
   }
 
+  // --- F77: ручные правки раскладки (не трогать / перенести в папку) -----
+  // Правка только помечает файл в БД: физически ничего не двигается до общей
+  // раскладки. Пометка приходит вместе со страницей плана (item.override), поэтому
+  // после перерисовки список остаётся размеченным.
+
+  var PLAN_ID_PAGE_SIZE = 1000;  // серверный максимум limit для страницы плана
+
+  // Строка помечается ДВУМЯ разными способами: исключённая (красная рамка) и
+  // перенесённая (синяя пунктирная) — это разные состояния, путать их нельзя.
+  function markOverrideRow(tr, action, target) {
+    tr.classList.remove("override-exclude", "override-reassign");
+    var old = tr.querySelector(".override-mark");
+    if (old) old.remove();
+    tr.dataset.override = action || "";
+    var btn = tr.querySelector(".override-row-btn");
+    if (btn) {
+      btn.textContent = action ? I18N.override_clear_button : I18N.override_exclude_button;
+    }
+    if (!action) {
+      tr.removeAttribute("title");
+      return;
+    }
+    var excluded = action === "exclude";
+    tr.classList.add(excluded ? "override-exclude" : "override-reassign");
+    var label = excluded ? I18N.override_excluded_mark
+        : fmt(I18N.override_reassigned_mark, { target: target || "" });
+    tr.title = label;
+    var chip = document.createElement("span");
+    chip.className = "chip override-mark " + (excluded ? "chip-danger" : "chip-accent");
+    chip.textContent = label;
+    var meta = tr.querySelector(".plan-meta");
+    if (meta) meta.appendChild(chip);
+  }
+
+  // Пометить уже отрисованные строки внутри scope (контейнер/узел дерева) —
+  // «список обновляется без перезагрузки страницы».
+  function markRowsOverride(scope, fileIds, action, target) {
+    var wanted = {};
+    fileIds.forEach(function (id) { wanted[id] = true; });
+    Array.prototype.slice.call(scope.querySelectorAll(".row-select")).forEach(function (box) {
+      if (!wanted[parseInt(box.value, 10)]) return;
+      var tr = box.closest("tr");
+      if (tr) markOverrideRow(tr, action, target);
+    });
+  }
+
+  function overrideStatusEl() {
+    return document.getElementById("override-status");
+  }
+
+  function applyOverride(action, fileIds, target, onSuccess) {
+    var body = { file_ids: fileIds, action: action };
+    if (target) body.target = target;
+    return postJson("/api/overrides", body).then(function (resp) {
+      if (resp && resp.ok) {
+        onSuccess(resp.file_ids || fileIds);
+      } else {
+        overrideStatusEl().textContent = I18N.override_error_prefix +
+            ((resp && resp.error) || "");
+      }
+    }).catch(function (err) {
+      overrideStatusEl().textContent = I18N.override_error_prefix + err;
+    });
+  }
+
+  // Все file_id папки — страницами у сервера, поэтому «не трогать папку» работает
+  // и для нераскрытой папки, и для папки больше одной страницы.
+  function fetchCategoryIds(mode, category) {
+    var ids = [];
+    function step(offset) {
+      return fetch("/api/plan?mode=" + encodeURIComponent(mode) +
+                   "&category=" + encodeURIComponent(category) +
+                   "&offset=" + offset + "&limit=" + PLAN_ID_PAGE_SIZE)
+        .then(function (r) { return r.json(); })
+        .then(function (page) {
+          var items = page.items || [];
+          items.forEach(function (it) { ids.push(it.file_id); });
+          if (items.length && ids.length < page.total) return step(offset + items.length);
+          return ids;
+        });
+    }
+    return step(0);
+  }
+
+  // Кнопка правки в самой строке: одиночный файл — частый случай, ради него не
+  // нужно идти в выделение. Метка/подпись кнопки переключаются по состоянию строки.
+  function overrideRowButton(tr, item) {
+    var btn = makeBtn(null, null, I18N.override_exclude_button, "btn-sm override-row-btn");
+    btn.addEventListener("click", function () {
+      var action = tr.dataset.override ? "clear" : "exclude";
+      applyOverride(action, [item.file_id], null, function () {
+        markOverrideRow(tr, action === "clear" ? null : "exclude", null);
+      });
+    });
+    return btn;
+  }
+
+  // Панель над деревом: правка применяется к ВЫДЕЛЕНИЮ (те же чекбоксы
+  // .row-select, что и «Удалить выбранное»); одиночный файл — выделение из одного.
+  function wireOverrideControls(containerId) {
+    var container = document.getElementById(containerId);
+    var excludeBtn = document.getElementById("city-override-exclude-btn");
+    var moveBtn = document.getElementById("city-override-move-btn");
+    var clearBtn = document.getElementById("city-override-clear-btn");
+    var select = document.getElementById("city-override-target");
+    var countEl = document.getElementById("city-override-count");
+
+    function selectedIds() {
+      return Array.prototype.slice.call(container.querySelectorAll(".row-select:checked"))
+          .map(function (b) { return parseInt(b.value, 10); });
+    }
+    function refresh() {
+      var n = selectedIds().length;
+      countEl.textContent = n ? " (" + n + ")" : "";
+      excludeBtn.disabled = n === 0;
+      clearBtn.disabled = n === 0;
+      moveBtn.disabled = n === 0;
+    }
+    function apply(action) {
+      var ids = selectedIds();
+      if (!ids.length) return;
+      var target = null;
+      if (action === "reassign") {
+        target = select.value;
+        if (!target) { window.alert(I18N.override_alert_choose_target); return; }
+      }
+      applyOverride(action, ids, target, function (applied) {
+        markRowsOverride(container, applied, action === "clear" ? null : action, target);
+      });
+    }
+    container.addEventListener("change", function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("row-select")) refresh();
+    });
+    excludeBtn.addEventListener("click", function () { apply("exclude"); });
+    moveBtn.addEventListener("click", function () { apply("reassign"); });
+    clearBtn.addEventListener("click", function () { apply("clear"); });
+    refresh();
+  }
+
+  // Список целей переноса = папки текущего плана из уже загруженного агрегата
+  // (отдельный эндпойнт не нужен). Перетаскивание плитки в узел дерева не
+  // реализуем: дерево ленивое, узел нераскрытой (и потому отсутствующей в DOM)
+  // папки не может быть целью drop — список даёт доступ ко ВСЕМ папкам раскладки,
+  // как и требует фича.
+  function fillOverrideTargets(categories) {
+    var select = document.getElementById("city-override-target");
+    var previous = select.value;
+    select.textContent = "";
+    var empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = I18N.override_target_placeholder;
+    select.appendChild(empty);
+    categories.forEach(function (row) {
+      var opt = document.createElement("option");
+      opt.value = row.category;
+      opt.textContent = row.category;
+      select.appendChild(opt);
+    });
+    select.value = previous;
+  }
+
   function renderFiles(files) {
     var table = document.createElement("table");
     files.forEach(function (item) {
@@ -2869,6 +3227,7 @@ label { cursor: pointer; }
       tdThumb.appendChild(nameEl);
       tr.appendChild(tdThumb);
       var tdMeta = document.createElement("td");
+      tdMeta.className = "plan-meta";
       tdMeta.textContent = [item.date, item.geo, item.category]
           .filter(Boolean).join(" \\u00b7 ");
       tr.appendChild(tdMeta);
@@ -2878,7 +3237,10 @@ label { cursor: pointer; }
         deletePhoto(item.file_id, function () { tr.remove(); });
       });
       tdActions.appendChild(btnDelete);
+      tdActions.appendChild(overrideRowButton(tr, item));
       tr.appendChild(tdActions);
+      // F77: пометка из ответа плана — строка приходит уже размеченной.
+      markOverrideRow(tr, item.override || null, item.override_target || null);
       table.appendChild(tr);
     });
     return wrapTable(table);
@@ -2937,6 +3299,30 @@ label { cursor: pointer; }
     var details = document.createElement("details");
     var summary = document.createElement("summary");
     summary.textContent = name + " (" + node.count + ")";
+    if (node.category) {
+      // F77: «не трогать» на папку целиком — кнопка в заголовке категории.
+      // Клик внутри <summary> иначе раскрывает/сворачивает узел, поэтому событие
+      // до <details> не доходит.
+      var folderBtn = makeBtn("danger", null, I18N.override_exclude_folder_button,
+          "btn-sm override-folder-btn");
+      folderBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!window.confirm(fmt(I18N.override_exclude_folder_confirm, { n: node.count }))) return;
+        folderBtn.disabled = true;
+        fetchCategoryIds(mode, node.category).then(function (ids) {
+          if (!ids.length) { folderBtn.disabled = false; return; }
+          return applyOverride("exclude", ids, null, function (applied) {
+            markRowsOverride(details, applied, "exclude", null);
+          });
+        }).then(function () { folderBtn.disabled = false; })
+          .catch(function (err) {
+            folderBtn.disabled = false;
+            overrideStatusEl().textContent = I18N.override_error_prefix + err;
+          });
+      });
+      summary.appendChild(folderBtn);
+    }
     details.appendChild(summary);
     var built = false;
     details.addEventListener("toggle", function () {
@@ -2964,8 +3350,11 @@ label { cursor: pointer; }
       .then(function (data) {
         var categories = data.categories || [];
         if (mode === "city") {
-          cityPlanCount = data.total || 0;
+          // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
+          // в подтверждении раскладки их считать нельзя.
+          cityPlanCount = (data.total || 0) - (data.excluded || 0);
           cityPlanDirCount = categories.length;
+          fillOverrideTargets(categories);
         }
         container.textContent = "";
         if (!categories.length) {
@@ -2985,6 +3374,7 @@ label { cursor: pointer; }
 
   renderPlanTab("city", "tree-city");
   wireBulkDelete("tree-city", "city-delete-selected-btn", "city-delete-selected-count");
+  wireOverrideControls("tree-city");
 
   document.querySelectorAll(".expand-all-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -4114,6 +4504,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_photo_trash()
             elif path == "/api/photos/trash":
                 self._handle_photos_trash()
+            elif path == "/api/overrides":
+                self._handle_overrides()
             elif path == "/api/clusters/label":
                 self._handle_cluster_label()
             elif path == "/api/clusters/merge":
@@ -4253,6 +4645,20 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 return
             trashed = _trash_files(db_path, ids)
             self._send_json({"trashed": trashed})
+
+        def _handle_overrides(self) -> None:
+            # F77: marks only — nothing is moved on disk here (the physical move is the
+            # shared sort --apply). The plan cache is deliberately NOT invalidated: the
+            # mark is served live by PlanCache, and a rebuild per click would cost the
+            # whole mode (F70).
+            parsed = _validate_overrides_payload(self._read_json_body())
+            if parsed is None:
+                self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            file_ids, action, target = parsed
+            applied = _apply_overrides(db_path, file_ids, action, target)
+            self._send_json({"ok": True, "action": action, "target": target,
+                             "file_ids": applied})
 
         def _handle_cluster_label(self) -> None:
             parsed = _validate_cluster_label_payload(self._read_json_body())
