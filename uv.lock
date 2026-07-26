@@ -20,6 +20,13 @@ conflicts = [[
     { package = "sorta", extra = "gpu" },
 ]]
 
+[manifest]
+
+[[manifest.dependency-metadata]]
+name = "insightface"
+version = "1.0.1"
+requires-dist = ["numpy", "onnx", "opencv-python", "tqdm", "requests", "scipy", "scikit-image"]
+
 [[package]]
 name = "accelerate"
 version = "1.14.0"
@@ -653,7 +660,6 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-5-sorta-cpu' and extra == 'extra-5-sorta-gpu')" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-5-sorta-cpu' and extra == 'extra-5-sorta-gpu')" },
     { name = "onnx" },
-    { name = "onnxruntime" },
     { name = "opencv-python" },
     { name = "requests" },
     { name = "scikit-image" },
@@ -1374,8 +1380,8 @@ version = "1.27.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "flatbuffers" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-5-sorta-cpu' and extra == 'extra-5-sorta-gpu')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-5-sorta-cpu' and extra == 'extra-5-sorta-gpu')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-5-sorta-cpu') or (extra == 'extra-5-sorta-cpu' and extra == 'extra-5-sorta-gpu')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-5-sorta-cpu') or (extra == 'extra-5-sorta-cpu' and extra == 'extra-5-sorta-gpu')" },
     { name = "packaging" },
     { name = "protobuf" },
 ]
