@@ -1,8 +1,9 @@
 """F5: sorting by moving files.
 
-Contract: reads files/places/faces/face_clusters/events/event_files/media_class,
-writes to move_batches/moves and to the FS. The only exception: after a successful
-move, files.path is updated so the index stays valid; undo restores the old value.
+Contract: reads files/places/faces/face_clusters/events/event_files/media_class/
+manual_overrides, writes to move_batches/moves and to the FS. The only exception:
+after a successful move, files.path is updated so the index stays valid; undo
+restores the old value.
 
 Invariants (must not be broken):
   - without apply=True, no FS operation except writing the CSV plan next to the DB;
@@ -16,6 +17,15 @@ Invariants (must not be broken):
     logged, the rollback continues.
   - copy mode (C16, --copy): src is NOT deleted and files.path does NOT change;
     move_batches.operation='copy' lets undo distinguish it (deletes dst instead of dst -> src).
+
+F77 (manual_overrides, written by the web app): a correction the user made by eye
+outranks every automatic rule here. action='exclude' — the file drops out of the plan
+entirely (it is not moved anywhere, it stays exactly where it lies), counted in
+SortReport.manual_excluded separately from the --exclude directories; action='reassign'
+— the layout target is the folder the user picked, ahead of the dedup choice, the junk
+verdict, not_personal and geo. The reassign target comes from the DB, i.e. from
+outside, so it is validated against the sort root before a path is built from it (see
+_manual_target_parts) — an invalid target is ignored with a warning, never followed.
 
 The low_date rule: any mode's layout includes the year (YYYY), so a file without
 taken_at or with taken_at_confidence='low' (a date only from mtime — often the copy
@@ -213,6 +223,34 @@ def _sanitize(name: str) -> str:
     return s
 
 
+def _manual_target_parts(target: str | None, src: str) -> list[str] | None:
+    """F77: `manual_overrides.target` -> layout segments under the sort root, or None.
+
+    The value is written by the web app, i.e. it reaches the sorter from OUTSIDE, and
+    it is the one input of this feature that becomes a WRITE path — so it is treated as
+    untrusted. Accepted: a relative POSIX path of plain segments. Rejected (None + a
+    warning; the caller then lays the file out automatically, rather than writing
+    outside the root): an empty value, a backslash or a colon (`..\\..\\x`, `C:/win`,
+    UNC), a leading `/`, and any `..` segment. What survives still goes through
+    _sanitize, like every other folder name in the layout.
+    """
+    if not isinstance(target, str):
+        return None
+    raw = target.strip()
+    rejected = (not raw or "\\" in raw or ":" in raw or raw.startswith("/")
+                or ".." in [seg.strip() for seg in raw.split("/")])
+    if rejected:
+        _log.warning("sort: ручная правка проигнорирована — target выходит за корень "
+                     "раскладки или не является относительным путём: %r (%s)", target, src)
+        return None
+    parts = [_sanitize(seg) for seg in raw.split("/") if seg.strip() not in ("", ".")]
+    if not parts:
+        _log.warning("sort: ручная правка проигнорирована — пустой target: %r (%s)",
+                     target, src)
+        return None
+    return parts
+
+
 def _year_of(taken_at: str | None, confidence: str | None) -> str | None:
     if not taken_at or len(taken_at) < 4 or not taken_at[:4].isdigit():
         return None
@@ -234,6 +272,14 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
     known (G2); otherwise (landmark/visual without geonameid) — the original text
     row["city"] as-is.
     """
+    if row["manual_action"] == "reassign":
+        # F77: the user dragged this frame into a folder by hand — that outranks EVERY
+        # rule below (dedup choice, not_personal, junk/document/product verdict, geo,
+        # event/person layout): they looked at the frame, the classifier did not.
+        # A target that does not validate falls through to the automatic layout.
+        manual_parts = _manual_target_parts(row["manual_target"], row["path"])
+        if manual_parts is not None:
+            return manual_parts, "manual_reassign"
     if row["dedup_action"] == "to_delete":
         # U3b: an explicit user decision from the web app (sorta ui) — the highest
         # priority of all (city/junk/document/not_personal), the file goes to
@@ -472,7 +518,8 @@ class PlanItem:
     target_rel: str            # path relative to dest, POSIX separators
     reason: str                # city|person|person_primary|person_shared|event
     #                            | no_place|no_faces|no_event|junk|low_date
-    #                            | dedup_delete
+    #                            | dedup_delete|manual_reassign
+    #                            | manual_exclude (preview only, see keep_manual_excluded)
     taken_at: str | None
     taken_at_confidence: str | None
     country: str | None
@@ -505,6 +552,12 @@ class SortReport:
     deleted: int = 0   # F14: --delete-worse-dupes, permanently deleted worse near-dups
     excluded: int = 0  # F16: files skipped because of --exclude/sort.exclude_dirs
     in_place: bool = False  # F28: dest not set explicitly — layout inside the source root
+    # F77: manual corrections from the web app — deliberately NOT folded into
+    # `excluded` above: --exclude is "this directory is already sorted by hand", a
+    # manual override is "leave this frame alone"; one report number for both would
+    # hide which mechanism dropped a file.
+    manual_excluded: int = 0    # action='exclude': files left where they lie
+    manual_reassigned: int = 0  # action='reassign': files laid out into a chosen folder
 
 
 @dataclass
@@ -915,6 +968,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                   delete_worse_dupes: bool = False,
                   exclude: Sequence[str] | None = None,
                   write_reports: bool = True,
+                  keep_manual_excluded: bool = False,
                   progress: Callable[[int, int], None] | None = None) -> SortReport:
     """Build a layout plan; with apply=True move files with journaling.
 
@@ -947,6 +1001,21 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     entirely — before layout, near-dup grouping (F14) and writing CSV/HTML; the files
     stay in the index. exclude is combined with config sort.exclude_dirs; the number
     excluded is in report.excluded.
+
+    F77 (manual_overrides, written by `sorta ui`): a per-file correction made by eye.
+    action='exclude' — the file is dropped from the plan before layout/near-dup
+    grouping/reports (it is not moved anywhere; counted in report.manual_excluded,
+    separately from --exclude); action='reassign' — its target folder is
+    `dest/<target>/<name>`, ahead of every automatic rule, with the usual name-conflict
+    suffixes (report.manual_reassigned). An invalid target (`..`, absolute, a drive) is
+    ignored with a warning and the file is laid out automatically — a correction can
+    never write outside dest. Files without a correction are laid out exactly as before.
+
+    keep_manual_excluded=True — for the web app's PREVIEW only: files marked "leave
+    alone" stay in the returned plan, carrying the target they WOULD have had and
+    reason='manual_exclude', so the UI can keep showing (and unmarking) them instead of
+    losing them from the grid the moment they are marked. Forced off whenever
+    apply=True, so a plan that actually moves files can never contain them.
 
     F14 (--dedupe): among near-duplicates (pHash, only in the current --where
     selection) the best by quality (width*height, then size) is sorted normally, the
@@ -1003,11 +1072,13 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                p.country, p.country_name, p.city, p.confidence AS place_confidence,
                p.city_geonameid, p.district_geonameid, p.district_name,
                mc.verdict AS junk_verdict, mc.source AS junk_source,
-               dc.action AS dedup_action
+               dc.action AS dedup_action,
+               mo.action AS manual_action, mo.target AS manual_target
            FROM files f
            LEFT JOIN places p ON p.file_id = f.id
            LEFT JOIN media_class mc ON mc.file_id = f.id
            LEFT JOIN dedup_choice dc ON dc.file_id = f.id
+           LEFT JOIN manual_overrides mo ON mo.file_id = f.id
            WHERE f.dup_of IS NULL AND f.error IS NULL AND {cond}
            ORDER BY f.path""", params).fetchall()
 
@@ -1022,16 +1093,42 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                 kept_rows.append(r)
         rows = kept_rows
 
+    # F77: "leave alone" is not a target folder — such a file is not moved at all, so
+    # it leaves the plan here, before layout, near-dup grouping and the reports. Its
+    # own counter, separate from the --exclude directories above. keep_manual_excluded
+    # (preview only, never with apply — see the docstring) keeps the rows so the web app
+    # can still show the mark; they are then flagged reason='manual_exclude' below and
+    # take part in nothing that moves a file.
+    manual_excluded_count = 0
+    keep_excluded = keep_manual_excluded and not apply
+    if any(r["manual_action"] == "exclude" for r in rows):
+        kept_rows = []
+        for r in rows:
+            if r["manual_action"] == "exclude":
+                manual_excluded_count += 1
+                if keep_excluded:
+                    kept_rows.append(r)
+            else:
+                kept_rows.append(r)
+        rows = kept_rows
+
     persons_by_file = _load_persons(conn)
     events_by_file = _load_events(conn)
 
     row_targets: list[tuple[sqlite3.Row, list[str], str,
                            list[tuple[str, float]], tuple[str, str | None] | None]] = []
+    manual_reassigned_count = 0
     for r in rows:
         persons = persons_by_file.get(r["id"], [])
         event = events_by_file.get(r["id"])
         parts, reason = _target_parts(mode, strategy, r, persons, event, lang, resolver,
                                       drop_unlocalized_district)
+        if reason == "manual_reassign":
+            manual_reassigned_count += 1
+        if r["manual_action"] == "exclude":
+            # only reachable with keep_excluded (preview): the automatic target stays,
+            # the reason says the file is not going anywhere
+            reason = "manual_exclude"
         row_targets.append((r, parts, reason, persons, event))
 
     near_dup_best: dict[int, int] = {}
@@ -1042,9 +1139,12 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
         # "win" the group and pull a normal photo into _Duplicates instead of its
         # usual layout (they are all sorted separately, independent of near-dups);
         # dedup_delete — an explicit manual user decision (U3b), it must not pull a
-        # near-dup group onto itself.
+        # near-dup group onto itself; manual_reassign (F77) — the same reasoning, and
+        # the near-dup role must not overwrite the folder the user chose by hand.
         sortable_ids = {r["id"] for r, _parts, reason, _p, _e in row_targets
-                        if reason not in ("junk", "document", "not_personal", "dedup_delete")}
+                        if reason not in ("junk", "document", "not_personal",
+                                          "dedup_delete", "manual_reassign",
+                                          "manual_exclude")}
         near_dup_best, near_dup_worse = _resolve_near_dup_roles(conn, cfg, sortable_ids)
 
     claimed: set[str] = set()
@@ -1089,12 +1189,19 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                          thumbnail_workers=thumb_workers)
     report = SortReport(mode=mode, dest=dest, csv_path=csv_path, html_path=html_path,
                         plan=plan, dirs=len({it.dst.parent for it in plan}),
-                        excluded=excluded_count, in_place=in_place_run)
+                        excluded=excluded_count, in_place=in_place_run,
+                        manual_excluded=manual_excluded_count,
+                        manual_reassigned=manual_reassigned_count)
     excluded_note = f"; исключено: {excluded_count}" if excludes else ""
+    # F77: manual corrections are reported on their own, not merged into `исключено`
+    manual_note = ""
+    if manual_excluded_count or manual_reassigned_count:
+        manual_note = (f"; ручные правки: перенесено {manual_reassigned_count}, "
+                       f"не трогать {manual_excluded_count}")
     where_note = (f"; план: {csv_path}, {html_path}" if write_reports else "")
     print(f"sort --by {mode}{' --apply' if apply else ' (dry-run)'}: "
           f"{len(plan)} файлов -> {report.dirs} каталогов{where_note}"
-          f"{excluded_note}")
+          f"{excluded_note}{manual_note}")
     if not apply:
         return report
 
