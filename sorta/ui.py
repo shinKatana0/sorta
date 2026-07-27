@@ -5320,7 +5320,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       // Как во вкладке «Города»: полный путь — в тултипе имени. У дублей имена
       // совпадают по построению, поэтому единственное, чем кадры различаются на
       // глаз, — это где они лежат.
-      nameEl.title = f.src_path ? f.src_path + "\\" + f.name : f.name;
+      nameEl.title = f.src_path ? f.src_path + "\\\\" + f.name : f.name;
       tdThumb.appendChild(nameEl);
       if (f.recommended) {
         var badge = document.createElement("span");
