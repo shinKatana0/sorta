@@ -30,7 +30,7 @@ Switching the sort mode does not require re-running the pipelines.
 | events | `events.py` | `files`, `places` | `events`, `event_files` |
 | naming | `naming.py`, `landmarks.py`, `junk.py` | `files`, `places`, `events` | `places` (unknown only), `media_class`, `events.name` (name_is_manual=0 only) |
 | sorter | `sorter.py` | all | `move_batches`, `moves`, FS |
-| ui/cli | `cli.py`, `ui.py` | everything (read) | — (orchestrate module calls) |
+| ui/cli | `cli.py`, `ui.py` | everything (read) | `manual_overrides`, `manual_places`, `dedup_choice` — the user's OWN decisions; otherwise orchestrate module calls |
 
 **Architectural boundary invariants:**
 1. Modules do NOT import each other (except `core`). Data exchange happens only
@@ -53,10 +53,23 @@ Switching the sort mode does not require re-running the pipelines.
 
 ### places (written only by geo)
 - 1:1 with files; `confidence`: `exact_gps` | `session_inferred` | `trip_inferred` |
-  `visual` | `unknown`. The two inferred levels are told apart on purpose: reports, the
-  CSV plan and the UI show how confidently a place was determined (F85a).
-- Idempotency: re-running geo fully recomputes the rows (protected manual edits,
-  should they appear, would be behind a separate flag).
+  `path_inferred` | `visual` | `unknown`. The inferred levels are told apart on purpose:
+  reports, the CSV plan and the UI show how confidently a place was determined (F85a),
+  and `path_inferred` (F85c) is country-only by construction — it comes from a folder
+  NAME, not from geometry.
+- Idempotency: re-running geo fully recomputes the rows. A place the USER assigned is
+  therefore not stored here at all — see `manual_places`.
+
+### manual_places (written only by ui) — F85c
+- A place the user assigned to a whole group (an event, a source folder) by hand. It
+  cannot live in `places`: one writer, and every geo run recomputes that table from
+  scratch, so a manual place there would last exactly until the next run.
+- The sorter prefers this row over `places` when it builds the plan and reports the file
+  as `place_confidence='manual'` — a place the user chose is never presented as one the
+  program inferred. The whole place comes from one source: a manual row replaces country,
+  city and district together (a country-only assignment leaves city/geonameid NULL and
+  lands in the `country_only` branch of the layout).
+- Wiped by `reset_index` like every other manual decision.
 
 ### geo_cache (written only by geo, online provider) — F93
 - What the online provider SAID, never where a file ends up: the key is the
@@ -113,8 +126,10 @@ over TRIPS (F85a): geo groups its own sessions the way `events` does (the same
 `events.trip_merge_gap_hours`/`trip_merge_max_km`, because on a clean run the `events`
 table does not exist yet and `places` has a single writer), and a still place-less file
 inherits the trip's place when the trip's GPS frames agree about the city (the dominant
-one holds > 50% of them) and the file lies between two of those frames in time →
-full idempotent recomputation of places in one transaction.
+one holds > 50% of them) and the file lies between two of those frames in time → a last
+pass over what none of that reached (F85c): the COUNTRY named by a folder on the file's
+path, country-only because a country read from a folder name is right 99.5% of the time
+and a city 4.3% → full idempotent recomputation of places in one transaction.
 With `geo.provider: online` the network sits in front of that: coordinates are grouped
 by their city+district pair from the bundled base, each group is looked up in
 `geo_cache`, and only a miss goes to Nominatim — three requests (ru/en/ja) about the
