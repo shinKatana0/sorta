@@ -28,8 +28,9 @@ class TestMigrations(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("dedup_choice", tbls)
             self.assertIn("geo_cache", tbls)  # v13 (F93)
+            self.assertIn("manual_places", tbls)  # v14 (F85c)
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 13)
+            self.assertEqual(v, 14)
             conn.close()
 
     def test_v1_db_migrates_to_v2(self):
@@ -83,7 +84,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("city_geonameid", pl_cols)  # added by the v6 migration
             self.assertIn("country_name", pl_cols)     # added by the v10 migration
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 13)
+            self.assertEqual(v, 14)
             row = conn.execute("SELECT * FROM files").fetchone()
             self.assertEqual(row["path"], "/a.jpg")
             self.assertIsNone(row["orientation"])
@@ -179,6 +180,29 @@ class TestMigrations(unittest.TestCase):
                 conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0], 0)
             conn.close()
 
+    def test_manual_places_table_exists_and_is_wiped_by_reset(self):
+        """v14 (F85c): a place the user assigned to a whole group. It lives outside
+        `places` because geo recomputes that table from scratch — and it goes away on a
+        reset like every other manual decision."""
+        from sorta.db import reset_index
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "p.db")
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(manual_places)")}
+            self.assertEqual(cols, {"file_id", "country", "city", "city_geonameid",
+                                    "updated_at"})
+            conn.execute(
+                "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
+                "VALUES ('/x.jpg', 1, 0.0, 'jpg', 'photo', 'now')")
+            conn.execute(
+                "INSERT INTO manual_places (file_id, country, city, city_geonameid, "
+                "updated_at) VALUES (1, 'GR', 'Athens', 264371, 'now')")
+            conn.commit()
+            reset_index(conn)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM manual_places").fetchone()[0], 0)
+            conn.close()
+
 
 class TestReset(unittest.TestCase):
     def test_reset_index_clears_data_keeps_schema(self):
@@ -193,7 +217,7 @@ class TestReset(unittest.TestCase):
             reset_index(conn)
             # data wiped, schema alive (tables + user_version)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0], 0)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 14)
             tables = {r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("media_class", tables)

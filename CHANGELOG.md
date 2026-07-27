@@ -22,6 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without labelling: `scripts/measure_place_inference.py` hides the coordinates of files
   that have them and scores each level against the truth — 99.0% for the trip level on
   the validation collection (385 cases), where it places 839 files that had none.
+- **Country from a folder name** (F85c, part 1): a file that no geometric signal could
+  place takes the COUNTRY named by a folder on its path («Тайланд 2023», «Greece»). Only
+  the country, and deliberately so — measured on the files that do have GPS, so the guess
+  can be scored against the truth, a country read from a folder name is right 99.5% of
+  2 105 hints while a CITY read the same way is right 4.3% of 1 152 (the bundled base
+  holds 150 000 settlements, so any ordinary word finds a hamlet somewhere). The hint is
+  the last rule to run: it never overrides GPS, session or trip inheritance, it only
+  fills what nothing else reached, and it costs no dependency, no network and no model —
+  the country names are already in the package. On the validation collection it takes
+  520 files out of `_Unsorted/no_place` and into `<Country>/<year>/`. New confidence
+  level `path_inferred`, reported by `sorta geo`.
+- **Assigning a place to a whole group by hand** (F85c, part 2): after every automatic
+  signal has had its turn, about 6 300 files of the validation collection still have
+  none — old scans, forwarded pictures, frames shot with GPS off. No model will place
+  them, because the information is not in them; it is in the person who took them. The
+  web app now takes it in bulk: pick a group that is already a thing on screen (a whole
+  event on the "Events" tab, a whole source folder from a row of the "Cities" plan),
+  pick a city or a country from the bundled base, one action for all 500 files. The
+  assignment is stored apart from `places` (which `geo` recomputes from scratch every
+  run) and applied when the plan is built, so it survives a recompute; the plan, the CSV
+  and the report show it as `manual`, so a place the user chose is never mistaken for
+  one the program inferred. Files the camera placed itself are skipped and counted back
+  rather than overwritten silently — overwriting them is a second, explicit answer.
+  Undoing an assignment restores exactly the place the program had worked out.
 - **Persistent geo cache** (F93): with `geo.provider: online` the provider's answers are
   stored in the DB (`geo_cache`) instead of the process, keyed by the city+district pair
   of the bundled base — adding photos no longer re-asks Nominatim about the whole

@@ -143,6 +143,30 @@ response carries the fresh sizes, so the client does not need a second request. 
 here decides on its own what to delete — there is no size ceiling and no eviction, a
 cache goes away only when the user says so.
 
+(15) `GET /api/places/search`, `POST /api/place` (F85c, the "Cities" and "Events" tabs) —
+assigning a place to a whole GROUP by hand. About 6 300 files of the live collection
+carry no place signal at all (no GPS, no neighbour in time with one, no landmark,
+nothing readable in the folder name), and no model will place them — the information is
+not in them, it is in the person who took them. So the feature is not another guess, it
+is a cheap way to say it in bulk: pick a group the user already thinks in (a whole event,
+a whole source folder), pick a place, one action. The GET resolves typed text against
+the BUNDLED base only (`geodata.city_ids_by_name`/`country_cc_by_name`, the same pair
+`--where` uses — full-name matches, so same-named cities come back as several candidates
+told apart by region); it reads nothing but the data files. The POST takes
+`{"kind": "event"|"source_dir", "selector": str, "action": "assign"|"clear",
+"country": str?, "city_geonameid": int?, "include_gps": bool?}` and writes one row per
+file into `manual_places` — never into `places`, which has a single writer (`geo`,
+ARCHITECTURE §2) and is recomputed from scratch on every run. The sorter reads that
+table when it builds the plan, so the assignment survives a geo recompute and shows up
+as `place_confidence='manual'` in the plan, the CSV and the report — a place the user
+chose is never mistaken for one the program inferred. Files with `exact_gps` are skipped
+and counted back in `skipped_gps` unless `include_gps` is set: the camera knew the place
+at the moment of the shot, so overwriting it is a separate, explicit decision. `selector`
+for `source_dir` is compared against `files.path` as a string and never opened (see
+`_is_under`), which is why this route accepts it at all. Nothing moves on disk here; the
+plan cache IS dropped afterwards (unlike an F77 correction, an assignment changes the
+target folder of every file of the group).
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -193,6 +217,7 @@ from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
 from .faces import detect_and_cluster
 from .geo import clear_geo_cache, geo_cache_size, resolve_places
+from .geodata import GeoDataMissing, GeoResolver
 from .indexer import excludes_path, index as run_index, load_excludes, normalize_exclude
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
@@ -240,6 +265,10 @@ def _plan_item_to_json(item: PlanItem,
         "reason": item.reason,
         "date": item.taken_at,
         "geo": geo,
+        # F85c: how confidently the place was determined — and, for `manual`, that it
+        # was not determined at all but chosen by the user. The grid draws its own mark
+        # off this, so a hand-assigned place never reads as something the program found.
+        "place_confidence": item.place_confidence,
         "category": item.reason,
         "thumb_url": f"/thumb/{item.file_id}",
         # F80: video and photo tiles used to be indistinguishable in the grid. The
@@ -1037,6 +1066,256 @@ def _apply_overrides(db_path: Path, file_ids: list[int], action: str,
     finally:
         conn.close()
     return known
+
+
+# --- F85c: assigning a place to a whole group at once -------------------------------
+# About 6 300 files of the live collection carry no place signal at all — no GPS, no
+# neighbour in time with one, no landmark, and nothing readable in the folder name. No
+# model will place them: the information is not in them. It is in the person who took
+# them, and the only thing that stands between them and a correct place is that clicking
+# six thousand times is not a thing anyone will do. Hence: pick a GROUP the user already
+# thinks in (a whole event, a whole source folder), pick a place from the bundled base,
+# one action.
+
+_PLACE_KINDS = ("event", "source_dir")
+_PLACE_ACTIONS = ("assign", "clear")
+_PLACE_SEARCH_LIMIT = 12
+
+_geo_resolver_cache: GeoResolver | None = None
+
+
+def _geo_resolver() -> GeoResolver:
+    """The bundled GeoNames resolver, loaded at most once per server process.
+
+    The place picker asks it on every keystroke (debounced), and the data behind it is
+    12 MB plus a KD-tree — building that per request would make the field unusable.
+    """
+    global _geo_resolver_cache
+    if _geo_resolver_cache is None:
+        _geo_resolver_cache = GeoResolver()
+    return _geo_resolver_cache
+
+
+@dataclasses.dataclass(frozen=True)
+class _ManualPlace:
+    """What a `manual_places` row holds: a country, optionally narrowed to one city."""
+
+    country: str
+    city: str | None = None
+    city_geonameid: int | None = None
+
+
+def _country_label(cc: str, lang: i18n.Lang) -> str:
+    """The country name to SHOW: the curated dictionary first, then the bundled base."""
+    curated = i18n.country(cc, lang)
+    if curated != cc:
+        return curated
+    try:
+        return _geo_resolver().country_name(cc, lang) or cc
+    except GeoDataMissing:
+        return cc
+
+
+def _city_candidates(query: str, lang: i18n.Lang) -> list[dict]:
+    """Cities of the bundled base whose name in ANY of the three languages is `query`.
+
+    `city_ids_by_name` (F46) matches a FULL name, not a prefix, which is what makes this
+    safe to offer: the same reverse index the `--where city=` filter is built on, and
+    the same geonameids that land in `places.city_geonameid`. Same-named cities come
+    back as several candidates, told apart by region and country — picking for the user
+    would be guessing.
+    """
+    resolver = _geo_resolver()
+    out: list[dict] = []
+    seen: set[int] = set()
+    for search_lang in _UI_LANGS:
+        for gid in resolver.city_ids_by_name(query, search_lang):  # type: ignore[arg-type]
+            if gid in seen:
+                continue
+            seen.add(gid)
+            cc = resolver.country_of(gid)
+            if not cc:
+                # Without a country the place cannot be laid out (the layout starts at
+                # the country folder), so such a city is not offered at all.
+                continue
+            region = resolver.region_key_of(gid)
+            region_name = resolver.region_name(cc, region[1], lang) if region else None
+            city_name = resolver.name(gid, lang)
+            details = ", ".join(p for p in (region_name, _country_label(cc, lang)) if p)
+            out.append({
+                "kind": "city", "country": cc, "city_geonameid": gid,
+                "city": resolver.name(gid, "en"),
+                "label": f"{city_name} ({details})" if details else city_name,
+            })
+            if len(out) >= _PLACE_SEARCH_LIMIT:
+                return out
+    return out
+
+
+def _places_search(query: str, lang: i18n.Lang) -> list[dict]:
+    """`GET /api/places/search` — what the typed text may mean, country first.
+
+    Country first because it is the safer answer: a wrong country is a mistake the user
+    can see in one glance at the plan, and the country level is where a file with no
+    other signal belongs anyway. Both halves read ONLY the bundled base — no network, no
+    model, and nothing is written until the user picks one and confirms.
+    """
+    text = query.strip()
+    if not text:
+        return []
+    results: list[dict] = []
+    try:
+        cc = i18n.country_cc_by_name(text)
+        for search_lang in _UI_LANGS:
+            if cc:
+                break
+            cc = _geo_resolver().country_cc_by_name(text, search_lang)  # type: ignore[arg-type]
+        if cc:
+            results.append({"kind": "country", "country": cc.upper(),
+                            "city_geonameid": None, "city": None,
+                            "label": _country_label(cc, lang)})
+        results.extend(_city_candidates(text, lang))
+    except GeoDataMissing:
+        # The bundled base is the only source here; without it the picker offers
+        # nothing rather than pretending an empty answer means "no such place".
+        _log.warning("ui: гео-данные недоступны — поиск места вернёт пустой список")
+        return []
+    return results
+
+
+def _validate_place_payload(
+    payload: object,
+) -> tuple[str, str, str, _ManualPlace | None, bool] | None:
+    """Parse the body of `POST /api/place`:
+    `{"kind": "event"|"source_dir", "selector": str, "action": "assign"|"clear",
+      "country": str?, "city_geonameid": int?, "include_gps": bool?}`.
+
+    None -> invalid (400). `assign` needs a country (a city alone would leave the layout
+    without its top folder); `city_geonameid` is optional and narrows it to one city.
+    The selector is NOT resolved here — an event id is looked up in the DB, and a source
+    folder is only ever COMPARED against `files.path`, never opened (see
+    `_place_target_ids`).
+    """
+    if not isinstance(payload, dict):
+        return None
+    kind = payload.get("kind")
+    action = payload.get("action")
+    selector = payload.get("selector")
+    if kind not in _PLACE_KINDS or action not in _PLACE_ACTIONS:
+        return None
+    if not isinstance(selector, str) or not selector.strip():
+        return None
+    include_gps = bool(payload.get("include_gps"))
+    if action == "clear":
+        return kind, selector.strip(), action, None, include_gps
+    country = payload.get("country")
+    if not isinstance(country, str) or not country.strip():
+        return None
+    gid = payload.get("city_geonameid")
+    if gid is not None and (not isinstance(gid, int) or isinstance(gid, bool)):
+        return None
+    city = None
+    if gid is not None:
+        try:
+            city = _geo_resolver().name(gid, "en")
+        except GeoDataMissing:
+            return None
+    return (kind, selector.strip(), action,
+            _ManualPlace(country=country.strip().upper(), city=city, city_geonameid=gid),
+            include_gps)
+
+
+def _is_under(path: str, directory: str) -> bool:
+    """Is `path` inside `directory`? A comparison of two strings, never of the disk.
+
+    `files.path` is written by the indexer with the separators of the machine that
+    indexed it, and the folder arrives from the client's own tree, so both are
+    normalized (case and separator) before the prefix test. The boundary character is
+    required — `/Photos/Greece2019` must not count as being inside `/Photos/Greece`.
+    """
+    root = os.path.normcase(directory.rstrip("\\/"))
+    target = os.path.normcase(path)
+    if not root:
+        return False
+    return target.startswith(root + os.sep) or target.startswith(root + "/")
+
+
+def _place_target_ids(conn: sqlite3.Connection, kind: str, selector: str) -> list[int]:
+    """The canonical files of the chosen group — one event, or one source folder.
+
+    Only these two kinds exist on purpose: both are groups the user already sees as a
+    thing (a card on the "Events" tab, a folder in the plan), and both are BOUNDED. "The
+    whole collection in one action" is deliberately not offered — the larger the grab,
+    the higher the price of a wrong pick, and undoing it means finding the files again.
+    """
+    if kind == "event":
+        try:
+            event_id = int(selector)
+        except ValueError:
+            return []
+        rows = conn.execute(
+            """SELECT f.id FROM event_files ef JOIN files f ON f.id = ef.file_id
+               WHERE ef.event_id = ? AND f.dup_of IS NULL AND f.error IS NULL""",
+            (event_id,),
+        ).fetchall()
+        return [int(r["id"]) for r in rows]
+    rows = conn.execute(
+        "SELECT id, path FROM files WHERE dup_of IS NULL AND error IS NULL").fetchall()
+    return [int(r["id"]) for r in rows if _is_under(r["path"], selector)]
+
+
+def _apply_bulk_place(db_path: Path, kind: str, selector: str, action: str,
+                      place: _ManualPlace | None, include_gps: bool) -> dict:
+    """Write (or drop) the manual place of a whole group. Returns what happened.
+
+    Files with `confidence='exact_gps'` are SKIPPED unless `include_gps` is set: those
+    were placed by the camera at the moment of the shot, and a memory of which city a
+    trip was in is not better evidence than a coordinate. They are counted and reported
+    back, so the client can offer to include them — an explicit second decision, never a
+    silent overwrite. `clear` skips nothing: dropping a manual row can only restore what
+    the program itself worked out.
+
+    One transaction for the whole group — a bulk assignment either lands entirely or not
+    at all, which is what makes "undo" a single action too.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect(db_path)
+    try:
+        ids = _place_target_ids(conn, kind, selector)
+        skipped_gps = 0
+        if ids and action == "assign" and not include_gps:
+            ph = ",".join("?" * len(ids))
+            with_gps = {int(r["file_id"]) for r in conn.execute(
+                f"""SELECT file_id FROM places
+                    WHERE confidence = 'exact_gps' AND file_id IN ({ph})""", ids)}
+            skipped_gps = len(with_gps)
+            ids = [fid for fid in ids if fid not in with_gps]
+        if ids:
+            ph = ",".join("?" * len(ids))
+            with conn:
+                if action == "clear":
+                    conn.execute(
+                        f"DELETE FROM manual_places WHERE file_id IN ({ph})", ids)
+                else:
+                    assert place is not None  # guaranteed by _validate_place_payload
+                    conn.executemany(
+                        """INSERT INTO manual_places
+                               (file_id, country, city, city_geonameid, updated_at)
+                           VALUES (?, ?, ?, ?, ?)
+                           ON CONFLICT(file_id) DO UPDATE SET
+                               country = excluded.country, city = excluded.city,
+                               city_geonameid = excluded.city_geonameid,
+                               updated_at = excluded.updated_at""",
+                        [(fid, place.country, place.city, place.city_geonameid, now)
+                         for fid in ids])
+    finally:
+        conn.close()
+    return {
+        "ok": True, "action": action, "kind": kind, "selector": selector,
+        "affected": len(ids), "skipped_gps": skipped_gps,
+        "country": place.country if place else None,
+        "city_geonameid": place.city_geonameid if place else None,
+    }
 
 
 def _clusters_payload(db_path: Path, sample_limit: int = _CLUSTER_SAMPLE_LIMIT) -> list[dict]:
@@ -2776,6 +3055,85 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось сохранить правку: ", "en": "Could not save the correction: ",
         "ja": "修正を保存できません: ",
     },
+    # F85c: assigning a place to a whole group by hand
+    "place_search_placeholder": {
+        "ru": "Город или страна", "en": "City or country", "ja": "都市または国",
+    },
+    "place_assign_button": {
+        "ru": "Назначить место", "en": "Assign place", "ja": "場所を指定",
+    },
+    "place_clear_button": {
+        "ru": "Отменить назначение", "en": "Undo assignment", "ja": "指定を取り消す",
+    },
+    "place_folder_button": {
+        "ru": "Место для исходной папки", "en": "Place for the source folder",
+        "ja": "元フォルダの場所",
+    },
+    "place_not_found": {
+        "ru": "Такого места нет в базе — проверьте написание.",
+        "en": "No such place in the bundled data — check the spelling.",
+        "ja": "その場所は同梱データにありません。綴りを確認してください。",
+    },
+    "place_alert_choose": {
+        "ru": "Сначала выберите место из списка.",
+        "en": "Pick a place from the list first.",
+        "ja": "先に一覧から場所を選んでください。",
+    },
+    "place_assign_confirm": {
+        "ru": "Назначить место «{place}» файлам этой группы ({n})?",
+        "en": "Assign the place «{place}» to the files of this group ({n})?",
+        "ja": "このグループのファイル（{n}）に場所「{place}」を指定しますか？",
+    },
+    "place_folder_confirm": {
+        "ru": "Назначить место «{place}» всем файлам исходной папки «{dir}»?",
+        "en": "Assign the place «{place}» to every file of the source folder «{dir}»?",
+        "ja": "元フォルダ「{dir}」のすべてのファイルに場所「{place}」を指定しますか？",
+    },
+    "place_event_clear_confirm": {
+        "ru": "Снять назначенное место с файлов этого события ({n})?",
+        "en": "Remove the assigned place from the files of this event ({n})?",
+        "ja": "このイベントのファイル（{n}）から指定した場所を解除しますか？",
+    },
+    "place_folder_clear_confirm": {
+        "ru": "Снять назначенное место с файлов исходной папки «{dir}»?",
+        "en": "Remove the assigned place from the files of the source folder «{dir}»?",
+        "ja": "元フォルダ「{dir}」のファイルから指定した場所を解除しますか？",
+    },
+    "place_assigned_status": {
+        "ru": "Назначено: {n}", "en": "Assigned: {n}", "ja": "指定しました: {n}",
+    },
+    "place_cleared_status": {
+        "ru": "Назначение снято: {n}", "en": "Assignment removed: {n}",
+        "ja": "指定を解除しました: {n}",
+    },
+    "place_skipped_gps": {
+        "ru": " · с точным GPS пропущено: {n}",
+        "en": " · skipped, they have exact GPS: {n}",
+        "ja": " · GPS があるためスキップ: {n}",
+    },
+    "place_include_gps_confirm": {
+        "ru": "{n} файлов уже имеют координаты из камеры — они не тронуты. "
+              "Перезаписать место и у них?",
+        "en": "{n} files already carry camera coordinates and were left alone. "
+              "Overwrite their place too?",
+        "ja": "{n} 件はカメラの座標を持つためそのままです。これらの場所も上書きしますか？",
+    },
+    "place_manual_mark": {
+        "ru": "место назначено вручную", "en": "place assigned by hand",
+        "ja": "場所は手動指定",
+    },
+    "place_hint": {
+        "ru": "Место назначается группе целиком — событию или исходной папке. Оно "
+              "переживает пересчёт гео и видно в плане как «вручную».",
+        "en": "A place is assigned to a whole group — an event or a source folder. It "
+              "survives a geo recompute and shows up in the plan as «manual».",
+        "ja": "場所はグループ単位（イベントまたは元フォルダ）で指定します。位置情報の"
+              "再計算後も残り、プランには「手動」と表示されます。",
+    },
+    "place_error_prefix": {
+        "ru": "Не удалось назначить место: ", "en": "Could not assign the place: ",
+        "ja": "場所を指定できません: ",
+    },
 }
 
 
@@ -3185,6 +3543,14 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 .override-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); margin: 0; }
 .override-status { font-size: 0.8rem; color: var(--danger); }
 
+/* F85c: назначение места группе — та же панель, что и у ручных правок */
+.place-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: 0 0 var(--space-md) 0; }
+.place-input { min-width: 200px; }
+.place-options { max-width: 320px; }
+.place-row-btn { margin-left: var(--space-sm); }
+.place-manual { margin-left: var(--space-sm); }
+
 .sort-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; margin: var(--space-md) 0; }
 .sort-controls input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
 .sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
@@ -3389,6 +3755,11 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <span id="override-status" class="override-status"></span>
 <p class="override-hint">{{override_hint}}</p>
 </div>
+<div class="place-controls" id="city-place-controls">
+<span id="city-place-picker" class="place-picker"></span>
+<span id="place-status" class="override-status"></span>
+<p class="override-hint">{{place_hint}}</p>
+</div>
 <div id="tree-city"><div class="state-msg state-loading">{{loading}}</div></div>
 </section>
 
@@ -3492,6 +3863,9 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     film: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
         'stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" ' +
         'height="14" rx="2"/><path d="M7 5v14M17 5v14M3 12h18"/></svg>',
+    pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+        'stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-6.3 7-11a7 7 0 1 ' +
+        '0-14 0c0 4.7 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>',
   };
 
   function icon(name) {
@@ -3983,6 +4357,149 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     select.value = previous;
   }
 
+  // --- F85c: место, назначенное человеком, — сразу на всю группу ---------
+  // У этих файлов не осталось ни одного сигнала: ни GPS, ни соседей по времени,
+  // ни имени папки. Место знает только владелец, поэтому задача не «угадать
+  // точнее», а дать назначить его ПАЧКОЙ — событию целиком или исходной папке
+  // целиком. Пишется отдельно от places (её geo перезаписывает целиком) и
+  // применяется при построении плана; на диске здесь ничего не двигается.
+
+  var PLACE_SEARCH_DELAY = 250;  // мс: поиск идёт по нажатию клавиш, не по каждой
+
+  // Язык интерфейса берём из <html lang>: он уже проставлен сервером, отдельного
+  // состояния для этого заводить незачем. (initLang() держит одноимённую локальную
+  // переменную — имя здесь другое намеренно.)
+  function uiLang() {
+    return document.documentElement.getAttribute("lang") || "en";
+  }
+
+  // Поле выбора места. Сервер отвечает ТОЧНЫМИ совпадениями по локальной базе
+  // (та же пара city_ids_by_name/country_cc_by_name, что и у --where), поэтому
+  // список короткий и однозначный: одноимённые города различаются регионом.
+  function renderPlacePicker(container) {
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "place-input";
+    input.placeholder = I18N.place_search_placeholder;
+    var select = document.createElement("select");
+    select.className = "place-options";
+    select.disabled = true;
+    var results = [];
+    var timer = null;
+
+    function fill(list) {
+      results = list || [];
+      select.textContent = "";
+      results.forEach(function (r, i) {
+        var opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = r.label;
+        select.appendChild(opt);
+      });
+      select.disabled = results.length === 0;
+    }
+
+    function search() {
+      var q = input.value.trim();
+      if (!q) { fill([]); return; }
+      fetch("/api/places/search?lang=" + encodeURIComponent(uiLang()) +
+            "&q=" + encodeURIComponent(q))
+        .then(function (r) { return r.json(); })
+        .then(function (data) { fill(data && data.results); })
+        .catch(function () { fill([]); });
+    }
+
+    input.addEventListener("input", function () {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(search, PLACE_SEARCH_DELAY);
+    });
+    container.appendChild(input);
+    container.appendChild(select);
+    return {
+      chosen: function () {
+        if (!results.length) return null;
+        return results[parseInt(select.value, 10)] || null;
+      },
+      typed: function () { return input.value.trim(); }
+    };
+  }
+
+  function placeStatusEl() {
+    return document.getElementById("place-status");
+  }
+
+  function postPlace(body, statusEl, onDone) {
+    return postJson("/api/place", body).then(function (resp) {
+      if (!resp || !resp.ok) {
+        statusEl.textContent = I18N.place_error_prefix + ((resp && resp.error) || "");
+        return;
+      }
+      var text = fmt(body.action === "clear" ? I18N.place_cleared_status
+                                             : I18N.place_assigned_status,
+                     { n: resp.affected });
+      if (resp.skipped_gps) text += fmt(I18N.place_skipped_gps, { n: resp.skipped_gps });
+      statusEl.textContent = text;
+      // Кадры с точными координатами не перезаписываются молча: камера знала
+      // место в момент съёмки лучше, чем память о поездке. Это отдельное решение,
+      // и спрашивают о нём ровно один раз.
+      if (resp.skipped_gps && !body.include_gps &&
+          window.confirm(fmt(I18N.place_include_gps_confirm, { n: resp.skipped_gps }))) {
+        body.include_gps = true;
+        return postPlace(body, statusEl, onDone);
+      }
+      if (onDone) onDone(resp);
+    }).catch(function (err) {
+      statusEl.textContent = I18N.place_error_prefix + err;
+    });
+  }
+
+  // Одно действие на группу: подтверждение называет и место, и размер захвата —
+  // цена ошибки тем выше, чем крупнее группа.
+  function assignPlace(picker, kind, selector, confirmKey, confirmVals, statusEl, onDone) {
+    var chosen = picker.chosen();
+    if (!chosen) {
+      statusEl.textContent = picker.typed() ? I18N.place_not_found : "";
+      window.alert(I18N.place_alert_choose);
+      return;
+    }
+    confirmVals.place = chosen.label;
+    if (!window.confirm(fmt(I18N[confirmKey], confirmVals))) return;
+    postPlace({ kind: kind, selector: selector, action: "assign",
+                country: chosen.country, city_geonameid: chosen.city_geonameid },
+              statusEl, onDone);
+  }
+
+  function clearPlace(kind, selector, confirmKey, confirmVals, statusEl, onDone) {
+    if (!window.confirm(fmt(I18N[confirmKey], confirmVals))) return;
+    postPlace({ kind: kind, selector: selector, action: "clear" }, statusEl, onDone);
+  }
+
+  var cityPlacePicker = null;
+
+  // Кнопка в строке плана: место назначается ИСХОДНОЙ папке кадра целиком — по ней
+  // и видно, что кадры одной поездки лежат вместе. Строка с уже назначенным местом
+  // предлагает обратное действие, как и кнопка ручных правок рядом.
+  function placeRowButton(item) {
+    var manual = item.place_confidence === "manual";
+    var btn = makeBtn(null, "pin", manual ? I18N.place_clear_button
+                                          : I18N.place_folder_button,
+        "btn-sm place-row-btn");
+    btn.disabled = !item.src_path;
+    btn.addEventListener("click", function () {
+      var statusEl = placeStatusEl();
+      var vals = { dir: item.src_dir || item.src_path };
+      var done = function () { renderPlanTab("city", "tree-city"); };
+      if (manual) {
+        clearPlace("source_dir", item.src_path, "place_folder_clear_confirm",
+                   vals, statusEl, done);
+      } else {
+        assignPlace(cityPlacePicker, "source_dir", item.src_path,
+                    "place_folder_confirm", vals, statusEl, done);
+      }
+    });
+    return btn;
+  }
+
   function renderFiles(files) {
     var table = document.createElement("table");
     files.forEach(function (item) {
@@ -4010,6 +4527,14 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       tdMeta.textContent = [item.src_dir, item.date, item.geo, item.category]
           .filter(Boolean).join(" \\u00b7 ");
       if (item.src_path) { tdMeta.title = item.src_path; }
+      // F85c: место, выбранное человеком, помечено отдельно — иначе его не отличить
+      // от выведенного программой, а это разные по надёжности вещи.
+      if (item.place_confidence === "manual") {
+        var placeChip = document.createElement("span");
+        placeChip.className = "chip chip-good place-manual";
+        placeChip.textContent = I18N.place_manual_mark;
+        tdMeta.appendChild(placeChip);
+      }
       tr.appendChild(tdMeta);
       var tdActions = document.createElement("td");
       var btnDelete = makeBtn("danger", "trash", I18N.delete, "btn-sm");
@@ -4018,6 +4543,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       });
       tdActions.appendChild(btnDelete);
       tdActions.appendChild(overrideRowButton(tr, item));
+      tdActions.appendChild(placeRowButton(item));
       tr.appendChild(tdActions);
       // F77: пометка из ответа плана — строка приходит уже размеченной.
       markOverrideRow(tr, item.override || null, item.override_target || null);
@@ -4152,6 +4678,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       });
   }
 
+  cityPlacePicker = renderPlacePicker(document.getElementById("city-place-picker"));
   renderPlanTab("city", "tree-city");
   wireBulkDelete("tree-city", "city-delete-selected-btn", "city-delete-selected-count");
   wireOverrideControls("tree-city");
@@ -5531,6 +6058,30 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     albumBox.appendChild(albumStatus);
     card.appendChild(albumBox);
 
+    // F85c: событие — самая осязаемая группа, какая есть: это одна поездка, и место
+    // у неё одно. Назначение на всё событие целиком — одно действие вместо e.count.
+    var placeBox = document.createElement("div");
+    placeBox.className = "place-controls";
+    var picker = renderPlacePicker(placeBox);
+    var placeStatus = document.createElement("span");
+    placeStatus.className = "override-status";
+    var assignBtn = makeBtn("primary", "pin", I18N.place_assign_button,
+        "btn-sm place-assign-btn");
+    assignBtn.addEventListener("click", function () {
+      assignPlace(picker, "event", String(e.id), "place_assign_confirm",
+                  { n: e.count }, placeStatus, null);
+    });
+    var clearBtn = makeBtn("ghost", null, I18N.place_clear_button,
+        "btn-sm place-clear-btn");
+    clearBtn.addEventListener("click", function () {
+      clearPlace("event", String(e.id), "place_event_clear_confirm",
+                 { n: e.count }, placeStatus, null);
+    });
+    placeBox.appendChild(assignBtn);
+    placeBox.appendChild(clearBtn);
+    placeBox.appendChild(placeStatus);
+    card.appendChild(placeBox);
+
     return card;
   }
 
@@ -5796,6 +6347,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_clusters()
             elif path == "/api/events":
                 self._serve_events()
+            elif path == "/api/places/search":
+                self._serve_places_search(parse_qs(parts.query))
             elif path == "/api/process/status":
                 self._serve_process_status()
             elif path == "/api/process/defaults":
@@ -5844,6 +6397,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_photos_trash()
             elif path == "/api/overrides":
                 self._handle_overrides()
+            elif path == "/api/place":
+                self._handle_place()
             elif path == "/api/clusters/label":
                 self._handle_cluster_label()
             elif path == "/api/clusters/merge":
@@ -5914,6 +6469,15 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
 
         def _serve_events(self) -> None:
             self._send_json(_events_payload(db_path))
+
+        def _serve_places_search(self, query: dict[str, list[str]]) -> None:
+            # F85c: read-only, bundled data only. `?lang=` decides the language of the
+            # LABELS; the search itself always tries all three, because a place is
+            # looked up by the name the user knows it under.
+            lang = _resolve_query_lang(query.get("lang"))
+            raw = (query.get("q") or [""])[0]
+            self._send_json({"query": raw.strip(),
+                             "results": _places_search(raw, lang)})
 
         def _read_json_body(self) -> object | None:
             try:
@@ -6001,6 +6565,26 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             applied = _apply_overrides(db_path, file_ids, action, target)
             self._send_json({"ok": True, "action": action, "target": target,
                              "file_ids": applied})
+
+        def _handle_place(self) -> None:
+            # F85c: unlike an F77 correction, this one changes the target FOLDER of
+            # every file of the group, so the built plan is now stale — the cache is
+            # dropped and the next request rebuilds it. Nothing is moved on disk here
+            # either: the assignment is a row in the index, the layout is still the
+            # shared `sort --apply`.
+            parsed = _validate_place_payload(self._read_json_body())
+            if parsed is None:
+                self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            kind, selector, action, place, include_gps = parsed
+            result = _apply_bulk_place(db_path, kind, selector, action, place, include_gps)
+            if result["affected"]:
+                conn = _connect(db_path)
+                try:
+                    cache.rebuild(cfg, conn)
+                finally:
+                    conn.close()
+            self._send_json(result)
 
         def _handle_cluster_label(self) -> None:
             parsed = _validate_cluster_label_payload(self._read_json_body())

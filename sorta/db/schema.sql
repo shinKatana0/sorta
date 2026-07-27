@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 13;
+PRAGMA user_version = 14;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS places (
     city_geonameid INTEGER,               -- G2: city geonameid (GeoNames), NULL for landmark/unknown
     district_geonameid INTEGER,           -- G2: district geonameid, NULL if none/landmark
     district_name TEXT,                   -- G2b (online): district name from Nominatim; offline NULL (district from geonameid)
-    confidence TEXT NOT NULL,             -- exact_gps | session_inferred | trip_inferred (F85a) | visual | unknown
+    confidence TEXT NOT NULL,             -- exact_gps | session_inferred | trip_inferred (F85a) | path_inferred (F85c) | visual | unknown
     updated_at TEXT NOT NULL
 );
 
@@ -116,6 +116,26 @@ CREATE TABLE IF NOT EXISTS manual_overrides (
     -- NULL for exclude. Comes from outside, so the sorter must validate it before
     -- building a path from it.
     target TEXT,
+    updated_at TEXT NOT NULL
+);
+
+-- v14 (F85c): a place the USER assigned, to a whole event or a whole source folder at
+-- once. It cannot live in `places`: that table has exactly one writer (`geo`) and every
+-- geo run recomputes it from scratch, so a manual place written there would survive
+-- until the next run and no longer. Here it survives every recompute and is applied
+-- where the layout is decided — the sorter prefers this row over `places` and reports
+-- the file as confidence='manual', so a place the user chose is never mistaken for one
+-- the program inferred.
+--
+-- The whole place comes from ONE source (the same rule F86 follows for the online/
+-- offline mix): a manual row replaces country + city together, district included, and
+-- never has a Nominatim country glued onto a hand-picked city. A country-only
+-- assignment leaves city/city_geonameid NULL and lands in the `country_only` branch.
+CREATE TABLE IF NOT EXISTS manual_places (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),
+    country TEXT NOT NULL,                -- ISO cc; always known (a city implies its country)
+    city TEXT,                            -- canonical en/asciiname anchor, NULL = country only
+    city_geonameid INTEGER,               -- GeoNames id of the city, NULL = country only
     updated_at TEXT NOT NULL
 );
 

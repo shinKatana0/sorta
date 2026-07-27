@@ -128,3 +128,25 @@ def country(cc: str, lang: Lang) -> str:
     if entry is None:
         return cc
     return entry.get(lang, entry[_DEFAULT_LANG])
+
+
+# The reverse of `country()`, built once from the same dictionary: casefolded name in
+# ANY of the three languages -> ISO cc. One index for all languages on purpose — the
+# caller (F85c: the country a folder name gives away) does not know which language the
+# user named their folder in, and a country name is not ambiguous across these three.
+_COUNTRY_BY_NAME: dict[str, str] = {
+    name.casefold(): cc
+    for cc, names in _COUNTRIES.items()
+    for name in names.values()
+}
+
+
+def country_cc_by_name(name: str) -> str | None:
+    """A country name in ru/en/ja -> ISO cc (upper case); None — not in the dictionary.
+
+    Only the curated dictionary above, which is small and hand-checked; the bundled
+    GeoNames base carries far more spellings and is asked separately (see
+    geo._CountryFromPath). Case and surrounding whitespace are irrelevant.
+    """
+    cc = _COUNTRY_BY_NAME.get(name.strip().casefold())
+    return cc.upper() if cc else None

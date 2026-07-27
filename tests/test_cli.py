@@ -25,15 +25,16 @@ class TestSummaries(unittest.TestCase):
 
     def test_geo(self):
         s = SimpleNamespace(total=10, exact_gps=4, session_inferred=2, trip_inferred=1,
-                            unknown=3)
+                            path_inferred=2, unknown=1)
         out = cli._summarize_geo(s)
         self.assertIn("10 файлов", out)
         self.assertIn("exact_gps 4", out)
-        # F85a: the two inference levels are reported apart — the summary is how the
-        # user sees the trip level working at all
+        # F85a/F85c: every inference level is reported apart — the summary is how the
+        # user sees a level working at all
         self.assertIn("session_inferred 2", out)
         self.assertIn("trip_inferred 1", out)
-        self.assertIn("unknown 3", out)
+        self.assertIn("path_inferred 2", out)
+        self.assertIn("unknown 1", out)
 
     def test_landmarks_with_breakdown(self):
         s = SimpleNamespace(scanned=5, matched=2, by_landmark={"Айя-София": 1, "Колизей": 1})

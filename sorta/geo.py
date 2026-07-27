@@ -8,6 +8,9 @@ Confidence levels:
 - session_inferred — place inherited from a file with GPS in the same time session
 - trip_inferred    — place inherited from the TRIP the file belongs to (F85a), when the
                      GPS frames of that trip agree about the city
+- path_inferred    — the COUNTRY read off the name of a folder on the file's path
+                     (F85c), the last signal in the queue and the only one that is not
+                     geometry at all
 - unknown          — could not resolve (visual — landmarks.py, Phase 5/F6)
 
 `exact_gps` requires a place that ACTUALLY resolved (F65): coordinates whose resolve
@@ -36,6 +39,17 @@ A trip is a unit of MEANING (sessions merged by time AND geographic proximity), 
 place of a trip is inheritable inside it — but only when the trip's own GPS frames agree
 about the city AND the file lies between two of them in time (see _inherit_trip_places).
 
+F85c: after every geometric signal has had its turn there are still files with no place
+at all — old scans, forwarded pictures, frames shot with GPS off. There is nothing left
+in them to infer from, but the FOLDER they lie in often carries the answer: people name
+their directories after trips («Тайланд 2023», «Greece»). Measured on the files of this
+collection that DO have GPS (so the guess can be scored against the truth): a country
+read off a folder name is right 99.5% of the time over 2 105 hints — and a CITY read the
+same way is right 4.3% of the time, because the bundled base holds 150 000 settlements
+and any ordinary word finds a hamlet somewhere. So the hint is COUNTRY-ONLY, by
+construction, and it is deliberately the last rule to run: it never overrides GPS or an
+inheritance, it only fills what nothing else could (see _CountryFromPath).
+
 F93: the ONLINE answers live in the `geo_cache` table, not in the process. A re-run
 still recomputes places from scratch (session inheritance needs the whole collection),
 but it no longer re-asks the network about coordinates it already knows — and it stores
@@ -48,6 +62,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import statistics
 import time
@@ -61,8 +76,9 @@ from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Callable, Protocol
 
+from . import i18n
 from .config import Config
-from .geodata import GeoResolver
+from .geodata import GeoDataMissing, GeoResolver
 from .i18n import Lang
 
 _log = logging.getLogger(__name__)
@@ -89,6 +105,17 @@ _CITY_MISSING_WARN_EVERY = 50
 _DEFAULT_TRIP_MERGE_GAP_HOURS = 48.0
 _DEFAULT_TRIP_MERGE_MAX_KM = 120.0
 _EARTH_RADIUS_KM = 6371.0088
+# F85c: a maximal run of letters — one WORD of a folder name («Тайланд 2023» -> Тайланд).
+# Digits and punctuation are separators, so a year or a date glued to the name does not
+# hide the country behind it.
+_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+# A single word inside a longer name is only tried as a country from this length up.
+# The measured rule ("the folder plus the words in it") had no such limit; this is one
+# notch stricter than what was scored, because the short country names — «Чад», «Мали»,
+# «Того» — double as ordinary words, and one wrongly filed folder costs more than the
+# handful of files a three-letter country would add. The WHOLE segment is still matched
+# at any length, so a folder actually named «Чад» resolves.
+_PATH_HINT_MIN_WORD = 4
 
 
 @dataclass
@@ -97,6 +124,7 @@ class GeoStats:
     exact_gps: int = 0
     session_inferred: int = 0
     trip_inferred: int = 0  # F85a: inherited from the trip, not from the time session
+    path_inferred: int = 0  # F85c: the country came from a folder name, nothing else
     unknown: int = 0
     # F65: files with valid coordinates whose place did not resolve. Non-zero means
     # the geo data is broken/missing, not that the user's photos are unusual.
@@ -574,7 +602,8 @@ class _CityFallbackResolver:
         return places
 
 
-def _resolver_for(cfg: Config, conn: sqlite3.Connection) -> _PlaceBatchResolver:
+def _resolver_for(cfg: Config, conn: sqlite3.Connection,
+                  offline: GeoResolver) -> _PlaceBatchResolver:
     """Provider abstraction by `cfg.geo.provider`.
 
     offline -> geodata.GeoResolver (bundled GeoNames, no network) — never reads or
@@ -583,12 +612,14 @@ def _resolver_for(cfg: Config, conn: sqlite3.Connection) -> _PlaceBatchResolver:
                behind the persistent cache of F93 and wrapped in the offline city
                fallback of F86 (both only if the bundled data is actually there: online
                must keep working on an install without it).
+
+    `offline` is the bundled resolver of the whole stage (see resolve_places) — it is
+    passed in rather than created here so the path hint of F85c shares one loaded base.
     """
     provider = cfg.geo.provider
     if provider == "offline":
-        return _OfflineBatchResolver(GeoResolver())
+        return _OfflineBatchResolver(offline)
     if provider == "online":
-        offline = GeoResolver()
         available = offline.data_available()
         if not available:
             _log.warning(
@@ -840,6 +871,122 @@ def _inherit_trip_places(
                 resolved[r["id"]] = (place, "trip_inferred")
 
 
+# --- F85c: the country a folder NAME gives away -------------------------------------
+
+
+def _path_segments(path: str) -> list[str]:
+    """The DIRECTORY names of a file path, deepest first.
+
+    Split by hand rather than through `Path`: the index stores whatever separator the
+    machine that wrote it uses, and a POSIX interpreter would see `D:\\Фото\\Греция\\a.jpg`
+    as a single segment. The file name itself is dropped — a camera names files, a
+    person names folders.
+    """
+    parts = [p for p in re.split(r"[\\/]+", path.strip()) if p]
+    return list(reversed(parts[:-1]))
+
+
+def _name_candidates(segment: str) -> list[str]:
+    """What in one folder name may be a country: the whole name, then its words.
+
+    The whole name first, because it is the more specific claim («Коста-Рика» is one
+    name and two words). Words shorter than _PATH_HINT_MIN_WORD are left out — see
+    the constant.
+    """
+    name = segment.strip()
+    out = [name] if name else []
+    for word in _WORD.findall(name):
+        if len(word) >= _PATH_HINT_MIN_WORD and word != name:
+            out.append(word)
+    return out
+
+
+class _CountryFromPath:
+    """F85c: country (never city) from the names of the folders a file lies in.
+
+    The two halves of the rule are both deliberate.
+
+    COUNTRY ONLY. Measured on the files of the live collection that have GPS — hide it,
+    guess from the path, compare with the truth: a country from a folder name is right
+    99.5% of 2 105 hints, a city 4.3% of 1 152. The reason is not that folder names lie
+    about cities; it is that the bundled base holds 150 000 settlements, so ANY ordinary
+    word resolves to some hamlet. `city_ids_by_name` is therefore not called here at all,
+    and must not be added: 4.3% would poison everything this feature exists for.
+
+    DEEPEST FIRST. The folder nearest the file is the most specific thing the user said
+    about it: under «Отпуска/Греция 2019» the answer is Greece, and a collection root
+    named after the country the owner lives in must not outvote it.
+
+    Two name sources, both bundled, both offline: the curated dictionary of i18n (small,
+    hand-checked) and the GeoNames country names of the resolver in all three languages
+    (~250 countries, and the spellings people actually type — «Тайланд» is in there).
+    Without the bundled data the hint simply produces nothing; it never becomes a
+    network call or a guess.
+    """
+
+    def __init__(self, resolver: object) -> None:
+        # getattr, not a direct call: the resolver is whatever `GeoResolver()` returned
+        # for this run (tests inject a mini one), and a resolver without the reverse
+        # lookups must degrade to the curated dictionary instead of crashing the stage.
+        self._lookup = getattr(resolver, "country_cc_by_name", None)
+        self._cache: dict[str, str | None] = {}
+
+    def _cc_of(self, name: str) -> str | None:
+        cc = i18n.country_cc_by_name(name)
+        if cc is not None:
+            return cc
+        if self._lookup is None:
+            return None
+        for lang in _CACHE_LANGS:
+            try:
+                found = self._lookup(name, lang)
+            except GeoDataMissing:
+                self._lookup = None  # the base is not there — do not ask 6 000 more times
+                return None
+            if found:
+                return str(found).upper()
+        return None
+
+    def country_of(self, path: str) -> str | None:
+        """The ISO cc a folder on this path names, or None if none of them names one."""
+        for segment in _path_segments(path):
+            for candidate in _name_candidates(segment):
+                key = candidate.casefold()
+                if key not in self._cache:
+                    self._cache[key] = self._cc_of(candidate)
+                cc = self._cache[key]
+                if cc is not None:
+                    return cc
+        return None
+
+
+def _inherit_path_countries(
+    rows: list[sqlite3.Row], resolved: dict[int, tuple[_Place, str]],
+    hint: _CountryFromPath,
+) -> None:
+    """F85c: fill the still-place-less files with the country of their folder name.
+
+    Runs LAST, after both inheritance levels: the hint is a person's label, not a
+    measurement, and it may never overwrite what GPS or a neighbour in time established.
+    `taken_at_confidence` is not consulted (unlike the two inheritance rules) — a folder
+    name says nothing about time, and a file whose date is unusable is laid out by the
+    sorter's own undated branch anyway.
+
+    The place is country-only by construction: no city, no district, no coordinates. The
+    sorter has a branch for exactly this shape (`country_only`, F86) — `<Country>/<year>/`.
+    """
+    for r in rows:
+        if r["id"] in resolved:
+            continue
+        cc = hint.country_of(r["path"])
+        if cc is None:
+            continue
+        resolved[r["id"]] = (
+            _Place(country=cc, city_geonameid=None, district_geonameid=None, city=None),
+            "path_inferred",
+        )
+
+
 def resolve_places(
     cfg: Config, conn: sqlite3.Connection,
     progress: Callable[[int, int], None] | None = None,
@@ -848,9 +995,14 @@ def resolve_places(
     gap_hours = float(cfg.geo.session_gap_hours)
 
     rows = conn.execute(
-        """SELECT id, taken_at, taken_at_confidence, gps_lat, gps_lon
+        """SELECT id, path, taken_at, taken_at_confidence, gps_lat, gps_lon
            FROM files WHERE dup_of IS NULL AND error IS NULL"""
     ).fetchall()
+    # One bundled resolver for the whole stage: the batch resolver below and the path
+    # hint of F85c both read the same 12 MB of GeoNames, and loading it twice would
+    # double both the seconds and the memory. Construction loads nothing (GeoResolver
+    # reads lazily), so this costs nothing when neither of them is reached.
+    local = GeoResolver()
 
     # 1) exact_gps: all files with valid coordinates.
     #    Coordinates may be garbage ('' from broken EXIF), so we coerce to float and
@@ -868,7 +1020,7 @@ def resolve_places(
     gps_by_id = {r["id"]: c for r, c in zip(gps_rows, coords)}
     gps_unresolved = 0
     if coords:
-        resolver = _resolver_for(cfg, conn)
+        resolver = _resolver_for(cfg, conn, local)
         # online: the entire network phase sits right here (in the resolve) (~1
         # request/sec to Nominatim, minutes on a real collection) — progress must
         # move here, not in the write loop below (which is instant for online: the
@@ -913,6 +1065,10 @@ def resolve_places(
     #     where nobody has GPS inherits from the trip around it. Deliberately second:
     #     session inheritance is the more precise of the two and keeps priority.
     _inherit_trip_places(cfg, sessions, resolved, gps_by_id)
+
+    # 2c) path_inferred (F85c): what no geometric signal reached at all — the COUNTRY
+    #     off the name of a folder on the file's path. Last in the queue by design.
+    _inherit_path_countries(rows, resolved, _CountryFromPath(local))
 
     # 3) write: full recomputation of the places table in one transaction
     stats = GeoStats(total=len(rows), gps_unresolved=gps_unresolved)

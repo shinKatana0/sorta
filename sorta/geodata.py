@@ -337,6 +337,18 @@ class GeoResolver:
         place = self._places.get(geonameid)
         return (place.lat, place.lon) if place is not None else None
 
+    def country_of(self, geonameid: int) -> str | None:
+        """ISO cc of a city/place by geonameid; None — not in the data or no cc.
+
+        `region_key_of` cannot answer this: it needs admin1 as well and returns nothing
+        for a place whose region is blank, while the COUNTRY of such a place is known
+        perfectly well — and the country is what a layout starts from (F85c: a city
+        picked by hand still has to be filed under its country).
+        """
+        self._ensure_loaded()
+        place = self._places.get(geonameid)
+        return place.cc if place is not None and place.cc else None
+
     def region_key_of(self, geonameid: int) -> tuple[str, str] | None:
         """(cc, admin1) of the city — the region key for grouping/trip name.
 

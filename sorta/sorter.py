@@ -1,7 +1,7 @@
 """F5: sorting by moving files.
 
-Contract: reads files/places/faces/face_clusters/events/event_files/media_class/
-manual_overrides, writes to move_batches/moves and to the FS. The only exception:
+Contract: reads files/places/manual_places/faces/face_clusters/events/event_files/
+media_class/manual_overrides, writes to move_batches/moves and to the FS. The only exception:
 after a successful move, files.path is updated so the index stays valid; undo
 restores the old value.
 
@@ -58,6 +58,20 @@ F86 does the same for city mode: a file whose country resolved but whose city no
 provider knows goes to <Country>/<year>/ (reason `country_only`) instead of
 _Unsorted/no_place/. Only a file without a country at all (place_confidence='unknown')
 still lands in no_place.
+
+F85c (manual_places, written by the web app): a place the user assigned to a whole event
+or a whole source folder. It is read here and NOT in geo, because `places` has a single
+writer and is recomputed from scratch on every geo run — a manual place stored there
+would live until the next run. The row replaces the automatic place as a WHOLE (country,
+city and district together, never a mix of the two sources) and the file is reported with
+place_confidence='manual', so the CSV, the HTML report and the web app all tell a place
+the user chose from one the program inferred. Everything above it in _target_parts still
+outranks it: a file marked "leave alone" or reassigned by hand (F77), a to_delete
+duplicate, a document or a junk verdict does not go to the assigned city — those are
+decisions about what the file IS, and the assignment only says where it was taken.
+One deliberate limit: `--where country=/city=` still selects on the AUTOMATIC place. It
+is a SQL filter over `places`, applied before the manual row replaces anything, and a
+selection language that answered about hand-assigned places would have to run twice.
 """
 from __future__ import annotations
 
@@ -1172,17 +1186,31 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                               csv_path=placeholder.with_suffix(".csv"),
                               html_path=placeholder.with_suffix(".html"))
 
+    # F85c: `mp.file_id IS NULL` (not COALESCE per column) decides between the two
+    # sources of a place — a manual row wins as a WHOLE, so a hand-picked city can never
+    # end up under an inferred country, and the district of the automatic place cannot
+    # survive under a city the user replaced. `country_name` is dropped for a manual row
+    # on purpose: it is the provider's spelling of the OLD country, and _target_parts
+    # localizes the cc through i18n.country when it is absent.
     rows = conn.execute(
         _CTE + f"""SELECT f.id, f.path, f.taken_at, f.taken_at_confidence,
                f.hash, f.hash_algo, f.not_personal, f.gps_lat, f.gps_lon,
                f.camera_make, f.camera_model,
-               p.country, p.country_name, p.city, p.confidence AS place_confidence,
-               p.city_geonameid, p.district_geonameid, p.district_name,
+               CASE WHEN mp.file_id IS NULL THEN p.country ELSE mp.country END AS country,
+               CASE WHEN mp.file_id IS NULL THEN p.country_name END AS country_name,
+               CASE WHEN mp.file_id IS NULL THEN p.city ELSE mp.city END AS city,
+               CASE WHEN mp.file_id IS NULL THEN p.confidence
+                    ELSE 'manual' END AS place_confidence,
+               CASE WHEN mp.file_id IS NULL THEN p.city_geonameid
+                    ELSE mp.city_geonameid END AS city_geonameid,
+               CASE WHEN mp.file_id IS NULL THEN p.district_geonameid END AS district_geonameid,
+               CASE WHEN mp.file_id IS NULL THEN p.district_name END AS district_name,
                mc.verdict AS junk_verdict, mc.source AS junk_source,
                dc.action AS dedup_action,
                mo.action AS manual_action, mo.target AS manual_target
            FROM files f
            LEFT JOIN places p ON p.file_id = f.id
+           LEFT JOIN manual_places mp ON mp.file_id = f.id
            LEFT JOIN media_class mc ON mc.file_id = f.id
            LEFT JOIN dedup_choice dc ON dc.file_id = f.id
            LEFT JOIN manual_overrides mo ON mo.file_id = f.id

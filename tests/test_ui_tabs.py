@@ -59,7 +59,8 @@ class TestApiPlanPersonEvent(PersonEventTestBase):
         items = self._page("person", categories[0])["items"]
         self.assertEqual({it["file_id"] for it in items}, {fid})
         expected_keys = {"file_id", "name", "target_rel", "reason", "date",
-                         "geo", "category", "thumb_url", "src_dir", "src_path", "video"}
+                         "geo", "place_confidence", "category", "thumb_url", "src_dir",
+                         "src_path", "video"}
         for item in items:
             self.assertEqual(expected_keys, set(item.keys()))
         self.assertTrue(any(it["target_rel"].startswith("Alice/") for it in items))
