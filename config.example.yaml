@@ -113,6 +113,14 @@ faces:
   det_threshold: 0.7     # detector confidence threshold (Immich default)
   min_cluster_size: 5    # min faces per cluster (HDBSCAN); smaller — noise
   max_distance: 0.5      # cosine face-similarity threshold (Immich default)
+  # F88: detector input side in px, pinned. Leaving it unset used to let insightface
+  # pick the two-pass mode (128x128 then 640x640 on EVERY frame) — the network ran
+  # twice per frame and detection cost 165.1 ms/frame instead of 16.5 (x10, 100 real
+  # frames, RTX 5090 Laptop). NOT a speed knob: 640 is the model's native size, and
+  # lowering it buys almost nothing while losing small faces — 512 measured 13.4
+  # ms/frame (3 ms) for 52 faces against 56, i.e. -9% of the people found. Lower it
+  # only on hardware that cannot afford 640, and know what it costs.
+  det_size: 640
   # Parallel inference sessions (F12.1): faces is inference-bound; independent
   # FaceAnalysis sessions scale ~x3 on GPU. 0 = auto (4 on CUDA, 1 on CPU).
   infer_workers: 0
