@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   costs no network at all. The cache survives "Start over"; clear it with
   `sorta cache --clear-geo`, `sorta reset --clear-geo` or the checkbox in the reset
   dialog of `sorta ui`. Expiry: `geo.cache_max_age_days` (default 180, 0 — never).
+- **Cache management in the web app** (F94): the "Process" tab shows what the preview
+  and geo caches occupy (the same numbers `sorta cache` prints) and clears either of
+  them with a confirmation that states the price — a cleared preview cache rebuilds
+  itself, but the next run decodes at 336 ms per frame instead of 73. Both clears are
+  refused while a run or a layout is in flight, and nothing is ever cleared
+  automatically: there is no size ceiling and no eviction.
 
 ## [0.2.0] - 2026-07-25
 
