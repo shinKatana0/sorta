@@ -27,8 +27,9 @@ class TestMigrations(unittest.TestCase):
             tbls = {r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("dedup_choice", tbls)
+            self.assertIn("geo_cache", tbls)  # v13 (F93)
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 12)
+            self.assertEqual(v, 13)
             conn.close()
 
     def test_v1_db_migrates_to_v2(self):
@@ -82,7 +83,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("city_geonameid", pl_cols)  # added by the v6 migration
             self.assertIn("country_name", pl_cols)     # added by the v10 migration
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 12)
+            self.assertEqual(v, 13)
             row = conn.execute("SELECT * FROM files").fetchone()
             self.assertEqual(row["path"], "/a.jpg")
             self.assertIsNone(row["orientation"])
@@ -192,7 +193,7 @@ class TestReset(unittest.TestCase):
             reset_index(conn)
             # data wiped, schema alive (tables + user_version)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0], 0)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 13)
             tables = {r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("media_class", tables)

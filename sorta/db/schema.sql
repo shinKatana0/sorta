@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 12;
+PRAGMA user_version = 13;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -136,4 +136,33 @@ CREATE TABLE IF NOT EXISTS moves (
     dst TEXT NOT NULL,
     hash TEXT NOT NULL,
     status TEXT NOT NULL                  -- planned | done | undone | failed
+);
+
+-- v13 (owner: F93-geo-cache): answers of the ONLINE geo provider, kept ACROSS runs.
+-- geo recomputes places from scratch every time (session inheritance needs it), and
+-- the in-memory cache died with the process — so adding 200 photos cost the same ~35
+-- minutes of Nominatim as a full run. This table is the network, not the decision:
+-- it caches what the provider said, never where a file ends up.
+--
+-- `key` is built by the code, not by SQL, because it has two shapes and SQLite would
+-- treat NULLs in a composite PK as distinct rows:
+--   "c:<city_geonameid>/<district_geonameid>"  — the normal key. The local base
+--       already partitions coordinates by MEANING, which beats any grid: measured on
+--       a 14 254-file collection, 603 requests against 6 219 for a 110 m grid, and
+--       zero localities mixed against 0.9%.
+--   "g:<lat>/<lon>"  — the fallback for coordinates the local base cannot resolve,
+--       rounded to 3 digits (~110 m).
+--
+-- All three interface languages are stored side by side: language is a property of
+-- the DATA, not of the run. Switching folder language must not cost a network pass,
+-- and it used to leave the cities in the old language until the next full geo.
+CREATE TABLE IF NOT EXISTS geo_cache (
+    provider TEXT NOT NULL,               -- only 'online' writes here; offline never does
+    key TEXT NOT NULL,                    -- see the two shapes above
+    country TEXT,                         -- ISO cc — the same in every language
+    country_name_ru TEXT, country_name_en TEXT, country_name_ja TEXT,
+    city_ru TEXT, city_en TEXT, city_ja TEXT,
+    district_ru TEXT, district_en TEXT, district_ja TEXT,
+    updated_at TEXT NOT NULL,             -- for the staleness policy (borders do move)
+    PRIMARY KEY (provider, key)
 );
