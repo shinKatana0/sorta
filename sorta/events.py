@@ -7,12 +7,15 @@ Rules:
   adjacent sessions merge into one event (a large trip) when the gap is <
   events.trip_merge_gap_hours (default 48) AND the same "trip locality":
   the same country (places.country), AND (the same city OR the same admin1 region OR
-  cities closer than events.trip_merge_max_km, F44/#19). City — places.city_geonameid;
+  localities closer than events.trip_merge_max_km, F44/#19). City — places.city_geonameid;
   if it is NULL (online provider, G2b), the string fallback
-  places.district_name/city (F44/#19-A1) is used — such cities have no
-  coordinates/region, so merging works only by string equality for them. An unknown
-  locality does not confirm a merge. Files with taken_at_confidence='low' do not
-  enter auto events.
+  places.district_name/city (F44/#19-A1) is used — such cities have no region, so the
+  region branch applies only to geonameid cities. Proximity is measured between the
+  CENTERS OF THE LOCALITIES, and a center is the median GPS of the locality's own
+  files (F92) — coordinates the files carry themselves, so the distance branch works
+  under any geo provider; geodata coordinates of city_geonameid remain the fallback
+  for a locality where no file has GPS. An unknown locality does not confirm a merge.
+  Files with taken_at_confidence='low' do not enter auto events.
 - Size threshold (F30): groups (after merging) with a file count <
   events.min_event_size (default 5) do not become an auto event — their files
   do not enter event_files (the sorter routes them down the no_event branch).
@@ -41,6 +44,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import asin, cos, radians, sin, sqrt
+from statistics import median
 from typing import Callable
 
 from . import i18n
@@ -71,6 +75,8 @@ class _File:
     city_id: int | None  # places.city_geonameid — the city itself (G2), not a district/string
     city_str: str | None  # F44/#19-A1: the string fallback (district_name/city) when city_id is NULL
     country_cc: str | None  # places.country (ISO cc) — for the "same country" check (F44/#19-B)
+    gps_lat: float | None  # F92: the file's own GPS — the locality center for the distance check
+    gps_lon: float | None
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,7 @@ class _Locality:
     city_str: str | None  # meaningful only when city_id is None
     key: tuple[str, object] | None  # locality equality: ("i", geonameid) | ("s", casefold)
     country_cc: str | None
+    coords: tuple[float, float] | None  # F92: center by the GPS of its own files
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -94,15 +101,32 @@ def _parse_dt(s: str | None) -> datetime | None:
         return None
 
 
+def _file_gps(lat: object, lon: object) -> tuple[float, float] | None:
+    """A file's GPS as a pair of floats, or None when it is unusable (F92).
+
+    Unusable is: missing, garbage ('' from broken EXIF — the index stores what the
+    camera wrote), or exactly (0, 0) — the "never got a fix" sentinel that geo.py
+    filters out for the same reason (it resolves confidently to Ghana).
+    """
+    try:
+        pair = (float(lat), float(lon))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return None if pair == (0.0, 0.0) else pair
+
+
 def _load_files(conn: sqlite3.Connection) -> list[_File]:
     """Canonical files with a date, sorted by time.
 
     City — geonameid from places.city_geonameid; when it is NULL (online provider,
     G2b does not resolve geonameid), city_str is the string fallback district_name/city
-    (F44/#19-A1) so the online path does not lose the place.
+    (F44/#19-A1) so the online path does not lose the place. GPS comes from the same
+    row (F92) — the locality center for trip merging is built from it, so no separate
+    query is needed.
     """
     rows = conn.execute(
         """SELECT f.id, f.taken_at, f.taken_at_confidence AS confidence,
+                  f.gps_lat, f.gps_lon,
                   p.city_geonameid, p.district_name, p.city, p.country
            FROM files f LEFT JOIN places p ON p.file_id = f.id
            WHERE f.dup_of IS NULL AND f.error IS NULL AND f.taken_at IS NOT NULL"""
@@ -117,7 +141,9 @@ def _load_files(conn: sqlite3.Connection) -> list[_File]:
         if city_id is None:
             raw = r["district_name"] or r["city"]
             city_str = raw.strip() if raw and raw.strip() else None
-        out.append(_File(r["id"], dt, r["confidence"], city_id, city_str, r["country"]))
+        gps = _file_gps(r["gps_lat"], r["gps_lon"])
+        out.append(_File(r["id"], dt, r["confidence"], city_id, city_str, r["country"],
+                         gps[0] if gps else None, gps[1] if gps else None))
     out.sort(key=lambda f: (f.dt, f.id))
     return out
 
@@ -162,16 +188,38 @@ def _file_city_name(resolver: GeoResolver, lang: i18n.Lang, f: _File) -> str | N
     return f.city_str
 
 
+def _median_center(files: list[_File]) -> tuple[float, float] | None:
+    """The center of a set of files by their own GPS; None — nobody has GPS (F92).
+
+    The MEDIAN of each coordinate, not the mean: a single stray frame (a shot from an
+    airport on the way) must not drag the center of a locality hundreds of kilometres
+    away and break the merge for the whole trip.
+    """
+    pts = [(f.gps_lat, f.gps_lon) for f in files
+           if f.gps_lat is not None and f.gps_lon is not None]
+    if not pts:
+        return None
+    return (median(p[0] for p in pts), median(p[1] for p in pts))
+
+
 def _dominant_locality(files: list[_File]) -> _Locality:
-    """The dominant (by file count) locality among files + the dominant country."""
+    """The dominant (by file count) locality among files + the dominant country.
+
+    The center (F92) is the median GPS of the files of THAT locality — not of the
+    whole session, so files of a neighbouring city in the same session do not shift
+    it. An unknown locality (no key) has no center: it does not confirm a merge anyway.
+    """
     keys = Counter(k for f in files if (k := _city_key(f)) is not None)
     country_ccs = Counter(f.country_cc for f in files if f.country_cc)
     country_cc = country_ccs.most_common(1)[0][0] if country_ccs else None
     if not keys:
-        return _Locality(city_id=None, city_str=None, key=None, country_cc=country_cc)
+        return _Locality(city_id=None, city_str=None, key=None, country_cc=country_cc,
+                         coords=None)
     best_key = keys.most_common(1)[0][0]
-    rep = next(f for f in files if _city_key(f) == best_key)
-    return _Locality(city_id=rep.city_id, city_str=rep.city_str, key=best_key, country_cc=country_cc)
+    own = [f for f in files if _city_key(f) == best_key]
+    rep = own[0]
+    return _Locality(city_id=rep.city_id, city_str=rep.city_str, key=best_key,
+                     country_cc=country_cc, coords=_median_center(own))
 
 
 def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -180,25 +228,41 @@ def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
     return 2 * _EARTH_RADIUS_KM * asin(sqrt(h))
 
 
+def _locality_coords(loc: _Locality, resolver: GeoResolver) -> tuple[float, float] | None:
+    """Where the locality is: the median GPS of its own files, else geodata (F92).
+
+    The files' own GPS is provider-independent, so the distance branch keeps working
+    when city_geonameid is NULL (online, G2b). coords_of stays as the fallback for a
+    locality whose files carry no GPS at all — the city there came in by session
+    inheritance, and only geodata knows where it is.
+    """
+    if loc.coords is not None:
+        return loc.coords
+    return resolver.coords_of(loc.city_id) if loc.city_id is not None else None
+
+
 def _same_trip(
     anchor: _Locality, cand: _Locality, resolver: GeoResolver, max_km: float,
 ) -> bool:
     """F44/#19-B: the same country AND (the same city OR the same admin1 region OR
 
-    cities closer than max_km). Cities without a geonameid (online strings) have no
-    coordinates/region — for them only string-key equality applies.
+    localities closer than max_km). The region is known only for cities with a
+    geonameid; the distance is measured between locality centers (F92), which exist
+    for online string cities too.
     """
     if not anchor.country_cc or not cand.country_cc or anchor.country_cc != cand.country_cc:
         return False
     if anchor.key is not None and anchor.key == cand.key:
         return True
-    if anchor.city_id is None or cand.city_id is None:
+    if anchor.key is None or cand.key is None:  # an unknown locality confirms nothing
         return False
-    region_a = resolver.region_key_of(anchor.city_id)
-    if region_a is not None and region_a == resolver.region_key_of(cand.city_id):
-        return True
+    if anchor.city_id is not None and cand.city_id is not None:
+        region_a = resolver.region_key_of(anchor.city_id)
+        if region_a is not None and region_a == resolver.region_key_of(cand.city_id):
+            return True
     if max_km > 0:
-        coords_a, coords_b = resolver.coords_of(anchor.city_id), resolver.coords_of(cand.city_id)
+        coords_a = _locality_coords(anchor, resolver)
+        coords_b = _locality_coords(cand, resolver)
         if coords_a is not None and coords_b is not None:
             return _haversine_km(coords_a, coords_b) <= max_km
     return False

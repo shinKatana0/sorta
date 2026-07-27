@@ -77,13 +77,18 @@ class EventsBase(unittest.TestCase):
         self.tmp.cleanup()
 
     def add_file(self, taken_at, confidence="high", city_id=None, dup_of=None, error=None,
-                 country=None, district_name=None, city=None):
+                 country=None, district_name=None, city=None, gps=None):
         self._n += 1
+        # F92: gps=(lat, lon) — the file's own coordinates, the locality center for
+        # trip merging; None leaves the columns NULL (the pre-F92 fixtures).
+        lat, lon = gps if gps is not None else (None, None)
         cur = self.conn.execute(
             """INSERT INTO files (path, size, mtime, ext, media_type, taken_at,
-                   taken_at_source, taken_at_confidence, dup_of, error, indexed_at)
-               VALUES (?, 1000, 0, 'jpg', 'photo', ?, 'exif', ?, ?, ?, '2026-01-01')""",
-            (f"/photos/img_{self._n}.jpg", taken_at, confidence, dup_of, error),
+                   taken_at_source, taken_at_confidence, dup_of, error, indexed_at,
+                   gps_lat, gps_lon)
+               VALUES (?, 1000, 0, 'jpg', 'photo', ?, 'exif', ?, ?, ?, '2026-01-01',
+                       ?, ?)""",
+            (f"/photos/img_{self._n}.jpg", taken_at, confidence, dup_of, error, lat, lon),
         )
         fid = cur.lastrowid
         # F44/#19-A1: district_name/city — the string fallback for online places
