@@ -30,6 +30,7 @@ from urllib.parse import quote
 
 import numpy as np
 
+from . import imaging
 from .config import Config
 from .progress import PhaseCB, ProgressCB
 
@@ -43,6 +44,12 @@ Analyzer = Callable[[str, int | None], list[FaceHit]]
 # infer(bgr image) -> found faces; a factory builds one session per worker thread
 Infer = Callable[[np.ndarray], list[FaceHit]]
 InferFactory = Callable[[], Infer]
+# decode(path, exif_orientation) -> the frame the pool hands to a session
+Decode = Callable[[str, int | None], np.ndarray]
+# on_result(row, hits) — hits=None means the frame failed; called on the main thread
+OnResult = Callable[["sqlite3.Row", "list[FaceHit] | None"], None]
+# One pass over a batch of rows with a given decode; results on the calling thread
+Pipeline = Callable[["list[sqlite3.Row]", Decode, OnResult], None]
 
 
 # F88: the detector's input side, in px. buffalo_l's det_10g is trained at 640, and
@@ -179,9 +186,101 @@ def _decode_for_faces(path: str, orientation: int | None) -> np.ndarray:
     """Full-resolution decode + rotation — the unit of work of the prefetch-decode pool.
 
     No downscale: the ArcFace embedding crops the face from the original, and
-    shrinking the input would hurt clustering accuracy.
+    shrinking the input would hurt clustering accuracy. Since F91 this is paid only
+    for frames the gate found a face on — see _decode_preview_for_faces.
     """
     return _apply_orientation(_read_image_bgr(path), orientation)
+
+
+# F91: the two passes, and why the second one detects AGAIN instead of reusing the
+# boxes of the first.
+#
+# The step was decode-bound (16.6 frames/s with the GPU at 3-10%): every frame was
+# decompressed at full resolution, and 69% of them had no face at all. Detection does
+# not need those pixels — insightface downscales its input to det_size=640 whatever it
+# is given, so a 4000 px original and a 1536 px preview reach the network as the very
+# same 640 px frame. The crop DOES need them: ArcFace embeds the face out of the
+# original, and that is what must not change.
+#
+# The brief proposed scaling the preview's boxes into original coordinates and feeding
+# them to recognition directly. That saves one detection pass (16.5 ms on the 31% of
+# frames that have a face, on a card sitting at 3-10%) at the price of splitting
+# `app.get` into `det_model.detect` + a hand-built alignment — and if that alignment
+# ever takes coordinates from the wrong space, the embeddings drift silently and the
+# clusters rot weeks later. The brief's own acceptance criterion is equivalence, not
+# speed, and there is no insightface/GPU in this environment to prove it on. So the
+# preview is used strictly as a GATE: "is there anything here to crop?". A frame that
+# passes it goes through the unchanged `app.get(original)`, which makes the written
+# embeddings identical to the previous behaviour by construction rather than by
+# measurement. The saved decode — the whole point — is untouched: the 69% still never
+# reach a full decode.
+#
+# What is left to verify on real data is the gate's recall (the brief's "no more than
+# 2% difference in the number of faces found"): only frames where the preview sees
+# nothing and the original would have seen something are lost. `sorta faces --rescan`
+# before and after answers it.
+
+def _decode_preview_for_faces(path: str, orientation: int | None) -> np.ndarray | None:
+    """F91: a ~1536 px BGR frame for the detection GATE, or None if there is no cheap one.
+
+    The frame comes from the shared preview cache (F67): warm it is a read of a small
+    JPEG, cold it is a draft decode of the original (a DCT downscale, ~46 ms against
+    ~1000 ms for the full frame on a 13 MP camera JPEG) that also fills the cache for
+    the other stages. With the cache switched off `decode_rgb_preview` still decodes
+    to the requested size and merely writes nothing — the win is in decoding SMALL,
+    the cache only saves repeated touches.
+
+    None means "no cheap frame here" and the caller must go the old way, silently:
+    an unreadable/undecodable source, or a frame that came back no smaller than the
+    preview size (a picture below 1536 px — a downscale that saves nothing). mtime and
+    size for the cache key come from a local stat, microseconds against the decode, so
+    that this keeps the (path, orientation) signature the decode pool works with.
+    """
+    edge = imaging.preview_max_edge()
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    img = imaging.decode_rgb_preview(path, st.st_mtime, st.st_size, max_edge=edge)
+    if img is None or max(img.size) < edge:
+        return None
+    # PIL gives RGB, insightface wants BGR and a contiguous buffer (the reversed
+    # view is neither). Orientation is applied from the INDEX, exactly as on the full
+    # path — the preview is stored unrotated, as the source is.
+    return _apply_orientation(np.ascontiguousarray(np.asarray(img)[:, :, ::-1]), orientation)
+
+
+class _GateDecoder:
+    """The decode of the gate pass: a preview when there is one, the original otherwise.
+
+    Which of the two a frame got decides how its hits are read — a preview only
+    answers "is there anything to crop here", an original answers with the faces
+    themselves — and that answer is needed on the main thread while the decode runs in
+    the pool. Hence the set of paths rather than a second return value: the decode
+    callable of `_prefetch_decode` is (path, orientation) -> frame, one signature
+    shared with the plain full-resolution path, and files.path is UNIQUE, so it
+    identifies the row.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._previewed: set[str] = set()
+
+    def __call__(self, path: str, orientation: int | None) -> np.ndarray:
+        try:
+            img = _decode_preview_for_faces(path, orientation)
+        except Exception:  # the gate must not fail a frame the old path could read
+            img = None
+        if img is None:  # the fallback: quiet, cheap, and exactly the old path
+            return _decode_for_faces(path, orientation)
+        with self._lock:
+            self._previewed.add(path)
+        return img
+
+    def previewed(self, path: str) -> bool:
+        """Was this frame decoded as a preview (so its hits are only a gate answer)?"""
+        with self._lock:
+            return path in self._previewed
 
 
 def _decode_workers(cfg: Config) -> int:
@@ -228,11 +327,11 @@ def _infer_workers(cfg: Config) -> int:
 
 def _detect_parallel(
     rows: list[sqlite3.Row],
-    decode: Callable[[str, int | None], np.ndarray],
+    decode: Decode,
     infer_factory: InferFactory,
     workers: int,
     decode_workers: int,
-    on_result: Callable[[sqlite3.Row, list[FaceHit] | None], None],
+    on_result: OnResult,
 ) -> None:
     """Decode pool feeding `workers` inference sessions; results on the caller's thread.
 
@@ -301,7 +400,7 @@ def _detect_parallel(
 
 def _prefetch_decode(
     rows: list[sqlite3.Row],
-    decode: Callable[[str, int | None], np.ndarray],
+    decode: Decode,
     max_workers: int,
 ) -> Iterator[tuple[sqlite3.Row, np.ndarray | None, Exception | None]]:
     """Decode frames in a thread pool with a bounded window (~2×max_workers in flight).
@@ -337,6 +436,80 @@ def _prefetch_decode(
                 except Exception as exc:  # an undecodable frame — do not crash the pipeline
                     yield r, None, exc
             _fill()
+
+
+def _detect_serial(
+    rows: list[sqlite3.Row],
+    decode: Decode,
+    infer: Infer,
+    decode_workers: int,
+    on_result: OnResult,
+) -> None:
+    """One session on THIS thread, fed by the decode pool — the CPU profile's pipeline.
+
+    Extracted from `detect_faces` unchanged (F91): the gate runs the pipeline twice,
+    and both passes must reuse the one session — loading buffalo_l costs seconds.
+    """
+    for r, img, err in _prefetch_decode(rows, decode, decode_workers):
+        hits: list[FaceHit] | None = None
+        if err is None:
+            assert img is not None
+            try:
+                hits = infer(img)
+            except Exception:  # a broken frame — do not crash the pipeline
+                hits = None
+        on_result(r, hits)
+
+
+def _pipeline(factory: InferFactory, workers: int, decode_workers: int) -> Pipeline:
+    """The runner both passes of a run share: rows + a decode -> results on this thread.
+
+    `workers > 1` — the F87/F12.1 scheme (a decode pool feeding N independent
+    sessions); `workers == 1` (the CPU profile) — the same decode pool feeding a
+    single session on the calling thread, built here once so that the second pass of
+    the F91 gate does not load the model again.
+
+    On the parallel path every pass builds its own sessions: they are thread-local and
+    the pool's threads end with the pass. That is a few seconds of model load per run,
+    against the minutes the gate saves — sharing them would mean keeping one executor
+    alive across the passes, i.e. more machinery in `_detect_parallel` than the win
+    justifies.
+    """
+    if workers > 1:
+        def parallel(rows: list[sqlite3.Row], decode: Decode, on_result: OnResult) -> None:
+            _detect_parallel(rows, decode, factory, workers, decode_workers, on_result)
+
+        return parallel
+
+    infer = factory()
+
+    def serial(rows: list[sqlite3.Row], decode: Decode, on_result: OnResult) -> None:
+        _detect_serial(rows, decode, infer, decode_workers, on_result)
+
+    return serial
+
+
+def _split_for_gate(
+    rows: list[sqlite3.Row],
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    """(frames worth gating, frames that take the old path straight away) — F91.
+
+    The gate only pays off when the original is bigger than the preview: for a picture
+    that is already smaller the "preview" IS the frame, and the pass would be pure
+    overhead. The indexer's width/height answer that without touching the file; when
+    they are missing (an exotic format, a file indexed before those columns were
+    filled) the answer is unknown and the frame keeps the old path — the brief's third
+    fallback. A frame that slips through anyway (dimensions in the index disagreeing
+    with the file) is caught by _decode_preview_for_faces, which then returns None.
+    """
+    edge = imaging.preview_max_edge()
+    gated: list[sqlite3.Row] = []
+    direct: list[sqlite3.Row] = []
+    for r in rows:
+        width, height = r["width"], r["height"]
+        big = bool(width) and bool(height) and max(int(width), int(height)) > edge
+        (gated if big else direct).append(r)
+    return gated, direct
 
 
 # The pipeline uses only (bbox, det_score, embedding) — FaceHit — from a face.
@@ -435,6 +608,9 @@ def _write_hits(
 # and stills — a video has no faces row of its own.
 _CANONICAL = "dup_of IS NULL AND error IS NULL AND media_type = 'photo'"
 
+# width/height (F91) decide whether a frame is worth gating — see _split_for_gate.
+_DETECT_COLUMNS = "id, path, orientation, width, height"
+
 
 def _files_to_detect(
     conn: sqlite3.Connection, rescan: bool, limit: int | None,
@@ -450,16 +626,16 @@ def _files_to_detect(
     """
     if not rescan:
         return conn.execute(
-            f"""SELECT id, path, orientation FROM files
+            f"""SELECT {_DETECT_COLUMNS} FROM files
                 WHERE {_CANONICAL} AND id NOT IN (SELECT file_id FROM faces)
                 ORDER BY id"""
         ).fetchall()
     if limit is None:
         return conn.execute(
-            f"SELECT id, path, orientation FROM files WHERE {_CANONICAL} ORDER BY id"
+            f"SELECT {_DETECT_COLUMNS} FROM files WHERE {_CANONICAL} ORDER BY id"
         ).fetchall()
     return conn.execute(
-        f"SELECT id, path, orientation FROM files WHERE {_CANONICAL} "
+        f"SELECT {_DETECT_COLUMNS} FROM files WHERE {_CANONICAL} "
         f"ORDER BY RANDOM() LIMIT ?", (limit,)
     ).fetchall()
 
@@ -494,7 +670,16 @@ def detect_faces(
     one session on this thread. `infer_factory` builds a session; in production it is
     `_insightface_infer`, tests inject a fake one.
 
-    SQLite is written only from this thread in both cases (single-writer), one
+    F91: that real path runs in TWO passes. The first one looks for faces on a ~1536 px
+    preview (`_decode_preview_for_faces`) — the detector downscales its input to
+    det_size=640 anyway, so a full decode buys detection nothing — and 69% of a real
+    collection ends there, with the "no faces" marker written and the original never
+    read. Only the frames a face was found on are decoded in full, in the second pass,
+    and it is that ORIGINAL the faces written come from. Frames not worth gating
+    (`_split_for_gate`) and frames with no cheap preview join the second pass directly,
+    on exactly the old code path.
+
+    SQLite is written only from this thread in every case (single-writer), one
     transaction per file; the order of faces rows does not matter.
     """
     if limit is not None and not rescan:
@@ -531,24 +716,26 @@ def detect_faces(
         if progress:
             progress(done, len(rows))
 
-    workers = _infer_workers(cfg)
-    decode_workers = _decode_workers(cfg)
-    if workers > 1:
-        _detect_parallel(
-            rows, _decode_for_faces, factory, workers, decode_workers, on_result
-        )
-        return stats
+    run = _pipeline(factory, _infer_workers(cfg), _decode_workers(cfg))
+    gated, direct = _split_for_gate(rows)
 
-    infer = factory()
-    for r, img, err in _prefetch_decode(rows, _decode_for_faces, decode_workers):
-        frame_hits: list[FaceHit] | None = None
-        if err is None:
-            assert img is not None
-            try:
-                frame_hits = infer(img)
-            except Exception:
-                frame_hits = None
-        on_result(r, frame_hits)
+    if gated:
+        decoder = _GateDecoder()
+        promoted: list[sqlite3.Row] = []
+
+        def on_gate(r: sqlite3.Row, hits: list[FaceHit] | None) -> None:
+            """The gate asks one thing: is there anything on this frame to crop?"""
+            if hits and decoder.previewed(r["path"]):
+                promoted.append(r)  # a face is there — now the original is worth it
+            else:
+                # nothing found (69% of a real collection), an undecodable frame, or
+                # a frame that fell back to a full decode — those hits ARE the answer
+                on_result(r, hits)
+
+        run(gated, decoder, on_gate)
+        direct += promoted
+    if direct:
+        run(direct, _decode_for_faces, on_result)
     return stats
 
 
