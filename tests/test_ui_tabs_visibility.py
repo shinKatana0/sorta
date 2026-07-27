@@ -53,28 +53,28 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         status, body, ctype = self.get("/api/tabs/visibility")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        self.assertEqual(json.loads(body), {"person": False, "event": False})
+        self.assertEqual(json.loads(body), {"person": False, "event": False, "indexed": False})
 
     def test_clustered_faces_show_person_only(self):
         fid, _p, _c = self.add_photo_file("a.jpg")
         self.add_clustered_face(fid)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": True, "event": False})
+        self.assertEqual(json.loads(body), {"person": True, "event": False, "indexed": True})
 
     def test_noise_only_faces_do_not_show_person(self):
         fid, _p, _c = self.add_photo_file("noise.jpg")
         self.add_noise_face(fid)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": False, "event": False})
+        self.assertEqual(json.loads(body), {"person": False, "event": False, "indexed": True})
 
     def test_events_show_event_only(self):
         fid, _p, _c = self.add_photo_file("b.jpg")
         self.add_event(fid)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": False, "event": True})
+        self.assertEqual(json.loads(body), {"person": False, "event": True, "indexed": True})
 
     def test_both_independent_when_both_present(self):
         fid1, _p1, _c1 = self.add_photo_file("a.jpg")
@@ -83,7 +83,25 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         self.add_event(fid2)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": True, "event": True})
+        self.assertEqual(json.loads(body), {"person": True, "event": True, "indexed": True})
+
+
+class TestIndexedFlag(TabsVisibilityTestBase):
+    """`indexed` rides this endpoint because it answers the same kind of question —
+    what is in the DB — and is refreshed at the same moments, including right after
+    "Start over". It gates "re-run the selected stage": on an empty index there is
+    nothing to catch up."""
+
+    def test_empty_index_reports_not_indexed(self):
+        self.start_server()
+        _status, body, _ctype = self.get("/api/tabs/visibility")
+        self.assertFalse(json.loads(body)["indexed"])
+
+    def test_any_file_reports_indexed(self):
+        self.add_photo_file("a.jpg")
+        self.start_server()
+        _status, body, _ctype = self.get("/api/tabs/visibility")
+        self.assertTrue(json.loads(body)["indexed"])
 
 
 class TestTabsVisibilityMarkup(TabsVisibilityTestBase):

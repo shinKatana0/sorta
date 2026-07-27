@@ -1181,7 +1181,13 @@ def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
     """F54: visibility of the "People"/"Events" tabs — by data presence (variant B,
     without a meta table). person ⇔ there is a faces row with a non-empty cluster_id
     (the same source as `_clusters_payload`); event ⇔ non-empty `events`. Light
-    EXISTS queries, we do not build the full payload."""
+    EXISTS queries, we do not build the full payload.
+
+    `indexed` rides along for the same cost: "re-run the selected stage" only makes
+    sense over files that exist. Right after "Start over" the index is empty and
+    ticking "faces" used to light the button up — offering to catch up a stage on
+    nothing at all.
+    """
     conn = _connect(db_path)
     try:
         person = bool(conn.execute(
@@ -1190,9 +1196,12 @@ def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
         event = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM events)"
         ).fetchone()[0])
+        indexed = bool(conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM files)"
+        ).fetchone()[0])
     finally:
         conn.close()
-    return {"person": person, "event": event}
+    return {"person": person, "event": event, "indexed": indexed}
 
 
 def _validate_album_payload(
@@ -3994,6 +4003,8 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     fetch("/api/tabs/visibility")
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        indexHasFiles = !!data.indexed;
+        updateRerunSelectedDisabled();
         document.getElementById("tab-btn-person").style.display =
             data.person ? "" : "none";
         document.getElementById("tab-btn-event").style.display =
@@ -4084,10 +4095,18 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     return ALL_PROCESS_STAGES.filter(function (name) { return enabled[name]; });
   }
 
+  // Индекс пуст ⇒ догонять этап не на чем. Обновляется там же, где видимость
+  // вкладок: при загрузке, после прогона и сразу после «Начать заново» — то есть
+  // ровно в тот момент, когда индекс и обнуляется. До первого ответа считаем, что
+  // файлы есть: осторожная сторона тут — не гасить кнопку у того, у кого всё в
+  // порядке, а пустой индекс подтвердится через долю секунды.
+  var indexHasFiles = true;
+
   function rerunSelectedAllowed() {
-    return document.getElementById("process-faces-checkbox").checked ||
+    return indexHasFiles && (
+        document.getElementById("process-faces-checkbox").checked ||
         document.getElementById("process-events-checkbox").checked ||
-        document.getElementById("process-deep-checkbox").checked;
+        document.getElementById("process-deep-checkbox").checked);
   }
 
   // Последнее известное состояние пайплайна. Обработчик галочек срабатывает
@@ -5761,6 +5780,11 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
             faces, events, deep = parsed
+            # No "index is empty" guard here on purpose: re-running the optional
+            # stages over nothing is a no-op, not a hazard — unlike a layout over a
+            # half-built index or a reset mid-run, which the server does refuse. The
+            # button is disabled for it (F54 payload carries `indexed`), and that is
+            # the right layer for "pointless", as opposed to "dangerous".
             with busy_lock:
                 if sort_state.snapshot()["running"]:
                     self._send_json({"error": "sort is running"}, status=HTTPStatus.CONFLICT)

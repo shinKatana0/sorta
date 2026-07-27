@@ -94,6 +94,16 @@ class TestRunningStateGuards(unittest.TestCase):
         self.assertIn("updateBusyControlsDisabled();",
                       self._body("renderProcessStatus"))
 
+    def test_rerun_needs_a_non_empty_index(self):
+        """Reported from a live session: right after "Start over" the index is empty,
+        and ticking "faces" lit up "catch this stage up" — offering to re-run a stage
+        over no files at all. The flag is refreshed by the same fetch that shows/hides
+        the People and Events tabs, which already runs after a reset."""
+        body = self._body("rerunSelectedAllowed")
+        self.assertIn("indexHasFiles", body)
+        self.assertIn("indexHasFiles = !!data.indexed", self.html)
+        self.assertIn("updateRerunSelectedDisabled();", self._body("applyTabVisibility"))
+
     def test_rerun_button_starts_disabled_in_markup(self):
         """Before the first poll there is no state yet — the safe default is off."""
         markup = re.search(r'<button[^>]*id="process-rerun-optional-btn"[^>]*>', self.html)
