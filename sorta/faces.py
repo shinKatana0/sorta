@@ -5,7 +5,9 @@ Contract: reads files (path, dup_of IS NULL), writes ONLY into faces and face_cl
 - A faces row with bbox='[]' and an empty embedding is the marker "file processed, no faces"
   (incrementality without a schema change).
 - Re-clustering preserves labels: a new cluster inherits the label of the old
-  cluster with the largest intersection by face.id, if it is > 50%.
+  cluster with the largest intersection by face.id, if it is > 50%. After a rescan
+  (F89) the face ids are all new, so the intersection is taken over file ids
+  instead — see ClusterSnapshot.
 
 Thresholds come from the config.yaml `faces:` section (typed, cfg.faces);
 the defaults are the tuned Immich values.
@@ -392,14 +394,23 @@ def _insightface_analyzer(s: FacesSettings) -> Analyzer:  # pragma: no cover —
 
 def _write_hits(
     conn: sqlite3.Connection, s: FacesSettings, stats: FaceStats,
-    r: sqlite3.Row, hits: list[FaceHit],
+    r: sqlite3.Row, hits: list[FaceHit], replace: bool = False,
 ) -> None:
+    """Write the faces of one file; `replace` drops its previous rows first (F89).
+
+    The delete lives INSIDE the per-file transaction on purpose: at every moment a
+    file either has its old faces or its new ones, never neither. Wiping the whole
+    table up front would be simpler, but a Ctrl+C halfway through a rescan of 24k
+    frames would then leave a collection with no faces at all.
+    """
     kept = [
         (bbox, score, emb) for bbox, score, emb in hits
         if score >= s.det_threshold
         and min(bbox[2] - bbox[0], bbox[3] - bbox[1]) >= s.min_face_px
     ]
     with conn:  # one transaction per file: Ctrl+C-safe
+        if replace:
+            conn.execute("DELETE FROM faces WHERE file_id = ?", (r["id"],))
         if kept:
             conn.executemany(
                 "INSERT INTO faces (file_id, bbox, embedding) VALUES (?, ?, ?)",
@@ -420,17 +431,60 @@ def _write_hits(
     stats.files_processed += 1
 
 
+# The canonical photos phase 3 works on: originals only (no duplicates), readable,
+# and stills — a video has no faces row of its own.
+_CANONICAL = "dup_of IS NULL AND error IS NULL AND media_type = 'photo'"
+
+
+def _files_to_detect(
+    conn: sqlite3.Connection, rescan: bool, limit: int | None,
+) -> list[sqlite3.Row]:
+    """The files this run detects on.
+
+    Default (F68): only files with no faces row at all — the "no faces" marker counts
+    as processed. `rescan` (F89) takes every canonical photo again, and with `limit`
+    only N of them, picked at random: a measurement run recomputes 500 frames and
+    leaves the other 24 thousand alone. Random rather than the first N by id, because
+    the head of the collection is one folder from one camera and would answer a
+    different question than "what does this step cost on my photos".
+    """
+    if not rescan:
+        return conn.execute(
+            f"""SELECT id, path, orientation FROM files
+                WHERE {_CANONICAL} AND id NOT IN (SELECT file_id FROM faces)
+                ORDER BY id"""
+        ).fetchall()
+    if limit is None:
+        return conn.execute(
+            f"SELECT id, path, orientation FROM files WHERE {_CANONICAL} ORDER BY id"
+        ).fetchall()
+    return conn.execute(
+        f"SELECT id, path, orientation FROM files WHERE {_CANONICAL} "
+        f"ORDER BY RANDOM() LIMIT ?", (limit,)
+    ).fetchall()
+
+
 def detect_faces(
     cfg: Config, conn: sqlite3.Connection,
     progress: ProgressCB | None = None,
     analyzer: Analyzer | None = None,
     infer_factory: InferFactory | None = None,
+    rescan: bool = False,
+    limit: int | None = None,
 ) -> FaceStats:
     """Find faces in new canonical photos and write embeddings into faces.
 
     Incrementality: files that already have rows in faces (including the "no faces"
     marker) are skipped. Files with a row-read error do not get one and will be
     retried on the next run.
+
+    `rescan` (F89) turns that off: the selected files are detected again and their
+    old faces rows are replaced, one file per transaction. `limit` narrows a rescan
+    to N random files. A rescan gives every face a new id, so the cluster labels can
+    no longer be matched back by face — take `snapshot_clusters(conn)` BEFORE calling
+    this and hand it to `cluster_faces(inherit_from=...)`, which is exactly what
+    `detect_and_cluster(rescan=True)` does. Otherwise every name the user typed is
+    lost.
 
     The mock path (an `analyzer` passed, as in tests) is strictly serial, decode and
     inference in one call, behaviour unchanged. The real path (analyzer=None) runs
@@ -443,13 +497,10 @@ def detect_faces(
     SQLite is written only from this thread in both cases (single-writer), one
     transaction per file; the order of faces rows does not matter.
     """
+    if limit is not None and not rescan:
+        raise ValueError("limit имеет смысл только вместе с rescan")
     s = _settings(cfg)
-    rows = conn.execute(
-        """SELECT id, path, orientation FROM files
-           WHERE dup_of IS NULL AND error IS NULL AND media_type = 'photo'
-             AND id NOT IN (SELECT file_id FROM faces)
-           ORDER BY id"""
-    ).fetchall()
+    rows = _files_to_detect(conn, rescan, limit)
     stats = FaceStats(files_total=len(rows))
     if not rows:
         return stats
@@ -461,7 +512,7 @@ def detect_faces(
             except Exception:
                 stats.errors += 1
                 continue
-            _write_hits(conn, s, stats, r, hits)
+            _write_hits(conn, s, stats, r, hits, replace=rescan)
             if progress:
                 progress(i, len(rows))
         return stats
@@ -475,7 +526,7 @@ def detect_faces(
         if hits is None:
             stats.errors += 1
         else:
-            _write_hits(conn, s, stats, r, hits)
+            _write_hits(conn, s, stats, r, hits, replace=rescan)
         done += 1
         if progress:
             progress(done, len(rows))
@@ -560,7 +611,7 @@ def _read_face_rows(conn: sqlite3.Connection, report: _PhaseProgress) -> list[sq
     report.start(CLUSTER_PHASE_READ, int(total))
     rows: list[sqlite3.Row] = []
     cursor = conn.execute(
-        "SELECT id, cluster_id, embedding FROM faces WHERE bbox != ? ORDER BY id",
+        "SELECT id, file_id, cluster_id, embedding FROM faces WHERE bbox != ? ORDER BY id",
         (_NO_FACES_BBOX,),
     )
     for row in cursor:
@@ -621,8 +672,74 @@ def _root_of(merged_into: dict[int, int | None], cid: int) -> int:
     return cid
 
 
+@dataclass(frozen=True)
+class ClusterSnapshot:
+    """Which FILES each effective cluster held, and under what name (F89).
+
+    Labels normally survive a recomputation because a new cluster and its old
+    counterpart share face ids. A rescan deletes those rows and detects again, so
+    every id is new, every intersection is empty, and the names the user typed by
+    hand would disappear without a word. Files are the one identity that survives:
+    the snapshot is taken BEFORE the delete and inheritance is then computed in file
+    terms (`cluster_faces(inherit_from=...)`).
+
+    Chains are already resolved: `files` is keyed by the ROOT of the merged_into
+    chain, so a manually merged pair (F3) is one entry and inherits under the name
+    the user gave the pair.
+    """
+    labels: dict[int, str | None]   # cluster id -> its label (looked up by root)
+    files: dict[int, set[int]]      # root cluster id -> the files its faces sat on
+
+
+def snapshot_clusters(conn: sqlite3.Connection) -> ClusterSnapshot:
+    """Record the current clusters in file terms — call BEFORE a rescan deletes faces."""
+    old = {
+        r["id"]: (r["label"], r["merged_into"])
+        for r in conn.execute("SELECT id, label, merged_into FROM face_clusters")
+    }
+    merged_into = {cid: m for cid, (_lbl, m) in old.items()}
+    files: dict[int, set[int]] = defaultdict(set)
+    for r in conn.execute(
+        "SELECT file_id, cluster_id FROM faces WHERE cluster_id IS NOT NULL"
+    ):
+        files[_root_of(merged_into, r["cluster_id"])].add(r["file_id"])
+    return ClusterSnapshot(
+        labels={cid: lbl for cid, (lbl, _m) in old.items()}, files=dict(files),
+    )
+
+
+def _inherit_labels(
+    groups: dict[int, list[int]],
+    keys_of_group: Callable[[list[int]], set[int]],
+    old_roots_of_key: dict[int, list[int]],
+    labels: dict[int, str | None],
+    report: _PhaseProgress,
+) -> dict[int, str | None]:
+    """New cluster -> the label it inherits: biggest overlap with an old one, share > 50%.
+
+    The overlap is counted over identities that both sides can name: face ids on an
+    ordinary recomputation, file ids after a rescan (F89), where the face ids are all
+    new. A key can belong to several old clusters (one photo, two people), so a key
+    votes for each of them — at most once per cluster, which keeps the share below 1.
+    """
+    inherited: dict[int, str | None] = {}
+    for done, (lab, face_ids) in enumerate(groups.items(), 1):
+        report.step(done)
+        keys = keys_of_group(face_ids)
+        overlap = Counter(
+            root for k in keys for root in old_roots_of_key.get(k, ())
+        )
+        if not overlap:
+            continue
+        best_root, best_n = overlap.most_common(1)[0]
+        if best_n * 2 > len(keys):
+            inherited[lab] = labels.get(best_root)
+    return inherited
+
+
 def cluster_faces(cfg: Config, conn: sqlite3.Connection,
-                  progress: ProgressCB | None = None) -> ClusterStats:
+                  progress: ProgressCB | None = None,
+                  inherit_from: ClusterSnapshot | None = None) -> ClusterStats:
     """Full recomputation of clusters over all embeddings, preserving labels.
 
     F84: `progress` is the same `(done, total|None)` callback the other stages take —
@@ -631,6 +748,10 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection,
     inheritance of labels → write; HDBSCAN reports `total=None` (indeterminate), the
     rest are measurable. Called without a callback the function works exactly as
     before.
+
+    F89: `inherit_from` is a `ClusterSnapshot` taken before a rescan. Without it
+    labels are inherited by face id, as always; with it — by file id, because a
+    rescan gave every face a new id and the face-wise intersection would be empty.
     """
     s = _settings(cfg)
     report = _PhaseProgress(progress)
@@ -670,29 +791,34 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection,
             groups[int(lab)].append(r["id"])
 
     report.start(CLUSTER_PHASE_INHERIT, len(groups))
-    # old state: face.id -> root old cluster, and its label
-    old_clusters = {
-        r["id"]: (r["label"], r["merged_into"])
-        for r in conn.execute("SELECT id, label, merged_into FROM face_clusters")
-    }
-    merged_into = {cid: m for cid, (_lbl, m) in old_clusters.items()}
-    old_root_of_face = {
-        r["id"]: _root_of(merged_into, r["cluster_id"])
-        for r in rows if r["cluster_id"] is not None
-    }
+    if inherit_from is not None:
+        # F89: the faces rows were just replaced — match by file, the stable identity
+        file_of_face = {r["id"]: r["file_id"] for r in rows}
+        old_roots_of_key: dict[int, list[int]] = defaultdict(list)
+        for root, file_ids in inherit_from.files.items():
+            for file_id in file_ids:
+                old_roots_of_key[file_id].append(root)
+        old_labels = inherit_from.labels
 
-    # label inheritance: the old cluster with the largest intersection and share > 50%
-    inherited: dict[int, str | None] = {}
-    for done, (lab, face_ids) in enumerate(groups.items(), 1):
-        report.step(done)
-        overlap = Counter(
-            old_root_of_face[fid] for fid in face_ids if fid in old_root_of_face
-        )
-        if not overlap:
-            continue
-        best_root, best_n = overlap.most_common(1)[0]
-        if best_n * 2 > len(face_ids):
-            inherited[lab] = old_clusters[best_root][0] if best_root in old_clusters else None
+        def keys_of_group(face_ids: list[int]) -> set[int]:
+            return {file_of_face[fid] for fid in face_ids}
+    else:
+        # old state: face.id -> root old cluster, and its label
+        old_clusters = {
+            r["id"]: (r["label"], r["merged_into"])
+            for r in conn.execute("SELECT id, label, merged_into FROM face_clusters")
+        }
+        merged_into = {cid: m for cid, (_lbl, m) in old_clusters.items()}
+        old_roots_of_key = defaultdict(list)
+        for r in rows:
+            if r["cluster_id"] is not None:
+                old_roots_of_key[r["id"]].append(_root_of(merged_into, r["cluster_id"]))
+        old_labels = {cid: lbl for cid, (lbl, _m) in old_clusters.items()}
+
+        def keys_of_group(face_ids: list[int]) -> set[int]:
+            return set(face_ids)
+
+    inherited = _inherit_labels(groups, keys_of_group, old_roots_of_key, old_labels, report)
 
     report.start(CLUSTER_PHASE_WRITE, len(groups))
     with conn:
@@ -719,15 +845,24 @@ def detect_and_cluster(
     cfg: Config, conn: sqlite3.Connection,
     progress: ProgressCB | None = None,
     analyzer: Analyzer | None = None,
+    rescan: bool = False,
+    limit: int | None = None,
 ) -> tuple[FaceStats, ClusterStats]:
     """Full phase-3 pass: detection of new files + cluster recomputation.
 
     The same callback drives both halves — detection counts frames, clustering
     reports its phases (F84), so the bar keeps moving across the boundary instead of
     freezing on `24196/24196` for the rest of the step.
+
+    F89: `rescan` recomputes files that already have faces (all of them, or `limit`
+    random ones). This is the only place that pairs the rescan with the snapshot the
+    labels are carried across on, so it is the entry point to use — the halves called
+    separately with rescan=True would drop every name.
     """
-    face_stats = detect_faces(cfg, conn, progress=progress, analyzer=analyzer)
-    return face_stats, cluster_faces(cfg, conn, progress=progress)
+    snapshot = snapshot_clusters(conn) if rescan else None
+    face_stats = detect_faces(cfg, conn, progress=progress, analyzer=analyzer,
+                              rescan=rescan, limit=limit)
+    return face_stats, cluster_faces(cfg, conn, progress=progress, inherit_from=snapshot)
 
 
 # --- Manual operations on clusters -----------------------------------------

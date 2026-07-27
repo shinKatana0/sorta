@@ -234,9 +234,9 @@ class DetectFacesDecoupledTest(FacesTestCase):
         write_threads: set[int] = set()
         real_write = faces_mod._write_hits
 
-        def spy(conn, s, stats, r, hits):
+        def spy(conn, s, stats, r, hits, replace=False):  # replace: F89 rescan
             write_threads.add(threading.get_ident())
-            real_write(conn, s, stats, r, hits)
+            real_write(conn, s, stats, r, hits, replace)
 
         ids = [self.add_file()[0] for _ in range(8)]
         progress_threads: set[int] = set()
