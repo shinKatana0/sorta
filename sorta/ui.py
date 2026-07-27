@@ -126,6 +126,23 @@ exclusion narrow the walk and nothing else. This endpoint touches neither files 
 index: the rows already indexed under a new "do not scan" are removed by the next
 `index()` run.
 
+(14) `GET /api/cache`, `POST /api/cache/clear` (F94, the bottom of the "Process" tab) —
+the two caches the program keeps, from the web app instead of only from `sorta cache`.
+The GET reports what they occupy (the preview directory: files + bytes via `_sum_dir`,
+metadata only; `geo_cache`: rows via `geo.geo_cache_size`) — the same numbers the CLI
+prints. It is a SEPARATE route on purpose and is never folded into the status poll: the
+preview cache is tens of thousands of files, so walking it once a tick would be a
+directory scan per second. The POST takes `{"target": "preview"|"geo"}` — anything else
+is a 400 — and calls the ready `imaging.preview_cache_clear()` / `geo.clear_geo_cache()`;
+neither is reimplemented here, this feature is only the way to reach them. Both are
+idempotent (an empty cache clears to zero rows, not to an error) and both are refused
+with 409 while a run or a layout is in flight, under the same `busy_lock` as
+`/api/process/reset`: mid-run a geo clear would send the rest of the stage back to the
+network and a preview clear would delete the frames the stage is writing right now. The
+response carries the fresh sizes, so the client does not need a second request. Nothing
+here decides on its own what to delete — there is no size ceiling and no eviction, a
+cache goes away only when the user says so.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -175,7 +192,7 @@ from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
 from .faces import detect_and_cluster
-from .geo import resolve_places
+from .geo import clear_geo_cache, geo_cache_size, resolve_places
 from .indexer import excludes_path, index as run_index, load_excludes, normalize_exclude
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
@@ -1739,6 +1756,46 @@ def _env_payload() -> dict:
     return {"gpu_profile": importlib.util.find_spec("nvidia") is not None}
 
 
+# F94: the two caches the web app may look at and empty. The CLI (`sorta cache`) knows
+# the same pair; the names are what travels in the body of `POST /api/cache/clear`.
+_CACHE_TARGETS = ("preview", "geo")
+
+
+def _cache_payload(db_path: Path) -> dict:
+    """F94: what the preview and geo caches occupy — the numbers `sorta cache` prints.
+
+    The preview side is a metadata-only walk (`_sum_dir`) of a directory that holds one
+    JPEG per frame — tens of thousands of them on a real collection, which is exactly
+    why this is its own route and not a field of the status snapshot. The geo side is a
+    `COUNT(*)`, the unit `sorta cache` reports for it: rows, not bytes.
+
+    A cache that was never written is not an error — a missing directory sums to
+    (0, 0) and an empty table counts 0.
+    """
+    directory = imaging.preview_dir()
+    files, size = _sum_dir(directory)
+    conn = _connect(db_path)
+    try:
+        entries = geo_cache_size(conn)
+    finally:
+        conn.close()
+    return {
+        "preview": {"dir": str(directory), "files": files, "bytes": size},
+        "geo": {"entries": entries},
+    }
+
+
+def _validate_cache_clear_payload(payload: object) -> str | None:
+    """Parse `{"target": "preview"|"geo"}` (F94). None -> invalid: not a dict, or a
+    target outside the pair — deleting is not something to guess an object for."""
+    if not isinstance(payload, dict):
+        return None
+    target = payload.get("target")
+    if not isinstance(target, str) or target not in _CACHE_TARGETS:
+        return None
+    return target
+
+
 def _validate_process_payload(payload: object) -> tuple[str, bool, bool, bool, bool] | None:
     """Parse `{"source_dir": str, "deep": bool=False, "geo_online": bool=False,
     "faces": bool=False, "events": bool=False}` (F50/#34: opt-in VLM tier /
@@ -2343,6 +2400,78 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "process_reset_error_prefix": {
         "ru": "Не удалось сбросить: ", "en": "Failed to reset: ", "ja": "リセットできません: ",
+    },
+    # F94: the caches were reachable only from `sorta cache`, while the web app is
+    # advertised as a full entry point — so on a live collection 12 GB of previews had
+    # no way out for anyone who does not use the terminal. Sizes are shown, both
+    # clears are offered, and nothing is deleted without being asked for: a ceiling
+    # with eviction would be deciding for the user which frames to throw away.
+    "cache_title": {"ru": "Кэши", "en": "Caches", "ja": "キャッシュ"},
+    "cache_sizes": {
+        "ru": "Кэш превью: {preview} ({files} файлов) · Кэш геоданных: {geo} записей",
+        "en": "Preview cache: {preview} ({files} files) · Geo cache: {geo} entries",
+        "ja": "プレビューキャッシュ: {preview} ({files} 件) · 位置情報キャッシュ: {geo} 件",
+    },
+    "cache_hint": {
+        "ru": "Кэш превью — уменьшенные копии кадров, он ускоряет прогон и "
+              "пересобирается сам. Кэш геоданных — ответы онлайн-геокодера, они "
+              "избавляют повторный прогон от сети. Ни один из них не чистится "
+              "автоматически.",
+        "en": "The preview cache holds downscaled copies of the frames: it speeds the "
+              "run up and rebuilds itself. The geo cache holds the online geocoder's "
+              "answers, which spare a repeat run the network. Neither is ever cleared "
+              "automatically.",
+        "ja": "プレビューキャッシュは縮小したコマの控えで、処理を速くし、自動的に作り直されます。"
+              "位置情報キャッシュはオンライン地理コーダーの応答で、再実行時の通信を省きます。"
+              "どちらも自動では消去されません。",
+    },
+    "cache_clear_preview_button": {
+        "ru": "Очистить кэш превью", "en": "Clear the preview cache",
+        "ja": "プレビューキャッシュを消去",
+    },
+    "cache_clear_geo_button": {
+        "ru": "Очистить кэш геоданных", "en": "Clear the geo cache",
+        "ja": "位置情報キャッシュを消去",
+    },
+    "cache_clear_preview_confirm": {
+        "ru": "Удалить кэш превью ({preview})? Место освободится сразу, а кэш "
+              "соберётся заново сам — но первый прогон после этого будет медленнее: "
+              "336 мс на кадр против 73 мс на готовом кэше. Фото и индекс не тронет.",
+        "en": "Delete the preview cache ({preview})? The space is freed at once and the "
+              "cache rebuilds itself — but the first run after that is slower: 336 ms "
+              "per frame against 73 ms on a warm cache. Photos and the index are NOT "
+              "touched.",
+        "ja": "プレビューキャッシュ ({preview}) を削除しますか? 容量はすぐに解放され、"
+              "キャッシュは自動的に作り直されますが、次の処理は遅くなります"
+              "(1 コマあたり 336 ミリ秒、キャッシュありなら 73 ミリ秒)。"
+              "写真とインデックスには触れません。",
+    },
+    "cache_clear_geo_confirm": {
+        "ru": "Удалить ответы онлайн-геокодера ({geo} записей)? У уже обработанных "
+              "фото города останутся, но при provider: online следующий прогон "
+              "снова сходит в сеть — это минуты. Делайте это, если провайдер "
+              "ответил неверно.",
+        "en": "Delete the online geocoder's answers ({geo} entries)? The photos already "
+              "processed keep their cities, but with provider: online the next run goes "
+              "to the network again — that is minutes. Do this if the provider got an "
+              "answer wrong.",
+        "ja": "オンライン地理コーダーの応答 ({geo} 件) を削除しますか? "
+              "処理済みの写真の都市は残りますが、provider: online では次回の実行で"
+              "再び通信が発生します(数分)。応答が誤っていた場合に実行してください。",
+    },
+    "cache_clear_preview_done": {
+        "ru": "Кэш превью очищен: удалено файлов {n}.",
+        "en": "Preview cache cleared: {n} files removed.",
+        "ja": "プレビューキャッシュを消去しました: {n} 件を削除。",
+    },
+    "cache_clear_geo_done": {
+        "ru": "Кэш геоданных очищен: удалено записей {n}.",
+        "en": "Geo cache cleared: {n} entries removed.",
+        "ja": "位置情報キャッシュを消去しました: {n} 件を削除。",
+    },
+    "cache_clear_error_prefix": {
+        "ru": "Не удалось очистить кэш: ", "en": "Failed to clear the cache: ",
+        "ja": "キャッシュを消去できません: ",
     },
     "lightbox_close": {"ru": "Закрыть", "en": "Close", "ja": "閉じる"},
     "lightbox_open": {"ru": "Открыть превью", "en": "Open preview", "ja": "プレビューを開く"},
@@ -3022,6 +3151,14 @@ label { cursor: pointer; }
 .process-phase { margin: calc(-1 * var(--space-sm)) 0 var(--space-sm); font-size: 0.85rem;
       color: var(--muted); }
 /* F64: инфо-баннер о CPU-профиле (амбер, читается в обеих темах через --ink) */
+/* F94: the caches — a quiet block at the bottom of the tab. It is housekeeping, not a
+   step of the run, so it looks like a card but is not numbered among the steps. */
+.cache-block { margin-top: var(--space-md); border: 1px solid var(--line);
+      border-radius: var(--radius-md); background: var(--surface); padding: var(--space-md);
+      display: flex; flex-direction: column; gap: var(--space-sm); }
+.cache-head { display: flex; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; }
+.cache-sizes { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.cache-status { font-size: 0.8rem; color: var(--muted); }
 .env-warning { margin-top: var(--space-md); padding: 10px 13px; font-size: 0.85rem;
       border-radius: var(--radius-md); color: var(--ink); line-height: 1.45;
       background: rgba(214, 158, 46, 0.13); border: 1px solid rgba(214, 158, 46, 0.42); }
@@ -3211,6 +3348,18 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <div id="process-stages" class="stage-chips"></div>
 <div id="process-status" class="process-status"></div>
 <div id="env-cpu-warning" class="env-warning" style="display:none">⚠ {{env_cpu_warning}}</div>
+<div class="cache-block" id="cache-block">
+<div class="cache-head">
+<span class="step-title">{{cache_title}}</span>
+<span id="cache-sizes" class="cache-sizes">{{loading}}</span>
+</div>
+<span class="process-toggle-hint">{{cache_hint}}</span>
+<div class="process-actions">
+<button type="button" id="cache-clear-preview-btn" class="btn btn-ghost">{{cache_clear_preview_button}}</button>
+<button type="button" id="cache-clear-geo-btn" class="btn btn-ghost">{{cache_clear_geo_button}}</button>
+<span id="cache-status" class="cache-status"></span>
+</div>
+</div>
 </section>
 
 <section id="tab-city" class="tab-panel">
@@ -4249,6 +4398,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     movesLoaded = false;
     renderPlanTab("city", "tree-city");
     applyTabVisibility();
+    loadCacheSizes();  // F94: a run is what makes the preview cache grow
   }
 
   function renderProcessStatus(data) {
@@ -4748,6 +4898,69 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     });
   });
 
+  // --- F94: the caches ------------------------------------------------------
+  // Sizes are asked for rarely and on purpose: the preview cache is tens of
+  // thousands of files, so the status poll must never touch it. Page load, the end
+  // of a run and a clear are the only three moments the number can have changed.
+  var cacheInfo = { previewBytes: 0, previewFiles: 0, geoEntries: 0 };
+
+  function applyCacheInfo(data) {
+    if (!data || !data.preview || !data.geo) return;
+    cacheInfo.previewBytes = data.preview.bytes || 0;
+    cacheInfo.previewFiles = data.preview.files || 0;
+    cacheInfo.geoEntries = data.geo.entries || 0;
+    document.getElementById("cache-sizes").textContent = fmt(I18N.cache_sizes, {
+      preview: formatSize(cacheInfo.previewBytes),
+      files: cacheInfo.previewFiles,
+      geo: cacheInfo.geoEntries,
+    });
+  }
+
+  var cacheSizesPending = false;
+
+  function loadCacheSizes() {
+    // Page load and "the run has finished" can land together (a reload right after a
+    // run) — one walk of the preview directory per moment, not two.
+    if (cacheSizesPending) return;
+    cacheSizesPending = true;
+    fetch("/api/cache").then(function (r) { return r.json(); })
+      .then(function (data) { cacheSizesPending = false; applyCacheInfo(data); })
+      .catch(function () { cacheSizesPending = false; });
+  }
+
+  // Both clears are irreversible and neither is free, so each states its own price
+  // before it happens — the preview one that the next run pays 336 ms per frame
+  // instead of 73, the geo one that with provider: online it pays the network again.
+  function clearCache(target, confirmText, doneText) {
+    if (!window.confirm(confirmText)) return;
+    var statusEl = document.getElementById("cache-status");
+    statusEl.textContent = "";
+    postJson("/api/cache/clear", { target: target }).then(function (resp) {
+      if (!resp || resp.error) {
+        statusEl.textContent =
+            I18N.cache_clear_error_prefix + ((resp && resp.error) || "");
+        return;
+      }
+      statusEl.textContent = fmt(doneText, { n: resp.removed || 0 });
+      applyCacheInfo(resp.cache);
+    });
+  }
+
+  document.getElementById("cache-clear-preview-btn").addEventListener("click", function () {
+    clearCache("preview",
+               fmt(I18N.cache_clear_preview_confirm,
+                   { preview: formatSize(cacheInfo.previewBytes) }),
+               I18N.cache_clear_preview_done);
+  });
+
+  document.getElementById("cache-clear-geo-btn").addEventListener("click", function () {
+    clearCache("geo",
+               fmt(I18N.cache_clear_geo_confirm, { geo: cacheInfo.geoEntries }),
+               I18N.cache_clear_geo_done);
+  });
+
+  loadCacheSizes();
+
   pollProcessStatus();
 
   // --- вкладка «Города»: apply раскладки (F43) ----------------------------
@@ -4793,9 +5006,12 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   // busy_lock, но «Начать заново» сперва показывает страшное подтверждение и
   // только потом ошибку, а раскладка на середине прогона разложила бы коллекцию
   // по недостроенному индексу (places очищены, media_class ещё пуст).
+  // F94: очистки кэшей — там же: подтверждение с ценой действия ради ответа 409
+  // ничем не лучше, а превью на середине прогона пишет тот самый шаг.
   function updateBusyControlsDisabled() {
     ["sort-apply-btn", "sort-browse-btn", "sort-dest",
-     "process-reset-btn"].forEach(function (id) {
+     "process-reset-btn",
+     "cache-clear-preview-btn", "cache-clear-geo-btn"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = sortRunning || processRunning; }
     });
@@ -5594,6 +5810,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"dest": _suggested_sort_dest(cfg, db_path)})
             elif path == "/api/tabs/visibility":
                 self._send_json(_tabs_visibility_payload(db_path))
+            elif path == "/api/cache":
+                self._send_json(_cache_payload(db_path))
             elif path == "/api/source-tree":
                 self._serve_source_tree(parse_qs(parts.query))
             elif path == "/api/source-tree/excludes":
@@ -5640,6 +5858,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_process_cancel()
             elif path == "/api/process/reset":
                 self._handle_process_reset()
+            elif path == "/api/cache/clear":
+                self._handle_cache_clear()
             elif path == "/api/config/language":
                 self._handle_set_language()
             elif path == "/api/browse":
@@ -5922,6 +6142,39 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 finally:
                     conn.close()
             self._send_json({"ok": True, "clear_geo": clear_geo})
+
+        def _handle_cache_clear(self) -> None:
+            # F94: the button next to the size on the "Process" tab. The clearing
+            # itself belongs to imaging/geo — this only decides that it may happen now.
+            target = _validate_cache_clear_payload(self._read_json_body())
+            if target is None:
+                self._send_json({"error": "invalid target"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            # The same busy_lock guard as /api/process/reset, for the same reason:
+            # mid-run a geo clear sends the rest of the stage back to the network, and
+            # a preview clear deletes the frames that stage is writing right now.
+            with busy_lock:
+                if process_state.snapshot()["running"] or sort_state.snapshot()["running"]:
+                    self._send_json({"error": "already running"},
+                                    status=HTTPStatus.CONFLICT)
+                    return
+                if target == "geo":
+                    conn = _connect(db_path)
+                    try:
+                        removed = clear_geo_cache(conn)
+                    finally:
+                        conn.close()
+                else:
+                    # Counted before the removal: `preview_cache_clear` reports
+                    # nothing, and "freed nothing" has to be distinguishable from
+                    # "freed 12 GB" in the status line.
+                    removed, freed = _sum_dir(imaging.preview_dir())
+                    imaging.preview_cache_clear()
+                    _log.info("preview cache cleared: %d files, %d bytes", removed, freed)
+                payload = _cache_payload(db_path)
+            self._send_json({"ok": True, "target": target, "removed": removed,
+                             "cache": payload})
 
         def _handle_set_language(self) -> None:
             # F65: the "Folder language" selector — sets the OUTPUT language (folders/

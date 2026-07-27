@@ -270,7 +270,13 @@ class TestRescanLimit(RescanTestCase):
 
         after = self.face_ids()
         self.assertEqual(sorted(after), sorted(before), "all 8 files still have rows")
-        touched = {fid for fid, ids in after.items() if ids != before[fid]}
+        # Which files were recomputed is what the detector was ASKED about, not a diff
+        # of the row ids: a rescan deletes and re-inserts, and when the deleted rows
+        # sat at the end of the table SQLite hands the same rowids straight back — so
+        # a genuinely rewritten file can come back looking untouched (this comparison
+        # failed roughly one run in six). The other direction is sound: a row that was
+        # never deleted cannot change its id, so the rest is still checked by id.
+        touched = {fid for fid, path in self.paths.items() if path in self.seen}
         self.assertEqual(len(touched), 3)
         untouched = set(before) - touched
         for fid in untouched:
