@@ -856,13 +856,16 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
 sorta album person|event <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   Collect a slice into a named folder (hardlink by default)
 sorta undo [--batch ID]           Reverse the last (or a specific) batch
-sorta reset [--yes]               Wipe the index (DB) and start over — leaves your
+sorta reset [--yes] [--clear-geo] Wipe the index (DB) and start over — leaves your
                                   photos and any already-sorted folders untouched
-                                  (names of people/events and dup decisions are lost)
+                                  (names of people/events and dup decisions are lost).
+                                  The online-geo cache survives unless --clear-geo
 sorta ui [--port 8756]            Local web app (Process / Cities / Duplicates / People / Events / Moves)
 sorta doctor                      Environment check: torch/onnxruntime, GPU, geo data,
                                   log path, preview cache path (§3.5)
-sorta cache [--clear]             Preview cache: size, or delete it (§18)
+sorta cache [--clear] [--clear-geo]
+                                  Caches: preview size or deletion (§18), and
+                                  --clear-geo drops the cached online-geo answers
 ```
 
 Every command takes `-c/--config <path>` (default `config.yaml`) — except
@@ -1073,6 +1076,7 @@ geo:
   session_gap_hours: 6         # gap that splits GPS-inference sessions
   nominatim_url: "https://nominatim.openstreetmap.org"   # only if provider: online
   nominatim_user_agent: "sorta-photo-organizer"          # required by OSM policy
+  cache_max_age_days: 180      # how long a cached online answer stays fresh (0 = never expire)
 
 events:
   gap_hours: 6                 # gap that starts a new session

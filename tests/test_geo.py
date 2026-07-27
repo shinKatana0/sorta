@@ -304,7 +304,7 @@ class TestGeoProgress(unittest.TestCase):
         self.assertEqual(calls[-1], (2, 2))
 
     def test_online_provider_progress_ticks_during_network_phase(self):
-        # F52 review: the network phase (_NominatimResolver.resolve_places, called
+        # F52 review: the network phase (the online resolver, called
         # BEFORE the write loop) must move progress itself — the write loop for
         # online is instant (the network already ran), so all the useful information
         # about the ~12-minute run comes from here.
@@ -337,16 +337,32 @@ class TestGeoProgress(unittest.TestCase):
 
 
 class TestNominatimResolverProgress(unittest.TestCase):
-    """F52 review: unit-level on the network resolve itself — previously
-    _NominatimResolver.resolve_places got no progress at all, and the counter hung
-    at "0 of N" for all ~12 minutes of network, then instantly caught up in the write
-    loop. We check that progress(k, len(coords)) is called for EACH coordinate, in
-    step with (after) the real network requests, not all at once at the end.
+    """F52 review: unit-level on the network resolve itself — previously the online
+    resolver got no progress at all, and the counter hung at "0 of N" for all ~12
+    minutes of network, then instantly caught up in the write loop. We check that
+    progress(k, len(coords)) is called in step with (after) the real network requests,
+    not all at once at the end.
+
+    F93 changed the unit under test and its granularity: the network now happens once
+    per GROUP of coordinates (three requests, one per language), so progress ticks per
+    group and jumps by the size of the group. The property being pinned is the same —
+    the counter moves DURING the network.
     """
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = connect(Path(self.tmp.name) / "test.db")
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
     def _resolver(self):
-        from sorta.geo import _NominatimResolver
-        return _NominatimResolver(Config(geo=GeoConfig(provider="online")))
+        from sorta.geo import _CachedOnlineResolver, _NominatimClient
+        cfg = Config(geo=GeoConfig(provider="online"))
+        # local=None: no bundled base here, so every coordinate is keyed by the grid
+        # fallback (cache_coord_digits) — which is what makes the groups below explicit.
+        return _CachedOnlineResolver(cfg, self.conn, _NominatimClient(cfg), None)
 
     def _fake_response(self):
         class _Resp:
@@ -362,7 +378,7 @@ class TestNominatimResolverProgress(unittest.TestCase):
 
     def test_progress_interleaved_with_requests_not_batched_at_end(self):
         resolver = self._resolver()
-        coords = [(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]  # different -> none is cached
+        coords = [(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]  # three distinct groups
         events: list[tuple] = []
 
         def fake_urlopen(req, timeout=None):
@@ -374,17 +390,18 @@ class TestNominatimResolverProgress(unittest.TestCase):
             resolver.resolve_places(
                 coords, progress=lambda done, total: events.append(("progress", done, total)))
 
+        # three languages asked per group, then the tick for that group
         self.assertEqual(
             events,
-            [("request",), ("progress", 1, 3),
-             ("request",), ("progress", 2, 3),
-             ("request",), ("progress", 3, 3)],
+            [("request",), ("request",), ("request",), ("progress", 1, 3),
+             ("request",), ("request",), ("request",), ("progress", 2, 3),
+             ("request",), ("request",), ("request",), ("progress", 3, 3)],
         )
 
-    def test_progress_called_for_cached_coords_too(self):
-        # a repeated (rounded) coordinate makes no new request, but the position in
-        # coords still advances progress — otherwise cache hits would stick at the
-        # previous total.
+    def test_progress_counts_every_coordinate_of_a_group(self):
+        # a repeated (rounded) coordinate makes no extra request, but both files it
+        # stands for must be counted — otherwise a group of 200 photos would advance
+        # the counter by one.
         resolver = self._resolver()
         coords = [(1.0, 1.0), (1.0, 1.0), (2.0, 2.0)]
         calls = []
@@ -393,8 +410,8 @@ class TestNominatimResolverProgress(unittest.TestCase):
              patch("sorta.geo.time.sleep"):
             resolver.resolve_places(
                 coords, progress=lambda done, total: calls.append((done, total)))
-        self.assertEqual(calls, [(1, 3), (2, 3), (3, 3)])
-        self.assertEqual(mock_urlopen.call_count, 2)  # 2 unique coordinates
+        self.assertEqual(calls, [(2, 3), (3, 3)])
+        self.assertEqual(mock_urlopen.call_count, 6)  # 2 groups × 3 languages
 
 
 if __name__ == "__main__":

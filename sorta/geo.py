@@ -24,6 +24,12 @@ the target language is sort's job (G3), not this module's. `region` — DEPRECAT
 longer written (stays NULL). `district_name` — online only (district name as text,
 offline leaves it NULL and writes geonameid into district_geonameid).
 
+F93: the ONLINE answers live in the `geo_cache` table, not in the process. A re-run
+still recomputes places from scratch (session inheritance needs the whole collection),
+but it no longer re-asks the network about coordinates it already knows — and it stores
+all three languages side by side, so switching folder language costs no requests at
+all. The offline path never touches that table: recomputing it takes two seconds.
+
 Idempotency: a re-run fully recomputes places.
 """
 from __future__ import annotations
@@ -31,12 +37,13 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import statistics
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -50,7 +57,14 @@ _PROGRESS_EVERY = 1000
 _INHERIT_CONFIDENCE = ("high", "medium")
 _CANONICAL_LANG: Lang = "en"  # the city anchor is always English/asciiname — not localized here
 _NOMINATIM_MIN_INTERVAL = 1.0  # OSM policy: no more than 1 request/sec
-# coordinate rounding for the in-memory cache — now from cfg.geo.cache_coord_digits
+# coordinate rounding for the grid fallback key — from cfg.geo.cache_coord_digits
+# F93: a cached answer holds every interface language at once. Language is a property
+# of the DATA, not of the run: the user switched folders to Japanese and the cities
+# stayed Russian until the next full geo pass, i.e. 35 minutes of network. Completing
+# the missing languages from the bundled base is not an option — measured on the live
+# collection, GeoNames has ja names for 36 of its 83 cities.
+_CACHE_LANGS: tuple[Lang, ...] = ("ru", "en", "ja")
+_PROVIDER_ONLINE = "online"  # the only provider that writes into geo_cache
 # F86: how often the "an answer came back without a city" warning is written. Per file
 # it would be thousands of lines on a real collection; silence is what let the defect
 # live through a full production run (zero warnings for 1 596 lost cities).
@@ -155,23 +169,22 @@ class _OfflineBatchResolver:
         return places
 
 
-class _NominatimResolver:
-    """Online resolve via Nominatim/OSM reverse geocoding (variant B: names as text).
+class _NominatimClient:
+    """One Nominatim/OSM reverse-geocoding request in ONE language (variant B: names as text).
 
-    No geonameids — city/district are returned as ready names in the language
-    cfg.language. Respects the OSM policy: a mandatory User-Agent and no more than
-    1 request/sec; repeated coordinates (rounded to cfg.geo.cache_coord_digits
-    digits) within a run are taken from the in-memory cache without a new request.
+    No geonameids — city/district come back as ready names in the language that was
+    asked for. Respects the OSM policy: a mandatory User-Agent and no more than
+    1 request/sec. Deduplicating coordinates, the three languages and the persistent
+    cache all live one level up (_CachedOnlineResolver) — this class only knows how to
+    ask politely.
     """
 
     def __init__(self, cfg: Config) -> None:
         self._url = cfg.geo.nominatim_url.rstrip("/") + "/reverse"
         self._user_agent = cfg.geo.nominatim_user_agent
         self._timeout = cfg.geo.nominatim_timeout
-        self._language = cfg.language
-        self._coord_digits = cfg.geo.cache_coord_digits  # cache-key rounding (speed)
-        self._cache: dict[tuple[float, float], _Place] = {}
         self._last_request: float | None = None
+        self.requests = 0  # for the run summary: how much network the stage actually cost
 
     def _rate_limit(self) -> None:
         if self._last_request is not None:
@@ -181,10 +194,12 @@ class _NominatimResolver:
                 time.sleep(wait)
         self._last_request = time.monotonic()
 
-    def _fetch(self, lat: float, lon: float) -> _Place:
+    def fetch(self, lat: float, lon: float, lang: str) -> _Place:
+        self._rate_limit()
+        self.requests += 1
         query = urllib.parse.urlencode({
             "lat": lat, "lon": lon, "format": "jsonv2", "zoom": 14,
-            "accept-language": self._language,
+            "accept-language": lang,
         })
         req = urllib.request.Request(
             f"{self._url}?{query}", headers={"User-Agent": self._user_agent},
@@ -220,23 +235,254 @@ class _NominatimResolver:
             country_name=address.get("country"),  # full name in the accept-language language
         )
 
+
+def _pick_lang(values: dict[str, str | None], lang: str) -> str | None:
+    """The variant for `lang`, falling back to en and then to any language present.
+
+    An honest fallback, not a substitution: OSM has no `name:ja` for a Balinese
+    village, so its ja answer is the local latin name — which is exactly the string the
+    sorter used to write anyway. Returning nothing instead would hide a resolved place.
+    """
+    for candidate in (lang, _CANONICAL_LANG, *_CACHE_LANGS):
+        value = values.get(candidate)
+        if value:
+            return value
+    return None
+
+
+@dataclass(frozen=True)
+class _CachedAnswer:
+    """One geo_cache row: what the provider said about a key, in all three languages."""
+
+    country: str | None
+    country_name: dict[str, str | None]
+    city: dict[str, str | None]
+    district: dict[str, str | None]
+
+    @classmethod
+    def of(cls, places: dict[str, _Place]) -> "_CachedAnswer":
+        """Fold the per-language answers about ONE key into a single row."""
+        return cls(
+            country=next((p.country for p in places.values() if p.country), None),
+            country_name={lang: p.country_name for lang, p in places.items()},
+            city={lang: p.city for lang, p in places.items()},
+            district={lang: p.district_name for lang, p in places.items()},
+        )
+
+    def place(self, lang: str) -> _Place:
+        """The place as the current run needs it — the variant for `lang`."""
+        return _Place(
+            country=self.country,
+            city_geonameid=None,
+            district_geonameid=None,
+            city=_pick_lang(self.city, lang),
+            district_name=_pick_lang(self.district, lang),
+            country_name=_pick_lang(self.country_name, lang),
+        )
+
+
+def _all_answered(places: dict[str, _Place]) -> bool:
+    """Did EVERY language come back with a place? Only then may the row be cached.
+
+    A one-off network failure (or the "nominatim пустой address" of a bad minute — two
+    of them in one live run) must not be frozen into the collection forever, and a
+    half-written row would pin the missing language until the expiry date. Either all
+    three languages, or nothing: the files still get the answer of this run, and the
+    next run tries again.
+    """
+    return bool(places) and all(p.country is not None for p in places.values())
+
+
+class _GeoCacheTable:
+    """Access to `geo_cache` (schema v13): provider answers that outlive the run.
+
+    The key has two shapes, built by the code (SQLite would count NULLs in a composite
+    primary key as distinct rows):
+      `c:<city_geonameid>/<district_geonameid>` — the normal one;
+      `g:<lat>/<lon>` — the fallback for coordinates the local base cannot place.
+    The provider is part of the key: offline and online give different answers and
+    mixing them would be a silent misplacement. The language is NOT — it became a
+    dimension of the value.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, provider: str, max_age_days: int) -> None:
+        self._conn = conn
+        self._provider = provider
+        self._max_age_days = max_age_days
+        self.hits = 0
+        self.misses = 0
+        self.expired = 0
+
+    def _fresh(self, updated_at: str | None) -> bool:
+        """Is the row still within cfg.geo.cache_max_age_days? (0 — the expiry is off.)
+
+        City and district borders move rarely, but not never; an unreadable timestamp
+        counts as expired — asking again is cheap next to trusting a row we cannot date.
+        """
+        if self._max_age_days <= 0:
+            return True
+        written = _parse_dt(updated_at)
+        if written is None:
+            return False
+        age = datetime.now(timezone.utc).replace(tzinfo=None) - written
+        return age <= timedelta(days=self._max_age_days)
+
+    def get(self, key: str) -> _CachedAnswer | None:
+        row = self._conn.execute(
+            """SELECT country, country_name_ru, country_name_en, country_name_ja,
+                      city_ru, city_en, city_ja,
+                      district_ru, district_en, district_ja, updated_at
+               FROM geo_cache WHERE provider = ? AND key = ?""",
+            (self._provider, key),
+        ).fetchone()
+        if row is None:
+            self.misses += 1
+            return None
+        if not self._fresh(row["updated_at"]):
+            self.expired += 1
+            return None
+        self.hits += 1
+        return _CachedAnswer(
+            country=row["country"],
+            country_name={lang: row[f"country_name_{lang}"] for lang in _CACHE_LANGS},
+            city={lang: row[f"city_{lang}"] for lang in _CACHE_LANGS},
+            district={lang: row[f"district_{lang}"] for lang in _CACHE_LANGS},
+        )
+
+    def put(self, key: str, answer: _CachedAnswer) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._conn:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO geo_cache
+                       (provider, key, country,
+                        country_name_ru, country_name_en, country_name_ja,
+                        city_ru, city_en, city_ja,
+                        district_ru, district_en, district_ja, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self._provider, key, answer.country,
+                 *(answer.country_name.get(lang) for lang in _CACHE_LANGS),
+                 *(answer.city.get(lang) for lang in _CACHE_LANGS),
+                 *(answer.district.get(lang) for lang in _CACHE_LANGS), now),
+            )
+
+
+def geo_cache_size(conn: sqlite3.Connection) -> int:
+    """How many provider answers are cached (for `sorta cache`)."""
+    row = conn.execute("SELECT COUNT(*) AS n FROM geo_cache").fetchone()
+    return int(row["n"]) if row is not None else 0
+
+
+def clear_geo_cache(conn: sqlite3.Connection) -> int:
+    """Drop every cached provider answer; returns how many rows went away.
+
+    The escape hatch of F93: a cache can freeze a WRONG answer of the provider, and
+    "Start over" deliberately no longer wipes it — so there has to be one command that
+    does (`sorta cache --clear-geo`, `sorta reset --clear-geo`, the checkbox in the
+    reset dialog of the web app).
+    """
+    removed = geo_cache_size(conn)
+    with conn:
+        conn.execute("DELETE FROM geo_cache")
+    return removed
+
+
+def _median_coord(points: list[tuple[float, float]]) -> tuple[float, float]:
+    """The representative of a group — the median latitude and longitude.
+
+    The median and not the mean: one frame shot from a plane over the same district
+    would drag an average out of the place entirely. For a district of an awkward shape
+    even the median can land outside its border — the same caveat F92 carries about its
+    own trip centres.
+    """
+    return (statistics.median(p[0] for p in points),
+            statistics.median(p[1] for p in points))
+
+
+class _CachedOnlineResolver:
+    """F93: the online provider behind a cache keyed by the place of the LOCAL base.
+
+    Two things used to die with the process. The answers — `geo` recomputes places from
+    scratch every run (session inheritance looks at neighbours in time, so a partial
+    recompute gives a different result), and the in-memory cache went with the resolver:
+    adding 200 photos cost the same ~35 minutes of Nominatim as a full run. And the
+    language — it was asked for once, at `accept-language`, so switching folder language
+    left the cities in the old one until the next full pass.
+
+    The key is the pair (city_geonameid, district_geonameid) that every coordinate gets
+    for free from the bundled KD-tree. It beats a coordinate grid on both axes at once —
+    measured on 14 254 GPS files: 603 requests against 6 219 for a 110 m grid, and zero
+    localities mixed against 0.9% of districts. The reason is that the local base has
+    already partitioned the map by MEANING, while a grid invents squares that do not
+    know where a district ends. Coordinates the local base cannot place fall back to a
+    grid key (`g:`) — there are few of them, and the cost of a mistake there is higher.
+
+    A side effect worth as much as the speed: an online place is now anchored to a city
+    of the local base, so event names find a dominant locality again. Nominatim answers
+    with a village or a suburb, dozens per trip, and the name used to fall back to the
+    COUNTRY («Тайланд» instead of «Пхангнга» for 1 359 files).
+
+    On a miss the provider is asked THREE times (ru/en/ja) about ONE representative
+    coordinate — the median of the group — and the row is written once.
+    """
+
+    def __init__(self, cfg: Config, conn: sqlite3.Connection,
+                 client: _NominatimClient, local: GeoResolver | None) -> None:
+        self._client = client
+        self._local = local
+        self._language = cfg.language
+        self._grid_digits = cfg.geo.cache_coord_digits
+        self._cache = _GeoCacheTable(conn, _PROVIDER_ONLINE, cfg.geo.cache_max_age_days)
+
+    def _key(self, lat: float, lon: float) -> str:
+        """The cache key of a coordinate: the local base's place, or a grid cell."""
+        if self._local is not None:
+            res = self._local.resolve(lat, lon)
+            if res.city_id is not None:
+                district = "-" if res.district_id is None else str(res.district_id)
+                return f"c:{res.city_id}/{district}"
+        return f"g:{round(lat, self._grid_digits)}/{round(lon, self._grid_digits)}"
+
+    def _ask_provider(self, point: tuple[float, float]) -> tuple[_CachedAnswer, bool]:
+        """Three requests (ru/en/ja) about one point -> the row + may it be cached."""
+        lat, lon = point
+        places: dict[str, _Place] = {
+            lang: self._client.fetch(lat, lon, lang) for lang in _CACHE_LANGS}
+        return _CachedAnswer.of(places), _all_answered(places)
+
     def resolve_places(
         self, coords: list[tuple[float, float]],
         progress: Callable[[int, int], None] | None = None,
     ) -> list[_Place]:
+        groups: dict[str, list[int]] = {}
+        keys: list[str] = []
+        for i, (lat, lon) in enumerate(coords):
+            key = self._key(lat, lon)
+            keys.append(key)
+            groups.setdefault(key, []).append(i)
+
         # The network phase itself (~1 request/sec, most of the run can go here):
-        # progress on EVERY coordinate, not rarely — otherwise the counter hangs at
-        # "0 of N" for all those minutes and then instantly races to the end.
-        places = []
-        for i, (lat, lon) in enumerate(coords, 1):
-            key = (round(lat, self._coord_digits), round(lon, self._coord_digits))
-            if key not in self._cache:
-                self._rate_limit()
-                self._cache[key] = self._fetch(lat, lon)
-            places.append(self._cache[key])
+        # progress after every GROUP, not once at the end — otherwise the counter hangs
+        # at "0 of N" for all those minutes and then instantly races to the end.
+        by_key: dict[str, _Place] = {}
+        done = 0
+        for key, indices in groups.items():
+            answer = self._cache.get(key)
+            if answer is None:
+                answer, cacheable = self._ask_provider(
+                    _median_coord([coords[i] for i in indices]))
+                if cacheable:
+                    self._cache.put(key, answer)
+            by_key[key] = answer.place(self._language)
+            done += len(indices)
             if progress:
-                progress(i, len(coords))
-        return places
+                progress(done, len(coords))
+        _log.info(
+            "geo: онлайн-кэш: групп %d (из %d координат), попаданий %d, просрочено %d, "
+            "запросов к провайдеру %d",
+            len(groups), len(coords), self._cache.hits, self._cache.expired,
+            self._client.requests,
+        )
+        return [by_key[key] for key in keys]
 
 
 class _CityFallbackResolver:
@@ -305,25 +551,32 @@ class _CityFallbackResolver:
         return places
 
 
-def _resolver_for(cfg: Config) -> _PlaceBatchResolver:
+def _resolver_for(cfg: Config, conn: sqlite3.Connection) -> _PlaceBatchResolver:
     """Provider abstraction by `cfg.geo.provider`.
 
-    offline -> geodata.GeoResolver (bundled GeoNames, no network).
+    offline -> geodata.GeoResolver (bundled GeoNames, no network) — never reads or
+               writes geo_cache: a full offline recompute takes two seconds.
     online  -> Nominatim/OSM reverse geocoding (G2b) — names as text, no geonameids,
-               wrapped in the offline city fallback of F86 (only if the bundled data is
-               actually there: online must keep working on an install without it).
+               behind the persistent cache of F93 and wrapped in the offline city
+               fallback of F86 (both only if the bundled data is actually there: online
+               must keep working on an install without it).
     """
     provider = cfg.geo.provider
     if provider == "offline":
         return _OfflineBatchResolver(GeoResolver())
     if provider == "online":
-        online = _NominatimResolver(cfg)
         offline = GeoResolver()
-        if not offline.data_available():
+        available = offline.data_available()
+        if not available:
             _log.warning(
                 "geo: оффлайн-база недоступна (%s) — города, которых нет в ответе "
-                "провайдера, восстановить не получится", offline.data_dir,
+                "провайдера, восстановить не получится, а кэш ответов будет "
+                "группировать координаты по сетке, а не по городу и району",
+                offline.data_dir,
             )
+        online = _CachedOnlineResolver(cfg, conn, _NominatimClient(cfg),
+                                      offline if available else None)
+        if not available:
             return online
         return _CityFallbackResolver(online, _OfflineBatchResolver(offline))
     raise ValueError(f"geo: неизвестный geo.provider={provider!r} (ожидается offline|online)")
@@ -379,7 +632,7 @@ def resolve_places(
     resolved: dict[int, tuple[_Place, str]] = {}
     gps_unresolved = 0
     if coords:
-        resolver = _resolver_for(cfg)
+        resolver = _resolver_for(cfg, conn)
         # online: the entire network phase sits right here (in the resolve) (~1
         # request/sec to Nominatim, minutes on a real collection) — progress must
         # move here, not in the write loop below (which is instant for online: the

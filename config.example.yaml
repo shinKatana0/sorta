@@ -64,9 +64,15 @@ geo:
   nominatim_url: "https://nominatim.openstreetmap.org"
   nominatim_user_agent: "sorta-photo-organizer"   # required by the OSM policy
   nominatim_timeout: 10
-  # Coordinate rounding for the online-geo cache: neighbouring photos in the same
-  # ~cell = one request to Nominatim. 3 digits ≈ 110 m (balance of speed/accuracy).
+  # F93: the online provider's answers are cached in the DB (table geo_cache) and
+  # survive both a re-run and "Start over" — clear them with `sorta cache --clear-geo`
+  # (or `sorta reset --clear-geo` / the checkbox in the reset dialog of `sorta ui`).
+  # The key is city+district from the bundled base; the rounding below is only the
+  # fallback for coordinates that base cannot place. 3 digits ≈ 110 m.
   cache_coord_digits: 3
+  # How long a cached answer stays fresh, in days (borders move rarely, but not
+  # never). 0 — never expire.
+  cache_max_age_days: 180
 
 events:
   # A gap between frames larger than this (hours) — a new time session

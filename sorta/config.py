@@ -97,11 +97,15 @@ class GeoConfig:
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     nominatim_user_agent: str = "sorta-photo-organizer"  # required by the OSM policy
     nominatim_timeout: float = 10.0
-    # coordinate rounding for the in-memory online-geo cache: neighbouring photos in
-    # the same ~cell = ONE request to Nominatim. 3 digits ≈ 110 m (default: balance of
-    # speed and accuracy — on 4547 GPS photos ~721 requests ≈ ~12 min @1req/sec vs
-    # ~26 min at 4 digits/~11 m). Fewer digits = faster, but coarser (may confuse districts).
+    # F93: coordinate rounding for the GRID FALLBACK key of the online-geo cache —
+    # used only for coordinates the bundled base cannot place (everything else is keyed
+    # by city+district geonameid, which is both faster and exact). 3 digits ≈ 110 m.
+    # Fewer digits = faster, but coarser (may confuse districts).
     cache_coord_digits: int = 3
+    # F93: how long a cached provider answer stays fresh, in days. City and district
+    # borders move rarely, but not never — 180 days ≈ half a year, an expired row is
+    # re-asked once and rewritten. 0 turns the expiry off entirely.
+    cache_max_age_days: int = 180
 
 
 @dataclass

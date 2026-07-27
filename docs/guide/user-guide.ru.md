@@ -857,13 +857,16 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
 sorta album person|event <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   Собрать срез в именованную папку (по умолчанию hardlink)
 sorta undo [--batch ID]           Откатить последний (или указанный) батч
-sorta reset [--yes]               Стереть индекс (БД) и начать с нуля — фото и уже
+sorta reset [--yes] [--clear-geo] Стереть индекс (БД) и начать с нуля — фото и уже
                                   разложенные папки НЕ трогает (имена людей/событий
-                                  и решения по дублям при этом пропадут)
+                                  и решения по дублям при этом пропадут). Кэш
+                                  онлайн‑гео переживает сброс, если не задан --clear-geo
 sorta ui [--port 8756]            Локальный веб‑апп (Обработать / Города / Дубли / Люди / События / Перемещения)
 sorta doctor                      Диагностика окружения: torch/onnxruntime, GPU, гео‑база,
                                   путь лога, путь кэша превью (§3.5)
-sorta cache [--clear]             Кэш превью: размер или удаление (§18)
+sorta cache [--clear] [--clear-geo]
+                                  Кэши: размер/удаление превью (§18), а --clear-geo
+                                  очищает сохранённые ответы онлайн‑гео
 ```
 
 Каждая команда принимает `-c/--config <path>` (по умолчанию `config.yaml`) — кроме
@@ -1072,6 +1075,7 @@ geo:
   session_gap_hours: 6         # разрыв, разделяющий сессии гео‑наследования
   nominatim_url: "https://nominatim.openstreetmap.org"   # только при provider: online
   nominatim_user_agent: "sorta-photo-organizer"          # обязателен политикой OSM
+  cache_max_age_days: 180      # срок годности сохранённого онлайн-ответа (0 — бессрочно)
 
 events:
   gap_hours: 6                 # разрыв, начинающий новую сессию

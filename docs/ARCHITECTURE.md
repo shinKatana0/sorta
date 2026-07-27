@@ -25,7 +25,7 @@ Switching the sort mode does not require re-running the pipelines.
 |---|---|---|---|
 | core | `config.py`, `db/`, `hashing.py`, `dates.py`, `exif.py`, `imaging.py` | FS (decode) | — |
 | indexer | `indexer.py`, `dedup.py` | FS | `files` |
-| geo | `geo.py` | `files` | `places` |
+| geo | `geo.py` | `files`, `geo_cache` | `places`, `geo_cache` (online provider only) |
 | faces | `faces.py` | `files` | `faces`, `face_clusters` |
 | events | `events.py` | `files`, `places` | `events`, `event_files` |
 | naming | `naming.py`, `landmarks.py`, `junk.py` | `files`, `places`, `events` | `places` (unknown only), `media_class`, `events.name` (name_is_manual=0 only) |
@@ -55,6 +55,19 @@ Switching the sort mode does not require re-running the pipelines.
 - 1:1 with files; `confidence`: `exact_gps` | `session_inferred` | `visual` | `unknown`.
 - Idempotency: re-running geo fully recomputes the rows (protected manual edits,
   should they appear, would be behind a separate flag).
+
+### geo_cache (written only by geo, online provider) — F93
+- What the online provider SAID, never where a file ends up: the key is the
+  `(city_geonameid, district_geonameid)` pair of the bundled base (a grid cell rounded
+  to `geo.cache_coord_digits` for coordinates that base cannot place) plus the provider;
+  the value is country + city/district/country names in ALL THREE languages, so
+  switching folder language costs no network.
+- A row is written only for a COMPLETE answer (all three languages resolved) — a failed
+  request must not be frozen into the collection. Rows older than
+  `geo.cache_max_age_days` are asked again.
+- The only table `reset_index` spares: a reset is about the user's files, not about the
+  name of a point on the map. Clear it explicitly with `sorta cache --clear-geo`,
+  `sorta reset --clear-geo` or the checkbox in the reset dialog of `sorta ui`.
 
 ### faces / face_clusters (written only by faces)
 - `embedding` — BLOB float32 (512, ArcFace little-endian).
@@ -95,6 +108,10 @@ batch reverse_geocoder (`mode=1`, offline) for files with GPS → sessions by ta
 (gap from `geo.session_gap_hours`) → place inheritance for files without GPS
 (only high/medium confidence, the nearest-in-time neighbour with GPS) →
 full idempotent recomputation of places in one transaction.
+With `geo.provider: online` the network sits in front of that: coordinates are grouped
+by their city+district pair from the bundled base, each group is looked up in
+`geo_cache`, and only a miss goes to Nominatim — three requests (ru/en/ja) about the
+median point of the group, then one row. The recompute itself is unchanged.
 
 ### faces (Phase 3, implemented)
 insightface buffalo_l (CUDA with a CPU fallback; `_enable_cuda_dll_dirs` for

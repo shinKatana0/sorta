@@ -45,7 +45,10 @@ hash verification) do not apply here.
 (8) `POST /api/process/reset` (F42, the "Start over" button) — wipes the ENTIRE index
 via the ready `db.reset_index(conn)` (the same tables as the CLI `sorta reset`:
 metadata, geo, faces/clusters with names, events with names, junk, dedup_choice,
-moves). Blocked with 409 while `/api/process` is still `running` (the same
+moves). The body carries `{"clear_geo": bool}` from the checkbox of the reset dialog
+(F93) and it reaches `db.reset_index(clear_geo=...)`: without it the cached provider
+answers survive the reset, with it they go too — the same pair as the CLI
+`sorta reset --clear-geo`. Blocked with 409 while `/api/process` is still `running` (the same
 `_ProcessState.snapshot()`). Does not touch files on disk or already-sorted folders —
 only the DB contents. PlanCache is invalidated right after the reset, so the next plan
 request rebuilds it (an empty DB -> an empty plan, see PlanCache).
@@ -2303,8 +2306,40 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "人物名・イベント名・重複の判定を含むインデックスを消去します。"
               "写真や既に整理済みのフォルダには触れません。続行しますか?",
     },
+    # F93: the geo cache survives "Start over" — the name of a point on the map does
+    # not depend on which files the user keeps, and re-asking the provider costs ~10
+    # minutes of network. But an invisible unresettable thing must not exist, so the
+    # way out lives exactly where the user already decided to erase something. Default
+    # UNCHECKED: the cache is normally what makes the next run fast.
+    "process_reset_clear_geo_label": {
+        "ru": "Также очистить кэш геоданных",
+        "en": "Also clear the geo cache",
+        "ja": "位置情報のキャッシュも消去する",
+    },
+    "process_reset_clear_geo_hint": {
+        "ru": "Ответы онлайн-геокодера переживают сброс, поэтому повторный прогон не "
+              "стоит сети. Ставьте галочку, если провайдер ответил неверно и город "
+              "нужно переспросить (при provider: online это снова минуты сети).",
+        "en": "The online geocoder's answers survive a reset, so the next run costs no "
+              "network. Tick this if the provider got a city wrong and has to be asked "
+              "again (with provider: online that is minutes of network once more).",
+        "ja": "オンライン地理コーダーの応答はリセット後も残るため、次回の実行に通信は不要です。"
+              "プロバイダーが誤った都市を返した場合のみチェックしてください"
+              "(provider: online では再び数分の通信が必要になります)。",
+    },
+    "process_reset_confirm_ok": {
+        "ru": "Стереть индекс", "en": "Erase the index", "ja": "インデックスを消去",
+    },
+    "process_reset_confirm_cancel": {
+        "ru": "Отмена", "en": "Cancel", "ja": "キャンセル",
+    },
     "process_reset_done": {
         "ru": "Индекс сброшен.", "en": "Index reset.", "ja": "インデックスをリセットしました。",
+    },
+    "process_reset_done_geo": {
+        "ru": "Индекс сброшен, кэш геоданных очищен.",
+        "en": "Index reset, geo cache cleared.",
+        "ja": "インデックスをリセットし、位置情報のキャッシュを消去しました。",
     },
     "process_reset_error_prefix": {
         "ru": "Не удалось сбросить: ", "en": "Failed to reset: ", "ja": "リセットできません: ",
@@ -3018,6 +3053,18 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 .sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
 .sort-mode-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
 
+/* --- F93: подтверждение сброса. window.confirm не умеет галочку, а галочка
+   «очистить кэш геоданных» обязана быть именно здесь: пользователь вспоминает про
+   кэш в момент «хочу переделать начисто», а не в настройках. --- */
+.reset-dialog { position: fixed; inset: 0; z-index: 2100; display: flex; align-items: center;
+      justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.86); }
+.reset-dialog[hidden] { display: none; }
+.reset-dialog-box { max-width: 520px; padding: var(--space-lg); border-radius: var(--radius-md);
+      background: var(--surface); box-shadow: var(--shadow-lg); }
+.reset-dialog-text { margin: 0 0 var(--space-md) 0; }
+.reset-dialog-actions { display: flex; gap: var(--space-sm); justify-content: flex-end;
+      margin-top: var(--space-md); }
+
 /* --- лайтбокс (F42): один переиспользуемый оверлей для крупного просмотра --- */
 .lightbox { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center;
       justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.86);
@@ -3232,6 +3279,19 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
      stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
 {{back_to_top}}</button>
+<div id="reset-dialog" class="reset-dialog" hidden>
+<div class="reset-dialog-box">
+<p class="reset-dialog-text">{{process_reset_confirm}}</p>
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="reset-clear-geo-checkbox"> {{process_reset_clear_geo_label}}</label>
+<span class="process-toggle-hint">{{process_reset_clear_geo_hint}}</span>
+</div>
+<div class="reset-dialog-actions">
+<button type="button" id="reset-dialog-cancel" class="btn btn-ghost">{{process_reset_confirm_cancel}}</button>
+<button type="button" id="reset-dialog-ok" class="btn btn-danger">{{process_reset_confirm_ok}}</button>
+</div>
+</div>
+</div>
 <div id="lightbox" class="lightbox" hidden title="{{lightbox_close}}">
 <img id="lightbox-img" src="" alt="">
 <button type="button" id="lightbox-prev" class="lightbox-nav lightbox-prev" hidden
@@ -4653,15 +4713,37 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     postJson("/api/process/cancel", {});
   });
 
+  // F93: сброс подтверждается своим диалогом, а не window.confirm — в нём живёт
+  // галочка «также очистить кэш геоданных». Галочка каждый раз сбрасывается: очистка
+  // кэша — разовое решение, а не режим, который тихо остаётся включённым.
+  var resetDialogEl = document.getElementById("reset-dialog");
+  var resetClearGeoEl = document.getElementById("reset-clear-geo-checkbox");
+
+  function closeResetDialog() {
+    resetDialogEl.hidden = true;
+  }
+
   document.getElementById("process-reset-btn").addEventListener("click", function () {
-    if (!window.confirm(I18N.process_reset_confirm)) return;
-    postJson("/api/process/reset", {}).then(function (resp) {
+    resetClearGeoEl.checked = false;
+    resetDialogEl.hidden = false;
+  });
+
+  document.getElementById("reset-dialog-cancel").addEventListener("click", closeResetDialog);
+
+  resetDialogEl.addEventListener("click", function (e) {
+    if (e.target === resetDialogEl) closeResetDialog();  // клик по фону — отмена
+  });
+
+  document.getElementById("reset-dialog-ok").addEventListener("click", function () {
+    var clearGeo = resetClearGeoEl.checked;
+    closeResetDialog();
+    postJson("/api/process/reset", { clear_geo: clearGeo }).then(function (resp) {
       var statusEl = document.getElementById("process-status");
       if (resp && resp.error) {
         statusEl.textContent = I18N.process_reset_error_prefix + resp.error;
         return;
       }
-      statusEl.textContent = I18N.process_reset_done;
+      statusEl.textContent = clearGeo ? I18N.process_reset_done_geo : I18N.process_reset_done;
       refreshTabsAfterProcess();
     });
   });
@@ -5821,6 +5903,11 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             self._send_json({"ok": True})
 
         def _handle_process_reset(self) -> None:
+            # F93: the checkbox of the reset dialog rides in the body. Absent/garbage
+            # body -> False, i.e. the geo cache survives: the destructive branch has to
+            # be asked for explicitly, never fallen into.
+            payload = self._read_json_body()
+            clear_geo = bool(payload.get("clear_geo")) if isinstance(payload, dict) else False
             # F45: the reset also writes to the DB — hold busy_lock for the whole
             # reset, not just the check, otherwise sort/process could start in the
             # window between the check and db.reset_index itself.
@@ -5830,11 +5917,11 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                     return
                 conn = _connect(db_path)
                 try:
-                    db.reset_index(conn)
+                    db.reset_index(conn, clear_geo=clear_geo)
                     cache.rebuild(cfg, conn)
                 finally:
                     conn.close()
-            self._send_json({"ok": True})
+            self._send_json({"ok": True, "clear_geo": clear_geo})
 
         def _handle_set_language(self) -> None:
             # F65: the "Folder language" selector — sets the OUTPUT language (folders/

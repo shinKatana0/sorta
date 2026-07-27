@@ -179,9 +179,12 @@ class TestOfflineFallback(CityFallbackTestBase):
         self.assertIsNone(row["district_name"])    # was "Nusa Dua" as text
         self.assertEqual(row["district_geonameid"], _GID_NUSA_DUA)
 
-    def test_online_city_never_asks_the_offline_base(self):
-        # the regression guard: what already works must not start paying for a second
-        # lookup, and the online city must win.
+    def test_online_city_is_not_replaced_by_the_offline_base(self):
+        # the regression guard: an answer that already names a city must not be
+        # completed from the bundled base — the online city wins.
+        # F93: the base IS consulted for every coordinate now (that is where the cache
+        # key comes from, a free KD-tree lookup), so this is asserted on the RESULT: an
+        # offline place would have brought a city_geonameid with it.
         photo = self.add_file(_DOMODEDOVO)
         self.run_geo(payload={"address": {"city": "Moscow", "country_code": "ru",
                                           "country": "Россия"}})
@@ -189,7 +192,7 @@ class TestOfflineFallback(CityFallbackTestBase):
         self.assertEqual(row["city"], "Moscow")
         self.assertEqual(row["country_name"], "Россия")
         self.assertIsNone(row["city_geonameid"])
-        self.assertEqual(self.offline.calls, [])
+        self.assertIsNone(row["district_geonameid"])
 
     def test_extra_address_keys_count_as_a_city(self):
         # F86 (2): Nominatim names a settlement outside a city with whatever key fits
@@ -200,7 +203,9 @@ class TestOfflineFallback(CityFallbackTestBase):
                 self.run_geo(payload={"address": {key: "Ostrovtsy",
                                                   "country_code": "ru"}})
                 self.assertEqual(self.place_of(photo)["city"], "Ostrovtsy")
-                self.assertEqual(self.offline.calls, [])
+                # the offline base did not replace the place (F93: it is still asked
+                # for the cache key, but its city must not win here)
+                self.assertIsNone(self.place_of(photo)["city_geonameid"])
 
     def test_country_mismatch_keeps_the_online_answer(self):
         # near a border the nearest-neighbour city of the offline base can sit in the
@@ -245,8 +250,13 @@ class TestOfflineFallback(CityFallbackTestBase):
         with patch("sorta.geo.urllib.request.urlopen", side_effect=OSError("boom")), \
              patch("sorta.geo.GeoResolver", return_value=self.offline):
             resolve_places(self.cfg, self.conn, progress=lambda done, total: None)
-        self.assertEqual(self.place_of(photo)["confidence"], "unknown")
-        self.assertEqual(self.offline.calls, [])
+        row = self.place_of(photo)
+        self.assertEqual(row["confidence"], "unknown")
+        # nothing of the offline base leaked into the row (F93: it is consulted for the
+        # cache key, which is not an answer about the place)
+        self.assertIsNone(row["country"])
+        self.assertIsNone(row["city"])
+        self.assertIsNone(row["city_geonameid"])
 
     def test_missing_offline_data_does_not_break_the_online_run(self):
         # online is usable on an install without the bundled data — a missing base only
