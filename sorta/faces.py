@@ -43,6 +43,13 @@ Infer = Callable[[np.ndarray], list[FaceHit]]
 InferFactory = Callable[[], Infer]
 
 
+# F88: the detector's input side, in px. buffalo_l's det_10g is trained at 640, and
+# that is the only value worth running: it is the native size and it costs 16.5 ms/frame
+# against 13.4 at 512 — 3 ms that buy back the small faces 512 loses (−9% on the
+# measurement). Lowering it is a "trade recall for weak hardware" knob, not a speed knob.
+DET_SIZE_DEFAULT = 640
+
+
 @dataclass(frozen=True)
 class FacesSettings:
     """Phase-3 thresholds; the defaults are Immich's."""
@@ -50,6 +57,30 @@ class FacesSettings:
     det_threshold: float = 0.7   # detector confidence threshold
     min_cluster_size: int = 5    # HDBSCAN; smaller — noise
     max_distance: float = 0.5    # cosine face-similarity threshold
+    det_size: int = DET_SIZE_DEFAULT  # F88: detector input side, pinned (see _det_size)
+
+
+def _det_size(cfg: Config) -> int:
+    """`faces.det_size` — the detector input side; DET_SIZE_DEFAULT when unset or bad.
+
+    A garbage value must not take down a run that has already spent an hour on the
+    collection, so anything that is not a positive number falls back to the default
+    with a warning instead of raising inside a worker thread.
+    """
+    raw = (cfg.raw.get("faces") or {}).get("det_size")
+    if raw is None:
+        return DET_SIZE_DEFAULT
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        logging.warning(
+            "faces.det_size: некорректное значение %r — используется %d",
+            raw, DET_SIZE_DEFAULT,
+        )
+        return DET_SIZE_DEFAULT
+    return n
 
 
 def _settings(cfg: Config) -> FacesSettings:
@@ -59,6 +90,7 @@ def _settings(cfg: Config) -> FacesSettings:
         det_threshold=float(f.det_threshold),
         min_cluster_size=int(f.min_cluster_size),
         max_distance=float(f.max_distance),
+        det_size=_det_size(cfg),
     )
 
 
@@ -319,6 +351,13 @@ def _insightface_infer(s: FacesSettings) -> Infer:  # pragma: no cover — ML, s
     An onnxruntime session is not thread-safe, so this is called once per inference
     worker (F12.1): every thread gets its own FaceAnalysis, and nothing is shared
     between them. The contract of the returned infer (bbox/score/embedding) is fixed.
+
+    F88: `det_size` is passed explicitly. Without it insightface 1.0.1 leaves the
+    detector in its two-pass mode (`set det-size: [(128, 128), (640, 640)]`) and runs
+    the network TWICE per frame; both passes cost the same ~78 ms even though the first
+    has 25× less to compute, because the price is in switching the input shape, not in
+    the arithmetic. Pinning one shape: 165.1 -> 16.5 ms/frame on 100 real frames, 57
+    faces against 56. The first call stays expensive (plans/kernels warm up) — expected.
     """
     from insightface.app import FaceAnalysis
 
@@ -329,7 +368,8 @@ def _insightface_infer(s: FacesSettings) -> Infer:  # pragma: no cover — ML, s
         allowed_modules=_ALLOWED_MODULES,
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
-    app.prepare(ctx_id=0, det_thresh=float(s.det_threshold))
+    app.prepare(ctx_id=0, det_thresh=float(s.det_threshold),
+                det_size=(int(s.det_size), int(s.det_size)))
 
     def infer(img: np.ndarray) -> list[FaceHit]:
         return [
@@ -825,11 +865,11 @@ def compare_allowed_modules_embeddings(paths: list[str]) -> SmokeReport:  # prag
 
     _enable_cuda_dll_dirs()
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    det_thresh = FacesSettings().det_threshold
+    s = FacesSettings()  # F88: the same pinned det_size the pipeline runs with
 
     def run(allowed_modules: list[str] | None) -> tuple[list[list[np.ndarray]], float]:
         app = FaceAnalysis(name="buffalo_l", allowed_modules=allowed_modules, providers=providers)
-        app.prepare(ctx_id=0, det_thresh=det_thresh)
+        app.prepare(ctx_id=0, det_thresh=s.det_threshold, det_size=(s.det_size, s.det_size))
         t0 = time.perf_counter()
         per_image = [
             [np.asarray(f.embedding, dtype=np.float64) for f in app.get(_decode_for_faces(p, None))]
