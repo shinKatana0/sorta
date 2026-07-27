@@ -158,6 +158,14 @@ naming:
   text_frac_min: 0.08        # a document with a lower text fraction → treated as a scene (FP gate)
   text_frac_document: 0.15   # a photo with a higher text fraction → treated as a document (FN rescue)
   text_rescue_docscore_min: 0.3  # OCR runs only if doc-score ≥ this (perf)
+  # F90 measured that gate on the validation collection (2000 frames,
+  # `python scripts/measure_ocr_gate.py --probe-below 200`). 0.3 gates 28.4% of the
+  # frames and changes 2.1% of the verdicts — 13 OCR calls per verdict, which looks
+  # wasteful and is not: raising it to 0.6 saves ~5 min on a full 24k run and gives up
+  # ~a third of the rescued documents (39 -> 25 per 2000 frames). Between 0.3 and 0.35
+  # the benefit is flat; from 0.4 on it falls off. The probe below the grid also found
+  # documents the gate misses TODAY (~1% of clear-scene frames), so the pressure on
+  # this number is downward, not upward. Re-measure before touching it.
   text_frac_downscale_px: 1280   # downscale the frame to this before OCR detection (speed)
   # F37-B: deep junk-classification tier — a local VLM (memory/document/product)
   # instead of the fast CLIP. opt-in: needs the [vlm] extra (uv sync --extra vlm);
