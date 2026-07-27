@@ -6,6 +6,8 @@ Does not touch files, faces, events, moves.
 Confidence levels:
 - exact_gps        — coordinates from EXIF, offline resolve via geodata.GeoResolver
 - session_inferred — place inherited from a file with GPS in the same time session
+- trip_inferred    — place inherited from the TRIP the file belongs to (F85a), when the
+                     GPS frames of that trip agree about the city
 - unknown          — could not resolve (visual — landmarks.py, Phase 5/F6)
 
 `exact_gps` requires a place that ACTUALLY resolved (F65): coordinates whose resolve
@@ -26,6 +28,14 @@ the target language is sort's job (G3), not this module's. `region` — DEPRECAT
 longer written (stays NULL). `district_name` — online only (district name as text,
 offline leaves it NULL and writes geonameid into district_geonameid).
 
+F85a: inheritance has a second level. A time session is six hours wide, and 1 758 files
+of the live collection sat in a session where nobody had GPS while the TRIP around them
+was placed perfectly well. Widening the session window is the wrong knob — it stretches
+an arbitrary interval of time, and twelve hours later the camera may be in another city.
+A trip is a unit of MEANING (sessions merged by time AND geographic proximity), so the
+place of a trip is inheritable inside it — but only when the trip's own GPS frames agree
+about the city AND the file lies between two of them in time (see _inherit_trip_places).
+
 F93: the ONLINE answers live in the `geo_cache` table, not in the process. A re-run
 still recomputes places from scratch (session inheritance needs the whole collection),
 but it no longer re-asks the network about coordinates it already knows — and it stores
@@ -44,8 +54,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -71,6 +83,12 @@ _PROVIDER_ONLINE = "online"  # the only provider that writes into geo_cache
 # it would be thousands of lines on a real collection; silence is what let the defect
 # live through a full production run (zero warnings for 1 596 lost cities).
 _CITY_MISSING_WARN_EVERY = 50
+# F85a: defaults for the trip thresholds, read from the `events:` section (see the
+# block comment above _TripLocality). Same numbers as events._DEFAULT_* — the config
+# normally supplies them, these are only the fallback for an EventsConfig without them.
+_DEFAULT_TRIP_MERGE_GAP_HOURS = 48.0
+_DEFAULT_TRIP_MERGE_MAX_KM = 120.0
+_EARTH_RADIUS_KM = 6371.0088
 
 
 @dataclass
@@ -78,6 +96,7 @@ class GeoStats:
     total: int = 0
     exact_gps: int = 0
     session_inferred: int = 0
+    trip_inferred: int = 0  # F85a: inherited from the trip, not from the time session
     unknown: int = 0
     # F65: files with valid coordinates whose place did not resolve. Non-zero means
     # the geo data is broken/missing, not that the user's photos are unusual.
@@ -611,6 +630,216 @@ def _split_sessions(
     return sessions
 
 
+# --- F85a: the trip level of inheritance --------------------------------------------
+# DUPLICATED RULE. The twin lives in events.py (_split_sessions/_merge_sessions/
+# _same_trip) — change a threshold on one side and look at the other.
+#
+# It has to be duplicated. The stages run index -> geo -> landmarks -> faces -> events,
+# so when geo works the `events` table does not exist yet on a clean run and there is
+# nothing to read; moving the inheritance into the events stage is not allowed either,
+# because `places` has exactly one writer (docs/ARCHITECTURE.md §2), and the stage order
+# cannot change (events needs `country` from places). So geo groups its own sessions
+# into trips by the same rule, reading the SAME thresholds — cfg.events.trip_merge_gap_hours
+# and cfg.events.trip_merge_max_km.
+#
+# Two deliberate differences, both in the direction of "inherit less":
+# * no admin1-region branch. events has a loaded GeoResolver at hand; geo would have to
+#   load the bundled base a second time just for this. A trip here can therefore only
+#   come out SHORTER than the events one, never wider — no file is placed further away
+#   than the rule above allows.
+# * a session where nobody has GPS does not break a trip: it neither confirms nor denies
+#   the locality, and those sessions are exactly what this feature exists for. In events
+#   such a session starts a new group, because there a group IS the event.
+
+
+@dataclass(frozen=True)
+class _TripLocality:
+    """Where a session was, as far as its own GPS files know."""
+
+    key: tuple[str, object] | None  # ("i", geonameid) | ("s", casefolded city name)
+    country: str | None
+    coords: tuple[float, float] | None  # F92: the median GPS of the files of `key`
+
+
+def _city_key(place: _Place) -> tuple[str, object] | None:
+    """The locality key of a resolved place: geonameid, else the city name, else none.
+
+    events._city_key prefers `district_name` for the string fallback — an event wants
+    the most specific name it can print. Here the only question is which CITY the trip
+    agreed on, so a suburb must not split one city into three localities.
+    """
+    if place.city_geonameid is not None:
+        return ("i", place.city_geonameid)
+    if place.city and place.city.strip():
+        return ("s", place.city.strip().casefold())
+    return None
+
+
+def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    lat1, lon1, lat2, lon2 = radians(a[0]), radians(a[1]), radians(b[0]), radians(b[1])
+    h = sin((lat2 - lat1) / 2) ** 2 + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) ** 2
+    return 2 * _EARTH_RADIUS_KM * asin(sqrt(h))
+
+
+# a resolved GPS file: when it was taken, the place it resolved to, its own coordinates
+_Donor = tuple[datetime, _Place, tuple[float, float] | None]
+
+
+def _session_donors(
+    session: list[tuple[datetime, sqlite3.Row]],
+    resolved: dict[int, tuple[_Place, str]], gps: dict[int, tuple[float, float]],
+) -> list[_Donor]:
+    """The exact_gps files of a session — the only ones that may vouch for a place.
+
+    Session-inherited files are deliberately left out: their place is a copy of these
+    same coordinates, and counting it again would let one GPS frame outvote another
+    just by having more dateless neighbours.
+    """
+    donors: list[_Donor] = []
+    for dt, r in session:
+        entry = resolved.get(r["id"])
+        if entry is not None and entry[1] == "exact_gps":
+            donors.append((dt, entry[0], gps.get(r["id"])))
+    return donors
+
+
+def _session_locality(donors: list[_Donor]) -> _TripLocality | None:
+    """The dominant locality of a session; None — nobody in it has a place at all."""
+    if not donors:
+        return None
+    keys = Counter(k for _dt, p, _c in donors if (k := _city_key(p)) is not None)
+    countries = Counter(p.country for _dt, p, _c in donors if p.country)
+    country = countries.most_common(1)[0][0] if countries else None
+    if not keys:
+        return _TripLocality(key=None, country=country, coords=None)
+    best_key = keys.most_common(1)[0][0]
+    own = [c for _dt, p, c in donors if _city_key(p) == best_key and c is not None]
+    return _TripLocality(key=best_key, country=country,
+                         coords=_median_coord(own) if own else None)
+
+
+def _same_trip(anchor: _TripLocality, cand: _TripLocality, max_km: float) -> bool:
+    """The same country AND (the same city OR centers closer than max_km).
+
+    The centers are the medians of the files' OWN GPS (F92), so the distance branch
+    works under any geo provider, geonameid or not.
+    """
+    if not anchor.country or not cand.country or anchor.country != cand.country:
+        return False
+    if anchor.key is not None and anchor.key == cand.key:
+        return True
+    if anchor.key is None or cand.key is None:  # an unknown locality confirms nothing
+        return False
+    if max_km > 0 and anchor.coords is not None and cand.coords is not None:
+        return _haversine_km(anchor.coords, cand.coords) <= max_km
+    return False
+
+
+def _merge_trips(
+    sessions: list[list[tuple[datetime, sqlite3.Row]]],
+    localities: list[_TripLocality | None],
+    trip_gap_hours: float, max_km: float,
+) -> list[list[int]]:
+    """Adjacent sessions -> trips (as lists of session indices).
+
+    The anchor is the locality of the first session of the trip that HAS one, and it is
+    not recomputed on further merges (as in events): the comparison always runs against
+    the place of the trip, not against the last session added to it.
+    """
+    trips: list[list[int]] = []
+    anchors: list[_TripLocality | None] = []
+    trip_gap = timedelta(hours=trip_gap_hours)
+    for i, session in enumerate(sessions):
+        locality = localities[i]
+        if trips:
+            anchor = anchors[-1]
+            prev = sessions[trips[-1][-1]]
+            if (session[0][0] - prev[-1][0] < trip_gap
+                    and (locality is None or anchor is None
+                         or _same_trip(anchor, locality, max_km))):
+                trips[-1].append(i)
+                if anchor is None:
+                    anchors[-1] = locality
+                continue
+        trips.append([i])
+        anchors.append(locality)
+    return trips
+
+
+def _brackets(first: datetime, last: datetime, dt: datetime) -> bool:
+    """Is `dt` between the first and the last frame that vouches for the trip's city?
+
+    The evidence a trip offers is not uniform over its length. In the MIDDLE it is an
+    alibi: the camera was in this city before the file and in the same city after it, and
+    nothing in between could have taken it a thousand kilometres away and back. Past the
+    ends there is no such alibi — the last GPS frame does not say when the trip's owner
+    left, and a day-trip out of town lands exactly there.
+
+    The measurement agrees, and not by a small margin: on the validation collection the
+    span holds 414 of the 554 inferences and 4 of the 32 mistakes — the other 28 all sat
+    past an end. Precision inside 99.0%, outside 80.0%.
+    """
+    return first <= dt <= last
+
+
+def _trip_place(places: list[_Place]) -> _Place:
+    """The place a trip lends: the dominant one of its city, minus the district.
+
+    What the trip agreed on is the CITY; a district would be a finer claim than the
+    evidence supports — the frame may well have been shot in another part of town.
+    """
+    rep = Counter(places).most_common(1)[0][0]
+    return replace(rep, district_geonameid=None, district_name=None)
+
+
+def _inherit_trip_places(
+    cfg: Config, sessions: list[list[tuple[datetime, sqlite3.Row]]],
+    resolved: dict[int, tuple[_Place, str]], gps: dict[int, tuple[float, float]],
+) -> None:
+    """F85a: a file with no place inherits the place of its TRIP. Mutates `resolved`.
+
+    Runs AFTER session inheritance — that one is more precise and keeps its priority;
+    only what it did not reach is considered here.
+
+    Two conditions, both measured on scripts/measure_place_inference.py (hide the GPS of
+    files that have it, infer, compare with the truth — 554 trip-level cases):
+
+    1. the trip's own GPS frames agree about the city: the dominant city holds MORE than
+       half of them (a frame whose place came back as country-only counts in the
+       denominator — it is a GPS frame that does not confirm the city). A trip across
+       three cities leaves its place-less files as they are: a foreign city is worse than
+       an empty folder, because the user will not look there (the principle of F75/F86);
+    2. the file lies BETWEEN two frames of that city in time — see `_brackets`.
+
+    Rule 1 alone measured 94.2% precision, below the 95% this feature has to clear; every
+    single mistake was a file outside the span of the trip's GPS frames. Adding rule 2
+    brings it to 99.0% and costs about a quarter of the reach.
+    """
+    trip_gap_hours = float(getattr(cfg.events, "trip_merge_gap_hours",
+                                   _DEFAULT_TRIP_MERGE_GAP_HOURS))
+    max_km = float(getattr(cfg.events, "trip_merge_max_km", _DEFAULT_TRIP_MERGE_MAX_KM))
+    donors_of = [_session_donors(s, resolved, gps) for s in sessions]
+    localities = [_session_locality(d) for d in donors_of]
+    for trip in _merge_trips(sessions, localities, trip_gap_hours, max_km):
+        donors = [d for i in trip for d in donors_of[i]]
+        keys = Counter(k for _dt, p, _c in donors if (k := _city_key(p)) is not None)
+        if not keys:
+            continue
+        best_key, best_n = keys.most_common(1)[0]
+        if best_n * 2 <= len(donors):
+            continue
+        vouching = [d for d in donors if _city_key(d[1]) == best_key]
+        first, last = min(d[0] for d in vouching), max(d[0] for d in vouching)
+        place = _trip_place([p for _dt, p, _c in vouching])
+        for i in trip:
+            for dt, r in sessions[i]:
+                if r["id"] in resolved or r["taken_at_confidence"] not in _INHERIT_CONFIDENCE:
+                    continue
+                if not _brackets(first, last, dt):
+                    continue
+                resolved[r["id"]] = (place, "trip_inferred")
+
+
 def resolve_places(
     cfg: Config, conn: sqlite3.Connection,
     progress: Callable[[int, int], None] | None = None,
@@ -634,6 +863,9 @@ def resolve_places(
             gps_rows.append(r)
             coords.append((lat, lon))
     resolved: dict[int, tuple[_Place, str]] = {}
+    # F85a: the coordinates of the GPS files by id — a trip locality's center is the
+    # median of the files' OWN GPS (F92), so the distance check needs them again below.
+    gps_by_id = {r["id"]: c for r, c in zip(gps_rows, coords)}
     gps_unresolved = 0
     if coords:
         resolver = _resolver_for(cfg, conn)
@@ -665,7 +897,8 @@ def resolve_places(
     # 2) session_inferred: inheritance of the FULL place (country + both geonameids
     #    + city) within a time session.
     timed = [(dt, r) for r in rows if (dt := _parse_dt(r["taken_at"])) is not None]
-    for session in _split_sessions(timed, gap_hours):
+    sessions = _split_sessions(timed, gap_hours)
+    for session in sessions:
         sources = [(dt, resolved[r["id"]][0]) for dt, r in session if r["id"] in resolved]
         if not sources:
             continue
@@ -675,6 +908,11 @@ def resolve_places(
             # several cities in a session → take the nearest-in-time file with GPS
             _, place = min(sources, key=lambda s: abs((s[0] - dt).total_seconds()))
             resolved[r["id"]] = (place, "session_inferred")
+
+    # 2b) trip_inferred (F85a): what the six-hour session could not reach — a session
+    #     where nobody has GPS inherits from the trip around it. Deliberately second:
+    #     session inheritance is the more precise of the two and keeps priority.
+    _inherit_trip_places(cfg, sessions, resolved, gps_by_id)
 
     # 3) write: full recomputation of the places table in one transaction
     stats = GeoStats(total=len(rows), gps_unresolved=gps_unresolved)

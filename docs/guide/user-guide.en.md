@@ -401,7 +401,7 @@ $ sorta index -c config.yaml
 Готово: +13 новых, ~0 обновлено, 0 пропущено, 0 ошибок, 1 дубликатов помечено
 
 $ sorta geo -c config.yaml
-Готово: 12 файлов — exact_gps 10, session_inferred 1, unknown 1
+Готово: 12 файлов — exact_gps 10, session_inferred 1, trip_inferred 0, unknown 1
 
 $ sorta faces -c config.yaml
 Детекция: 12 файлов, 0 лиц, 12 без лиц, 0 ошибок
@@ -460,7 +460,7 @@ new/changed files):
 | Stage | Command | Runs by default? | What it does |
 |---|---|---|---|
 | Index | `sorta index [dir]` | always | Scan files, read EXIF/dates, compute blake3 hashes, mark exact duplicates. |
-| Geo | `sorta geo` | always | Resolve each file's place from GPS; infer place for GPS‑less files from time‑adjacent neighbours (offline GeoNames, or online Nominatim if enabled). |
+| Geo | `sorta geo` | always | Resolve each file's place from GPS; infer place for GPS‑less files from time‑adjacent neighbours, then from the whole trip when its GPS frames agree on the city and surround the file in time (offline GeoNames, or online Nominatim if enabled). |
 | Landmarks | `sorta landmarks` | always | Visual place guess for GPS‑less scenes, conservative threshold — fills in city for e.g. an indoor landmark photo with no GPS. |
 | Faces | `sorta faces` | **opt‑in** (`--faces`) | Detect faces (insightface), compute embeddings, cluster people (HDBSCAN). The slowest stage; skipped unless you ask for it. |
 | Events | `sorta events` | **opt‑in** (`--events`) | Group photos into events by time gaps + city; name them by date + city. Independent of faces — enable either, both, or neither. |

@@ -1,7 +1,8 @@
 """F6 (Phase 5): places without GPS — CLIP zero-shot over a curated landmark list.
 
 Contract: reads files and places, writes ONLY into places and STRICTLY into rows
-with confidence='unknown' (exact_gps / session_inferred / visual are not overwritten;
+with confidence='unknown' (exact_gps / session_inferred / trip_inferred / visual are
+not overwritten;
 run order: geo always before landmarks).
 
 F75: a single CLIP score does not separate a real Charles Bridge from a nice photo of

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Place inherited from the trip** (F85a): a file with no GPS used to get a place only
+  from the six hours around it, so a whole session where nobody had coordinates stayed
+  in `_Unsorted/no_place` even when the trip around it was placed perfectly (1 758 files
+  of the validation collection). The geo stage now groups its own sessions into trips by
+  the same rule `events` uses (`events.trip_merge_gap_hours` / `events.trip_merge_max_km`)
+  and lends the trip's place to what the session level could not reach. Two conditions
+  keep it honest, because a file filed under a foreign city is worse than one in an empty
+  folder: the trip's own GPS frames must agree about the city (the dominant one holds
+  more than half of them), and the file must lie between two of those frames in time —
+  the camera was in that city before it and after it. The new place carries
+  `confidence = 'trip_inferred'`, told apart from `session_inferred` in
+  `sorta geo`/`sorta stats`, the CSV plan and the HTML report. Precision is measurable
+  without labelling: `scripts/measure_place_inference.py` hides the coordinates of files
+  that have them and scores each level against the truth — 99.0% for the trip level on
+  the validation collection (385 cases), where it places 839 files that had none.
 - **Persistent geo cache** (F93): with `geo.provider: online` the provider's answers are
   stored in the DB (`geo_cache`) instead of the process, keyed by the city+district pair
   of the bundled base — adding photos no longer re-asks Nominatim about the whole

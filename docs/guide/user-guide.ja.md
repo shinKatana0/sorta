@@ -401,7 +401,7 @@ $ sorta index -c config.yaml
 Готово: +13 новых, ~0 обновлено, 0 пропущено, 0 ошибок, 1 дубликатов помечено
 
 $ sorta geo -c config.yaml
-Готово: 12 файлов — exact_gps 10, session_inferred 1, unknown 1
+Готово: 12 файлов — exact_gps 10, session_inferred 1, trip_inferred 0, unknown 1
 
 $ sorta faces -c config.yaml
 Детекция: 12 файлов, 0 лиц, 12 без лиц, 0 ошибок
@@ -461,7 +461,7 @@ $ sorta stats -c config.yaml
 | 段階 | コマンド | 既定で実行? | 内容 |
 |---|---|---|---|
 | インデックス | `sorta index [dir]` | 常に | スキャン、EXIF/日付読取、blake3 ハッシュ、完全重複の印付け。 |
-| 位置情報 | `sorta geo` | 常に | GPS から場所を解決。GPS 無しは時間的に近い隣接写真から推定（オフライン GeoNames、有効なら オンライン Nominatim）。 |
+| 位置情報 | `sorta geo` | 常に | GPS から場所を解決。GPS 無しは時間的に近い隣接写真から、次に旅行全体（GPS 付きコマの都市が一致し、その前後を挟んでいる場合）から推定（オフライン GeoNames、有効なら オンライン Nominatim）。 |
 | ランドマーク | `sorta landmarks` | 常に | GPS 無しシーンの視覚的場所推定、保守的なしきい値 — 例えば屋内のランドマーク写真で GPS が無い場合に都市を補完。 |
 | 顔 | `sorta faces` | **opt‑in**（`--faces`） | 顔検出（insightface）、埋め込み計算、人物クラスタリング（HDBSCAN）。最も遅い段階のため、明示的に要求しない限りスキップされます。 |
 | イベント | `sorta events` | **opt‑in**（`--events`） | 時間差＋都市で写真をイベント化。日付＋都市で命名。顔検出とは独立 — どちらか、両方、どちらもオフ、を選べます。 |
