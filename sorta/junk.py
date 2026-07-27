@@ -105,6 +105,18 @@ verdicts and the DB writes — and only the middle one leaves the caller's threa
 SQLite stays single-writer. This is a perf change only: the gate `run_ocr`, the
 thresholds and the order in which verdicts are applied are untouched, so the
 classification is byte-for-byte what K=1 produces.
+
+F90: OCR still runs on 28% of the frames and changes 2% of the verdicts (14:1), and
+`text_rescue_docscore_min` — the number that decides that ratio — was set by eye and
+never measured. The gate is worth its cost (it catches a real document CLIP scored
+low, and letting one of those into the city folders is the expensive error), so the
+threshold is not something a worker may quietly raise; it is a decision for the user
+in front of a table. The tool that prints that table is
+`scripts/measure_ocr_gate.py`, and for it to price the REAL gate the verdict/gate
+branches now live in functions of their own — `clip_verdict`, `ocr_gate_open`,
+`apply_text_frac`, over the thresholds of `gate_settings` — instead of inline in the
+classify() loop. classify() calls exactly those functions, so the measurement cannot
+drift away from the pipeline. Behaviour is unchanged; no threshold moved.
 """
 from __future__ import annotations
 
@@ -644,6 +656,103 @@ def _is_real_photo(row: sqlite3.Row) -> bool:
     )
 
 
+# F90: the fast-tier verdict and the OCR gate, lifted out of the classify() loop.
+# The gate is priced by scripts/measure_ocr_gate.py, which sweeps
+# text_rescue_docscore_min over a grid — and a measurement is only worth anything if
+# it replays the decision the pipeline actually makes. A second copy of these three
+# branches in the script would drift from this one and quietly price the wrong gate,
+# so both call the same functions. classify() behaves exactly as before.
+
+
+@dataclass(frozen=True)
+class GateSettings:
+    """The thresholds the CLIP verdict and the OCR gate/rescue are built from.
+
+    Read through getattr with the module defaults (see the F37/F38 constants above):
+    the fields appeared in NamingConfig later than the code reading them, and the
+    getattr pattern is what junk.py has always used for them.
+    """
+    junk_threshold: float
+    document_threshold: float
+    text_frac_min: float
+    text_frac_document: float
+    text_rescue_docscore_min: float
+
+
+def gate_settings(cfg: Config) -> GateSettings:
+    """The gate thresholds of a config, resolved once per run (or per measurement)."""
+    s = naming_settings(cfg)
+    return GateSettings(
+        junk_threshold=float(s.junk_threshold),
+        document_threshold=float(s.document_threshold),
+        text_frac_min=float(getattr(s, "text_frac_min", _DEFAULT_TEXT_FRAC_MIN)),
+        text_frac_document=float(
+            getattr(s, "text_frac_document", _DEFAULT_TEXT_FRAC_DOCUMENT)),
+        text_rescue_docscore_min=float(
+            getattr(s, "text_rescue_docscore_min", _DEFAULT_TEXT_RESCUE_DOCSCORE_MIN)),
+    )
+
+
+def clip_verdict(best_class: str, best_score: float, heuristic: str | None,
+                 doc_score: float | None, real_photo: bool,
+                 g: GateSettings) -> tuple[str, float]:
+    """The verdict of one frame BEFORE the OCR signal -> (verdict, score).
+
+    The order of the branches is the contract, not a detail: an explicit
+    Screenshot_/"снимок экрана" name wins over everything (F22), then a
+    high-confidence document-CLIP — BEFORE the camera/GPS/faces veto, because a
+    photographed document carries camera EXIF (F15), then the veto (F13), then the
+    junk classes. `doc_score` is None for frames with faces: the document pass is not
+    run for them at all.
+    """
+    if heuristic == "screenshot":
+        return "screenshot", best_score
+    if doc_score is not None and doc_score >= g.document_threshold:
+        return "document", doc_score
+    if real_photo:
+        return "photo", best_score
+    if best_score >= g.junk_threshold:
+        return best_class, best_score
+    return heuristic or "photo", best_score
+
+
+def ocr_gate_open(has_faces: bool, verdict: str, doc_score: float,
+                  rescue_docscore_min: float) -> bool:
+    """Does this frame cost an OCR call? (F37 Phase A + the F38 doc-score gate.)
+
+    `rescue_docscore_min` is a parameter rather than a field of GateSettings because
+    F90 sweeps exactly this number over a grid to price the gate; classify() passes
+    the configured one. The rest is the F38 condition unchanged: OCR only for the
+    document<->photo pair, never for frames with faces, and the FP gate
+    (verdict=='document') is not limited by the threshold — there are few documents
+    anyway, and letting one through is the expensive error.
+    """
+    return not has_faces and (
+        verdict == "document"
+        or (verdict == "photo" and doc_score >= rescue_docscore_min)
+    )
+
+
+def apply_text_frac(verdict: str, score: float, text_frac: float | None,
+                    g: GateSettings) -> tuple[str, float, str]:
+    """The OCR signal on top of the CLIP verdict -> (verdict, score, source).
+
+    text_frac None — "no signal" (the gate stayed shut, the frame did not decode, the
+    detector failed on it): the verdict is left exactly as CLIP left it and source
+    stays 'clip'. source == 'ocr' means, and only means, that OCR changed the verdict.
+    """
+    if text_frac is not None:
+        if verdict == "document" and text_frac < g.text_frac_min:
+            # FP gate: CLIP is sure it is "document", but there is almost no text —
+            # a scene (beach), not a document.
+            return "photo", text_frac, "ocr"
+        if verdict == "photo" and text_frac >= g.text_frac_document:
+            # FN rescue: dense text over the whole frame — a document, even if the
+            # CLIP score was low.
+            return "document", text_frac, "ocr"
+    return verdict, score, "clip"
+
+
 @dataclass
 class JunkStats:
     total: int = 0        # canonical photos in total
@@ -780,15 +889,9 @@ def classify(
         text_detector_factory or _resolve_detector_factory(cfg, text_detector),
         ocr_workers)
     stats.clip_used = True
-    document_threshold = float(cfg.naming.document_threshold)
-    text_frac_min = float(getattr(cfg.naming, "text_frac_min", _DEFAULT_TEXT_FRAC_MIN))
-    text_frac_document = float(
-        getattr(cfg.naming, "text_frac_document", _DEFAULT_TEXT_FRAC_DOCUMENT))
-    # F38: the FN rescue (verdict='photo') runs OCR only when the document-CLIP
-    # already "doubts whether it is a document" — clear scenes (doc_score≈0) do not
-    # run OCR (perf). The FP gate (verdict='document') is not limited by this threshold.
-    text_rescue_docscore_min = float(
-        getattr(cfg.naming, "text_rescue_docscore_min", _DEFAULT_TEXT_RESCUE_DOCSCORE_MIN))
+    # F90: every threshold of the verdict/gate logic in one place (see GateSettings) —
+    # the same values scripts/measure_ocr_gate.py sweeps.
+    g = gate_settings(cfg)
     prompts = [prompt for _cls, prompt in _CLIP_CLASSES]
     doc_prompts = [prompt for _cls, prompt in _DOCUMENT_CLASSES]
     prod_prompts = [prompt for _cls, prompt in _PRODUCT_CLASSES]
@@ -822,44 +925,16 @@ def classify(
                 # F73, phase 1: the pre-OCR verdict of every frame of the chunk, plus
                 # the frames the OCR gate opens for. The gate condition itself and the
                 # verdict logic are unchanged — only the OCR call left this loop.
-                pre: list[tuple[str, float, str]] = []  # (verdict, score, source)
+                pre: list[tuple[str, float]] = []  # (verdict, score) before OCR
                 ocr_jobs: list[OcrJob] = []
                 for i, (r, p) in enumerate(zip(chunk, probs)):
                     best = int(np.argmax(p))
-                    score = float(p[best])
-                    if heur_raw[r["id"]] == "screenshot":
-                        # F22: an explicit Screenshot_/"снимок экрана" name — a strong
-                        # signal, it overrides both the document detection and the face
-                        # veto (an avatar in a screenshot does not make the file a real photo).
-                        verdict = "screenshot"
-                    elif i in doc_score and doc_score[i] >= document_threshold:
-                        # no faces + a high-confidence CLIP document → a separate
-                        # review category (F15), goes BEFORE the camera/GPS veto.
-                        verdict = "document"
-                        score = doc_score[i]
-                    elif _is_real_photo(r):
-                        # camera EXIF/GPS or faces in the photo → this is a shot photo; a
-                        # meme/screenshot does not carry those. The CLIP verdict does not
-                        # override (otherwise on real data most "junk" would be false).
-                        verdict = "photo"
-                    elif score >= s.junk_threshold:
-                        verdict = _CLIP_CLASSES[best][0]
-                    else:
-                        verdict = heur[r["id"]]
-                    pre.append((verdict, score, "clip"))
-                    # F37 (Phase A): the OCR signal only for the document<->photo pair,
-                    # only without faces (the same veto as the document-CLIP above) —
-                    # screenshot/meme are not touched.
-                    # F38: the rescue branch (photo) runs OCR only if doc_score is
-                    # uncertain (>= text_rescue_docscore_min) — a clear scene
-                    # (doc_score≈0) spends no OCR call. The FP gate (document) — without
-                    # a limit, as before (there are few documents anyway).
-                    run_ocr = not r["has_faces"] and (
-                        verdict == "document"
-                        or (verdict == "photo"
-                            and doc_score.get(i, 0.0) >= text_rescue_docscore_min)
-                    )
-                    if run_ocr:
+                    verdict, score = clip_verdict(
+                        _CLIP_CLASSES[best][0], float(p[best]), heur_raw[r["id"]],
+                        doc_score.get(i), _is_real_photo(r), g)
+                    pre.append((verdict, score))
+                    if ocr_gate_open(bool(r["has_faces"]), verdict,
+                                     doc_score.get(i, 0.0), g.text_rescue_docscore_min):
                         ocr_jobs.append((r["id"], r["path"], r["width"], r["height"]))
                 # F73, phase 2: text_frac for the gated frames, in the pool. This is the
                 # only part of the stage that leaves this thread.
@@ -868,18 +943,10 @@ def classify(
                 # (single writer) and in the original per-chunk order, so the verdicts
                 # and stats are exactly those of the serial version.
                 for i, r in enumerate(chunk):
-                    verdict, score, source = pre[i]
                     # missing / None both mean "no signal" — the verdict is left alone
-                    text_frac = text_fracs.get(r["id"])
-                    if text_frac is not None:
-                        if verdict == "document" and text_frac < text_frac_min:
-                            # FP gate: CLIP is sure it is "document", but there is
-                            # almost no text — a scene (beach), not a document.
-                            verdict, score, source = "photo", text_frac, "ocr"
-                        elif verdict == "photo" and text_frac >= text_frac_document:
-                            # FN rescue: dense text over the whole frame — a document,
-                            # even if the CLIP score was low.
-                            verdict, score, source = "document", text_frac, "ocr"
+                    verdict, score = pre[i]
+                    verdict, score, source = apply_text_frac(
+                        verdict, score, text_fracs.get(r["id"]), g)
                     if verdict == "photo" and _in_screenshots_dir(r["path"]):
                         # F29: the Screenshots folder is a "floor" for photo; we do not
                         # override document/meme (conservative, brief F29).
@@ -894,7 +961,7 @@ def classify(
                     if (vlm_fn is not None and not r["has_faces"]
                             and verdict not in ("screenshot", "meme")
                             and (verdict == "document"
-                                 or doc_score.get(i, 0.0) >= text_rescue_docscore_min
+                                 or doc_score.get(i, 0.0) >= g.text_rescue_docscore_min
                                  or product_score.get(i, 0.0) >= product_candidate_min)):
                         vlm_candidates.append((r["id"], r["path"], verdict))
                 done += len(chunk)
