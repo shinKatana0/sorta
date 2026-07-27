@@ -199,12 +199,14 @@ def _cmd_geo(config_path: str) -> None:
     print(_summarize_geo(stats))
 
 
-def _cmd_faces(config_path: str) -> None:
+def _cmd_faces(config_path: str, rescan: bool = False, limit: int | None = None) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     conn = connect(cfg.database)
-    with progress_task("faces: детекция", phase_labels=_CLUSTER_PHASE_LABELS) as cb:
-        face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb)
+    title = "faces: пересканирование" if rescan else "faces: детекция"
+    with progress_task(title, phase_labels=_CLUSTER_PHASE_LABELS) as cb:
+        face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb,
+                                                  rescan=rescan, limit=limit)
     print(_summarize_faces(face_stats, cl_stats))
 
 
@@ -561,10 +563,27 @@ try:
     app.add_typer(faces_app, name="faces")
 
     @faces_app.callback(invoke_without_command=True)
-    def faces_main(ctx: typer.Context, config: str = _CFG):
+    def faces_main(
+        ctx: typer.Context,
+        rescan: bool = typer.Option(
+            False, "--rescan",
+            help="Пересчитать лица заново: стереть строки faces и продетектировать "
+                 "все канонические фото (имена кластеров переносятся по файлам). "
+                 "Нужен после смены детектора; без флага шаг инкрементальный"),
+        limit: int = typer.Option(
+            None, "--limit",
+            help="Только с --rescan: пересчитать N случайных файлов, остальные не "
+                 "трогать (замер шага на живом пайплайне)"),
+        config: str = _CFG,
+    ):
         """Без подкоманды: найти лица в новых фото и пересчитать кластеры."""
-        if ctx.invoked_subcommand is None:
-            _cmd_faces(config)
+        if ctx.invoked_subcommand is not None:
+            return
+        if limit is not None and not rescan:
+            raise typer.BadParameter("--limit работает только вместе с --rescan")
+        if limit is not None and limit <= 0:
+            raise typer.BadParameter("--limit должен быть положительным числом")
+        _cmd_faces(config, rescan=rescan, limit=limit)
 
     @faces_app.command("label")
     def faces_label(cluster_id: int, name: str, config: str = _CFG):
