@@ -62,7 +62,7 @@ class TestApiDupesGet(DupesTestBase):
         frames = groups[0]["frames"]
         self.assertEqual({f["file_id"] for f in frames}, {best, worse})
         expected_keys = {"file_id", "name", "thumb_url", "width", "height",
-                         "size", "recommended", "action"}
+                         "size", "recommended", "action", "src_dir", "src_path"}
         for f in frames:
             self.assertEqual(expected_keys, set(f.keys()))
             self.assertEqual(f["thumb_url"], f"/thumb/{f['file_id']}")
@@ -70,6 +70,20 @@ class TestApiDupesGet(DupesTestBase):
         by_id = {f["file_id"]: f for f in frames}
         self.assertTrue(by_id[best]["recommended"])
         self.assertFalse(by_id[worse]["recommended"])
+
+    def test_frames_carry_the_source_folder(self):
+        """Duplicates share a name by construction, so where they lie is the only
+        thing that tells them apart by eye — the Cities tab shows it, this one did
+        not. src_dir goes in the line, src_path in the tooltip."""
+        self.add_dupe("keep/a.jpg", phash="0" * 16, width=4000, height=3000, size=9_000_000)
+        self.add_dupe("downloads/b.jpg", phash="0" * 16, width=1000, height=750, size=200_000)
+        self.start_server()
+        _status, body, _ctype = self.get("/api/dupes")
+        frames = json.loads(body)[0]["frames"]
+        self.assertEqual({f["src_dir"] for f in frames}, {"keep", "downloads"})
+        for f in frames:
+            self.assertTrue(f["src_path"].endswith(f["src_dir"]))
+            self.assertNotIn(f["name"], f["src_path"])
 
     def test_no_near_duplicates_returns_empty_list(self):
         self.add_dupe("a.jpg", phash="0" * 16, width=100, height=100, size=1000)

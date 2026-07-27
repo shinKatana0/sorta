@@ -668,6 +668,12 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
             frames.append({
                 "file_id": r["id"],
                 "name": Path(r["path"]).name,
+                # Where the frame lies in the source, as the Cities tab shows it:
+                # `src_dir` in the line, the full `src_path` in the tooltip. Deciding
+                # which of two identical frames to keep is mostly a question of WHERE
+                # they lie — the copy in "Sorted" beats the one in "Downloads".
+                "src_dir": Path(r["path"]).parent.name,
+                "src_path": str(Path(r["path"]).parent),
                 "thumb_url": f"/thumb/{r['id']}",
                 "width": w,
                 "height": h,
@@ -5311,6 +5317,10 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       var nameEl = document.createElement("span");
       nameEl.className = "thumb-name";
       nameEl.textContent = f.name;
+      // Как во вкладке «Города»: полный путь — в тултипе имени. У дублей имена
+      // совпадают по построению, поэтому единственное, чем кадры различаются на
+      // глаз, — это где они лежат.
+      nameEl.title = f.src_path ? f.src_path + "\\" + f.name : f.name;
       tdThumb.appendChild(nameEl);
       if (f.recommended) {
         var badge = document.createElement("span");
@@ -5324,7 +5334,11 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       var tdMeta = document.createElement("td");
       var dims = f.width && f.height ? f.width + "×" + f.height : "?";
       var kb = Math.round((f.size || 0) / 1024) + " KB";
-      tdMeta.textContent = [dims, kb, actionLabel(f.action)].filter(Boolean).join(" · ");
+      // Исходная папка первой, как в «Городах»: при выборе, какой из одинаковых
+      // кадров оставить, решает обычно именно она.
+      tdMeta.textContent = [f.src_dir, dims, kb, actionLabel(f.action)]
+          .filter(Boolean).join(" · ");
+      if (f.src_path) { tdMeta.title = f.src_path; }
       tr.appendChild(tdMeta);
 
       var tdActions = document.createElement("td");
