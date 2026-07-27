@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS places (
     city_geonameid INTEGER,               -- G2: city geonameid (GeoNames), NULL for landmark/unknown
     district_geonameid INTEGER,           -- G2: district geonameid, NULL if none/landmark
     district_name TEXT,                   -- G2b (online): district name from Nominatim; offline NULL (district from geonameid)
-    confidence TEXT NOT NULL,             -- exact_gps | session_inferred | visual | unknown
+    confidence TEXT NOT NULL,             -- exact_gps | session_inferred | trip_inferred (F85a) | visual | unknown
     updated_at TEXT NOT NULL
 );
 

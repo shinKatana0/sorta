@@ -79,7 +79,8 @@ def _summarize_index(stats, dups: int) -> str:
 
 def _summarize_geo(stats) -> str:
     return (f"Готово: {stats.total} файлов — exact_gps {stats.exact_gps}, "
-            f"session_inferred {stats.session_inferred}, unknown {stats.unknown}")
+            f"session_inferred {stats.session_inferred}, "
+            f"trip_inferred {stats.trip_inferred}, unknown {stats.unknown}")
 
 
 def _summarize_landmarks(stats) -> str:

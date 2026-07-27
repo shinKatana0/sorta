@@ -274,6 +274,12 @@ def _merge_sessions(
 ) -> list[tuple[list[_File], _Locality]]:
     """Merge adjacent sessions into a trip: gap < trip_gap_hours AND _same_trip.
 
+    DUPLICATED RULE: geo.py carries a copy of this (_merge_trips/_same_trip/
+    _session_locality) because it needs trips one stage EARLIER than they exist here —
+    see the block comment there for why it cannot be shared. Both sides read the same
+    cfg.events.trip_merge_gap_hours/trip_merge_max_km; change a threshold or the rule
+    here and look at geo.py.
+
     The group's anchor locality is taken from the FIRST session and is not
     recomputed on further merges (as before for city_id) — the comparison always
     runs against it, not against the last added session.

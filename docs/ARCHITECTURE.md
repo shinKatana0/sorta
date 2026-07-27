@@ -52,7 +52,9 @@ Switching the sort mode does not require re-running the pipelines.
 - `gps_lat/gps_lon` — WGS84 in degrees, NULL if absent.
 
 ### places (written only by geo)
-- 1:1 with files; `confidence`: `exact_gps` | `session_inferred` | `visual` | `unknown`.
+- 1:1 with files; `confidence`: `exact_gps` | `session_inferred` | `trip_inferred` |
+  `visual` | `unknown`. The two inferred levels are told apart on purpose: reports, the
+  CSV plan and the UI show how confidently a place was determined (F85a).
 - Idempotency: re-running geo fully recomputes the rows (protected manual edits,
   should they appear, would be behind a separate flag).
 
@@ -106,7 +108,12 @@ UPSERT in one transaction per batch (Ctrl+C-safe) → dedup pass.
 ### geo (Phase 2, implemented)
 batch reverse_geocoder (`mode=1`, offline) for files with GPS → sessions by taken_at
 (gap from `geo.session_gap_hours`) → place inheritance for files without GPS
-(only high/medium confidence, the nearest-in-time neighbour with GPS) →
+(only high/medium confidence, the nearest-in-time neighbour with GPS) → a second pass
+over TRIPS (F85a): geo groups its own sessions the way `events` does (the same
+`events.trip_merge_gap_hours`/`trip_merge_max_km`, because on a clean run the `events`
+table does not exist yet and `places` has a single writer), and a still place-less file
+inherits the trip's place when the trip's GPS frames agree about the city (the dominant
+one holds > 50% of them) and the file lies between two of those frames in time →
 full idempotent recomputation of places in one transaction.
 With `geo.provider: online` the network sits in front of that: coordinates are grouped
 by their city+district pair from the bundled base, each group is looked up in

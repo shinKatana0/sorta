@@ -55,7 +55,11 @@ dedup:
 geo:
   # A gap between frames larger than this (in hours) starts a new time session;
   # within a session, files without GPS inherit the place of GPS neighbours
-  # (session_inferred)
+  # (session_inferred). F85a: a file the session could not reach then inherits the
+  # place of its TRIP (trip_inferred) — but only if the trip's GPS frames agree about
+  # the city AND the file lies between two of them in time. Trips are cut by the
+  # thresholds of the events section below (trip_merge_gap_hours / trip_merge_max_km);
+  # there is no separate knob here.
   session_gap_hours: 6
   # Source of the Country/City/District geo hierarchy: offline (bundled GeoNames,
   # default, no network) | online (Nominatim/OSM, opt-in, needs network) — G2/G2b.
