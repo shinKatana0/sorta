@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Persistent geo cache** (F93): with `geo.provider: online` the provider's answers are
+  stored in the DB (`geo_cache`) instead of the process, keyed by the city+district pair
+  of the bundled base — adding photos no longer re-asks Nominatim about the whole
+  collection, and all three languages are fetched at once, so switching folder language
+  costs no network at all. The cache survives "Start over"; clear it with
+  `sorta cache --clear-geo`, `sorta reset --clear-geo` or the checkbox in the reset
+  dialog of `sorta ui`. Expiry: `geo.cache_max_age_days` (default 180, 0 — never).
+
 ## [0.2.0] - 2026-07-25
 
 ### Added

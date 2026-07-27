@@ -29,7 +29,7 @@ from .faces import (
     label_cluster,
 )
 from .faces import merge as merge_clusters
-from .geo import resolve_places
+from .geo import clear_geo_cache, geo_cache_size, resolve_places
 from .indexer import index as run_index
 from .indexer import excludes_path, refresh_exif, save_excludes
 from .junk import classify as classify_junk
@@ -529,24 +529,46 @@ try:
     def cache_cmd(
         clear: bool = typer.Option(
             False, "--clear", help="Удалить кэш превью (он пересоберётся сам)"),
+        clear_geo: bool = typer.Option(
+            False, "--clear-geo",
+            help="Удалить кэш ответов онлайн-геокодера (F93): следующий `sorta geo` "
+                 "при provider: online снова сходит в сеть"),
         config: str = _CFG,
     ):
-        """Кэш превью: показать путь и размер, при --clear — удалить.
+        """Кэши: показать путь и размер, при --clear/--clear-geo — удалить.
 
-        Кэш безопасно удалять в любой момент: он ленивый и пересоздаётся той стадией,
-        которой первой понадобится кадр. Смысл команды — освободить место (порядка
-        150 КБ на фото) или заставить перегенерировать превью после смены настроек.
+        Кэш превью безопасно удалять в любой момент: он ленивый и пересоздаётся той
+        стадией, которой первой понадобится кадр. Смысл команды — освободить место
+        (порядка 150 КБ на фото) или заставить перегенерировать превью после смены
+        настроек.
+
+        Кэш геоданных (F93) — ответы онлайн-провайдера в таблице geo_cache. Он
+        переживает и повторный прогон, и «Начать заново», поэтому --clear-geo —
+        единственный способ переспросить провайдера, если он однажды ответил неверно.
         """
-        load_config(config)  # applies the imaging: section onto the env
+        cfg = load_config(config)  # applies the imaging: section onto the env
         directory = imaging.preview_dir()
-        if not clear:
-            files = sum(1 for _ in directory.rglob("*.jpg")) if directory.exists() else 0
-            size = sum(f.stat().st_size for f in directory.rglob("*.jpg")) if files else 0
-            print(f"Кэш превью: {directory}")
-            print(f"  файлов: {files}, размер: {size / 1e9:.2f} ГБ")
+        if clear_geo:
+            conn = connect(cfg.database)
+            try:
+                removed = clear_geo_cache(conn)
+            finally:
+                conn.close()
+            print(f"Кэш геоданных очищен: удалено записей {removed}")
+        if clear:
+            imaging.preview_cache_clear()
+            print(f"Кэш превью удалён: {directory}")
+        if clear or clear_geo:
             return
-        imaging.preview_cache_clear()
-        print(f"Кэш превью удалён: {directory}")
+        files = sum(1 for _ in directory.rglob("*.jpg")) if directory.exists() else 0
+        size = sum(f.stat().st_size for f in directory.rglob("*.jpg")) if files else 0
+        print(f"Кэш превью: {directory}")
+        print(f"  файлов: {files}, размер: {size / 1e9:.2f} ГБ")
+        conn = connect(cfg.database)
+        try:
+            print(f"Кэш геоданных (geo_cache): записей {geo_cache_size(conn)}")
+        finally:
+            conn.close()
 
     @app.command()
     def ui(port: int = typer.Option(8756, "--port", help="Порт локального сервера (127.0.0.1)"),
@@ -702,25 +724,33 @@ try:
     @app.command()
     def reset(
         yes: bool = typer.Option(False, "--yes", "-y", help="Без подтверждения"),
+        clear_geo: bool = typer.Option(
+            False, "--clear-geo",
+            help="Заодно очистить кэш ответов онлайн-геокодера (F93); без флага он "
+                 "переживает сброс, и повторный прогон geo не стоит сети"),
         config: str = _CFG,
     ):
         """Стереть индекс (БД) и начать с нуля. Фото и разложенные папки НЕ трогает.
 
-        Внимание: пропадут имена людей/событий и решения по дублям.
+        Внимание: пропадут имена людей/событий и решения по дублям. Кэш геоданных
+        (F93) остаётся — названия точек на карте не зависят от того, какие файлы лежат
+        у пользователя; стереть и его — `--clear-geo`.
         """
         cfg = load_config(config)
         configure_logging(cfg.log_level)
         if not yes:
             typer.confirm(
                 "Стереть весь индекс? Имена людей/событий и решения по дублям "
-                "пропадут; фото и уже разложенные папки НЕ тронутся",
+                "пропадут; фото и уже разложенные папки НЕ тронутся"
+                + (", кэш геоданных тоже будет очищен" if clear_geo else ""),
                 abort=True)
         conn = connect(cfg.database)
         try:
-            reset_index(conn)
+            reset_index(conn, clear_geo=clear_geo)
         finally:
             conn.close()
-        print("Индекс стёрт. Запустите `sorta index`/`sorta run` заново.")
+        print("Индекс стёрт. Запустите `sorta index`/`sorta run` заново."
+              + (" Кэш геоданных очищен." if clear_geo else ""))
 
     @app.command()
     def undo(

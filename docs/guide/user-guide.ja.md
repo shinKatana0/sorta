@@ -854,13 +854,16 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
 sorta album person|event <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   スライスを名前付きフォルダに集める（既定はハードリンク）
 sorta undo [--batch ID]           直前（または指定）バッチを取り消し
-sorta reset [--yes]               インデックス（DB）を消去してやり直す — 写真や
+sorta reset [--yes] [--clear-geo] インデックス（DB）を消去してやり直す — 写真や
                                   振り分け済みフォルダには触れません（人物/イベント名
-                                  と重複判定は失われます）
+                                  と重複判定は失われます）。オンライン位置情報の
+                                  キャッシュは --clear-geo を付けない限り残ります
 sorta ui [--port 8756]            ローカル Web アプリ（処理／都市／重複／人物／イベント／移動）
 sorta doctor                      環境診断: torch/onnxruntime、GPU、地理データ、
                                   ログのパス、プレビューキャッシュのパス（§3.5）
-sorta cache [--clear]             プレビューキャッシュ: サイズ表示、または削除（§18）
+sorta cache [--clear] [--clear-geo]
+                                  キャッシュ: プレビューのサイズ表示/削除（§18）と、
+                                  --clear-geo でオンライン位置情報の応答を消去
 ```
 
 各コマンドは `-c/--config <path>`（既定 `config.yaml`）を受け付けます — ただし
@@ -1069,6 +1072,7 @@ geo:
   session_gap_hours: 6         # GPS 推定セッションを分ける時間差
   nominatim_url: "https://nominatim.openstreetmap.org"   # provider: online のみ
   nominatim_user_agent: "sorta-photo-organizer"          # OSM ポリシー上必須
+  cache_max_age_days: 180      # 保存済みオンライン応答の有効期間（0 = 無期限）
 
 events:
   gap_hours: 6                 # 新セッションを開始する時間差

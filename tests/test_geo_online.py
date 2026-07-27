@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -86,21 +87,30 @@ class TestGeoOnline(unittest.TestCase):
         mock_urlopen = MagicMock(return_value=_FakeResponse(_MOSCOW_ADDRESS))
         with patch("sorta.geo.urllib.request.urlopen", mock_urlopen):
             resolve_places(self.cfg, self.conn, progress=lambda done, total: None)
-        req = mock_urlopen.call_args[0][0]
-        self.assertTrue(req.full_url.startswith("https://geo.example/api/reverse?"))
-        self.assertIn("accept-language=ja", req.full_url)
-        self.assertEqual(req.get_header("User-agent"), "my-agent/1.0")
-        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], 5.0)
+        requests = [call[0][0] for call in mock_urlopen.call_args_list]
+        for req in requests:
+            self.assertTrue(req.full_url.startswith("https://geo.example/api/reverse?"))
+            self.assertEqual(req.get_header("User-agent"), "my-agent/1.0")
+        for call in mock_urlopen.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], 5.0)
+        # F93: the language is no longer a property of the run — all three are asked
+        # about the same point, so switching folder language costs no network at all.
+        self.assertEqual(
+            {"ru", "en", "ja"},
+            {urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+             ["accept-language"][0] for req in requests},
+        )
 
     def test_online_caches_same_rounded_coords(self):
+        # F93: two frames of the same place are one group — one trip to the network,
+        # now three requests deep (ru/en/ja are fetched together, see test_geo_cache).
         self.add_file(lat=55.75001, lon=37.62001)
-        self.add_file(lat=55.75002, lon=37.62002)  # rounds to the same 4 digits
+        self.add_file(lat=55.75002, lon=37.62002)
         mock_urlopen = MagicMock(return_value=_FakeResponse(_MOSCOW_ADDRESS))
         with patch("sorta.geo.urllib.request.urlopen", mock_urlopen), \
-             patch("sorta.geo.time.sleep") as mock_sleep:
+             patch("sorta.geo.time.sleep"):
             resolve_places(self.cfg, self.conn, progress=lambda done, total: None)
-        self.assertEqual(mock_urlopen.call_count, 1)
-        mock_sleep.assert_not_called()  # a single request -> no rate-limit needed
+        self.assertEqual(mock_urlopen.call_count, 3)  # one group × three languages
 
     def test_online_rate_limits_between_distinct_coords(self):
         self.add_file(lat=55.75, lon=37.62)
@@ -109,7 +119,8 @@ class TestGeoOnline(unittest.TestCase):
                    return_value=_FakeResponse(_MOSCOW_ADDRESS)), \
              patch("sorta.geo.time.sleep") as mock_sleep:
             resolve_places(self.cfg, self.conn, progress=lambda done, total: None)
-        mock_sleep.assert_called_once()
+        # the OSM policy is per REQUEST, not per group: 6 requests -> 5 waits
+        self.assertEqual(mock_sleep.call_count, 5)
 
     def test_online_network_error_is_unknown(self):
         # F65: coordinates alone no longer earn confidence='exact_gps' — the label now

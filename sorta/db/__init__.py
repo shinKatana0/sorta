@@ -56,19 +56,33 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-def reset_index(conn: sqlite3.Connection) -> None:
-    """Wipe the ENTIRE index (all tables) and recreate the empty schema — "start over".
+# F93: the ONE table "start over" spares. A reset is about the user's files; the name
+# of a point on the map does not depend on which files are lying around, and re-asking
+# Nominatim for it costs ~10 minutes of network per collection. An explicit exception
+# list, not "every table in sqlite_master": a new table must be wiped by default, and
+# surviving a reset has to be a deliberate decision per table.
+_KEPT_ON_RESET = ("geo_cache",)
+
+
+def reset_index(conn: sqlite3.Connection, *, clear_geo: bool = False) -> None:
+    """Wipe the index (all tables but the geo cache) and recreate the empty schema.
 
     Deletes ONLY DB data: metadata, geo, faces/clusters (and people names!),
     events (and manual names!), junk classification, dup decisions, the move
     journal. FILES on disk and already-sorted folders are NOT touched (they are not
     in the DB). Used by the `sorta reset` command and the "Start over" button in
     `sorta ui`.
+
+    `clear_geo=True` additionally drops the cached provider answers (`geo_cache`,
+    F93). It must stay reachable: the cache can hold a WRONG answer, and a user who
+    sees a wrong city presses "Start over" expecting to redo everything from nothing —
+    without the flag they would get the very same wrong city back.
     """
+    kept = () if clear_geo else _KEPT_ON_RESET
     with conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         tables = [r["name"] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")]
+            "SELECT name FROM sqlite_master WHERE type='table'") if r["name"] not in kept]
         for name in tables:
             conn.execute(f'DROP TABLE IF EXISTS "{name}"')
     conn.executescript(SCHEMA)  # recreates empty tables + user_version
