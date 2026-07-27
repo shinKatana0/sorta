@@ -16,7 +16,9 @@ The provider is chosen by `cfg.geo.provider`: offline (default) — bundled GeoN
 via geodata.GeoResolver; online (G2b) — Nominatim/OSM reverse geocoding, names as
 text already in cfg.language (no geonameids). Online answers that carry a country but
 no city are completed from the bundled offline base (F86, see _CityFallbackResolver) —
-the online provider stays the primary source, the offline one is only the insurance.
+the online provider stays the primary source for NAMES; the offline base is asked
+for every coordinate anyway since F93 — it supplies the cache key — and only
+completes a city the provider did not give.
 
 Canonically we write geonameid (city_geonameid/district_geonameid) + the English/
 asciiname anchor `city` (for --where/CSV/landmark fallback). Localizing names into
@@ -494,8 +496,10 @@ class _CityFallbackResolver:
     hid in _Unsorted/no_place — while the SAME coordinates resolve to a city in the
     bundled GeoNames data (55.4138, 37.8976 -> Домодедово; -8.79806, 115.2349 ->
     Jabajero). Turning the online provider on made the result worse than offline; here
-    the online answer stays primary and only a missing city is completed offline, which
-    is bundled anyway and costs neither a request nor a second.
+    the online answer stays primary and only a missing city is completed offline. Since
+    F93 the offline lookup happens for every coordinate regardless (it is what the cache
+    key is built from), so this costs nothing extra — but it is no longer true that the
+    base is "only touched on a miss".
 
     Country, city and district always come from ONE source: an offline city replaces the
     whole place, so a Nominatim country name never gets glued onto a GeoNames city. If
