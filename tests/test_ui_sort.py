@@ -181,7 +181,9 @@ class TestSortStatusShape(SortTestBase):
         self.start_server()
         data = self.sort_status()
         self.assertEqual(
-            set(data.keys()), {"running", "done", "total", "error", "finished", "result"})
+            set(data.keys()),
+            {"running", "done", "total", "error", "finished", "result",
+             "cancel_requested"})
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])
         self.assertIsNone(data["error"])
@@ -196,8 +198,10 @@ class TestSortStatusShape(SortTestBase):
         final = _poll_until(self.sort_status, lambda d: d["finished"])
         self.assertEqual(
             set(final["result"].keys()),
-            {"moved", "failed", "skipped_in_place", "dirs", "dest", "in_place", "mode"},
+            {"moved", "failed", "skipped_in_place", "skipped_already_copied",
+             "cancelled", "total", "dirs", "dest", "in_place", "mode"},
         )
+        self.assertFalse(final["result"]["cancelled"])
         self.assertEqual(final["result"]["mode"], "copy")
         self.assertFalse(final["result"]["in_place"])
 

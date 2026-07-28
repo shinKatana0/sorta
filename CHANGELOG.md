@@ -6,7 +6,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A repeated `sort --apply` no longer duplicates what it already copied** (F97): the
+  first real apply on the live collection (22 364 files, ~220 GB, copy mode) died with
+  the machine; the user restarted it into the same destination and got **10 021 files
+  copied a second time under `_1` names — 140.9 GB** of byte-identical twins. Cause:
+  `_resolve_dst` could tell "the file is already AT its target" (an in-place layout)
+  from a name conflict, but not "the target already holds exactly this file". It now
+  compares the size and then the blake3 of the existing `dst` against the source hash
+  **from the index** (no re-hashing of sources on a resume) and skips the file,
+  counting it in a separate `skipped_already_copied` — separate on purpose, because
+  "source and target are one path" and "the copy is already made" are different events.
+  A different file with the same name still gets `_1`, and a same-size-different-hash
+  file (a copy interrupted mid-write) counts as different — the existing file is never
+  overwritten. Albums go through the same `_resolve_dst` and inherit the behaviour.
+
 ### Added
+- **Cancelling a layout from the UI** (F97): copying 220 GB takes an hour and a half and
+  there was no way to stop it short of killing the process. `plan_and_sort` now takes
+  `should_cancel`, polled at the start of each file, before the `moves` row is written;
+  on cancel it **breaks rather than raises**, so the batch still gets its `finished_at`
+  — an exception would fly past the code that closes it, and undo is exactly the tool
+  the user reaches for next. `POST /api/sort/cancel` and a Cancel button next to the
+  progress bar; the report says "cancelled, N of M", not a bare "done".
+- **Rolling the last batch back from the UI** (F97): the "Moves" tab was a read-only
+  manifest that told the user to go and type `sorta undo`, in precisely the situation
+  the journal had been written for. It now has a Roll back button (and a second entry
+  point in the result panel of a cancelled layout), behind a confirmation dialog that
+  names the operation and the count from the manifest — *"N copies in `<dest>` will be
+  deleted, the originals stay untouched"* / *"N files will go back to their original
+  folders"*. `POST /api/undo` + `GET /api/undo/status` + `POST /api/undo/cancel`, the
+  same shape as `/api/sort`, cross-locked with a layout and a pipeline run both ways.
+  The rollback is itself cancellable (it re-hashes every copy) and idempotent: pressing
+  the button again finishes what a cancel left. `undo` now also handles the **tail of an
+  interrupted transfer** — rows still in `status='planned'` whose file exists: a hash
+  match means it is our own complete file (deleted for copy, moved back for move), a
+  mismatch means a broken copy, which is **not** deleted but reported by path for the
+  user to check. A batch left with `finished_at = NULL` is closed by the rollback
+  instead of looking like it is running forever.
+- **Windows long paths** (F97): every filesystem call in `sorter.py` now goes through a
+  `\\?\`-prefix helper — the copy, the destination `mkdir`, the existence check that
+  resolves name conflicts (without it `exists()` lies "no" past 260 characters, the
+  unsuffixed name is chosen and the write fails anyway), and the `unlink` in `undo` and
+  in near-duplicate deletion. Paths in the DB stay plain absolute strings; the prefix
+  lives only at the call boundary, and on non-Windows the helper is a no-op.
 - **Event names that say what happened** (F95): the biggest events of a collection were
   called `2025-04-24..05-06 Тайланд` (1 359 files) — a date range and a country, which
   is exactly what the folder path above them already showed. A year later a trip is
