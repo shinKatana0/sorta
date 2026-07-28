@@ -491,23 +491,101 @@ def _apply_imaging_config(raw: dict) -> None:
         os.environ[env_name] = str(value)
 
 
+# F104: words YAML reads as something other than a plain string. A model name will
+# never be one of them, but a saver that emits `model: no` and reads back `False` is a
+# trap waiting for the one value that hits it — quoting them costs nothing.
+_YAML_RESERVED = frozenset({
+    "y", "n", "yes", "no", "true", "false", "on", "off", "null", "none", "~",
+})
+# Characters that carry no YAML meaning outside quotes: a model id, a path fragment,
+# a language code. Anything else (a colon, a hash, a leading dash, spaces) is quoted.
+_YAML_PLAIN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./+-]*$")
+
+
+def _yaml_scalar(value: bool | int | float | str) -> str:
+    """One value as the text of a YAML scalar — bools lower-case, strings safe."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    if _YAML_PLAIN_RE.match(text) and text.lower() not in _YAML_RESERVED:
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _set_top_level(text: str, key: str, scalar: str) -> str:
+    """Replace the value of a top-level `key:` line, or append the line."""
+    pattern = re.compile(rf"(?m)^{re.escape(key)}:.*$")
+    if pattern.search(text):
+        # A lambda replacement, not a template: a quoted value may contain a backslash,
+        # which re.sub would read as a group reference and mangle.
+        return pattern.sub(lambda _m: f"{key}: {scalar}", text, count=1)
+    head = text.rstrip("\n") + "\n" if text.strip() else ""
+    return f"{head}{key}: {scalar}\n"
+
+
+def _set_in_section(text: str, section: str, key: str, scalar: str) -> str:
+    """Replace (or add) `key:` inside a top-level `section:` block of the YAML text.
+
+    Line-level, like `_set_top_level`: the block is everything indented under the
+    header, and only the ONE line of that block is rewritten. A missing key is appended
+    to the end of the block (with the block's own indentation), a missing section is
+    appended to the end of the file — so a config.yaml that never mentioned `vlm:`
+    grows the section instead of the value going nowhere.
+    """
+    lines = text.split("\n")
+    header = re.compile(rf"^{re.escape(section)}:\s*(#.*)?$")
+    start = next((i for i, line in enumerate(lines) if header.match(line)), None)
+    if start is None:
+        head = text.rstrip("\n") + "\n" if text.strip() else ""
+        return f"{head}{section}:\n  {key}: {scalar}\n"
+    end = start + 1
+    while end < len(lines):
+        line = lines[end]
+        if line.strip() and not line[:1].isspace():
+            break
+        end += 1
+    entry = re.compile(rf"^(\s+){re.escape(key)}:.*$")
+    indent = "  "
+    last_filled = start
+    for i in range(start + 1, end):
+        match = entry.match(lines[i])
+        if match is not None:
+            lines[i] = f"{match.group(1)}{key}: {scalar}"
+            return "\n".join(lines)
+        if lines[i].strip():
+            last_filled = i
+            if not lines[i].lstrip().startswith("#"):
+                indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+    lines.insert(last_filled + 1, f"{indent}{key}: {scalar}")
+    return "\n".join(lines)
+
+
+def save_setting(path: str | Path, key: str, value: bool | int | float | str) -> None:
+    """Persist one `key: value` into config.yaml, preserving the rest of the file.
+
+    `key` is either a top-level name (`language`) or one level of nesting
+    (`vlm.enabled`) — the two shapes the settings column of the web app writes (F104).
+
+    A line-level edit, not a YAML round-trip: the file belongs to the user and is full
+    of their comments, ordering and blank lines, all of which `yaml.safe_dump` would
+    silently throw away on the first change of a checkbox. A missing file is created.
+    """
+    p = Path(path)
+    text = p.read_text(encoding="utf-8") if p.exists() else ""
+    section, _dot, leaf = key.rpartition(".")
+    scalar = _yaml_scalar(value)
+    updated = (_set_in_section(text, section, leaf, scalar) if section
+               else _set_top_level(text, leaf, scalar))
+    p.write_text(updated, encoding="utf-8")
+
+
 def save_language(path: str | Path, lang: str) -> None:
     """Persist `language: <lang>` into config.yaml, preserving the rest of the file.
 
-    A line-level replace (not a YAML round-trip) so user comments and formatting
-    survive: replace the value of an existing top-level `language:` line, otherwise
-    append the line; create the file if it does not exist. `lang` is normalized to a
-    supported code (ru|en|ja) — an invalid value falls back to the i18n default.
+    `lang` is normalized to a supported code (ru|en|ja) — an invalid value falls back
+    to the i18n default. The writing itself is `save_setting` (F104), which generalized
+    what this function used to do inline.
     """
-    lang = i18n.normalize_lang(lang)
-    p = Path(path)
-    if p.exists():
-        text = p.read_text(encoding="utf-8")
-        pattern = re.compile(r"(?m)^language:.*$")
-        if pattern.search(text):
-            text = pattern.sub(f"language: {lang}", text, count=1)
-        else:
-            text = text.rstrip("\n") + f"\nlanguage: {lang}\n"
-    else:
-        text = f"language: {lang}\n"
-    p.write_text(text, encoding="utf-8")
+    save_setting(path, "language", i18n.normalize_lang(lang))
