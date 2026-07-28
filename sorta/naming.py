@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -175,42 +176,168 @@ def _encode_images(paths: tuple[str, ...], max_n: int) -> list[tuple[str, str]]:
 # describe(frames, prompt, max_new_tokens) is deliberately the whole interface: the
 # prompt, the decode and the parsing of the answer stay with the stage that owns
 # them, the runtime only knows how to run the model.
+#
+# F101: `describe` is now assembled from the two halves it always consisted of —
+# `prepare` (the processor: chat template + image preprocessing, pure CPU) and
+# `generate` (the model itself, the GPU). Profiling the first live deep run showed the
+# pass is not heavy but SEQUENTIAL: ~0.6 s of CPU then ~0.19 s of GPU per frame, with
+# no overlap — one core busy out of 24, the card idle three quarters of the time. A
+# caller that has many frames to classify (junk) can now run the halves in a pipeline;
+# a caller with one call per event (VlmNamer) keeps using `describe` and notices
+# nothing. The split changes no tensor and no token: SplitVlm.__call__ is literally
+# generate(prepare(...)), which is the body the single function had.
 
 VlmDescribeFn = Callable[[Sequence[Image.Image], str, int], str]
+# The CPU half: frames + prompt -> whatever the GPU half needs (for Qwen — the
+# processor's BatchFeature, deliberately left on the CPU, see qwen_runtime).
+VlmPrepareFn = Callable[[Sequence[Image.Image], str], Any]
+VlmGenerateFn = Callable[[Any, int], str]
 
 DEFAULT_VLM_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
 # The VLM input is not for fine details like OCR, a large frame is not needed; saves
 # VRAM/generation time.
 VLM_MAX_EDGE = 896
 
+
+@dataclass(frozen=True)
+class SplitVlm:
+    """A runtime that hands out both halves of `describe`, not only the whole (F101).
+
+    It IS a VlmDescribeFn — calling it runs prepare then generate, exactly as the one
+    function did — so every existing caller keeps working unchanged. A caller that
+    wants overlap asks for the halves instead (`isinstance(runtime, SplitVlm)`), runs
+    `prepare` on worker threads and `generate` on its own: one thread per GPU is the
+    point, several threads generating would only serialize inside the driver.
+
+    A runtime that is NOT a SplitVlm (a test double, a future provider) is not an
+    error anywhere — the caller falls back to the serial path.
+    """
+    prepare: VlmPrepareFn
+    generate: VlmGenerateFn
+
+    def __call__(self, frames: Sequence[Image.Image], prompt: str,
+                 max_new_tokens: int) -> str:
+        return self.generate(self.prepare(frames, prompt), max_new_tokens)
+
+
 _VLM_RUNTIMES: dict[str, VlmDescribeFn] = {}
 
 
-def qwen_vlm(model_name: str) -> VlmDescribeFn:  # pragma: no cover — ML, smoke test
-    """Load Qwen2.5-VL through transformers → describe(frames, prompt, max_new_tokens).
+def processor_is_fast(processor: Any) -> bool:
+    """Did transformers really give us the fast (torchvision) image processor?
+
+    F101: `use_fast=True` is a request, not a promise — for a model whose repo ships
+    only the slow processor config transformers quietly hands back the slow one, and
+    the slow one is pure Python over PIL, i.e. a good part of the 0.6 s of CPU per
+    frame this feature exists to remove. So the answer is read off the built processor
+    rather than assumed, and `scripts/measure_vlm_speed.py` prints it: "we asked for
+    fast" and "we got fast" must not be the same line in a report.
+    """
+    return type(getattr(processor, "image_processor", processor)).__name__.endswith("Fast")
+
+
+class ThreadLocalProcessors:
+    """One processor per thread that prepares frames — built lazily, kept for the run.
+
+    F101: the weights are shared (they are read-only and 20.5 GB), but a processor is
+    NOT read-only. Its tokenizer sets truncation/padding on itself at every call, so
+    two threads preprocessing at once share mutable state — the same reason every OCR
+    worker gets its own easyocr Reader (F73) and every faces worker its own session
+    (F12.1). A processor costs milliseconds and no VRAM, so the fix is the same one:
+    per thread, once, and never per frame.
+
+    Without a `factory` (a single-threaded caller, a measurement, a test) the shared
+    instance is handed out unchanged — there is nothing to protect it from.
+    """
+
+    def __init__(self, shared: Any, factory: Callable[[], Any] | None = None) -> None:
+        self._shared = shared
+        self._factory = factory
+        self._local = threading.local()
+        self._built = 0
+        self._lock = threading.Lock()
+
+    @property
+    def built(self) -> int:
+        """Processors created besides the shared one — one per preparation thread."""
+        return self._built
+
+    def get(self) -> Any:
+        if self._factory is None:
+            return self._shared
+        own: Any = getattr(self._local, "processor", None)
+        if own is None:
+            own = self._local.processor = self._factory()
+            with self._lock:
+                self._built += 1
+        return own
+
+
+def qwen_processor(model_name: str,
+                   use_fast: bool = True) -> Any:  # pragma: no cover — ML, smoke test
+    """The Qwen processor, fast by default (F101).
+
+    Separate from the model on purpose: a processor costs milliseconds to build while
+    the weights cost seconds and 20.5 GB of VRAM, so the measurement script can compare
+    the slow and the fast preprocessing on ONE loaded model — and so every preparation
+    thread can have its own (see ThreadLocalProcessors).
+    """
+    from transformers import AutoProcessor
+
+    return AutoProcessor.from_pretrained(model_name, use_fast=use_fast)
+
+
+def load_qwen(model_name: str,
+              use_fast: bool = True) -> tuple[Any, Any, str]:  # pragma: no cover — ML
+    """(model, processor, device) — the parts `qwen_vlm` assembles a runtime from.
 
     Lazy-import: the module loads without transformers installed (as junk did with
     easyocr/transformers before) — the build fails ONLY here, and every caller wraps
     that in a graceful fallback (junk → the fast CLIP tier, the namer → the template).
     """
     import torch
-    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+    from transformers import Qwen2_5_VLForConditionalGeneration
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_name, torch_dtype=dtype, device_map=device)
-    processor = AutoProcessor.from_pretrained(model_name)
     model.eval()
+    return model, qwen_processor(model_name, use_fast=use_fast), device
 
-    def describe(frames: Sequence[Image.Image], prompt: str, max_new_tokens: int) -> str:
+
+def qwen_runtime(model: Any, processor: Any, device: str,
+                 processor_factory: Callable[[], Any] | None = None,
+                 ) -> SplitVlm:  # pragma: no cover — ML, smoke test
+    """A loaded Qwen2.5-VL as its CPU and GPU halves (F101).
+
+    `prepare` leaves the tensors ON THE CPU. That is the VRAM contract of the pipeline
+    above it: with the halves overlapped several frames are in flight at once, and
+    moving each to the card at preprocessing time would multiply the peak by the window
+    size. The card sees exactly one frame's inputs at a time — `generate` does the
+    `.to(device)` itself, the same call the single function made.
+
+    `processor_factory` gives each preparation thread its own processor (see
+    ThreadLocalProcessors on why a shared one is not safe to preprocess with). The
+    `generate` side keeps using `processor` for decoding, and it runs on one thread
+    only, so no processor is ever touched by two threads.
+    """
+    import torch
+
+    processors = ThreadLocalProcessors(processor, processor_factory)
+
+    def prepare(frames: Sequence[Image.Image], prompt: str) -> Any:
+        own = processors.get()
         images = list(frames)
         content: list[dict[str, Any]] = [{"type": "image", "image": im} for im in images]
         content.append({"type": "text", "text": prompt})
-        text = processor.apply_chat_template(
+        text = own.apply_chat_template(
             [{"role": "user", "content": content}],
             tokenize=False, add_generation_prompt=True)
-        inputs = processor(text=[text], images=images, return_tensors="pt").to(device)
+        return own(text=[text], images=images, return_tensors="pt")
+
+    def generate(prepared: Any, max_new_tokens: int) -> str:
+        inputs = prepared.to(device)
         with torch.no_grad():
             # #30 (V1): greedy, NOT sampling. Qwen's default generation_config is
             # do_sample=True: on some frames fp16 logits go to NaN/inf -> softmax
@@ -223,7 +350,15 @@ def qwen_vlm(model_name: str) -> VlmDescribeFn:  # pragma: no cover — ML, smok
         answer = processor.batch_decode(gen_ids, skip_special_tokens=True)[0]
         return str(answer).strip()
 
-    return describe
+    return SplitVlm(prepare=prepare, generate=generate)
+
+
+def qwen_vlm(model_name: str,
+             use_fast: bool = True) -> VlmDescribeFn:  # pragma: no cover — ML, smoke test
+    """Load Qwen2.5-VL through transformers → describe(frames, prompt, max_new_tokens)."""
+    model, processor, device = load_qwen(model_name, use_fast=use_fast)
+    return qwen_runtime(model, processor, device,
+                        lambda: qwen_processor(model_name, use_fast=use_fast))
 
 
 def shared_vlm(model_name: str,

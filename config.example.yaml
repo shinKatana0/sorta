@@ -200,6 +200,14 @@ naming:
   # checkbox in the UI.
   vlm_enabled: false
   classify_vlm_model: "Qwen/Qwen2.5-VL-3B-Instruct"  # junk VLM classifier (deep tier)
+  # F101: threads that prepare frames (decode + image preprocessing) for the deep
+  # tier while the GPU classifies the previous one. The pass was not heavy but
+  # sequential — ~0.6 s of CPU then ~0.19 s of GPU per frame, one core busy out of 24
+  # and the card idle three quarters of the time. Verdicts do not depend on this
+  # number: the labels are applied in the candidate order whatever it is set to.
+  # Default min(4, cores) — modest on purpose (a two-core machine is a real machine),
+  # and the frames in flight (~2 per worker) are held in RAM, not in VRAM.
+  # vlm_workers: 4
   product_candidate_min: 0.4  # product-CLIP above this → the frame goes to the VLM tier (candidate gate)
   # F65: the bundled list now ships inside the package (sorta/data/landmarks.yaml).
   # Leave this out to use it; set a path only to supply your OWN list — a path that
