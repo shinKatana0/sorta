@@ -321,9 +321,10 @@ class TestTransfer(SorterTestBase):
         self.dest.mkdir()
         (self.dest / "x.jpg").write_bytes(b"occupied")
         src = self.write_file("sub/x.jpg", b"incoming")
-        dst, in_place = _resolve_dst(self.dest, src, claimed)
+        dst, in_place, already_copied = _resolve_dst(self.dest, src, claimed)
         self.assertEqual(dst.name, "x_1.jpg")
         self.assertFalse(in_place)
+        self.assertFalse(already_copied)
 
 
 class TestPlanDryRun(SorterTestBase):

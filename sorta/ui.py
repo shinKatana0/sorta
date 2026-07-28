@@ -70,6 +70,24 @@ a snapshot for polling. After a successful apply — `PlanCache.rebuild` with th
 conn (the city plan reads the new paths); the "Moves" tab learns about it from a reset
 of `movesLoaded` in JS.
 
+(9a) `POST /api/sort/cancel` (F97) — sets a flag on `_SortState`, exactly like
+`/api/process/cancel`. `plan_and_sort` reads it as `should_cancel` between files and
+BREAKS out of the loop, so the batch still gets its `finished_at`; the result then
+carries `cancelled` and `moved`, i.e. "copied 4 000 of 22 364" rather than "done".
+Copying 220 GB takes an hour and a half — before this the only way to stop it was to
+kill the process.
+
+(9b) `POST /api/undo` + `GET /api/undo/status` + `POST /api/undo/cancel` (F97, the
+"Roll back" button on the "Moves" tab and in the panel of a cancelled layout) — the
+same three-endpoint shape as `/api/sort`, with its own `_UndoState`. It rolls back the
+LAST batch, the one the manifest on that tab is already showing (`_last_batch_id`),
+and there is deliberately no batch selector: fewer ways to misfire a button that
+deletes files. The engine is `sorter.undo` — the blake3 check before deleting a copy,
+the tail of an interrupted transfer and the closing of a batch left with
+`finished_at=NULL` all live there. Cross-locked with `/api/sort` and `/api/process`
+both ways (409): a rollback changes paths of files on disk. Before F97 the UI sent the
+user to the terminal for exactly the situation the journal was written for.
+
 (10) `POST /api/browse` (F51, the "Browse…" button — next to the "Process" path field
 and next to the layout destination field on the "Cities" tab) — opens a native
 folder-picker dialog and returns `{"path": str}` (an empty string on cancel/error/no
@@ -224,7 +242,15 @@ from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
 from .runlog import log_environment, stage_timer
-from .sorter import ALBUM_KINDS, ALBUM_MODES, AlbumReport, PlanItem, plan_album, plan_and_sort
+from .sorter import (
+    ALBUM_KINDS,
+    ALBUM_MODES,
+    AlbumReport,
+    PlanItem,
+    plan_album,
+    plan_and_sort,
+    undo,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -2218,7 +2244,13 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
 
 class _SortState:
     """Thread-safe state of the background `/api/sort` apply (F43) — modelled on
-    `_ProcessState`, but without stages (one `plan_and_sort` operation)."""
+    `_ProcessState`, but without stages (one `plan_and_sort` operation).
+
+    F97: it also carries a cancel flag now. Unlike `_ProcessState`, the flag is only
+    READ (`cancel_requested` is handed to `plan_and_sort` as `should_cancel`) — it
+    never raises out of a callback. The layout has a batch to close before it may
+    stop, so the engine decides when to break, not the state object.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -2231,6 +2263,7 @@ class _SortState:
         self.error: str | None = None
         self.finished = False
         self.result: dict | None = None
+        self._cancel_requested = False
 
     def try_start(self) -> bool:
         """True and switches to running if nothing is going now; otherwise False (409)."""
@@ -2245,6 +2278,15 @@ class _SortState:
         with self._lock:
             self.done = done
             self.total = total
+
+    def request_cancel(self) -> None:
+        with self._lock:
+            if self.running:
+                self._cancel_requested = True
+
+    def cancel_requested(self) -> bool:
+        with self._lock:
+            return self._cancel_requested
 
     def finish(self, error: str | None, result: dict | None) -> None:
         with self._lock:
@@ -2262,7 +2304,20 @@ class _SortState:
                 "error": self.error,
                 "finished": self.finished,
                 "result": self.result,
+                "cancel_requested": self._cancel_requested,
             }
+
+
+class _UndoState(_SortState):
+    """Thread-safe state of the background `/api/undo` rollback (F97).
+
+    Deliberately the same shape as `_SortState` (running/done/total/error/finished/
+    result + a cancel flag): the client polls it with the same code, and a rollback is
+    the same kind of thing as a layout — one long operation over a file list that has
+    to be stoppable. A separate class rather than a second `_SortState` instance so
+    the cross-lock in the handlers reads as what it is: sort, process and undo are
+    three named things that may not run at the same time.
+    """
 
 
 def _validate_sort_payload(payload: object) -> tuple[str | None, str] | None:
@@ -2308,6 +2363,10 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
     `plan_and_sort` may raise `ValueError` (e.g. in-place with ≠1 source in
     `cfg.sources`) — caught and stored in the state as an error, the thread does not
     crash and the server stays alive.
+
+    F97: `should_cancel` is the state's own flag, so `POST /api/sort/cancel` stops the
+    copying between files. A cancelled run is NOT an error — it returns a result like
+    any other, with `cancelled` set and `moved` telling how far it got.
     """
     conn = _connect(db_path)
     error: str | None = None
@@ -2316,7 +2375,8 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
         dest_path = Path(dest) if dest else None
         try:
             report = plan_and_sort(cfg, conn, "city", dest_path, apply=True,
-                                   copy=(mode == "copy"), progress=state.set_progress)
+                                   copy=(mode == "copy"), progress=state.set_progress,
+                                   should_cancel=state.cancel_requested)
         except ValueError as exc:
             error = str(exc)
         else:
@@ -2324,6 +2384,9 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
                 "moved": report.moved,
                 "failed": report.failed,
                 "skipped_in_place": report.skipped_in_place,
+                "skipped_already_copied": report.skipped_already_copied,
+                "cancelled": report.cancelled,
+                "total": len(report.plan),
                 "dirs": report.dirs,
                 "dest": str(report.dest),
                 "in_place": report.in_place,
@@ -2337,6 +2400,71 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
             except Exception:  # noqa: BLE001
                 _log.exception("sorta ui: план не обновлён после apply раскладки")
                 result["preview_stale"] = True
+    finally:
+        conn.close()
+        state.finish(error, result)
+
+
+# --- F97: roll the last batch back from the UI (`POST /api/undo`) -------------
+# The engine is `sorter.undo`, exactly the one behind the CLI `sorta undo` — the
+# blake3 verification before deleting a copy, the interrupted tail and the closing of
+# a batch left with finished_at=NULL all live there. Here, as with `/api/sort`, only
+# the background thread, the progress snapshot and the cancel flag.
+#
+# The batch is resolved the same way `_moves_payload` resolves it — the LAST batch in
+# move_batches, i.e. the very one the "Moves" tab is showing. `sorter.undo(None)` picks
+# the last batch that has a 'done' move instead, which is a different batch in exactly
+# the case this button exists for: a run interrupted before its first file finished.
+# The button and the manifest next to it must talk about the same thing.
+
+
+def _last_batch_id(conn: sqlite3.Connection) -> int | None:
+    row = conn.execute("SELECT id FROM move_batches ORDER BY id DESC LIMIT 1").fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+def _run_undo(db_path: Path, cfg: Config, state: _UndoState, cache: PlanCache) -> None:
+    """The body of the `POST /api/undo` background thread: its own sqlite connection
+    (not transferable between threads, like `_run_sort`).
+
+    No batches at all -> an error in the state, not an exception: the button is only
+    reachable when the manifest shows a batch, so this is a race, not a user mistake.
+    A cancelled rollback is a normal result with `cancelled` set — what was undone
+    stays undone and pressing the button again finishes the rest.
+
+    `stray` (copies of an interrupted transfer whose hash does not match) travels to
+    the client as a list of paths: those files are still lying in the result and only
+    a human can decide what they are.
+    """
+    conn = _connect(db_path)
+    error: str | None = None
+    result: dict | None = None
+    try:
+        batch_id = _last_batch_id(conn)
+        if batch_id is None:
+            error = "no batches to undo"
+        else:
+            try:
+                stats = undo(conn, batch_id, progress=state.set_progress,
+                             should_cancel=state.cancel_requested)
+            except ValueError as exc:
+                error = str(exc)
+            else:
+                result = {
+                    "batch_id": stats.batch_id,
+                    "undone": stats.undone,
+                    "missing": stats.missing,
+                    "failed": stats.failed,
+                    "cancelled": stats.cancelled,
+                    "stray": stats.stray,
+                }
+                # As in _run_sort: the rollback already happened, so a preview cache
+                # that would not rebuild is a soft signal, never a rollback error.
+                try:
+                    cache.rebuild(cfg, conn)
+                except Exception:  # noqa: BLE001
+                    _log.exception("sorta ui: план не обновлён после отката")
+                    result["preview_stale"] = True
     finally:
         conn.close()
         state.finish(error, result)
@@ -2971,10 +3099,15 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "{n} files, {dirs} folders → {dest}",
         "ja": "{n} ファイル、{dirs} フォルダ → {dest}",
     },
+    # F97: the text used to send the user to the terminal (`sorta undo`) — there is a
+    # button on the "Moves" tab now, so it points at the button.
     "sort_confirm_move": {
-        "ru": "ВНИМАНИЕ: оригиналы будут ПЕРЕМЕЩЕНЫ. Откат — команда sorta undo.",
-        "en": "WARNING: originals will be MOVED. Roll back with the sorta undo command.",
-        "ja": "警告: オリジナルファイルが移動されます。元に戻すには sorta undo コマンドを使用してください。",
+        "ru": "ВНИМАНИЕ: оригиналы будут ПЕРЕМЕЩЕНЫ. "
+              "Откатить можно кнопкой на вкладке «Перемещения».",
+        "en": "WARNING: originals will be MOVED. "
+              "You can roll this back with the button on the Moves tab.",
+        "ja": "警告: オリジナルファイルが移動されます。"
+              "「移動」タブのボタンで元に戻せます。",
     },
     "sort_confirm_inplace": {
         "ru": "ВНИМАНИЕ: реструктурируется ИСХОДНОЕ дерево коллекции, а не копия "
@@ -3008,6 +3141,75 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "sort_start_error_prefix": {
         "ru": "Не удалось запустить: ", "en": "Failed to start: ", "ja": "開始できません: ",
+    },
+    # --- F97: cancelling a layout + rolling back from the "Moves" tab ---------
+    "sort_cancel_button": {"ru": "Отменить", "en": "Cancel", "ja": "中止"},
+    "sort_cancel_requested": {
+        "ru": "Отмена запрошена — текущий файл будет дописан…",
+        "en": "Cancellation requested — the current file will be finished…",
+        "ja": "中止をリクエストしました — 現在のファイルは書き終えます…",
+    },
+    "sort_cancelled_text": {
+        "ru": "Отменено: разложено {n} из {all}, ошибок {f}.",
+        "en": "Cancelled: sorted {n} of {all}, errors {f}.",
+        "ja": "中止しました: {all} 件中 {n} 件を振り分け、エラー {f} 件。",
+    },
+    "sort_already_copied_note": {
+        "ru": " Уже было на месте: {c}.", "en": " Already there: {c}.",
+        "ja": " すでに配置済み: {c} 件。",
+    },
+    "sort_undo_hint": {
+        "ru": "Разложенное можно откатить — вкладка «Перемещения».",
+        "en": "What was sorted can be rolled back on the Moves tab.",
+        "ja": "振り分けた結果は「移動」タブで元に戻せます。",
+    },
+    "undo_button": {"ru": "Откатить", "en": "Roll back", "ja": "元に戻す"},
+    "undo_cancel_button": {"ru": "Отменить откат", "en": "Cancel rollback", "ja": "中止"},
+    "undo_confirm_copy": {
+        "ru": "Будет удалено {n} копий в {dest}. Оригиналы не тронутся.",
+        "en": "{n} copies in {dest} will be deleted. The originals stay untouched.",
+        "ja": "{dest} 内のコピー {n} 件を削除します。オリジナルはそのまま残ります。",
+    },
+    "undo_confirm_move": {
+        "ru": "{n} файлов вернутся в исходные папки.",
+        "en": "{n} files will go back to their original folders.",
+        "ja": "{n} 件のファイルが元のフォルダに戻ります。",
+    },
+    "undo_confirm_ok": {"ru": "Откатить", "en": "Roll back", "ja": "元に戻す"},
+    "undo_confirm_cancel": {"ru": "Отмена", "en": "Cancel", "ja": "キャンセル"},
+    "undo_progress_line": {
+        "ru": "Откачено {done} из {all}", "en": "Rolled back {done} of {all}",
+        "ja": "元に戻した件数 {done}/{all}",
+    },
+    "undo_done_text": {
+        "ru": "Откачено {n}, отсутствовало {m}, ошибок {f}",
+        "en": "Rolled back {n}, missing {m}, errors {f}",
+        "ja": "元に戻した {n} 件、見つからない {m} 件、エラー {f} 件",
+    },
+    "undo_cancelled_text": {
+        "ru": "Отменено: откачено {n}. Нажмите «Откатить» ещё раз, чтобы доделать.",
+        "en": "Cancelled: {n} rolled back. Press Roll back again to finish.",
+        "ja": "中止しました: {n} 件を元に戻しました。続けるにはもう一度「元に戻す」を押してください。",
+    },
+    "undo_stray_title": {
+        "ru": "Битые копии прерванного переноса — не удалены, проверьте вручную:",
+        "en": "Broken copies from an interrupted transfer — not deleted, check by hand:",
+        "ja": "中断された転送による壊れたコピー — 削除していません。手動で確認してください:",
+    },
+    "undo_nothing_to_undo": {
+        "ru": "Откатывать нечего.", "en": "Nothing to roll back.",
+        "ja": "元に戻すものがありません。",
+    },
+    "undo_error_prefix": {
+        "ru": "Ошибка отката: ", "en": "Rollback error: ", "ja": "元に戻す処理のエラー: ",
+    },
+    "undo_start_error_prefix": {
+        "ru": "Не удалось запустить откат: ", "en": "Failed to start the rollback: ",
+        "ja": "元に戻す処理を開始できません: ",
+    },
+    "undo_cancel_requested": {
+        "ru": "Отмена отката запрошена…", "en": "Rollback cancellation requested…",
+        "ja": "元に戻す処理の中止をリクエストしました…",
     },
     # --- F77: manual corrections to the layout (the "Cities" tab) ----------
     "override_exclude_button": {
@@ -3747,6 +3949,10 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <span class="sort-dest-hint">{{sort_dest_hint}}</span>
 </div>
 <progress id="sort-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
+<div class="process-actions">
+<button type="button" id="sort-cancel-btn" class="btn btn-ghost" style="display:none">{{sort_cancel_button}}</button>
+<button type="button" id="sort-undo-btn" class="btn btn-danger" style="display:none">{{undo_button}}</button>
+</div>
 <div id="sort-status" class="process-status"></div>
 <div id="sort-warning" class="process-status"></div>
 <div class="tree-controls">
@@ -3795,6 +4001,13 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 
 <section id="tab-moves" class="tab-panel">
 <div id="moves-summary"></div>
+<div class="process-actions">
+<button type="button" id="undo-btn" class="btn btn-danger" disabled>{{undo_button}}</button>
+<button type="button" id="undo-cancel-btn" class="btn btn-ghost" style="display:none">{{undo_cancel_button}}</button>
+</div>
+<progress id="undo-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
+<div id="undo-status" class="process-status"></div>
+<div id="undo-stray" class="process-status"></div>
 <div class="tree-controls">
 <button type="button" class="btn btn-ghost expand-all-btn">{{expand_all}}</button>
 <button type="button" class="btn btn-ghost collapse-all-btn">{{collapse_all}}</button>
@@ -3816,6 +4029,15 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <div class="reset-dialog-actions">
 <button type="button" id="reset-dialog-cancel" class="btn btn-ghost">{{process_reset_confirm_cancel}}</button>
 <button type="button" id="reset-dialog-ok" class="btn btn-danger">{{process_reset_confirm_ok}}</button>
+</div>
+</div>
+</div>
+<div id="undo-dialog" class="reset-dialog" hidden>
+<div class="reset-dialog-box">
+<p class="reset-dialog-text" id="undo-dialog-text"></p>
+<div class="reset-dialog-actions">
+<button type="button" id="undo-dialog-cancel" class="btn btn-ghost">{{undo_confirm_cancel}}</button>
+<button type="button" id="undo-dialog-ok" class="btn btn-danger">{{undo_confirm_ok}}</button>
 </div>
 </div>
 </div>
@@ -5543,40 +5765,79 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   // по недостроенному индексу (places очищены, media_class ещё пуст).
   // F94: очистки кэшей — там же: подтверждение с ценой действия ради ответа 409
   // ничем не лучше, а превью на середине прогона пишет тот самый шаг.
+  // F97: откат — третий такой же процесс: он двигает файлы на диске, совмещать его
+  // с раскладкой или прогоном нельзя (сервер отбивает 409 под тем же busy_lock).
+  // undoAvailable/undoBatchInfo наполняет манифест «Перемещений» (applyUndoAvailability):
+  // кнопка отката жива только когда есть что откатывать, а диалог берёт числа оттуда же.
+  var undoRunning = false;
+  var undoAvailable = false;
+  var undoBatchInfo = null;
+
   function updateBusyControlsDisabled() {
+    var busy = sortRunning || processRunning || undoRunning;
     ["sort-apply-btn", "sort-browse-btn", "sort-dest",
      "process-reset-btn",
      "cache-clear-preview-btn", "cache-clear-geo-btn"].forEach(function (id) {
       var el = document.getElementById(id);
-      if (el) { el.disabled = sortRunning || processRunning; }
+      if (el) { el.disabled = busy; }
     });
+    var undoBtn = document.getElementById("undo-btn");
+    // «Откатить» дополнительно требует батча в манифесте — см. applyUndoAvailability
+    if (undoBtn) { undoBtn.disabled = busy || !undoAvailable; }
+    var sortUndoBtn = document.getElementById("sort-undo-btn");
+    if (sortUndoBtn) { sortUndoBtn.disabled = busy || !undoAvailable; }
   }
 
   function renderSortStatus(data) {
     var bar = document.getElementById("sort-progress");
     var statusEl = document.getElementById("sort-status");
     var warnEl = document.getElementById("sort-warning");
+    var cancelBtn = document.getElementById("sort-cancel-btn");
+    var undoBtn = document.getElementById("sort-undo-btn");
     sortRunning = !!data.running;
+    cancelBtn.style.display = data.running ? "" : "none";
+    cancelBtn.disabled = !!data.cancel_requested;
     updateBusyControlsDisabled();
     bar.style.display = data.running ? "" : "none";
     if (data.running) {
+      undoBtn.style.display = "none";
       bar.max = data.total || 0;
       bar.value = data.done || 0;
-      statusEl.textContent = fmt(I18N.sort_progress_line, { done: data.done, all: data.total });
+      statusEl.textContent = data.cancel_requested
+          ? I18N.sort_cancel_requested
+          : fmt(I18N.sort_progress_line, { done: data.done, all: data.total });
       warnEl.textContent = "";
       return;
     }
-    if (!data.finished) { statusEl.textContent = ""; warnEl.textContent = ""; return; }
+    if (!data.finished) {
+      undoBtn.style.display = "none";
+      statusEl.textContent = ""; warnEl.textContent = ""; return;
+    }
     if (data.error) {
+      undoBtn.style.display = "none";
       statusEl.textContent = I18N.sort_error_prefix + data.error;
       warnEl.textContent = "";
       return;
     }
     var r = data.result || {};
-    statusEl.textContent = fmt(I18N.sort_done_text,
-        { n: r.moved || 0, f: r.failed || 0, p: r.skipped_in_place || 0 });
-    warnEl.textContent = r.preview_stale ? I18N.sort_preview_stale_warning : "";
+    // F97: отменённый прогон обязан говорить «сколько из скольких», а не «готово»;
+    // и рядом с ним — вторая точка входа в тот же откат, что и на «Перемещениях».
+    if (r.cancelled) {
+      statusEl.textContent = fmt(I18N.sort_cancelled_text,
+          { n: r.moved || 0, all: r.total || 0, f: r.failed || 0 });
+    } else {
+      statusEl.textContent = fmt(I18N.sort_done_text,
+          { n: r.moved || 0, f: r.failed || 0, p: r.skipped_in_place || 0 });
+    }
+    if (r.skipped_already_copied) {
+      statusEl.textContent += fmt(I18N.sort_already_copied_note,
+          { c: r.skipped_already_copied });
+    }
+    undoBtn.style.display = r.cancelled ? "" : "none";
+    warnEl.textContent = r.preview_stale ? I18N.sort_preview_stale_warning
+        : (r.cancelled ? I18N.sort_undo_hint : "");
     movesLoaded = false;
+    refreshUndoAvailability();
     renderPlanTab("city", "tree-city");
   }
 
@@ -5588,6 +5849,12 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
         if (data.running) sortPollTimer = setTimeout(pollSortStatus, SORT_POLL_MS);
       });
   }
+
+  document.getElementById("sort-cancel-btn").addEventListener("click", function () {
+    this.disabled = true;  // мгновенный фидбэк, не ждём следующего polling-тика
+    document.getElementById("sort-status").textContent = I18N.sort_cancel_requested;
+    postJson("/api/sort/cancel", {});
+  });
 
   document.getElementById("sort-apply-btn").addEventListener("click", function () {
     var dest = document.getElementById("sort-dest").value.trim();
@@ -5679,6 +5946,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       .then(function (data) {
         container.textContent = "";
         summary.textContent = "";
+        applyUndoAvailability(data);
         if (!data.batch) {
           summary.appendChild(stateEl("empty", I18N.no_moves_yet));
           return;
@@ -5691,10 +5959,154 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
         });
       })
       .catch(function (err) {
+        applyUndoAvailability(null);
         container.textContent = "";
         container.appendChild(stateEl("error", I18N.error_loading_moves + err));
       });
   }
+
+  // --- F97: откат последнего батча кнопкой (POST /api/undo) ----------------
+  // Кнопка живёт рядом с манифестом и откатывает ровно тот батч, который манифест
+  // показывает — селектора батчей нет намеренно: меньше способов ошибиться кнопкой,
+  // которая удаляет файлы. Вторая точка входа — панель результата после отменённой
+  // раскладки; эндпоинт и диалог у них общие.
+
+  var UNDO_POLL_MS = 1000;
+  var undoPollTimer = null;
+  var undoDialogEl = document.getElementById("undo-dialog");
+
+  // Строки, которые откат реально трогает: 'done' и хвост прерванного переноса
+  // ('planned' — журнал коммитится ДО операции, статус мог не успеть записаться).
+  function undoableCount(moves) {
+    var n = 0;
+    moves.forEach(function (m) {
+      if (m.status === "done" || m.status === "planned") n += 1;
+    });
+    return n;
+  }
+
+  function applyUndoAvailability(data) {
+    if (!data || !data.batch) {
+      undoAvailable = false;
+      undoBatchInfo = null;
+    } else {
+      undoBatchInfo = {
+        operation: data.batch.operation || "move",
+        dest_root: data.batch.dest_root || "",
+        count: undoableCount(data.moves || []),
+      };
+      undoAvailable = undoBatchInfo.count > 0;
+    }
+    updateBusyControlsDisabled();
+  }
+
+  function refreshUndoAvailability() {
+    movesLoaded = true;  // манифест перезагружаем прямо сейчас, повтор по клику не нужен
+    loadMoves();
+  }
+
+  // Диалог называет операцию своими словами и числами из манифеста: без числа
+  // страшную кнопку не нажимают вообще, а эта кнопка удаляет файлы.
+  function undoConfirmText() {
+    if (!undoBatchInfo) return I18N.undo_nothing_to_undo;
+    if (undoBatchInfo.operation === "move") {
+      return fmt(I18N.undo_confirm_move, { n: undoBatchInfo.count });
+    }
+    return fmt(I18N.undo_confirm_copy,
+        { n: undoBatchInfo.count, dest: undoBatchInfo.dest_root });
+  }
+
+  function openUndoDialog() {
+    if (!undoAvailable) {
+      document.getElementById("undo-status").textContent = I18N.undo_nothing_to_undo;
+      return;
+    }
+    document.getElementById("undo-dialog-text").textContent = undoConfirmText();
+    undoDialogEl.hidden = false;
+  }
+
+  function closeUndoDialog() {
+    undoDialogEl.hidden = true;
+  }
+
+  function renderUndoStatus(data) {
+    var bar = document.getElementById("undo-progress");
+    var statusEl = document.getElementById("undo-status");
+    var strayEl = document.getElementById("undo-stray");
+    var cancelBtn = document.getElementById("undo-cancel-btn");
+    undoRunning = !!data.running;
+    cancelBtn.style.display = data.running ? "" : "none";
+    cancelBtn.disabled = !!data.cancel_requested;
+    updateBusyControlsDisabled();
+    bar.style.display = data.running ? "" : "none";
+    if (data.running) {
+      bar.max = data.total || 0;
+      bar.value = data.done || 0;
+      statusEl.textContent = data.cancel_requested
+          ? I18N.undo_cancel_requested
+          : fmt(I18N.undo_progress_line, { done: data.done, all: data.total });
+      strayEl.textContent = "";
+      return;
+    }
+    if (!data.finished) { statusEl.textContent = ""; strayEl.textContent = ""; return; }
+    if (data.error) {
+      statusEl.textContent = I18N.undo_error_prefix + data.error;
+      strayEl.textContent = "";
+      return;
+    }
+    var r = data.result || {};
+    statusEl.textContent = r.cancelled
+        ? fmt(I18N.undo_cancelled_text, { n: r.undone || 0 })
+        : fmt(I18N.undo_done_text,
+              { n: r.undone || 0, m: r.missing || 0, f: r.failed || 0 });
+    // Битые копии называются поимённо: они остались лежать в результате и выглядят
+    // как обычные фото — молча их не удаляем и молча про них не забываем.
+    strayEl.textContent = (r.stray && r.stray.length)
+        ? I18N.undo_stray_title + " " + r.stray.join(", ") : "";
+    refreshUndoAvailability();
+    renderPlanTab("city", "tree-city");
+  }
+
+  function pollUndoStatus() {
+    fetch("/api/undo/status")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        renderUndoStatus(data);
+        if (data.running) undoPollTimer = setTimeout(pollUndoStatus, UNDO_POLL_MS);
+      });
+  }
+
+  document.getElementById("undo-btn").addEventListener("click", openUndoDialog);
+  document.getElementById("sort-undo-btn").addEventListener("click", openUndoDialog);
+  document.getElementById("undo-dialog-cancel").addEventListener("click", closeUndoDialog);
+
+  undoDialogEl.addEventListener("click", function (e) {
+    if (e.target === undoDialogEl) closeUndoDialog();  // клик по фону — отмена
+  });
+
+  document.getElementById("undo-dialog-ok").addEventListener("click", function () {
+    closeUndoDialog();
+    var statusEl = document.getElementById("undo-status");
+    statusEl.textContent = "";
+    document.getElementById("undo-stray").textContent = "";
+    postJson("/api/undo", {}).then(function (resp) {
+      if (resp && resp.error) {
+        statusEl.textContent = I18N.undo_start_error_prefix + resp.error;
+        return;
+      }
+      if (undoPollTimer) clearTimeout(undoPollTimer);
+      pollUndoStatus();
+    });
+  });
+
+  document.getElementById("undo-cancel-btn").addEventListener("click", function () {
+    this.disabled = true;  // мгновенный фидбэк, не ждём следующего polling-тика
+    document.getElementById("undo-status").textContent = I18N.undo_cancel_requested;
+    postJson("/api/undo/cancel", {});
+  });
+
+  pollUndoStatus();
+  refreshUndoAvailability();
 
   // --- альбомы (F35): кнопка «Собрать в папку» на карточках Люди/События ---
 
@@ -6314,6 +6726,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                   process_state: _ProcessState,
                   sort_state: _SortState,
                   busy_lock: threading.Lock,
+                  undo_state: _UndoState,
                   config_path: str | Path | None = None) -> type[BaseHTTPRequestHandler]:
     default_lang = i18n.normalize_lang(cfg.raw.get("language"))
     _index_html_cache: dict[i18n.Lang, bytes] = {
@@ -6368,6 +6781,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json(_env_payload())
             elif path == "/api/sort/status":
                 self._serve_sort_status()
+            elif path == "/api/undo/status":
+                self._send_json(undo_state.snapshot())
             elif path == "/api/sort/suggest-dest":
                 self._send_json({"dest": _suggested_sort_dest(cfg, db_path)})
             elif path == "/api/tabs/visibility":
@@ -6432,6 +6847,12 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_save_source_excludes()
             elif path == "/api/sort":
                 self._handle_sort_start()
+            elif path == "/api/sort/cancel":
+                self._handle_sort_cancel()
+            elif path == "/api/undo":
+                self._handle_undo_start()
+            elif path == "/api/undo/cancel":
+                self._handle_undo_cancel()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -6667,6 +7088,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 if sort_state.snapshot()["running"]:
                     self._send_json({"error": "sort is running"}, status=HTTPStatus.CONFLICT)
                     return
+                if undo_state.snapshot()["running"]:
+                    self._send_json({"error": "undo is running"}, status=HTTPStatus.CONFLICT)
+                    return
                 if not process_state.try_start(source_dir):
                     self._send_json({"error": "already running"}, status=HTTPStatus.CONFLICT)
                     return
@@ -6698,6 +7122,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 if sort_state.snapshot()["running"]:
                     self._send_json({"error": "sort is running"}, status=HTTPStatus.CONFLICT)
                     return
+                if undo_state.snapshot()["running"]:
+                    self._send_json({"error": "undo is running"}, status=HTTPStatus.CONFLICT)
+                    return
                 if not process_state.try_start(""):
                     self._send_json({"error": "already running"}, status=HTTPStatus.CONFLICT)
                     return
@@ -6725,7 +7152,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # reset, not just the check, otherwise sort/process could start in the
             # window between the check and db.reset_index itself.
             with busy_lock:
-                if process_state.snapshot()["running"] or sort_state.snapshot()["running"]:
+                if (process_state.snapshot()["running"]
+                        or sort_state.snapshot()["running"]
+                        or undo_state.snapshot()["running"]):
                     self._send_json({"error": "already running"}, status=HTTPStatus.CONFLICT)
                     return
                 conn = _connect(db_path)
@@ -6748,7 +7177,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # mid-run a geo clear sends the rest of the stage back to the network, and
             # a preview clear deletes the frames that stage is writing right now.
             with busy_lock:
-                if process_state.snapshot()["running"] or sort_state.snapshot()["running"]:
+                if (process_state.snapshot()["running"]
+                        or sort_state.snapshot()["running"]
+                        or undo_state.snapshot()["running"]):
                     self._send_json({"error": "already running"},
                                     status=HTTPStatus.CONFLICT)
                     return
@@ -6781,7 +7212,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # hold busy_lock: the rebuild must not race a running sort/process that
             # reads cfg (the same guard as /api/process/reset).
             with busy_lock:
-                if process_state.snapshot()["running"] or sort_state.snapshot()["running"]:
+                if (process_state.snapshot()["running"]
+                        or sort_state.snapshot()["running"]
+                        or undo_state.snapshot()["running"]):
                     self._send_json({"error": "already running"},
                                     status=HTTPStatus.CONFLICT)
                     return
@@ -6867,6 +7300,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 if process_state.snapshot()["running"]:
                     self._send_json({"error": "process is running"}, status=HTTPStatus.CONFLICT)
                     return
+                if undo_state.snapshot()["running"]:
+                    self._send_json({"error": "undo is running"}, status=HTTPStatus.CONFLICT)
+                    return
                 if not sort_state.try_start():
                     self._send_json({"error": "already running"}, status=HTTPStatus.CONFLICT)
                     return
@@ -6875,6 +7311,40 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 daemon=True,
             )
             thread.start()
+            self._send_json({"ok": True})
+
+        def _handle_sort_cancel(self) -> None:
+            # F97: a flag, exactly like /api/process/cancel. The engine reads it
+            # between files and closes the batch itself — nothing here waits for the
+            # thread, so the button answers instantly even mid-copy of a large file.
+            sort_state.request_cancel()
+            self._send_json({"ok": True})
+
+        def _handle_undo_start(self) -> None:
+            # F97: the rollback changes paths of files on disk, so it may not run
+            # alongside a layout or a pipeline — the same busy_lock and the same
+            # "other running -> own try_start" order as /api/sort, both ways.
+            with busy_lock:
+                if process_state.snapshot()["running"]:
+                    self._send_json({"error": "process is running"},
+                                    status=HTTPStatus.CONFLICT)
+                    return
+                if sort_state.snapshot()["running"]:
+                    self._send_json({"error": "sort is running"},
+                                    status=HTTPStatus.CONFLICT)
+                    return
+                if not undo_state.try_start():
+                    self._send_json({"error": "already running"},
+                                    status=HTTPStatus.CONFLICT)
+                    return
+            thread = threading.Thread(
+                target=_run_undo, args=(db_path, cfg, undo_state, cache), daemon=True,
+            )
+            thread.start()
+            self._send_json({"ok": True})
+
+        def _handle_undo_cancel(self) -> None:
+            undo_state.request_cancel()
             self._send_json({"ok": True})
 
         def _serve_thumb(self, raw_id: str) -> None:
@@ -6974,9 +7444,10 @@ def build_server(cfg: Config, conn: sqlite3.Connection, *,
     cache = PlanCache(cfg, conn, dest)
     process_state = _ProcessState()
     sort_state = _SortState()
+    undo_state = _UndoState()
     busy_lock = threading.Lock()
     handler_cls = _make_handler(Path(cfg.database).resolve(), cache, cfg,
-                                process_state, sort_state, busy_lock,
+                                process_state, sort_state, busy_lock, undo_state,
                                 config_path=config_path)
     return ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
 

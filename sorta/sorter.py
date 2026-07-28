@@ -558,6 +558,43 @@ def _resolve_near_dup_roles(
 
 # --- Transfer ---------------------------------------------------------------
 
+_LONG_PATH_PREFIX = "\\" * 2 + "?" + "\\"   # \\?\ — written this way to survive escaping
+
+
+def _fs(path: Path) -> Path:
+    """F97: the form a path must take at the boundary of a FILESYSTEM call on Windows.
+
+    Windows resolves an ordinary path against MAX_PATH (260 characters); the `\\\\?\\`
+    prefix lifts that limit. Without it a destination root plus a country/city folder
+    plus the original file name goes past 260 easily, and such a file lands silently
+    in `failed` — measured on the live collection, not hypothetical.
+
+    The prefix also switches OFF Windows' own path normalization, so what is handed to
+    it must ALREADY be absolute, with backslash separators and without `.`/`..`
+    segments — hence os.path.abspath (it normalizes too) before the prefix is glued
+    on. A UNC path takes its own form: `\\\\server\\share` -> `\\\\?\\UNC\\server\\share`.
+
+    Paths stored in the DB (moves.src/dst, files.path) NEVER carry the prefix — the
+    project's convention is plain absolute paths and this function exists only at the
+    call boundary. On non-Windows it returns the path unchanged: the branching lives
+    here, not in every caller.
+
+    The per-component limit of 255 characters survives the prefix (verified: WinError
+    123 on a 300-character folder name). Nothing here defends against it, because
+    every component in the layout is either a short city/year folder or a file name
+    that already exists on a filesystem that enforces the same limit.
+    """
+    if os.name != "nt":
+        return path
+    text = str(path)
+    if text.startswith(_LONG_PATH_PREFIX):
+        return path
+    full = os.path.abspath(text)
+    if full.startswith(_LONG_PATH_PREFIX[:2]):
+        return Path(_LONG_PATH_PREFIX + "UNC" + full[1:])
+    return Path(_LONG_PATH_PREFIX + full)
+
+
 class TransferError(RuntimeError):
     """Transferring a single file failed; the caller marks the move failed."""
 
@@ -565,12 +602,12 @@ class TransferError(RuntimeError):
 def _copy_and_verify(src: Path, dst: Path, expected_hash: str) -> None:
     """copy2 src -> dst, blake3 verify; on failure dst is deleted, TransferError."""
     try:
-        shutil.copy2(src, dst)
+        shutil.copy2(_fs(src), _fs(dst))
     except OSError as exc:
-        Path(dst).unlink(missing_ok=True)
+        _fs(dst).unlink(missing_ok=True)
         raise TransferError(f"копирование не удалось: {src} -> {dst}: {exc}") from None
-    if file_hash(dst)[0] != expected_hash:
-        dst.unlink(missing_ok=True)
+    if file_hash(_fs(dst))[0] != expected_hash:
+        _fs(dst).unlink(missing_ok=True)
         raise TransferError(f"хэш копии не совпал, копия удалена: {src} -> {dst}")
 
 
@@ -585,46 +622,100 @@ def _transfer(src: Path, dst: Path, src_hash: str | None = None,
     cross-disk) — an auto-fallback to the copy path (the same as copy=True), the
     album is materialized anyway. After any path — a check: dst exists and the size
     matches.
+
+    F97: every FS call here goes through `_fs` — the long-path form on Windows. The
+    plain `src`/`dst` stay in the log/exception texts (a `\\\\?\\` prefix in a message
+    to the user means nothing) and in whatever the caller writes to the DB.
     """
-    size = src.stat().st_size
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
+    size = _fs(src).stat().st_size
+    _fs(dst.parent).mkdir(parents=True, exist_ok=True)
+    if _fs(dst).exists():
         raise TransferError(f"dst уже существует, перезапись запрещена: {dst}")
     if link:
         try:
-            os.link(src, dst)
+            os.link(_fs(src), _fs(dst))
         except OSError as exc:
             _log.warning("album: hardlink недоступен (%s), фолбэк на copy: %s -> %s",
                         exc, src, dst)
-            _copy_and_verify(src, dst, src_hash or file_hash(src)[0])
+            _copy_and_verify(src, dst, src_hash or file_hash(_fs(src))[0])
     elif copy:
-        _copy_and_verify(src, dst, src_hash or file_hash(src)[0])
+        _copy_and_verify(src, dst, src_hash or file_hash(_fs(src))[0])
     else:
         try:
-            os.rename(src, dst)
+            os.rename(_fs(src), _fs(dst))
         except OSError:
-            _copy_and_verify(src, dst, src_hash or file_hash(src)[0])
-            os.remove(src)
-    if not dst.exists() or dst.stat().st_size != size:
+            _copy_and_verify(src, dst, src_hash or file_hash(_fs(src))[0])
+            os.remove(_fs(src))
+    if not _fs(dst).exists() or _fs(dst).stat().st_size != size:
         raise TransferError(f"проверка после перемещения не прошла: {dst}")
 
 
-def _resolve_dst(target_dir: Path, src: Path, claimed: set[str]) -> tuple[Path, bool]:
-    """dst without overwriting: suffixes _1, _2 against the disk and plan-claimed names.
+def _is_the_same_file(dst: Path, src: Path, src_hash: str | None,
+                      src_algo: str | None) -> bool:
+    """F97: is the file already lying at `dst` the very one we would put there?
 
-    If the file is already at the target location (a repeated apply after an
-    interruption) — returns (src, True): no move needed.
+    Size first (a stat, free), the blake3 of `dst` only when the size matches —
+    hashing every same-named file in the target would cost a full read per candidate.
+    The SOURCE hash comes from the index (`files.hash`, already computed at index
+    time) rather than being recomputed: a resumed apply must not pay for re-reading
+    the sources it has already read once.
+
+    Without a hash in the index, or under a different algorithm, or on any OSError,
+    the answer is "no" — the file then takes the usual `_1` suffix. That is wasteful,
+    never destructive; the opposite mistake would skip a file that was never copied.
+    """
+    if not src_hash:
+        return False
+    try:
+        if _fs(dst).stat().st_size != _fs(src).stat().st_size:
+            return False
+        dst_hash, algo = file_hash(_fs(dst))
+    except OSError:
+        return False
+    if src_algo and algo != src_algo:
+        return False
+    return dst_hash == src_hash
+
+
+def _resolve_dst(target_dir: Path, src: Path, claimed: set[str],
+                 src_hash: str | None = None,
+                 src_algo: str | None = None) -> tuple[Path, bool, bool]:
+    """dst without overwriting -> (dst, in_place, already_copied).
+
+    Suffixes _1, _2 against the disk and the names other plan items have claimed.
+
+    in_place=True — the file is already AT the target path (src == dst), an in-place
+    layout; nothing to do.
+
+    already_copied=True (F97) — `dst` is occupied by a file that is byte-for-byte our
+    source (see _is_the_same_file), i.e. a previous apply into this same dest already
+    copied it. Before F97 that case was indistinguishable from "another file happens
+    to share this name" and got a `_1` suffix: measured on the live collection, a
+    second `sort --apply` into the same dest re-copied 10 021 files and 140.9 GB of
+    duplicates. `_1` for a DIFFERENT file with the same name is still correct and
+    still happens — the two cases only had to stop being one.
+
+    The decision is made while the plan is built, so a dry-run plan shows exactly the
+    targets an apply would use.
     """
     dst = target_dir / src.name
     if os.path.normcase(str(dst)) == os.path.normcase(str(src)):
-        return src, True
+        return src, True, False
     n = 0
     cand = dst
-    while os.path.normcase(str(cand)) in claimed or cand.exists():
+    while True:
+        key = os.path.normcase(str(cand))
+        if key not in claimed:
+            if not _fs(cand).exists():
+                claimed.add(key)
+                return cand, False, False
+            if _is_the_same_file(cand, src, src_hash, src_algo):
+                # claimed as well: a later file of the same name must not be handed
+                # this path either, it goes on to _1 as it always did
+                claimed.add(key)
+                return cand, False, True
         n += 1
         cand = dst.with_name(f"{dst.stem}_{n}{dst.suffix}")
-    claimed.add(os.path.normcase(str(cand)))
-    return cand, False
 
 
 # --- Plan and apply ---------------------------------------------------------
@@ -655,6 +746,10 @@ class PlanItem:
     db_algo: str | None
     near_dup_group: int | None = None   # F14: near-duplicate group index (1-based)
     near_dup_role: str | None = None    # kept | moved | deleted
+    # F97: dst already holds a byte-for-byte copy of this file (a previous apply into
+    # the same dest) — apply skips it instead of writing a `_1` twin. Distinct from
+    # in_place, which is "src and dst are one and the same path".
+    already_copied: bool = False
 
 
 @dataclass
@@ -669,6 +764,15 @@ class SortReport:
     moved: int = 0
     failed: int = 0
     skipped_in_place: int = 0
+    # F97: deliberately NOT folded into skipped_in_place. "Skipped because source and
+    # target are the same path" and "skipped because the copy is already there" are
+    # different events, and one number for both turns diagnosing an interrupted run
+    # back into guesswork — which is exactly how the 140.9 GB of duplicates went
+    # unnoticed.
+    skipped_already_copied: int = 0
+    # F97: apply stopped on request (should_cancel) — the report says "cancelled,
+    # N of M", never a bare "done".
+    cancelled: bool = False
     deleted: int = 0   # F14: --delete-worse-dupes, permanently deleted worse near-dups
     excluded: int = 0  # F16: files skipped because of --exclude/sort.exclude_dirs
     in_place: bool = False  # F28: dest not set explicitly — layout inside the source root
@@ -686,6 +790,14 @@ class UndoStats:
     undone: int = 0
     missing: int = 0
     failed: int = 0
+    # F97: the rollback stopped on request (should_cancel). What was already undone
+    # stays undone — the rest keeps its status and a repeated undo finishes the job.
+    cancelled: bool = False
+    # F97: files found in the result that are OURS by journal but NOT byte-for-byte
+    # what we wrote (a copy interrupted mid-write). They are never deleted — the user
+    # is told the path instead. Without this they stayed in the result silently,
+    # looking like ordinary photos with truncated insides.
+    stray: list[str] = field(default_factory=list)
 
 
 _CSV_DEDUPE_COLUMNS = ["near_dup_group", "near_dup_role"]
@@ -1065,7 +1177,7 @@ def _precheck_hash(conn: sqlite3.Connection, batch_id: int, item: PlanItem,
                    report: SortReport) -> str | None:
     """Hash verification before the move — a safeguard against a stale index."""
     try:
-        src_hash, algo = file_hash(item.src)
+        src_hash, algo = file_hash(_fs(item.src))
     except OSError as exc:
         _log.warning("sort: источник недоступен, пропуск: %s (%s)", item.src, exc)
         _record_failed(conn, batch_id, item, item.db_hash or "")
@@ -1089,7 +1201,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                   exclude: Sequence[str] | None = None,
                   write_reports: bool = True,
                   keep_manual_excluded: bool = False,
-                  progress: Callable[[int, int], None] | None = None) -> SortReport:
+                  progress: Callable[[int, int], None] | None = None,
+                  should_cancel: Callable[[], bool] | None = None) -> SortReport:
     """Build a layout plan; with apply=True move files with journaling.
 
     write_reports=False skips the CSV/HTML artefacts (the returned SortReport still
@@ -1144,6 +1257,20 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     `dupes --near`. delete_worse_dupes=True (only with dedupe) instead of moving to
     _Duplicates/ PERMANENTLY deletes the worse ones — not undoable via undo, the
     status in moves is 'deleted' (audit).
+
+    F97 (should_cancel): a predicate polled at the START of each file's iteration,
+    before the moves row is written. On True the loop BREAKS — it does not raise, the
+    way the UI pipeline cancels itself out of a progress callback. An exception here
+    would fly past the code that closes the batch, and a batch left with
+    finished_at=NULL is exactly what undo (the tool the user reaches for after a
+    cancel) has to be able to read. The check is deliberately not inside `_transfer`:
+    a half-copied file must either finish or be removed, and `_copy_and_verify`
+    already guarantees that. report.cancelled says so, so "copied 4 000 of 22 364" can
+    be told apart from a plain "done".
+
+    F97 (resuming): a second apply into the same dest no longer duplicates what the
+    first one copied — see `_resolve_dst`/`report.skipped_already_copied`. Without it
+    cancelling would be useless: the run could be stopped but not continued.
     """
     if mode not in MODES:
         raise ValueError(f"неизвестный режим {mode!r}; допустимы: {', '.join(MODES)}")
@@ -1295,7 +1422,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
             parts = [i18n.folder("duplicates", lang)]
             reason = "near_dup_delete" if delete_worse_dupes else "near_dup"
         src = Path(r["path"])
-        dst, in_place = _resolve_dst(dest.joinpath(*parts), src, claimed)
+        dst, in_place, already_copied = _resolve_dst(
+            dest.joinpath(*parts), src, claimed, r["hash"], r["hash_algo"])
         try:
             target_rel = dst.relative_to(dest).as_posix()
         except ValueError:  # only on a path-case divergence on Windows
@@ -1311,7 +1439,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
             event=event[0] if event else None,
             junk_verdict=r["junk_verdict"], junk_source=r["junk_source"],
             db_hash=r["hash"], db_algo=r["hash_algo"],
-            near_dup_group=near_dup_group, near_dup_role=near_dup_role))
+            near_dup_group=near_dup_group, near_dup_role=near_dup_role,
+            already_copied=already_copied))
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = f"sort_plan_{mode}_{stamp}"
@@ -1350,10 +1479,21 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     report.batch_id = batch_id
 
     for i, item in enumerate(plan, 1):
+        if should_cancel is not None and should_cancel():
+            # F97: break, never raise — the batch below MUST get its finished_at
+            _log.info("sort: отмена по запросу, перенесено %d из %d", report.moved, len(plan))
+            report.cancelled = True
+            break
         if progress:
             progress(i, len(plan))
         if item.in_place:
             report.skipped_in_place += 1
+            continue
+        if item.already_copied:
+            # F97: the copy is already in the target from an earlier apply — leaving
+            # it alone is the whole point; a moves row here would only journal a
+            # non-event.
+            report.skipped_already_copied += 1
             continue
         src_hash = _precheck_hash(conn, batch_id, item, report)
         if src_hash is None:
@@ -1366,7 +1506,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
         conn.commit()  # invariant: the journal is committed BEFORE the FS operation
         if item.near_dup_role == "deleted":
             try:
-                item.src.unlink()
+                _fs(item.src).unlink()
             except OSError as exc:
                 _log.warning("sort: удаление не удалось, пропуск: %s (%s)", item.src, exc)
                 conn.execute("UPDATE moves SET status = 'failed' WHERE id = ?", (move_id,))
@@ -1401,7 +1541,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
 
 
 def undo(conn: sqlite3.Connection, batch_id: int | None = None,
-         progress: Callable[[int, int], None] | None = None) -> UndoStats:
+         progress: Callable[[int, int], None] | None = None,
+         should_cancel: Callable[[], bool] | None = None) -> UndoStats:
     """Undo a batch by the journal in reverse order.
 
     batch_id=None — the last batch that still has moves with status='done' (repeated
@@ -1415,6 +1556,27 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
     'done', failed++), since it is unclear what exactly changed.
     operation='link' (F34) — the same path as 'copy': dst is a hardlink (or a copy
     fallback), deleting dst is safe and does not touch the source data.
+
+    F97 (should_cancel): polled at the start of each row, `break` and never an
+    exception — the same discipline as plan_and_sort, and for a stronger reason:
+    undoing a copy batch re-hashes every copy (blake3 over 220 GB is minutes to tens
+    of minutes), so it cannot be an operation the user is unable to stop. Rows already
+    processed keep their new status, the rest keep the old one, and a repeated undo
+    finishes the job — idempotency here matters more than speed.
+
+    F97 (the tail of an interrupted copy): rows still in status='planned' whose dst
+    exists. The journal is committed BEFORE the FS operation, so a run killed between
+    the two leaves a fully written file that undo used to walk straight past — an
+    orphan in the result that looks like an ordinary photo. Such a row is now handled
+    exactly like a 'done' one of the same operation, on one condition: the blake3 of
+    dst must match moves.hash. On a match it is our own complete file (deleted for
+    copy/link, moved back for move); on a mismatch it is a copy interrupted mid-write
+    — NOT deleted, reported in `stats.stray` for the user to look at by hand. A
+    'planned' row without a dst on disk means the operation never started; there is
+    nothing to undo and nothing to report.
+
+    F97: a batch left with finished_at=NULL (an interrupted apply) is closed here —
+    otherwise it goes on looking like "running right now" forever.
     """
     if batch_id is None:
         row = conn.execute(
@@ -1427,36 +1589,51 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
         "SELECT operation FROM move_batches WHERE id = ?", (batch_id,)).fetchone()
     operation = batch["operation"] if batch else "move"
     rows = conn.execute(
-        "SELECT id, file_id, src, dst, hash FROM moves "
-        "WHERE batch_id = ? AND status = 'done' ORDER BY id DESC",
+        "SELECT id, file_id, src, dst, hash, status FROM moves "
+        "WHERE batch_id = ? AND status IN ('done', 'planned') ORDER BY id DESC",
         (batch_id,)).fetchall()
     stats = UndoStats(batch_id=batch_id)
     for i, r in enumerate(rows, 1):
+        if should_cancel is not None and should_cancel():
+            _log.info("undo: отмена по запросу, откачено %d из %d", stats.undone, len(rows))
+            stats.cancelled = True
+            break
         if progress:
             progress(i, len(rows))
         src, dst = Path(r["src"]), Path(r["dst"])
-        if not dst.exists():
+        tail = r["status"] == "planned"
+        if not _fs(dst).exists():
+            if tail:
+                continue  # the FS operation never started — nothing was written
             _log.warning("undo: dst отсутствует, статус остаётся 'done': %s", dst)
             stats.missing += 1
             continue
-        if operation in ("copy", "link"):
+        if operation in ("copy", "link") or tail:
+            # A tail row goes through the hash check whatever the operation is: only a
+            # full match proves the file at dst is ours and complete.
             try:
-                dst_hash = file_hash(dst)[0]
+                dst_hash = file_hash(_fs(dst))[0]
             except OSError as exc:
                 _log.warning("undo: копия недоступна, пропуск: %s (%s)", dst, exc)
                 stats.failed += 1
                 continue
             if dst_hash != r["hash"]:
+                if tail:
+                    _log.warning("undo: битая копия прерванного переноса, НЕ удалена: %s", dst)
+                    stats.stray.append(str(dst))
+                    continue
                 _log.warning("undo: хэш копии не совпал, копия НЕ удалена: %s", dst)
                 stats.failed += 1
                 continue
-            dst.unlink()
-            conn.execute("UPDATE moves SET status = 'undone' WHERE id = ?", (r["id"],))
-            conn.commit()
-            stats.undone += 1
-            continue
+            if operation in ("copy", "link"):
+                _fs(dst).unlink()
+                conn.execute("UPDATE moves SET status = 'undone' WHERE id = ?", (r["id"],))
+                conn.commit()
+                stats.undone += 1
+                continue
+            # a move batch's tail: the file belongs at src, not in the bin
         restore, n = src, 0
-        while restore.exists():
+        while _fs(restore).exists():
             n += 1
             restore = src.with_name(f"{src.stem}_{n}{src.suffix}")
         if n:
@@ -1472,6 +1649,10 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
                      (str(restore), r["file_id"]))
         conn.commit()
         stats.undone += 1
+    conn.execute(
+        "UPDATE move_batches SET finished_at = ? WHERE id = ? AND finished_at IS NULL",
+        (datetime.now(timezone.utc).isoformat(timespec="seconds"), batch_id))
+    conn.commit()
     return stats
 
 
@@ -1495,6 +1676,7 @@ class AlbumPlanItem:
     dst: Path
     persons: list[str]     # labels of all named people on the file (for the move check)
     multi_person: bool     # len(persons) >= 2 — with mode='move' such a file is blocked
+    already_copied: bool = False   # F97: the album already holds this exact file
 
 
 @dataclass
@@ -1509,6 +1691,10 @@ class AlbumReport:
     transferred: int = 0
     failed: int = 0
     blocked_multi: int = 0   # mode='move': files skipped due to multi-membership
+    # F97: re-running an album into the same folder no longer re-materializes what is
+    # already there — the same `_resolve_dst` rule as the city layout, on purpose: an
+    # album has no separate logic of its own.
+    skipped_already_copied: int = 0
 
 
 def _resolve_event_ids_and_name(conn: sqlite3.Connection, selector: str) -> tuple[list[int], str]:
@@ -1556,6 +1742,12 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     sort canon. Files with 2+ named people in the frame are NOT moved with move
     (blocked, blocked_multi++) — it is ambiguous whose album it is; link/copy have no
     such restriction.
+
+    F97: an album goes through the same `_resolve_dst` as the city layout, so it
+    inherits the same rule — a file already sitting in the album folder byte-for-byte
+    is left alone (skipped_already_copied) instead of being re-materialized under a
+    `_1` name. No album-specific logic: gathering the same album twice was the same
+    bug as applying the same layout twice.
     """
     if kind not in ALBUM_KINDS:
         raise ValueError(f"неизвестный тип альбома {kind!r}; допустимы: {', '.join(ALBUM_KINDS)}")
@@ -1583,7 +1775,7 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     full_params = subject_params + where_params
 
     rows = conn.execute(
-        _CTE + f"""SELECT f.id, f.path FROM files f
+        _CTE + f"""SELECT f.id, f.path, f.hash, f.hash_algo FROM files f
                LEFT JOIN places p ON p.file_id = f.id
                WHERE f.dup_of IS NULL AND f.error IS NULL AND {full_cond}
                ORDER BY f.path""", full_params).fetchall()
@@ -1606,9 +1798,11 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     for r in rows:
         src = Path(r["path"])
         persons = [label for label, _area in persons_by_file.get(r["id"], [])]
-        dst, _in_place = _resolve_dst(album_dir, src, claimed)
+        dst, _in_place, already_copied = _resolve_dst(
+            album_dir, src, claimed, r["hash"], r["hash_algo"])
         report.plan.append(AlbumPlanItem(file_id=r["id"], src=src, dst=dst,
-                                         persons=persons, multi_person=len(persons) >= 2))
+                                         persons=persons, multi_person=len(persons) >= 2,
+                                         already_copied=already_copied))
 
     if mode == "move":
         blocked = [it for it in report.plan if it.multi_person]
@@ -1638,8 +1832,11 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         if mode == "move" and item.multi_person:
             report.blocked_multi += 1
             continue
+        if item.already_copied:
+            report.skipped_already_copied += 1
+            continue
         try:
-            src_hash, _algo = file_hash(item.src)
+            src_hash, _algo = file_hash(_fs(item.src))
         except OSError as exc:
             _log.warning("album: источник недоступен, пропуск: %s (%s)", item.src, exc)
             report.failed += 1
