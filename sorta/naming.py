@@ -40,7 +40,7 @@ from typing import Any, Callable, Protocol, Sequence
 from PIL import Image
 
 from . import imaging
-from .config import Config
+from .config import DEFAULT_VLM_MAX_EDGE, DEFAULT_VLM_MODEL, Config, VlmConfig
 from .config import NamingConfig as NamingSettings  # flat phase-5 settings
 
 _MAX_NAME_LEN = 80
@@ -193,10 +193,11 @@ VlmDescribeFn = Callable[[Sequence[Image.Image], str, int], str]
 VlmPrepareFn = Callable[[Sequence[Image.Image], str], Any]
 VlmGenerateFn = Callable[[Any, int], str]
 
-DEFAULT_VLM_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
-# The VLM input is not for fine details like OCR, a large frame is not needed; saves
-# VRAM/generation time.
-VLM_MAX_EDGE = 896
+# F102: both of these were defined here, and both describe the shared runtime rather
+# than this module — so the values moved to the `vlm:` config section (config.VlmConfig)
+# and the historical names stay bound to its defaults for the importers (junk.py, the
+# measurement scripts). What is actually in use comes from cfg.vlm, not from here.
+VLM_MAX_EDGE = DEFAULT_VLM_MAX_EDGE
 
 
 @dataclass(frozen=True)
@@ -409,13 +410,18 @@ class LocalVLMNamer:
         return f"{base} {described}" if described else None
 
 
-def _sample_frames(paths: tuple[str, ...], max_n: int) -> list[Image.Image]:
+def _sample_frames(paths: tuple[str, ...], max_n: int,
+                   max_edge: int = VLM_MAX_EDGE) -> list[Image.Image]:
     """Up to max_n evenly picked frames of the event, decoded for a local model.
 
     Decoding goes through the shared preview cache — Unicode/HEIC-safe (the F38
     lesson) and free of format restrictions, unlike _encode_images, which may only
     send an HTTP API the handful of formats that API accepts. An unreadable frame is
     skipped, not fatal: the event is described by the ones that decoded.
+
+    F102: `max_edge` is `vlm.max_edge` — the same size the deep junk tier feeds the
+    model, because it is the same model. The default keeps a caller that has no config
+    section on the historical 896.
     """
     frames: list[Image.Image] = []
     for p in _evenly_picked(list(paths), max_n):
@@ -424,7 +430,7 @@ def _sample_frames(paths: tuple[str, ...], max_n: int) -> list[Image.Image]:
         except OSError:
             continue
         img = imaging.decode_rgb_preview(p, st.st_mtime, st.st_size,
-                                         max_edge=VLM_MAX_EDGE)
+                                         max_edge=max_edge)
         if img is not None:
             frames.append(img)
     return frames
@@ -448,8 +454,15 @@ class VlmNamer:
     """
 
     def __init__(self, settings: NamingSettings,
-                 loader: Callable[[str], VlmDescribeFn] | None = None) -> None:
+                 loader: Callable[[str], VlmDescribeFn] | None = None,
+                 vlm: VlmConfig | None = None) -> None:
         self._s = settings
+        # F102: the model and the size its frames are decoded to come from the `vlm:`
+        # section. Without one — a caller holding only NamingSettings — the legacy
+        # `naming.classify_vlm_model` still answers, which is the very key load_config
+        # resolves that section from.
+        self._vlm = vlm if vlm is not None else VlmConfig(
+            model=str(getattr(settings, "classify_vlm_model", DEFAULT_VLM_MODEL)))
         self._loader = loader
         self._describe: VlmDescribeFn | None = None
         self._unavailable = False
@@ -462,9 +475,7 @@ class VlmNamer:
         """
         if self._describe is None and not self._unavailable:
             try:
-                self._describe = shared_vlm(
-                    str(getattr(self._s, "classify_vlm_model", DEFAULT_VLM_MODEL)),
-                    self._loader)
+                self._describe = shared_vlm(self._vlm.model, self._loader)
             except Exception:  # noqa: BLE001 — an optional tier must not break naming
                 self._unavailable = True
         return self._describe
@@ -476,7 +487,8 @@ class VlmNamer:
         describe = self._runtime()
         if describe is None:
             return template
-        frames = _sample_frames(ctx.sample_paths, self._s.max_samples)
+        frames = _sample_frames(ctx.sample_paths, self._s.max_samples,
+                                self._vlm.max_edge)
         if not frames:
             return template
         try:
@@ -532,12 +544,17 @@ class ClaudeNamer:
         return f"{base} {described}" if described else None
 
 
-def make_namer(settings: NamingSettings) -> EventNamer:
-    """Pick the provider from config (naming.provider)."""
+def make_namer(settings: NamingSettings, vlm: VlmConfig | None = None) -> EventNamer:
+    """Pick the provider from config (naming.provider).
+
+    `vlm` is the `vlm:` section (F102) — only the local `vlm` provider has any use for
+    it, and only for the model and its input size; omitting it falls back to the legacy
+    `naming.*` keys on `settings`.
+    """
     if settings.provider == "template":
         return TemplateNamer()
     if settings.provider == "vlm":
-        return VlmNamer(settings)
+        return VlmNamer(settings, vlm=vlm)
     if settings.provider == "local_vlm":
         return LocalVLMNamer(settings)
     if settings.provider == "claude":
@@ -599,7 +616,7 @@ def name_events(
     """Name auto events with the chosen provider; does not touch name_is_manual=1."""
     s = naming_settings(cfg)
     if namer is None:
-        namer = make_namer(s)
+        namer = make_namer(s, cfg.vlm)
 
     stats = NamingStats()
     (stats.manual_kept,) = conn.execute(

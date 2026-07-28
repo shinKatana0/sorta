@@ -177,6 +177,11 @@ from PIL import Image
 
 from . import imaging
 from .config import Config
+
+# F102 moved the workers knob to `vlm.workers` and this resolver along with it (the old
+# `naming.vlm_workers` address is still honoured there) — but this module is where it was
+# born and where the measurement scripts import it from, so the name stays re-exported.
+from .config import resolve_vlm_workers  # noqa: F401
 from .landmarks import Classifier, batched, clip_classifier
 from .naming import (
     DEFAULT_VLM_MODEL,
@@ -600,8 +605,9 @@ _VLM_LABEL_TO_VERDICT: dict[str, str] = {
 }
 
 # F95: the model name and its input size describe the MODEL, not this stage, and the
-# naming stage now runs the same weights — both live next to the shared loader in
-# naming.py (see naming.shared_vlm on why that module).
+# naming stage now runs the same weights. F102 finished that thought — they are the
+# `vlm:` config section, and these two are only the defaults for a caller that has no
+# config in hand (a measurement, a test).
 _DEFAULT_VLM_MODEL = DEFAULT_VLM_MODEL
 _DEFAULT_VLM_MAX_EDGE = VLM_MAX_EDGE
 
@@ -709,6 +715,7 @@ def vlm_classifier_from(describe: Callable[[Sequence[Image.Image], str, int], st
 
 def qwen_vlm_classifier(
     model_name: str = _DEFAULT_VLM_MODEL,
+    max_edge: int = _DEFAULT_VLM_MAX_EDGE,
 ) -> VlmClassifyFn:  # pragma: no cover — ML, smoke test
     """The real VLM classifier (Qwen2.5-VL via transformers).
 
@@ -719,33 +726,17 @@ def qwen_vlm_classifier(
     the classifier is actually built — which the caller in classify() wraps in
     try/except for a graceful fallback to the fast tier.
     """
-    return vlm_classifier_from(shared_vlm(model_name))
+    return vlm_classifier_from(shared_vlm(model_name), max_edge=max_edge)
 
 
-# F101: threads preparing frames for the deep tier — `naming.vlm_workers`, read from
-# cfg.raw the way resolve_ocr_workers reads naming.ocr_workers. The cap is deliberately
-# modest and NOT "all your cores": the machine that runs this may well have two, the
-# GPU half is a single consumer that only needs to be kept fed, and every worker in
-# flight holds a preprocessed frame in RAM (see _vlm_labels_pipelined on the window).
-_DEFAULT_VLM_WORKERS_CAP = 4
+def qwen_vlm_classifier_factory(max_edge: int) -> Callable[[str], VlmClassifyFn]:
+    """The default `vlm_classifier_factory` of classify(), carrying `vlm.max_edge` (F102).
 
-
-def resolve_vlm_workers(raw: dict | None) -> int:
-    """How many threads prepare frames for the VLM — `naming.vlm_workers` in config.yaml.
-
-    Default min(4, cpu_count). 1 means the serial pass, which is what the stage did
-    before F101 and what a runtime without split halves does anyway. Absent / 0 /
-    negative / garbage -> the default; the result is always >= 1.
+    The factory interface stays (model_name) -> classifier — tests inject their own, and
+    widening it would make every one of them care about a number they do not use — so
+    the configured input size travels in the closure instead.
     """
-    default = min(_DEFAULT_VLM_WORKERS_CAP, os.cpu_count() or 1)
-    workers = ((raw or {}).get("naming") or {}).get("vlm_workers")
-    if workers is None:
-        return default
-    try:
-        n = int(workers)
-    except (TypeError, ValueError):
-        return default
-    return n if n > 0 else default
+    return lambda model_name: qwen_vlm_classifier(model_name, max_edge=max_edge)
 
 
 def _vlm_labels(vlm_fn: VlmClassifyFn, paths: list[str],
@@ -1059,17 +1050,22 @@ def classify(
     opt-in via cfg.naming.vlm_enabled (default False, gated by use_clip=True —
     a heuristics-only run does not touch deep). vlm_classifier — a ready
     classify_media(path)->label (a mock in tests, like classifier/text_detector);
-    vlm_classifier_factory(model_name)->vlm_classifier — a factory for the real
-    build (qwen_vlm_classifier by default), replaced in tests to check the GRACEFUL
-    FALLBACK: if the factory raises (no transformers, the model does not load, not
-    enough VRAM), classify() catches the exception, logs it, and quietly continues
-    on the fast tier (CLIP) — without crashing.
+    vlm_classifier_factory(model_name)->vlm_classifier — a factory for the real build
+    (qwen_vlm_classifier_factory(cfg.vlm.max_edge) by default), replaced in tests to
+    check the GRACEFUL FALLBACK: if the factory raises (no transformers, the model does
+    not load, not enough VRAM), classify() catches the exception, logs it, and quietly
+    continues on the fast tier (CLIP) — without crashing.
 
     F101: the deep pass is pipelined when the classifier exposes its halves (the real
-    one does — SplitVlmClassifier) and `naming.vlm_workers` is above 1: that many
-    threads decode and preprocess frames while this thread runs the model and writes.
-    An injected `vlm_classifier` (tests) has no halves and takes the serial path, which
-    is why every verdict test below is unaffected by the pipeline.
+    one does — SplitVlmClassifier) and `vlm.workers` is above 1: that many threads
+    decode and preprocess frames while this thread runs the model and writes. An
+    injected `vlm_classifier` (tests) has no halves and takes the serial path, which is
+    why every verdict test below is unaffected by the pipeline.
+
+    F102: everything about the MODEL — which one, at what input resolution, with how
+    many preparation threads — comes from `cfg.vlm` (the `vlm:` config section, with the
+    old `naming.*` keys still honoured by load_config). The tier toggle is the exception
+    noted at the read below.
 
     progress (F100): the usual `(done, total)` callback; if it also carries a
     `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
@@ -1092,14 +1088,17 @@ def classify(
     # F37 (Phase B): the tier gate. use_clip=False — an explicit heuristics-only
     # mode, deep does not enter there (symmetric with CLIP below).
     vlm_fn: VlmClassifyFn | None = None
+    # F102: the toggle is read off cfg.naming and not off cfg.vlm on purpose — the two
+    # agree after load_config, but `--deep` and the UI checkbox force the tier for one
+    # run by replacing exactly this field on their own copy of the config.
     if use_clip and bool(getattr(cfg.naming, "vlm_enabled", False)):
         if vlm_classifier is not None:
             vlm_fn = vlm_classifier
         else:
-            model_name = str(getattr(cfg.naming, "classify_vlm_model", _DEFAULT_VLM_MODEL))
-            factory = vlm_classifier_factory or qwen_vlm_classifier
+            factory = vlm_classifier_factory or qwen_vlm_classifier_factory(
+                cfg.vlm.max_edge)
             try:
-                vlm_fn = factory(model_name)
+                vlm_fn = factory(cfg.vlm.model)
             except Exception as exc:  # noqa: BLE001 — deep is optional, must not crash
                 _log.warning(
                     "junk: VLM недоступна (%s) — откат на fast-ярус (CLIP)", exc)
@@ -1273,7 +1272,7 @@ def classify(
         # the OCR pool does — not until the garbage collector gets round to the
         # generator holding them.
         labels = _vlm_labels(vlm_fn, [path for _fid, path, _v in vlm_candidates],
-                             resolve_vlm_workers(cfg.raw))
+                             cfg.vlm.workers)
         with closing(labels), conn:
             for j, ((fid, _path, fast_verdict), label) in enumerate(
                     zip(vlm_candidates, labels)):

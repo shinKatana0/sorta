@@ -39,6 +39,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overwritten. Albums go through the same `_resolve_dst` and inherit the behaviour.
 
 ### Changed
+- **The VLM has a config section, and its input resolution is a knob in it** (F102): the
+  local Qwen2.5-VL was configured out of the `naming:` section — the toggle
+  (`naming.vlm_enabled`), the model (`naming.classify_vlm_model`) and the preparation
+  threads (`naming.vlm_workers`) all lived under "naming" because there was no other
+  address, even though the first of them switches **junk classification** on. The knob
+  that decides what the pass costs was not in the config at all: `VLM_MAX_EDGE = 896`, a
+  constant in the code, in a project whose stated rule is that thresholds live in
+  config.yaml — and after F101 removed the CPU half of the pass, the remaining time is
+  the GPU half, which the input resolution is exactly what decides. The new `vlm:`
+  section holds what describes the shared model **runtime** (`enabled`, `model`,
+  `workers`, `max_edge`); what belongs to a consumer stays with the consumer
+  (`naming.provider` picks who names events, `naming.product_candidate_min` is the junk
+  gate deciding which frame is worth a call at all). **Nothing has to be edited**: the
+  three old keys are still read, the new one wins when both are given, and a config using
+  only the old address logs one warning per run rather than one per frame — silently
+  ignoring a `naming.vlm_enabled` would mean switching a 20 GB tier on, or off, on
+  somebody else's machine. Defaults are unchanged (`enabled: false`, 896,
+  `min(4, cores)`), so a run without a config edit is the run that ran yesterday, and a
+  bad value (a word where a number belongs, a negative, a quoted `"false"`) falls back to
+  the default instead of starting something heavy or crashing. Token budgets deliberately
+  did **not** move: 8 for a junk label and 32 for an event name are the protocol of the
+  conversation with the model, not a user setting.
+  `scripts/measure_vlm_resolution.py` is what the knob was made for — one load of the
+  weights over one sample of the tier's own candidate frames at 896/672/448, with
+  median/p90 ms, frames/s, peak VRAM and a label-by-label verdict comparison, judged by
+  criteria registered in the code before the first run (agreement ≥ 98% on ≥ 300 frames,
+  no more than 2% of documents lost to `photo`, speedup ≥ 40%) and printing which of the
+  three outcomes the data reached.
 - **The deep classification tier overlaps its CPU work with the GPU** (F101): the tier
   earns its keep — on the live run of 2026-07-28 it changed **2 592 verdicts of 24 196
   (10.7%)**, 2 202 of them into `product`, a class the fast tier does not produce at all
