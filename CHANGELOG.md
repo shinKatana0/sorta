@@ -67,6 +67,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single verdict differs.
 
 ### Added
+- **The "not personal photos" buckets can be reviewed — and fixed in bulk** (F103): the
+  first live run of the deep VLM tier (2026-07-28) reclassified **2 592 frames of
+  24 196**, including a `product` class the fast tier does not produce at all (2 202
+  frames). Reviewed by eye, only a handful of those verdicts are wrong — but "a handful
+  of 2 202" is dozens of frames, and there was nowhere to look at them: the buckets were
+  visible only indirectly, as folders of the layout plan. The tool was confidently
+  carrying every tenth frame of a collection into a separate folder without ever showing
+  them first. A new tab lists every frame whose `media_class.verdict` is not `photo`,
+  with per-bucket counters and a filter (product / document / screenshot / meme), and
+  returns a whole selection to the normal city layout in one action. The correction goes
+  through the existing `manual_overrides` mechanism (F77) as the new action `photo`:
+  **`media_class` is never rewritten**, because the model's verdict is a measurement and
+  a correction by eye is a separate layer on top of it — otherwise the next junk run
+  would silently wipe the user's decisions and leave no trace of why. Only the sorter's
+  ROUTE changes: a corrected frame falls through to the ordinary city/date branch.
+  The `document` bucket answers **without a preview link** — those are passports,
+  medical forms and bank papers, and such a frame is never decoded for display; the card
+  carries a name and a date, which is enough to decide. Returning a document to the
+  photos is still allowed, only its preview is not built. Nothing here reclassifies
+  anything and no threshold moved.
 - **The classification stage says which phase it is in — and how far the deep tier has
   got** (F100): with `--deep` the frame counter ran through the fast pass and then stood
   at **100% for the whole VLM tier**; on the live run of 2026-07-28 (24 196 frames) that
