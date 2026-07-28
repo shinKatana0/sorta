@@ -39,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overwritten. Albums go through the same `_resolve_dst` and inherit the behaviour.
 
 ### Added
+- **The classification stage says which phase it is in — and how far the deep tier has
+  got** (F100): with `--deep` the frame counter ran through the fast pass and then stood
+  at **100% for the whole VLM tier**; on the live run of 2026-07-28 (24 196 frames) that
+  was forty minutes in which the only way to tell a working model from a hung process
+  was to look at the GPU load. `junk.classify` now reports its phases through the same
+  optional `progress.phase(name)` channel clustering has used since F84 —
+  `junk_clip` / `junk_ocr` / `junk_vlm` / `junk_write`, localized in the web app in
+  ru/en/ja. Unlike HDBSCAN, the deep phase is **measurable**: the gate's candidate list
+  exists before the loop starts, so it reports a real `(done, total)` over the
+  candidates — «глубокий анализ (VLM): 1 200 из 1 843» instead of a full bar and a
+  guess. The denominator changes from frames to candidates exactly when the caption
+  does, which is what makes the switch readable; a frame the model errored on still
+  moves the counter, so the bar always reaches its total. Nothing else moved: no
+  verdict, threshold or gate is touched, a run without the deep tier looks and behaves
+  as before, and a callback with no `phase` channel (the CLI path, quiet mode, tests) is
+  not an error — it just gets the counter, as it always did.
 - **Cancelling a layout from the UI** (F97): copying 220 GB takes an hour and a half and
   there was no way to stop it short of killing the process. `plan_and_sort` now takes
   `should_cancel`, polled at the start of each file, before the `moves` row is written;

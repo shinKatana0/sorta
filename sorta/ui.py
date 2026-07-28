@@ -2750,6 +2750,28 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "кластеры: запись", "en": "clusters: saving",
         "ja": "クラスタ: 保存中",
     },
+    # F100: the sub-phases of the `junk` stage. Keys: junk.CLASSIFY_PHASE_*. All four
+    # are measurable, the deep one included (the VLM gate knows its candidates before
+    # the loop starts), so the caption is shown next to the real N / M — the
+    # process_phase_elapsed form below is for phases that have no percent at all.
+    # The stage line right above already says "классификация", so these captions name
+    # only the phase — the same reason the clustering ones say "кластеры" and not "лица".
+    "process_phase_junk_clip": {
+        "ru": "быстрый разбор (CLIP)", "en": "fast pass (CLIP)",
+        "ja": "高速判定 (CLIP)",
+    },
+    "process_phase_junk_ocr": {
+        "ru": "поиск текста (OCR)", "en": "text detection (OCR)",
+        "ja": "テキスト検出 (OCR)",
+    },
+    "process_phase_junk_vlm": {
+        "ru": "глубокий анализ (VLM)", "en": "deep analysis (VLM)",
+        "ja": "詳細解析 (VLM)",
+    },
+    "process_phase_junk_write": {
+        "ru": "запись вердиктов", "en": "saving verdicts",
+        "ja": "判定を保存中",
+    },
     "process_phase_elapsed": {  # a phase with no percent — the clock is the sign of life
         "ru": "{phase} — идёт {seconds} с",
         "en": "{phase} — {seconds}s so far",

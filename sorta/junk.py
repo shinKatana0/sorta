@@ -122,6 +122,23 @@ branches now live in functions of their own — `clip_verdict`, `ocr_gate_open`,
 `apply_text_frac`, over the thresholds of `gate_settings` — instead of inline in the
 classify() loop. classify() calls exactly those functions, so the measurement cannot
 drift away from the pipeline. Behaviour is unchanged; no threshold moved.
+
+F100: the stage now names the phase it is in (CLASSIFY_PHASE_* below), through the
+same optional `progress.phase(name)` channel F84 built for clustering. It used to name
+nothing, and with the deep tier on that showed. Measured on the live run of
+2026-07-28 (24 196 frames, 7 896 of them past the candidate gate): the counter runs
+through the fast pass to 24 196/24 196 and then silently RE-BASES — `total` becomes
+7 896, `done` restarts at zero — with `"phase": null` throughout. The numbers were
+always honest; what was missing is the sentence explaining why the bar just jumped
+back to the start against a threefold smaller denominator. The VLM phase reports a
+real `(done, total)` over the gate's candidate list — unlike HDBSCAN it is
+measurable, because the candidates are known before the loop starts.
+
+The one place the bar could genuinely freeze is fixed here too: a VLM error used to
+`continue` PAST the progress call, so the counter stopped for exactly as many frames
+as the model failed on. Observability only: no verdict, threshold or gate is touched,
+and a callback without a `phase` channel (the CLI, quiet mode, tests) behaves exactly
+as it did.
 """
 from __future__ import annotations
 
@@ -147,6 +164,7 @@ from .naming import (
     shared_vlm,
     utcnow_iso,
 )
+from .progress import PhaseCB, ProgressCB
 
 _log = logging.getLogger(__name__)
 
@@ -744,6 +762,70 @@ def apply_text_frac(verdict: str, score: float, text_frac: float | None,
     return verdict, score, "clip"
 
 
+# F100: the phases `classify` reports. Stable identifiers, not captions — the served
+# UI localizes them (ui._UI_STRINGS), the CLI labels them for the rich bar
+# (cli._CLUSTER_PHASE_LABELS is the precedent). The keys mirror the three parts F73
+# split the per-chunk loop into, plus the deep tier.
+#
+# The difference from faces.CLUSTER_PHASE_* (F84) is the point of this feature: there
+# the long phase (HDBSCAN) is ONE blocking call, so it can only show a stopwatch;
+# here EVERY phase is measurable, the VLM one included — its candidate list is known
+# before the loop starts, because the gate has already run. That is also why the VLM
+# phase needs a caption more than the others: it is the only one that changes the
+# denominator under the user (24 196 frames -> 7 896 candidates on the live run), and
+# a bar that restarts from zero without a word reads as a bar that lost its place.
+CLASSIFY_PHASE_CLIP = "junk_clip"
+CLASSIFY_PHASE_OCR = "junk_ocr"
+CLASSIFY_PHASE_VLM = "junk_vlm"
+CLASSIFY_PHASE_WRITE = "junk_write"
+
+
+class _PhaseProgress:
+    """Phase + `(done, total)` reporting for `classify` (F100).
+
+    The phase channel is optional and duck-typed exactly as in faces (F84): a callback
+    that can show a caption exposes `phase(name)` (progress.TaskProgress,
+    ui._StageProgress), a bare `(done, total)` function simply gets no phases, and
+    without a callback at all every method is a no-op — the CLI path, the quiet mode
+    and most of the suite call classify() that way.
+
+    Unlike clustering, the fast-tier phases interleave INSIDE the per-chunk loop
+    (CLIP -> OCR -> write, F73) over one shared counter of frames, so `enter` only
+    relabels and never touches the count — a bar that restarted three times per chunk
+    would be worse than no phases at all. Repeating the current phase is not re-sent:
+    the UI restarts the phase clock on every report. `start` is for the one place
+    where the denominator really does change (the VLM tier counts its own candidates),
+    and it changes the caption at the same moment, which is what makes the new numbers
+    readable instead of a bar that silently slid backwards.
+    """
+
+    def __init__(self, progress: ProgressCB | None) -> None:
+        self._progress = progress
+        phase = getattr(progress, "phase", None)
+        self._phase: PhaseCB | None = phase if callable(phase) else None
+        self._current: str | None = None
+        self._total: int | None = None
+
+    def enter(self, name: str) -> None:
+        """Relabel to phase `name`, keeping the counter as it is."""
+        if name == self._current:
+            return
+        self._current = name
+        if self._phase is not None:
+            self._phase(name)
+
+    def start(self, name: str, total: int) -> None:
+        """Enter a phase that counts its OWN items: caption and denominator together."""
+        self._total = total
+        self._current = None
+        self.enter(name)
+        self.step(0)
+
+    def step(self, done: int) -> None:
+        if self._progress is not None:
+            self._progress(done, self._total)
+
+
 @dataclass
 class JunkStats:
     total: int = 0        # canonical photos in total
@@ -766,7 +848,7 @@ def classify(
     text_detector_factory: TextFracDetectorFactory | None = None,
     vlm_classifier: VlmClassifyFn | None = None,
     vlm_classifier_factory: Callable[[str], VlmClassifyFn] | None = None,
-    progress: Callable[[int, int], None] | None = None,
+    progress: ProgressCB | None = None,
 ) -> JunkStats:
     """Classify canonical photos into media_class.
 
@@ -798,6 +880,11 @@ def classify(
     FALLBACK: if the factory raises (no transformers, the model does not load, not
     enough VRAM), classify() catches the exception, logs it, and quietly continues
     on the fast tier (CLIP) — without crashing.
+
+    progress (F100): the usual `(done, total)` callback; if it also carries a
+    `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
+    which of its phases it is in — CLASSIFY_PHASE_*. A plain function without that
+    channel is not an error and gets the counter alone, as before.
     """
     s = naming_settings(cfg)
     rows = conn.execute(
@@ -839,8 +926,12 @@ def classify(
     stats.skipped_incremental = len(rows) - len(todo)
     if not todo:
         return stats
-    if progress:
-        progress(0, len(todo))  # total right away, even if the stage is small/fast (#37)
+    # F100: the phase channel of the callback, if it has one. The total is reported
+    # right away, even if the stage is small/fast (#37); which phase the stage opens
+    # with depends on the tier — a heuristics-only run classifies nothing, it only
+    # writes verdicts.
+    report = _PhaseProgress(progress)
+    report.start(CLASSIFY_PHASE_CLIP if use_clip else CLASSIFY_PHASE_WRITE, len(todo))
 
     heur_raw = {
         r["id"]: heuristic_verdict(
@@ -866,8 +957,7 @@ def classify(
                 verdict = heur[r["id"]]
                 conn.execute(upsert, (r["id"], verdict, "heuristic", None, now, active_tier))
                 stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
-        if progress:
-            progress(len(todo), len(todo))
+        report.step(len(todo))
         return stats
 
     if classifier is None:
@@ -898,6 +988,7 @@ def classify(
     try:
         with conn:
             for chunk in batched(todo, s.clip_batch_size):
+                report.enter(CLASSIFY_PHASE_CLIP)
                 paths = [r["path"] for r in chunk]
                 probs = classifier(paths, prompts)
                 # F15: document-CLIP only for files without detected faces —
@@ -929,10 +1020,16 @@ def classify(
                         ocr_jobs.append((r["id"], r["path"], r["width"], r["height"]))
                 # F73, phase 2: text_frac for the gated frames, in the pool. This is the
                 # only part of the stage that leaves this thread.
+                # F100: named only when the gate actually opened — a chunk with no OCR
+                # jobs stays in the CLIP phase instead of flashing a caption for work
+                # that is not happening.
+                if ocr_jobs:
+                    report.enter(CLASSIFY_PHASE_OCR)
                 text_fracs = ocr.text_frac(ocr_jobs)
                 # F73, phase 3: apply the OCR signal, then write — on this thread only
                 # (single writer) and in the original per-chunk order, so the verdicts
                 # and stats are exactly those of the serial version.
+                report.enter(CLASSIFY_PHASE_WRITE)
                 for i, r in enumerate(chunk):
                     # missing / None both mean "no signal" — the verdict is left alone
                     verdict, score = pre[i]
@@ -956,8 +1053,7 @@ def classify(
                                  or product_score.get(i, 0.0) >= product_candidate_min)):
                         vlm_candidates.append((r["id"], r["path"], verdict))
                 done += len(chunk)
-                if progress:
-                    progress(done, len(todo))
+                report.step(done)
     finally:
         # F73: the workers (and their Readers) live exactly as long as the stage does.
         # The count is logged so a run can be checked against "one Reader per worker,
@@ -972,6 +1068,13 @@ def classify(
     # run (closes #31) — the file keeps its fast verdict.
     if vlm_fn is not None and vlm_candidates:
         stats.vlm_candidates = len(vlm_candidates)
+        # F100: the phase whose numbers used to arrive without a word of explanation.
+        # The denominator switches from the frames of the fast pass to the candidates
+        # of the gate — honest, and readable only because the caption switches with
+        # it: at the measured 1.38 frames/s the difference between a bar that quietly
+        # restarted and "2 201 of 7 896" is the difference between "probably hung" and
+        # "about an hour left".
+        report.start(CLASSIFY_PHASE_VLM, len(vlm_candidates))
         with conn:
             for j, (fid, path, fast_verdict) in enumerate(vlm_candidates):
                 try:
@@ -979,17 +1082,19 @@ def classify(
                 except Exception as exc:  # noqa: BLE001 — deep is optional, do not crash the run
                     _log.warning("junk: VLM-ошибка на file_id=%s (%s) — оставляю fast-вердикт",
                                  fid, exc)
-                    continue
-                verdict = _VLM_LABEL_TO_VERDICT.get(label, fast_verdict)
-                # source='vlm' — the VLM is what decided this verdict. The
-                # incrementality marker is `tier` (already written as 'vlm' by the
-                # fast pass above, for candidates and non-candidates alike), so a
-                # repeated run does not re-run the VLM on these files.
-                conn.execute(upsert, (fid, verdict, "vlm", None, now, active_tier))
-                if verdict != fast_verdict:
-                    stats.by_verdict[fast_verdict] = stats.by_verdict.get(fast_verdict, 1) - 1
-                    stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
-                    stats.vlm_applied += 1
-                if progress:
-                    progress(j + 1, len(vlm_candidates))
+                else:
+                    verdict = _VLM_LABEL_TO_VERDICT.get(label, fast_verdict)
+                    # source='vlm' — the VLM is what decided this verdict. The
+                    # incrementality marker is `tier` (already written as 'vlm' by the
+                    # fast pass above, for candidates and non-candidates alike), so a
+                    # repeated run does not re-run the VLM on these files.
+                    conn.execute(upsert, (fid, verdict, "vlm", None, now, active_tier))
+                    if verdict != fast_verdict:
+                        stats.by_verdict[fast_verdict] = stats.by_verdict.get(fast_verdict, 1) - 1
+                        stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
+                        stats.vlm_applied += 1
+                # F100: outside the try/else — a frame the model failed on is a frame
+                # the pass is done with (an error on the last candidate would otherwise
+                # leave the bar one short of its total for good).
+                report.step(j + 1)
     return stats
