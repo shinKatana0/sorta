@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **City folders are named in the layout language** (F99): with `language: ru` the
+  layout produced `Россия\St Petersburg\2023\` — a localized country over an English
+  city. The geo layer writes the English anchor plus `places.city_geonameid` on purpose
+  and calls translating it sort's job (G3), and sort was translating the country only.
+  The defect was invisible while the online provider was in use (Nominatim stores names
+  already in the config language); the first full offline run (2026-07-28) hit **16 881
+  rows of 26 135**. The city name now comes from `GeoResolver.name(geonameid, lang)`,
+  with one resolver per plan (`places.tsv` is 170 472 rows — loading it per file would
+  turn seconds into hours), and the resolver's last fallback — the geonameid itself — is
+  refused in favour of the English anchor: a folder called `498817` explains nothing,
+  `Kapong` does. Rows without a geonameid (a hand-assigned place, `path_inferred`, a
+  landmark, an online answer) keep the text the DB holds — there is nothing there to
+  translate by. Measured on the live collection: 62 of 83 cities (15 284 files) get a
+  Russian name, the remaining 21 (3 166 files) stay English because no Russian name for
+  them exists. Switching the folder language re-plans the whole collection **without a
+  single geo query or a write into `places`**, and the web app's cards now show the city
+  the folder is named after instead of the anchor next to a localized folder.
 - **A repeated `sort --apply` no longer duplicates what it already copied** (F97): the
   first real apply on the live collection (22 364 files, ~220 GB, copy mode) died with
   the machine; the user restarted it into the same destination and got **10 021 files

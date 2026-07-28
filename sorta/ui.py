@@ -275,6 +275,10 @@ _ProgressCB = Callable[[int, "int | None"], None]  # (done, total|None) — comp
 
 def _plan_item_to_json(item: PlanItem,
                        override: tuple[str, str | None] | None = None) -> dict:
+    # G3: `item.city` already comes in the folder language (sorter._city_display_name)
+    # — the grid of the "Cities"/"Events" tabs must not label a frame «St Petersburg»
+    # while the target folder right next to it reads «Санкт-Петербург». One function
+    # decides both, so the plan and the card can never disagree.
     geo = "/".join(p for p in (item.country, item.city) if p) or None
     payload = {
         "file_id": item.file_id,

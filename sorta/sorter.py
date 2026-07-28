@@ -358,6 +358,31 @@ def _undated_parts(row: sqlite3.Row, lang: i18n.Lang) -> tuple[list[str], str]:
     return [i18n.folder("unsorted", lang), i18n.folder("downloaded", lang)], "downloaded"
 
 
+def _city_display_name(city: str | None, city_gid: int | None,
+                       lang: i18n.Lang, resolver: GeoResolver) -> str | None:
+    """G3: the city name to lay out and to show, in `lang`.
+
+    `places` holds the English anchor plus `city_geonameid` (geo.py writes exactly
+    that and calls localizing sort's job) — so the translation happens HERE, once per
+    row, and switching the folder language changes every city name without a single
+    geo query or a write into `places`.
+
+    Without a geonameid the DB text is the only name there is and is used as-is: a
+    landmark/visual place, an online provider's answer (already in the config
+    language) and a place the user assigned by hand carry no id to translate by.
+
+    `GeoResolver.name` ends its fallback chain with the geonameid itself — a folder
+    called `498817` explains nothing to anyone, so that answer is refused in favour of
+    the anchor: an English city name is an honest answer, a number is not.
+    """
+    if city_gid is None:
+        return city
+    name = resolver.name(city_gid, lang)
+    if name == str(city_gid) and city:
+        return city
+    return name
+
+
 def _year_of(taken_at: str | None, confidence: str | None) -> str | None:
     if not taken_at or len(taken_at) < 4 or not taken_at[:4].isdigit():
         return None
@@ -377,7 +402,8 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
     i18n.country by lang (F27); reason — a stable English code, not localized.
     City/district (G3) — via resolver.name(geonameid, lang) if the geonameid is
     known (G2); otherwise (landmark/visual without geonameid) — the original text
-    row["city"] as-is.
+    row["city"] as-is. See _city_display_name: neither name may end up being the
+    geonameid itself.
     """
     if row["manual_action"] == "reassign":
         # F77: the user dragged this frame into a folder by hand — that outranks EVERY
@@ -447,8 +473,8 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
             # one place signal we do have. Guessing a city by the nearest one is not an
             # option here — that is the F75 misplacement.
             return [_sanitize(country_name), year], "country_only"
-        city_gid = row["city_geonameid"]
-        city_name = resolver.name(city_gid, lang) if city_gid is not None else row["city"]
+        city_name = _city_display_name(row["city"], row["city_geonameid"], lang, resolver)
+        assert city_name is not None  # row["city"] is not None here (guarded above)
         parts = [_sanitize(country_name), _sanitize(city_name), year]
         district_gid = row["district_geonameid"]
         if district_gid is not None:
@@ -456,7 +482,13 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
             # names.tsv) is dropped — only Country/City/Year. RU and localized
             # foreign districts (Убуд/Кута) stay.
             if not drop_unlocalized_district or resolver.has_localized_name(district_gid, lang):
-                parts.append(_sanitize(resolver.name(district_gid, lang)))
+                district_name = resolver.name(district_gid, lang)
+                # G3: the same refusal as in _city_display_name — a district the
+                # bundled base does not know resolves to its own geonameid, and there
+                # is no anchor text to fall back to here (an online district comes
+                # WITHOUT an id, see below), so the segment is simply left out.
+                if district_name != str(district_gid):
+                    parts.append(_sanitize(district_name))
         elif row["district_name"]:
             # G2b online: the district as a name from Nominatim (no geonameid)
             parts.append(_sanitize(row["district_name"]))
@@ -1432,7 +1464,14 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
             file_id=r["id"], src=src, dst=dst, in_place=in_place,
             target_rel=target_rel, reason=reason,
             taken_at=r["taken_at"], taken_at_confidence=r["taken_at_confidence"],
-            country=r["country"], city=r["city"],
+            # G3: the city is carried in the layout language, not as the English
+            # anchor of `places` — the CSV/HTML reports and the web app's cards all
+            # read it from here, and a plan that lays a frame into «Санкт-Петербург»
+            # while its own Geo column says «St Petersburg» reads as two places.
+            # The country stays as the DB has it (an ISO cc or the online provider's
+            # full name): it is localized where it is FORMATTED, via i18n.country.
+            country=r["country"],
+            city=_city_display_name(r["city"], r["city_geonameid"], lang, resolver),
             place_confidence=r["place_confidence"],
             gps_lat=r["gps_lat"], gps_lon=r["gps_lon"],
             persons=[label for label, _area in persons],
