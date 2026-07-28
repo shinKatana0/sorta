@@ -106,6 +106,11 @@ SQLite stays single-writer. This is a perf change only: the gate `run_ocr`, the
 thresholds and the order in which verdicts are applied are untouched, so the
 classification is byte-for-byte what K=1 produces.
 
+F95: the VLM weights are loaded by `naming.shared_vlm`, not by this module — the
+event-naming stage now runs the same Qwen2.5-VL and two copies do not fit in VRAM.
+Only the loading moved: the prompt, the decode, the label parsing and the graceful
+fallback around building the classifier are unchanged.
+
 F90: OCR still runs on 28% of the frames and changes 2% of the verdicts (14:1), and
 `text_rescue_docscore_min` — the number that decides that ratio — was set by eye and
 never measured. The gate is worth its cost (it catches a real document CLIP scored
@@ -135,7 +140,13 @@ import numpy as np
 from . import imaging
 from .config import Config
 from .landmarks import Classifier, batched, clip_classifier
-from .naming import naming_settings, utcnow_iso
+from .naming import (
+    DEFAULT_VLM_MODEL,
+    VLM_MAX_EDGE,
+    naming_settings,
+    shared_vlm,
+    utcnow_iso,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -543,10 +554,15 @@ _VLM_LABEL_TO_VERDICT: dict[str, str] = {
     "product": "product",
 }
 
-_DEFAULT_VLM_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
-# The VLM input is not for fine details like OCR, a large frame is not needed; saves
-# VRAM/generation time (the same downscale logic as text_detector).
-_DEFAULT_VLM_MAX_EDGE = 896
+# F95: the model name and its input size describe the MODEL, not this stage, and the
+# naming stage now runs the same weights — both live next to the shared loader in
+# naming.py (see naming.shared_vlm on why that module).
+_DEFAULT_VLM_MODEL = DEFAULT_VLM_MODEL
+_DEFAULT_VLM_MAX_EDGE = VLM_MAX_EDGE
+
+# One label is one short word — a longer budget only buys the model room to explain
+# itself, which the parser below would then have to wade through.
+_VLM_MAX_NEW_TOKENS = 8
 
 _VLM_PROMPT = (
     "Classify this image into exactly one category: personal_photo, document, "
@@ -566,23 +582,18 @@ def qwen_vlm_classifier(
 ) -> VlmClassifyFn:  # pragma: no cover — ML, smoke test
     """The real VLM classifier (Qwen2.5-VL via transformers).
 
-    Lazy-import: junk is imported without transformers (like faces with insightface,
-    easyocr above) — the module loads even if the `[vlm]` extras are not installed;
-    it fails ONLY when actually building the classifier (which the caller in
-    classify() wraps in try/except for a graceful fallback to the fast tier).
+    F95: the weights are no longer loaded here — naming.shared_vlm hands out ONE
+    runtime per model name for the whole process, because the naming stage now runs
+    the same model and a second copy does not fit in VRAM (peak 20.5 GB). What stays
+    here is what belongs to this stage: the prompt, the decode and the parsing of the
+    answer. The load is still lazy (transformers is imported inside the loader) and
+    still fails only when the classifier is actually built — which the caller in
+    classify() wraps in try/except for a graceful fallback to the fast tier.
 
     Decode — via imaging.decode_rgb_preview (Unicode/HEIC-safe, the Phase A/F38
     lesson), downscale to _DEFAULT_VLM_MAX_EDGE before feeding the model.
     """
-    import torch
-    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        model_name, torch_dtype=dtype, device_map=device)
-    processor = AutoProcessor.from_pretrained(model_name)
-    model.eval()
+    describe = shared_vlm(model_name)
 
     def classify_media(path: str) -> str:
         # F67: via the shared preview cache (see easyocr_text_frac_detector).
@@ -594,27 +605,7 @@ def qwen_vlm_classifier(
             path, st.st_mtime, st.st_size, max_edge=_DEFAULT_VLM_MAX_EDGE)
         if img is None:
             return "personal_photo"  # could not decode — conservative
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image", "image": img},
-                {"type": "text", "text": _VLM_PROMPT},
-            ],
-        }]
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
-        inputs = processor(text=[text], images=[img], return_tensors="pt").to(device)
-        with torch.no_grad():
-            # #30 (V1): greedy, NOT sampling. Qwen's default generation_config is
-            # do_sample=True: on some frames fp16 logits go to NaN/inf ->
-            # softmax gives a zero distribution -> torch.multinomial triggers a
-            # CUDA device-side assert that POISONS the context (all subsequent
-            # frames also fail). Classification does not need sampling — it needs
-            # the most probable label; do_sample=False removes multinomial entirely
-            # (verified: 150/150 candidates without an assert, incl. the trigger).
-            out_ids = model.generate(**inputs, max_new_tokens=8, do_sample=False)
-        gen_ids = out_ids[:, inputs["input_ids"].shape[1]:]
-        answer = processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip().lower()
+        answer = describe([img], _VLM_PROMPT, _VLM_MAX_NEW_TOKENS).lower()
         for label in ("personal_photo", "document", "product"):
             if label in answer:
                 return label

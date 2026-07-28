@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Event names that say what happened** (F95): the biggest events of a collection were
+  called `2025-04-24..05-06 Тайланд` (1 359 files) — a date range and a country, which
+  is exactly what the folder path above them already showed. A year later a trip is
+  looked for by «Пхукет с детьми» or «свадьба в Праге», so the name has to carry the
+  CONTENT. New naming provider `vlm`: it takes the 3–5 sample frames of an event, asks
+  the local Qwen2.5-VL what is going on in them, and appends the answer to the template
+  base — `2025-04-24..05-06 Тайланд пляжный отдых с детьми`. Dates and places are never
+  asked of the model: they are known exactly from EXIF and geo, and a model asked for
+  them invents them. One call per EVENT rather than per file (473 events — minutes, not
+  hours), and the weights are the ones the deep junk tier already loads: `naming.py`
+  hands out a single runtime per model name, because a second copy of a 20.5 GB peak
+  does not fit on the card. Opt-in (`naming.provider: vlm`, needs the `[vlm]` extra) —
+  the default stays `template`, and everything that can go wrong (no transformers, the
+  model does not load, no VRAM, a garbage answer) falls back to the template name
+  instead of breaking the naming stage. Names the user typed by hand are untouchable, as
+  before. Documents and screenshots are now excluded from the sample frames of every
+  provider — the filter sits before the provider is chosen, so it also covers the cloud
+  one (`claude`), and it exists because the description becomes the name of a physical
+  folder that then travels into backups and reports.
 - **Place inherited from the trip** (F85a): a file with no GPS used to get a place only
   from the six hours around it, so a whole session where nobody had coordinates stayed
   in `_Unsorted/no_place` even when the trip around it was placed perfectly (1 758 files
