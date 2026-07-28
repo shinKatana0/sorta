@@ -219,6 +219,15 @@ already lying in that destination (with how much of it will be skipped as an ide
 copy — the F97 rule, asked of the same functions the apply uses). All of it is read off
 the SAME built plan the "Cities" tree draws, so the dialog and the tab cannot disagree.
 
+(19) `GET /api/overview` (F108, the "Overview" tab, the first one) — a snapshot of the
+whole collection in four groups: what is in the index, how each frame got its place (and
+how many have none), what the classifier decided and by which tier, and whether a layout
+ran at all. Read-only and, unlike everything else on this page, built ONLY from plain
+SQL aggregates: no plan, no cache, nothing precomputed. Both properties are load-bearing
+— the plan of a 24k collection takes minutes to build, and a cached number would answer
+the question the user opens this tab with ("what did the run just change?") with the
+state from before it. Aggregates only: no file path and no file id is in the answer.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -1765,6 +1774,179 @@ def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
     finally:
         conn.close()
     return {"person": person, "event": event, "indexed": indexed}
+
+
+# --- F108: the "Overview" tab — the state of the collection in one screen -----------
+# Every number below is a plain aggregate over the index, and the plan is deliberately
+# NOT built: a layout of 24k frames costs minutes, while this is the screen a user opens
+# right AFTER a run to see what changed. Nothing is cached either — a number that is one
+# run out of date answers the question wrongly, which is worse than not answering it.
+#
+# Privacy: aggregates only. No file path and no file id leaves this endpoint; the single
+# path in the payload is the destination FOLDER of the last layout, because "where did it
+# go" is one of the four questions the layout group exists to answer.
+
+# The order the place groups are shown in: from the place we know exactly, through the
+# ones inherited from a neighbour, down to no place at all.
+_PLACE_CONFIDENCE_ORDER = ("manual", "exact_gps", "session_inferred", "trip_inferred",
+                           "path_inferred", "visual", "unknown")
+
+# The population every per-file number is counted over — exactly the files the sorter
+# lays out (`plan_and_sort`), so a counter here matches what an apply will carry off.
+_OVERVIEW_LIVE = "f.dup_of IS NULL AND f.error IS NULL"
+
+
+def _media_class_breakdown(conn: sqlite3.Connection, column: str) -> list[dict]:
+    """`verdict`/`source`/`tier` -> [{"key": …, "count": n}], the biggest group first.
+
+    The three breakdowns are counted over the same population, so each of them sums to
+    the same `classes.total` — a `tier` split that does not add up to the number of
+    classified files is exactly the confusion this tab exists to remove. `tier` is NULL
+    for rows written before v11; that group travels as `key: null` and the view labels it.
+
+    The column name is interpolated into the SQL — it never comes from a request, the
+    three call sites below pass literals.
+    """
+    rows = conn.execute(
+        f"""SELECT mc.{column} AS key, COUNT(*) AS n
+            FROM files f JOIN media_class mc ON mc.file_id = f.id
+            WHERE {_OVERVIEW_LIVE}
+            GROUP BY mc.{column}""").fetchall()
+    out = [{"key": r["key"], "count": int(r["n"])} for r in rows]
+    out.sort(key=lambda b: (-b["count"], b["key"] or ""))
+    return out
+
+
+def _overview_place(conn: sqlite3.Connection) -> dict:
+    """The place group: how each frame got its place, and how many have none at all.
+
+    A manual place (F85c) wins over `places` as a whole, exactly as the sorter reads it —
+    otherwise a frame the user placed by hand would be counted here as placeless. The
+    `no_place` rule is `sorter._target_parts` verbatim: an unknown confidence, or neither
+    a city nor a country. Every one of those frames ends up in `_Unsorted/no_place`, which
+    is why this is the one number of the group that is shown even when it is zero.
+    """
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM files f WHERE {_OVERVIEW_LIVE}").fetchone()[0]
+    rows = conn.execute(
+        f"""SELECT CASE WHEN mp.file_id IS NOT NULL THEN 'manual'
+                        ELSE COALESCE(p.confidence, 'unknown') END AS conf,
+                   COUNT(*) AS n
+            FROM files f
+            LEFT JOIN places p ON p.file_id = f.id
+            LEFT JOIN manual_places mp ON mp.file_id = f.id
+            WHERE {_OVERVIEW_LIVE}
+            GROUP BY conf""").fetchall()
+    no_place = conn.execute(
+        f"""SELECT COUNT(*) FROM files f
+            LEFT JOIN places p ON p.file_id = f.id
+            LEFT JOIN manual_places mp ON mp.file_id = f.id
+            WHERE {_OVERVIEW_LIVE} AND mp.file_id IS NULL
+                  AND (COALESCE(p.confidence, 'unknown') = 'unknown'
+                       OR (p.city IS NULL AND p.country IS NULL
+                           AND p.country_name IS NULL))""").fetchone()[0]
+    counts = {r["conf"]: int(r["n"]) for r in rows}
+    confidence = []
+    for key in _PLACE_CONFIDENCE_ORDER:
+        count = counts.pop(key, 0)
+        if count:
+            confidence.append({"key": key, "count": count})
+    # A confidence value this list does not know about is still shown, under its raw name:
+    # a place the index carries must never be invisible here.
+    confidence += [{"key": key, "count": count}
+                   for key, count in sorted(counts.items()) if count]
+    return {
+        "total": int(total),
+        "confidence": confidence,
+        "no_place": int(no_place),
+        "no_place_percent": round(100.0 * no_place / total, 1) if total else 0.0,
+    }
+
+
+def _overview_layout(conn: sqlite3.Connection) -> dict:
+    """The layout group: was anything moved, when, where, how, and was it finished.
+
+    Only the LAST batch is described. `finished_at IS NULL` is the trace of an interrupted
+    run — the tab says so explicitly instead of showing a batch that merely looks normal.
+    """
+    batches = conn.execute("SELECT COUNT(*) FROM move_batches").fetchone()[0]
+    unfinished = conn.execute(
+        "SELECT COUNT(*) FROM move_batches WHERE finished_at IS NULL").fetchone()[0]
+    last = conn.execute(
+        """SELECT id, mode, operation, dest_root, started_at, finished_at
+           FROM move_batches ORDER BY started_at DESC, id DESC LIMIT 1""").fetchone()
+    payload: dict = {"batches": int(batches), "unfinished": int(unfinished), "last": None}
+    if last is None:
+        return payload
+    counted = conn.execute(
+        """SELECT COUNT(*) AS files, COALESCE(SUM(status = 'done'), 0) AS done
+           FROM moves WHERE batch_id = ?""", (last["id"],)).fetchone()
+    payload["last"] = {
+        "mode": last["mode"],
+        "operation": last["operation"],
+        "dest_root": last["dest_root"],
+        "started_at": last["started_at"],
+        "finished_at": last["finished_at"],
+        "unfinished": last["finished_at"] is None,
+        "files": int(counted["files"]),
+        "done": int(counted["done"]),
+    }
+    return payload
+
+
+def _overview_payload(db_path: Path) -> dict:
+    """`GET /api/overview` — the four groups of numbers the tab draws.
+
+    `empty` is the whole answer for a fresh index: the view then invites the user to pick
+    a folder instead of drawing a table of zeros.
+    """
+    conn = _connect(db_path)
+    try:
+        files = conn.execute(
+            """SELECT COUNT(*) AS files,
+                      COALESCE(SUM(media_type <> 'video'), 0) AS photos,
+                      COALESCE(SUM(media_type = 'video'), 0) AS videos,
+                      COALESCE(SUM(dup_of IS NOT NULL), 0) AS duplicates,
+                      COALESCE(SUM(error IS NOT NULL), 0) AS errors
+               FROM files""").fetchone()
+        events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        place = _overview_place(conn)
+        classes_total = conn.execute(
+            f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
+                WHERE {_OVERVIEW_LIVE}""").fetchone()[0]
+        updated_at = conn.execute(
+            f"""SELECT MAX(mc.updated_at) FROM files f
+                JOIN media_class mc ON mc.file_id = f.id
+                WHERE {_OVERVIEW_LIVE}""").fetchone()[0]
+        tiers = _media_class_breakdown(conn, "tier")
+        classes = {
+            "total": int(classes_total),
+            "verdicts": _media_class_breakdown(conn, "verdict"),
+            "sources": _media_class_breakdown(conn, "source"),
+            "tiers": tiers,
+            # "Did the deep tier run at all" — the question that used to be answered by a
+            # query into the database. A file the vlm tier deliberately skipped keeps
+            # source='clip' but tier='vlm', so the TIER is what answers it (schema v11).
+            "vlm_ran": any(t["key"] == "vlm" for t in tiers),
+            "updated_at": updated_at,
+        }
+        layout = _overview_layout(conn)
+    finally:
+        conn.close()
+    return {
+        "empty": int(files["files"]) == 0,
+        "collection": {
+            "files": int(files["files"]),
+            "photos": int(files["photos"]),
+            "videos": int(files["videos"]),
+            "duplicates": int(files["duplicates"]),
+            "errors": int(files["errors"]),
+            "events": int(events),
+        },
+        "place": place,
+        "classes": classes,
+        "layout": layout,
+    }
 
 
 def _validate_album_payload(
@@ -3906,6 +4088,122 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось загрузить корзины: ", "en": "Could not load the buckets: ",
         "ja": "バケットを読み込めません: ",
     },
+    # --- F108: the "Overview" tab ---------------------------------------------------
+    "tab_overview": {"ru": "Обзор", "en": "Overview", "ja": "概要"},
+    "overview_empty": {
+        "ru": "Индекс пуст. Укажите папку с фото и нажмите «Обработать» — после "
+              "прогона здесь появится состояние коллекции.",
+        "en": "The index is empty. Enter a photo folder and click Process — the state "
+              "of the collection shows up here after the run.",
+        "ja": "インデックスが空です。写真フォルダを指定して「処理する」を押してください。"
+              "処理後、コレクションの状態がここに表示されます。",
+    },
+    "overview_empty_button": {
+        "ru": "К обработке", "en": "Go to Process", "ja": "処理タブへ",
+    },
+    "overview_group_collection": {"ru": "Коллекция", "en": "Collection", "ja": "コレクション"},
+    "overview_group_place": {"ru": "Место", "en": "Place", "ja": "場所"},
+    "overview_group_classes": {"ru": "Разбор", "en": "Classification", "ja": "分類"},
+    "overview_group_layout": {"ru": "Раскладка", "en": "Layout", "ja": "振り分け"},
+    "overview_files": {"ru": "Файлов в индексе", "en": "Files in the index",
+                       "ja": "インデックス内のファイル"},
+    "overview_photos": {"ru": "Фото", "en": "Photos", "ja": "写真"},
+    "overview_videos": {"ru": "Видео", "en": "Videos", "ja": "動画"},
+    "overview_duplicates": {"ru": "Дубликатов", "en": "Duplicates", "ja": "重複"},
+    "overview_errors": {"ru": "Ошибок чтения", "en": "Read errors", "ja": "読み込みエラー"},
+    "overview_events": {"ru": "Событий", "en": "Events", "ja": "イベント"},
+    "overview_place_exact_gps": {"ru": "Точный GPS", "en": "Exact GPS", "ja": "正確なGPS"},
+    "overview_place_manual": {"ru": "Указано вручную", "en": "Set by hand", "ja": "手動指定"},
+    "overview_place_session_inferred": {
+        "ru": "Унаследовано от съёмки", "en": "Inherited from the session",
+        "ja": "撮影セッションから継承",
+    },
+    "overview_place_trip_inferred": {
+        "ru": "Унаследовано от поездки", "en": "Inherited from the trip",
+        "ja": "旅行から継承",
+    },
+    "overview_place_path_inferred": {
+        "ru": "Унаследовано от имени папки", "en": "Inherited from the folder name",
+        "ja": "フォルダ名から継承",
+    },
+    "overview_place_visual": {
+        "ru": "Определено по кадру", "en": "Recognised from the frame", "ja": "画像から判定",
+    },
+    "overview_no_place": {
+        "ru": "Без места вообще", "en": "No place at all", "ja": "場所が全く不明",
+    },
+    "overview_no_place_hint": {
+        "ru": "Эти кадры уедут в «_Без места».",
+        "en": "These frames end up in the “no place” folder.",
+        "ja": "これらは「場所なし」フォルダーに入ります。",
+    },
+    "overview_classified": {
+        "ru": "Разобрано кадров", "en": "Frames classified", "ja": "分類済みフレーム",
+    },
+    "overview_verdict_photo": {
+        "ru": "Личные фото", "en": "Personal photos", "ja": "個人写真",
+    },
+    "overview_by_source": {"ru": "Чем решено", "en": "Decided by", "ja": "判定の根拠"},
+    "overview_by_tier": {"ru": "Каким ярусом", "en": "Tier that handled it",
+                         "ja": "処理したティア"},
+    "overview_source_heuristic": {"ru": "Эвристика", "en": "Heuristics", "ja": "ヒューリスティック"},
+    "overview_source_clip": {"ru": "CLIP", "en": "CLIP", "ja": "CLIP"},
+    "overview_source_ocr": {"ru": "OCR", "en": "OCR", "ja": "OCR"},
+    "overview_source_vlm": {"ru": "VLM", "en": "VLM", "ja": "VLM"},
+    "overview_tier_heuristic": {"ru": "Быстрый (эвристика)", "en": "Fast (heuristics)",
+                                "ja": "高速（ヒューリスティック）"},
+    "overview_tier_clip": {"ru": "Быстрый (CLIP)", "en": "Fast (CLIP)", "ja": "高速（CLIP）"},
+    "overview_tier_vlm": {"ru": "Глубокий (VLM)", "en": "Deep (VLM)", "ja": "詳細（VLM）"},
+    "overview_tier_none": {"ru": "Ярус не записан", "en": "Tier not recorded",
+                           "ja": "ティア未記録"},
+    "overview_vlm_ran": {
+        "ru": "Глубокий ярус (VLM) прогонялся.",
+        "en": "The deep tier (VLM) has run.",
+        "ja": "詳細ティア（VLM）は実行済みです。",
+    },
+    "overview_vlm_not_ran": {
+        "ru": "Глубокий ярус (VLM) не прогонялся.",
+        "en": "The deep tier (VLM) has not run.",
+        "ja": "詳細ティア（VLM）は未実行です。",
+    },
+    "overview_updated_at": {
+        "ru": "Последнее изменение разбора: {at}",
+        "en": "Classification last changed: {at}",
+        "ja": "分類の最終更新: {at}",
+    },
+    "overview_not_classified": {
+        "ru": "Разбор ещё не запускался.", "en": "The classifier has not run yet.",
+        "ja": "分類はまだ実行されていません。",
+    },
+    "overview_layout_none": {
+        "ru": "Раскладка ещё не запускалась — файлы лежат там же, где лежали.",
+        "en": "No layout has run yet — the files are still where they were.",
+        "ja": "まだ振り分けは実行されていません。ファイルは元の場所のままです。",
+    },
+    "overview_layout_batches": {"ru": "Раскладок было", "en": "Layout runs",
+                                "ja": "振り分けの回数"},
+    "overview_layout_started": {"ru": "Начата", "en": "Started", "ja": "開始"},
+    "overview_layout_finished": {"ru": "Завершена", "en": "Finished", "ja": "完了"},
+    "overview_layout_dest": {"ru": "Куда", "en": "Destination", "ja": "振り分け先"},
+    "overview_layout_mode": {"ru": "Режим", "en": "Mode", "ja": "モード"},
+    "overview_layout_files": {"ru": "Файлов в раскладке", "en": "Files in the batch",
+                              "ja": "バッチ内のファイル"},
+    "overview_layout_done": {"ru": "Из них перенесено", "en": "Of them moved",
+                             "ja": "うち移動済み"},
+    "overview_layout_unfinished": {
+        "ru": "Батч не закрыт — прогон был прерван.",
+        "en": "The batch is not closed — the run was interrupted.",
+        "ja": "バッチが閉じられていません。実行が中断されました。",
+    },
+    "overview_op_move": {"ru": "перенос", "en": "move", "ja": "移動"},
+    "overview_op_copy": {"ru": "копия", "en": "copy", "ja": "コピー"},
+    "overview_goto_hint": {
+        "ru": "Открыть вкладку «{tab}»", "en": "Open the {tab} tab", "ja": "「{tab}」タブを開く",
+    },
+    "error_loading_overview": {
+        "ru": "Не удалось загрузить обзор: ", "en": "Could not load the overview: ",
+        "ja": "概要を読み込めません: ",
+    },
 }
 
 
@@ -4226,6 +4524,34 @@ label { cursor: pointer; }
 .junk-card-name { font-size: 0.8rem; word-break: break-all; }
 .junk-card-meta { font-size: 0.75rem; color: var(--muted); }
 .junk-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
+
+/* --- F108: вкладка «Обзор» ---------------------------------------------- */
+/* Четыре группы рядом, а не одна длинная простыня: вопрос «что с архивом»
+   распадается ровно на них, и ответ должен читаться без прокрутки. */
+.overview-groups { display: grid; gap: var(--space-md);
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.overview-row { display: flex; align-items: baseline; justify-content: space-between;
+      gap: var(--space-sm); padding: 5px 0; border-top: 1px solid var(--line); }
+.overview-row:first-of-type { border-top: none; }
+.overview-label { color: var(--muted); font-size: 0.85rem; }
+.overview-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Главное число группы (без места, файлов в индексе) — крупнее остальных строк. */
+.overview-row-main .overview-value { font-size: 1.15rem; }
+.overview-row-main .overview-label { color: var(--ink); font-weight: 500; }
+/* Число, у которого есть своя вкладка, само является переходом на неё: обзор без
+   переходов — отчёт, а нужен пульт. */
+.overview-value-link { font-family: var(--font-sans); font-size: inherit; font-weight: 600;
+      font-variant-numeric: tabular-nums; color: var(--accent); background: none;
+      border: none; padding: 0; cursor: pointer; text-decoration: underline;
+      text-underline-offset: 2px; }
+.overview-value-link:hover { color: var(--ink); }
+.overview-subtitle { margin: var(--space-md) 0 var(--space-xs) 0; color: var(--muted);
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.overview-note { margin: var(--space-sm) 0 0 0; color: var(--muted); font-size: 0.8rem; }
+.overview-note-warn { color: var(--danger); }
+/* Строки-значения (путь назначения, дата) переносятся, в отличие от чисел. */
+.overview-text { white-space: normal; word-break: break-word; font-weight: 500;
+      text-align: right; }
 .process-intro { max-width: 46rem; color: var(--muted); }
 /* F51: вертикальные группы (путь / каждый тумблер+hint / кнопки), а не один
    плоский flex — там .process-toggle-hint с flex-basis:100% уезжал в конец
@@ -4460,6 +4786,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </div>
 </div>
 <div class="tabs" role="tablist">
+<button type="button" class="tab-btn" id="tab-btn-overview">{{tab_overview}}</button>
 <button type="button" class="tab-btn active" id="tab-btn-process">{{tab_process}}</button>
 <button type="button" class="tab-btn" id="tab-btn-city">{{tab_city}}</button>
 <button type="button" class="tab-btn" id="tab-btn-dupes">{{tab_dupes}}</button>
@@ -4470,6 +4797,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </div>
 <p id="delete-remember-row" style="display:none"><label><input type="checkbox" id="delete-remember">
 {{delete_remember_label}}</label></p>
+
+<section id="tab-overview" class="tab-panel">
+<div id="overview-body"><div class="state-msg state-loading">{{loading}}</div></div>
+</section>
 
 <section id="tab-process" class="tab-panel active">
 <p class="process-intro">{{process_intro}}</p>
@@ -5724,8 +6055,11 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   var eventsLoaded = false;
   var junkLoaded = false;
 
+  var TAB_NAMES = ["overview", "process", "city", "dupes", "person", "event",
+                   "junk", "moves"];
+
   function activateTab(name) {
-    ["process", "city", "dupes", "person", "event", "junk", "moves"].forEach(function (t) {
+    TAB_NAMES.forEach(function (t) {
       document.getElementById("tab-btn-" + t).classList.toggle("active", t === name);
       document.getElementById("tab-" + t).classList.toggle("active", t === name);
     });
@@ -5753,9 +6087,13 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       movesLoaded = true;
       loadMoves();
     }
+    // F108: обзор — единственная вкладка без флага «уже загружено». Его открывают
+    // ПОСЛЕ прогона, чтобы увидеть изменения, и устаревшая цифра здесь хуже
+    // отсутствующей — поэтому числа перезапрашиваются на каждом открытии.
+    if (name === "overview") loadOverview();
   }
 
-  ["process", "city", "dupes", "person", "event", "junk", "moves"].forEach(function (t) {
+  TAB_NAMES.forEach(function (t) {
     document.getElementById("tab-btn-" + t).addEventListener("click", function () {
       activateTab(t);
     });
@@ -5765,6 +6103,13 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
   // EXISTS-проверок, вызывается при инициализации и после каждого прогона
   // (refreshTabsAfterProcess), т.к. прогон мог впервые породить кластеры/события.
+  // F108: тем же ответом решается стартовая вкладка. Разметка открывает
+  // «Обработать» — на пустом индексе это единственное, что можно сделать; при
+  // непустом индексе первым показываем «Обзор». Только на ПЕРВОМ ответе:
+  // applyTabVisibility зовётся и после прогона, а выдёргивать человека с его
+  // вкладки, когда прогон закончился, нельзя.
+  var firstTabVisibility = true;
+
   function applyTabVisibility() {
     fetch("/api/tabs/visibility")
       .then(function (r) { return r.json(); })
@@ -5781,11 +6126,232 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
             (activeName === "event" && !data.event)) {
           activateTab("process");
         }
+        if (firstTabVisibility) {
+          firstTabVisibility = false;
+          if (data.indexed) activateTab("overview");
+        }
       })
       .catch(function () {});
   }
 
   applyTabVisibility();
+
+  // --- вкладка «Обзор» (F108) --------------------------------------------
+  // Все числа приходят одним запросом /api/overview (простые агрегаты по индексу,
+  // без построения плана) и рисуются четырьмя карточками: коллекция, место,
+  // разбор, раскладка.
+
+  // Числа читают глазами: 7 619 против 7619. toLocaleString берёт разделитель
+  // разрядов из локали браузера.
+  function overviewNum(n) {
+    return Number(n || 0).toLocaleString();
+  }
+
+  function overviewValue(text, extraClass) {
+    var el = document.createElement("span");
+    el.className = "overview-value" + (extraClass ? " " + extraClass : "");
+    el.textContent = text;
+    return el;
+  }
+
+  // Число, у которого есть своя вкладка, само является переходом на неё. Ноль
+  // ссылкой не делаем: вести на заведомо пустую вкладку не за чем.
+  function overviewCount(count, tab) {
+    if (!tab || !count) return overviewValue(overviewNum(count));
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "overview-value-link";
+    btn.textContent = overviewNum(count);
+    btn.title = fmt(I18N.overview_goto_hint, { tab: I18N["tab_" + tab] || tab });
+    btn.addEventListener("click", function () { activateTab(tab); });
+    return btn;
+  }
+
+  function overviewRow(label, valueEl, main) {
+    var row = document.createElement("div");
+    row.className = "overview-row" + (main ? " overview-row-main" : "");
+    var name = document.createElement("span");
+    name.className = "overview-label";
+    name.textContent = label;
+    row.appendChild(name);
+    row.appendChild(valueEl);
+    return row;
+  }
+
+  function overviewCard(title) {
+    var card = document.createElement("div");
+    card.className = "card overview-card";
+    var head = document.createElement("h3");
+    head.textContent = title;
+    card.appendChild(head);
+    return card;
+  }
+
+  function overviewSubtitle(text) {
+    var el = document.createElement("p");
+    el.className = "overview-subtitle";
+    el.textContent = text;
+    return el;
+  }
+
+  function overviewNote(text, warn) {
+    var el = document.createElement("p");
+    el.className = "overview-note" + (warn ? " overview-note-warn" : "");
+    el.textContent = text;
+    return el;
+  }
+
+  function overviewPlaceLabel(key) {
+    return I18N["overview_place_" + key] || key;
+  }
+
+  function overviewVerdictLabel(key) {
+    return key === "photo" ? I18N.overview_verdict_photo : junkBucketLabel(key);
+  }
+
+  function overviewSourceLabel(key) {
+    return I18N["overview_source_" + key] || key;
+  }
+
+  function overviewTierLabel(key) {
+    return key ? (I18N["overview_tier_" + key] || key) : I18N.overview_tier_none;
+  }
+
+  function overviewCollectionCard(data) {
+    var c = data.collection;
+    var card = overviewCard(I18N.overview_group_collection);
+    card.appendChild(overviewRow(I18N.overview_files, overviewValue(overviewNum(c.files)), true));
+    card.appendChild(overviewRow(I18N.overview_photos, overviewValue(overviewNum(c.photos))));
+    card.appendChild(overviewRow(I18N.overview_videos, overviewValue(overviewNum(c.videos))));
+    card.appendChild(overviewRow(I18N.overview_duplicates, overviewCount(c.duplicates, "dupes")));
+    card.appendChild(overviewRow(I18N.overview_errors, overviewValue(overviewNum(c.errors))));
+    card.appendChild(overviewRow(I18N.overview_events, overviewCount(c.events, "event")));
+    return card;
+  }
+
+  function overviewPlaceCard(data) {
+    var p = data.place;
+    var card = overviewCard(I18N.overview_group_place);
+    // Главное число группы: каждый такой кадр уедет в «_Без места» — это и есть
+    // качество будущей раскладки, поэтому доля в процентах стоит рядом.
+    card.appendChild(overviewRow(
+        I18N.overview_no_place,
+        overviewValue(overviewNum(p.no_place) + " (" + p.no_place_percent + "%)"),
+        true));
+    p.confidence.forEach(function (row) {
+      // «unknown» — ровно те кадры, что уже названы строкой выше (правилом
+      // раскладки); второй раз их не повторяем.
+      if (row.key === "unknown") return;
+      card.appendChild(overviewRow(overviewPlaceLabel(row.key),
+                                   overviewValue(overviewNum(row.count))));
+    });
+    card.appendChild(overviewNote(I18N.overview_no_place_hint));
+    return card;
+  }
+
+  function overviewClassesCard(data) {
+    var cl = data.classes;
+    var card = overviewCard(I18N.overview_group_classes);
+    card.appendChild(overviewRow(I18N.overview_classified,
+                                 overviewValue(overviewNum(cl.total)), true));
+    if (!cl.total) {
+      card.appendChild(overviewNote(I18N.overview_not_classified));
+      return card;
+    }
+    cl.verdicts.forEach(function (row) {
+      // Всё, что не «личное фото», лежит на вкладке «Не личные» — туда и ведём.
+      card.appendChild(overviewRow(
+          overviewVerdictLabel(row.key),
+          overviewCount(row.count, row.key === "photo" ? null : "junk")));
+    });
+    card.appendChild(overviewSubtitle(I18N.overview_by_source));
+    cl.sources.forEach(function (row) {
+      card.appendChild(overviewRow(overviewSourceLabel(row.key),
+                                   overviewValue(overviewNum(row.count))));
+    });
+    card.appendChild(overviewSubtitle(I18N.overview_by_tier));
+    cl.tiers.forEach(function (row) {
+      card.appendChild(overviewRow(overviewTierLabel(row.key),
+                                   overviewValue(overviewNum(row.count))));
+    });
+    // Прогонялся ли глубокий ярус — вопрос, который раньше решался запросом в БД.
+    card.appendChild(overviewNote(
+        cl.vlm_ran ? I18N.overview_vlm_ran : I18N.overview_vlm_not_ran));
+    if (cl.updated_at) {
+      card.appendChild(overviewNote(fmt(I18N.overview_updated_at, { at: cl.updated_at })));
+    }
+    return card;
+  }
+
+  function overviewLayoutCard(data) {
+    var lay = data.layout;
+    var card = overviewCard(I18N.overview_group_layout);
+    if (!lay.last) {
+      card.appendChild(overviewNote(I18N.overview_layout_none));
+      return card;
+    }
+    var last = lay.last;
+    var mode = I18N["tab_" + last.mode] || last.mode;
+    var op = last.operation === "copy" ? I18N.overview_op_copy : I18N.overview_op_move;
+    card.appendChild(overviewRow(I18N.overview_layout_files,
+                                 overviewValue(overviewNum(last.files)), true));
+    card.appendChild(overviewRow(I18N.overview_layout_done,
+                                 overviewCount(last.done, "moves")));
+    card.appendChild(overviewRow(I18N.overview_layout_mode,
+                                 overviewValue(mode + " \\u00b7 " + op, "overview-text")));
+    card.appendChild(overviewRow(I18N.overview_layout_started,
+                                 overviewValue(last.started_at, "overview-text")));
+    card.appendChild(overviewRow(I18N.overview_layout_finished,
+                                 overviewValue(last.finished_at || "\\u2014", "overview-text")));
+    card.appendChild(overviewRow(I18N.overview_layout_dest,
+                                 overviewValue(last.dest_root, "overview-text")));
+    if (lay.batches > 1) {
+      card.appendChild(overviewRow(I18N.overview_layout_batches,
+                                   overviewValue(overviewNum(lay.batches))));
+    }
+    // Незакрытый батч — след прерванного прогона; о нём говорим явно.
+    if (last.unfinished || lay.unfinished) {
+      card.appendChild(overviewNote(I18N.overview_layout_unfinished, true));
+    }
+    return card;
+  }
+
+  function renderOverview(data) {
+    var body = document.getElementById("overview-body");
+    body.textContent = "";
+    if (data.empty) {
+      // Пустой индекс — приглашение начать, а не таблица нулей.
+      body.appendChild(stateEl("empty", I18N.overview_empty));
+      var actions = document.createElement("div");
+      actions.className = "process-actions";
+      var startBtn = makeBtn("primary", null, I18N.overview_empty_button);
+      startBtn.id = "overview-start-btn";
+      startBtn.addEventListener("click", function () { activateTab("process"); });
+      actions.appendChild(startBtn);
+      body.appendChild(actions);
+      return;
+    }
+    var groups = document.createElement("div");
+    groups.className = "overview-groups";
+    groups.appendChild(overviewCollectionCard(data));
+    groups.appendChild(overviewPlaceCard(data));
+    groups.appendChild(overviewClassesCard(data));
+    groups.appendChild(overviewLayoutCard(data));
+    body.appendChild(groups);
+  }
+
+  function loadOverview() {
+    var body = document.getElementById("overview-body");
+    body.textContent = "";
+    body.appendChild(stateEl("loading", I18N.loading));
+    return fetch("/api/overview")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderOverview(data); })
+      .catch(function (err) {
+        body.textContent = "";
+        body.appendChild(stateEl("error", I18N.error_loading_overview + err));
+      });
+  }
 
   // --- вкладка «Обработать» (F36: запуск пайплайна из веба + polling) ----
 
@@ -5951,6 +6517,11 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     renderPlanTab("city", "tree-city");
     applyTabVisibility();
     loadCacheSizes();  // F94: a run is what makes the preview cache grow
+    // F108: обзор перечитывается при каждом открытии, но если человек смотрит на
+    // него прямо сейчас — обновляем немедленно: прогон только что изменил числа.
+    if (document.getElementById("tab-overview").classList.contains("active")) {
+      loadOverview();
+    }
   }
 
   function renderProcessStatus(data) {
@@ -7840,6 +8411,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_sort_summary(parse_qs(parts.query))
             elif path == "/api/tabs/visibility":
                 self._send_json(_tabs_visibility_payload(db_path))
+            elif path == "/api/overview":
+                # F108: plain aggregates, computed per request. The plan cache is not
+                # touched on purpose — building a layout here would cost minutes.
+                self._send_json(_overview_payload(db_path))
             elif path == "/api/cache":
                 self._send_json(_cache_payload(db_path))
             elif path == "/api/source-tree":

@@ -95,6 +95,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single verdict differs.
 
 ### Added
+- **The state of the collection, on one screen** (F108): every key number of an archive
+  was reachable only through a hand-written SQL query. On 2026-07-28 the numbers that
+  actually decided what to do next — **7 619 frames with no place, 2 202 products, 819
+  documents, 2 592 verdicts changed by the deep tier, 360 events instead of 473 after a
+  geo-provider switch, 22 364 files in the layout plan** — were all pulled out of the
+  database by hand, and a user of the tool could not see a single one of them. The new
+  **"Overview"** tab is the first one and opens by default whenever the index is not
+  empty, in four groups: what is in the index (files, photos/videos, duplicates, read
+  errors, events); how each frame got its place (exact GPS, inherited from the session /
+  the trip / the folder name, recognised from the frame, set by hand) and **how many have
+  no place at all, with the percentage** — the one number that predicts the quality of a
+  layout, because each of those frames goes to the "no place" folder; what the classifier
+  decided, split by verdict, by `source` and — separately — by the `tier` that handled it,
+  which is what answers "did the deep VLM tier run at all"; and whether a layout ran, when,
+  where, in which mode, over how many files, and **whether its batch was ever closed** (an
+  open `finished_at` is the trace of an interrupted run and is stated as such). Every
+  number that has a tab of its own is a link to it — products and documents to "Not
+  personal photos", duplicates to "Duplicates", events to "Events": an overview without
+  those is a report, and what is needed is a control panel. `GET /api/overview` is built
+  from **plain SQL aggregates only** and is not cached: a plan of 24k frames takes minutes
+  to build, and this is the screen opened right AFTER a run to see what changed, where a
+  stale number is worse than a missing one. Aggregates only — no file path and no file id
+  leaves the endpoint, and there are no previews on this tab at all. An empty index gets
+  an invitation to pick a folder instead of a table of zeros.
 - **The "not personal photos" buckets can be reviewed — and fixed in bulk** (F103): the
   first live run of the deep VLM tier (2026-07-28) reclassified **2 592 frames of
   24 196**, including a `product` class the fast tier does not produce at all (2 202
