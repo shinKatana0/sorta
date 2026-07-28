@@ -1298,16 +1298,18 @@ class TestCityGeoLocalization(SorterTestBase):
         self.assertEqual(report.plan[0].target_rel,
                          "ロシア/サンクトペテルブルク/2022/アカデミーチェスコエ/spb.jpg")
 
-    def test_unknown_geonameid_falls_back_to_id_string(self):
-        # G1: a geonameid absent from the resolver (e.g. a stale bundled
-        # snapshot) does not break the plan — the resolver degrades to the id as a string.
+    def test_unknown_geonameid_falls_back_to_the_anchor_text(self):
+        # G1: a geonameid absent from the resolver (e.g. a stale bundled snapshot) does
+        # not break the plan — the resolver degrades to the id as a string, and F99
+        # refuses that answer: a folder named `999999` explains nothing, the English
+        # anchor from the DB does (see sorter._city_display_name).
         self.add_file("mystery.jpg", country="RU", city="Mystery Town",
                       city_geonameid=999999)
         cfg = Config(sources=[self.src_dir], database=self.root / "test.db",
                     raw={"language": "ru"})
         with patch("sorta.sorter.GeoResolver", return_value=_FakeGeoResolver()):
             report = plan_and_sort(cfg, self.conn, "city", self.dest, apply=False)
-        self.assertEqual(report.plan[0].target_rel, "Россия/999999/2022/mystery.jpg")
+        self.assertEqual(report.plan[0].target_rel, "Россия/Mystery Town/2022/mystery.jpg")
 
     def test_geo_resolver_constructed_once_per_plan(self):
         # G3: the resolver is created ONCE in plan_and_sort, not per file.
