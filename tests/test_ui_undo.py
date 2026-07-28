@@ -365,8 +365,11 @@ class TestUndoHtml(UndoTestBase):
         self.assertIn("/api/undo", html)
         self.assertIn("/api/undo/cancel", html)
         self.assertIn("/api/undo/status", html)
-        # the second entry point: the panel of a cancelled layout
-        self.assertIn('id="sort-undo-btn"', html)
+        # F104: the "Cities" tab no longer offers a second entry point into the
+        # rollback — the manifest that says WHAT is being rolled back lives here, and a
+        # rollback from the plan screen is a rollback blind. The hint pointing at this
+        # tab after a cancelled layout stays (sort_undo_hint), the button does not.
+        self.assertNotIn('id="sort-undo-btn"', html)
         self.assertIn('id="sort-cancel-btn"', html)
         self.assertIn("/api/sort/cancel", html)
         # U1 invariant (no external resources)

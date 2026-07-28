@@ -201,6 +201,24 @@ and the project rule is that such a frame is never decoded for display — the c
 carries a name and a date only. Returning a document to the photos is still allowed;
 only its preview is not built.
 
+(17) `GET|POST /api/settings` (F104, the settings column of the "Cities" tab) — the
+knobs that used to be reachable only by editing config.yaml and restarting: the deep
+VLM tier and its model, preparation threads and input size. POST validates against
+`_SETTINGS_SPEC` (an unknown key, a wrong type or an out-of-range number is a 400 and
+the file is not touched), then changes the RUNNING config and persists into config.yaml
+through `config.save_setting`, which rewrites ONE line and leaves the user's comments
+alone. 409 while `/api/process`, `/api/sort` or `/api/undo` is running, under the same
+`busy_lock` as the rest — swapping the model mid-classification is not a setting. Each
+knob is read at the start of a run, so applying one invalidates nothing (the reasoning
+per knob is above `_SETTINGS_SPEC`); the folder language, which DOES invalidate the plan
+cache, keeps its own route (`POST /api/config/language`, F65).
+
+(18) `GET /api/sort/summary?dest=` (F104) — the numbers the pre-apply dialog states:
+files, folders, volume, how much goes into the two review folders, and how much is
+already lying in that destination (with how much of it will be skipped as an identical
+copy — the F97 rule, asked of the same functions the apply uses). All of it is read off
+the SAME built plan the "Cities" tree draws, so the dialog and the tab cannot disagree.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -239,13 +257,13 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
 from send2trash import send2trash as send_to_trash
 
 from . import db, faces, i18n, imaging
-from .config import Config, save_language
+from .config import Config, save_language, save_setting
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
@@ -267,6 +285,12 @@ from .sorter import (
     plan_and_sort,
     undo,
 )
+# F104: the pre-apply summary has to say what the apply will DO, so it asks the two
+# functions the apply itself uses rather than re-deriving the rule here — the moment
+# the two answers can differ, the dialog is quoting numbers nobody has to honour.
+# `_fs`: the long-path form a filesystem call needs on Windows; `_is_the_same_file`:
+# "the file already lying at the target is byte-for-byte the one we would put there".
+from .sorter import _fs, _is_the_same_file
 
 _log = logging.getLogger(__name__)
 
@@ -341,6 +365,38 @@ def _plan_category(item: PlanItem) -> str:
     return head if sep else item.target_rel
 
 
+def _dest_occupancy(items: list[PlanItem], dest: Path | None) -> tuple[int, int]:
+    """(taken, identical) target paths of `items` inside `dest` — F104.
+
+    `taken` — the plan item's target name is already occupied; `identical` — by a
+    byte-for-byte copy of that very file, i.e. the apply will SKIP it (F97) instead of
+    writing a `_1` twin next to it. The difference between the two numbers is the file
+    that will be written after all, under another name.
+
+    The rule is asked of `sorter._is_the_same_file` rather than re-implemented: the
+    dialog states what the apply is going to do, and the moment the two can disagree
+    the numbers stop being a promise. `dest=None` — the destination could not be
+    resolved (see `_summary_dest`), so nothing is claimed about it.
+    """
+    if dest is None:
+        return 0, 0
+    taken = identical = 0
+    for item in items:
+        head, sep, _name = item.target_rel.rpartition("/")
+        target_dir = dest.joinpath(*head.split("/")) if sep else dest
+        # The name the apply TRIES first — the `_1` suffixes come after this one.
+        target = target_dir / item.src.name
+        if not _fs(target).exists():
+            continue
+        taken += 1
+        # src == dst is the in-place layout: the file IS the one lying at the target,
+        # and it is skipped just as surely as an identical copy would be.
+        if (os.path.normcase(str(target)) == os.path.normcase(str(item.src))
+                or _is_the_same_file(target, item.src, item.db_hash, item.db_algo)):
+            identical += 1
+    return taken, identical
+
+
 def _overrides_map(db_path: Path) -> dict[int, tuple[str, str | None]]:
     """F77: file_id -> (action, target) from `manual_overrides` — the live marks.
 
@@ -367,6 +423,10 @@ class _ModePlan:
 
     def __init__(self, items: list[PlanItem], sizes: dict[int, int]) -> None:
         self.items = items
+        # F104: kept, not only folded into the rows below — the pre-apply summary sums
+        # the volume of the files that will actually move, which is not the sum of the
+        # folder rows (those include what the user marked "leave alone").
+        self.sizes = sizes
         buckets: dict[str, list[PlanItem]] = defaultdict(list)
         for item in items:
             buckets[_plan_category(item)].append(item)
@@ -487,6 +547,43 @@ class PlanCache:
                 "overridden": len(actions),
                 "excluded": sum(1 for a in actions if a == "exclude"),
                 "categories": built.categories}
+
+    def summary(self, mode: str, dest: Path | None) -> dict | None:
+        """`GET /api/sort/summary` — the numbers the pre-apply dialog states (F104).
+
+        Everything is read off the SAME built plan the "Cities" tree draws, so the
+        dialog cannot quote a number the tab does not show: `files`/`dirs` leave out
+        what the user marked "leave alone" (exactly as `aggregate` does), `bytes` is
+        the volume of precisely those files, and the two review folders are counted by
+        the plan's own reason codes — a folder NAME changes with the folder language,
+        a reason does not.
+
+        `dest` is the destination the form is about to send (None — it could not be
+        resolved, see `_summary_dest`). What is already lying there is asked of the
+        filesystem with the rule `sorter._resolve_dst` applies at apply time, so
+        "already there, will be skipped" in the dialog means the same event that
+        `report.skipped_already_copied`/`skipped_in_place` will count. That costs a
+        stat per file (plus a hash where the size matches), which is why this is a
+        request of its own and not part of every `/api/plan`.
+        """
+        built = self._plan(mode)
+        if built is None:
+            return None
+        marks = _overrides_map(self._db_path)
+        items = [it for it in built.items
+                 if marks.get(it.file_id, ("", None))[0] != "exclude"]
+        existing, same = _dest_occupancy(items, dest)
+        return {
+            "mode": mode,
+            "dest": str(dest) if dest is not None else None,
+            "files": len(items),
+            "dirs": len({_plan_category(it) for it in items}),
+            "bytes": sum(built.sizes.get(it.file_id, 0) for it in items),
+            "products": sum(1 for it in items if it.reason == "product"),
+            "documents": sum(1 for it in items if it.reason == "document"),
+            "dest_existing": existing,
+            "dest_same": same,
+        }
 
     def page(self, mode: str, category: str, offset: int, limit: int) -> dict | None:
         """`GET /api/plan?mode=&category=&offset=&limit=` — one page of one folder.
@@ -2487,6 +2584,129 @@ def _validate_language_payload(payload: object) -> str | None:
     return lang if lang in _UI_LANGS else None
 
 
+# --- F104: the settings column of the "Cities" tab (`/api/settings`) ----------
+# A toggle in the interface has to change what the tool DOES, not just what a file
+# says — so for every knob here the question "what does writing it invalidate?" is
+# answered explicitly, and the answer is what makes a restart unnecessary:
+#
+#   vlm.enabled  — the deep junk tier. Read by the junk stage when a run STARTS
+#                  (through `naming.vlm_enabled`, which load_config keeps equal to it
+#                  and `_apply_settings` below keeps equal to it too). Nothing cached
+#                  depends on it; the visible effect is that the "Deep analysis (VLM)"
+#                  checkbox of the "Process" tab, which is initialized from the very
+#                  same field, moves with it.
+#   vlm.model    — which weights to load. Read when the model is first needed, i.e.
+#                  inside the next run. Nothing to invalidate.
+#   vlm.workers  — the frame-preparation pool. Read when the VLM pass starts.
+#   vlm.max_edge — the input size of a frame. Read per frame from that run's config.
+#
+# The folder language is the one setting with a consequence — the plan preview is
+# BUILT in that language — and it keeps its own endpoint (`POST /api/config/language`,
+# F65), which rebuilds the plan cache. It is not folded in here precisely because its
+# answer to the question above is different.
+
+
+@dataclasses.dataclass(frozen=True)
+class _SettingSpec:
+    """What a settings key accepts. `minimum`/`maximum` apply to `kind="int"` only."""
+    kind: str  # bool | str | int
+    minimum: int = 0
+    maximum: int = 0
+
+
+# The bounds are sanity rails, not tuning advice: 0 threads or a 4-pixel frame is a
+# typo, and a 40 000-pixel one is a typo that costs the whole VRAM budget. The `min`/
+# `max` attributes of the number inputs in the template carry the same numbers — a test
+# pins the two together, because a form that offers a value the server refuses is worse
+# than no form.
+_SETTINGS_SPEC: dict[str, _SettingSpec] = {
+    "vlm.enabled": _SettingSpec("bool"),
+    "vlm.model": _SettingSpec("str"),
+    "vlm.workers": _SettingSpec("int", 1, 32),
+    "vlm.max_edge": _SettingSpec("int", 128, 4096),
+}
+
+
+def _settings_payload(cfg: Config) -> dict:
+    """`GET /api/settings` — the current values, straight out of the RUNNING config."""
+    return {
+        "vlm.enabled": cfg.vlm.enabled,
+        "vlm.model": cfg.vlm.model,
+        "vlm.workers": cfg.vlm.workers,
+        "vlm.max_edge": cfg.vlm.max_edge,
+    }
+
+
+def _validate_settings_payload(payload: object) -> dict[str, object] | None:
+    """Parse the body of `POST /api/settings`: `{"<key>": <value>, …}`. None -> 400.
+
+    The WHOLE body is rejected on the first bad key or value — a half-applied save
+    would leave the file and the running config disagreeing about which half of the
+    form the user is looking at. An empty body is invalid too: it would answer "ok"
+    without having done anything.
+    """
+    if not isinstance(payload, dict) or not payload:
+        return None
+    values: dict[str, object] = {}
+    for key, raw in payload.items():
+        spec = _SETTINGS_SPEC.get(key)
+        if spec is None:
+            return None
+        if spec.kind == "bool":
+            if not isinstance(raw, bool):
+                return None
+            values[key] = raw
+        elif spec.kind == "str":
+            if not isinstance(raw, str) or not raw.strip():
+                return None
+            values[key] = raw.strip()
+        else:
+            # bool is an int in Python — `workers: true` is garbage, not 1.
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                return None
+            if not spec.minimum <= raw <= spec.maximum:
+                return None
+            values[key] = raw
+    return values
+
+
+def _apply_settings(cfg: Config, values: dict[str, object]) -> None:
+    """Put validated values into the RUNNING config (see the note above: nothing else
+    has to be invalidated — every one of them is read when the next run starts)."""
+    fields = {key: key.split(".", 1)[1] for key in _SETTINGS_SPEC}
+    # The values were type-checked one by one against _SETTINGS_SPEC, which mypy cannot
+    # follow through a dict[str, object] — the cast says so rather than widening the
+    # spec into something the validator would have to trust the caller about.
+    changed: Any = {fields[key]: value for key, value in values.items()}
+    cfg.vlm = dataclasses.replace(cfg.vlm, **changed)
+    # F102: `naming.vlm_enabled`/`classify_vlm_model` are the effective per-run toggle
+    # the junk stage reads, and load_config holds them equal to the `vlm:` section. A
+    # write that skipped this would be a setting that saved and did not apply.
+    cfg.naming = dataclasses.replace(cfg.naming, vlm_enabled=cfg.vlm.enabled,
+                                     classify_vlm_model=cfg.vlm.model)
+    section = cfg.raw.get("vlm")
+    if not isinstance(section, dict):  # `vlm:` absent, or present and left empty
+        section = {}
+        cfg.raw["vlm"] = section
+    for key, value in values.items():
+        section[fields[key]] = value
+
+
+def _summary_dest(cfg: Config, dest: str | None) -> Path | None:
+    """The destination root the pre-apply summary must look into (F104).
+
+    An empty destination means the in-place layout, whose root `plan_and_sort` takes
+    from the single configured source (F28) — resolved the same way here, and None
+    when that rule does not apply, so the dialog can say "the numbers about the
+    destination are unknown" instead of inventing them.
+    """
+    if dest:
+        return Path(dest)
+    if len(cfg.sources) == 1:
+        return Path(cfg.sources[0])
+    return None
+
+
 def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
              state: _SortState, cache: PlanCache) -> None:
     """The body of the `POST /api/sort` background thread: its own sqlite connection
@@ -3253,11 +3473,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Folder language saved — the plan was recomputed.",
         "ja": "フォルダの言語を保存しました — プランを再計算しました。",
     },
-    "sort_confirm_summary": {
-        "ru": "{n} файлов, {dirs} папок → {dest}",
-        "en": "{n} files, {dirs} folders → {dest}",
-        "ja": "{n} ファイル、{dirs} フォルダ → {dest}",
-    },
+    # F104: `sort_confirm_summary` (F43) lived here — the single line of a window.confirm
+    # that said only "N files, M folders". It is gone with that dialog: the summary is
+    # built from `sort_summary_*` below, off /api/sort/summary, and names the volume, the
+    # review folders and what is already in the destination as well.
     # F97: the text used to send the user to the terminal (`sorta undo`) — there is a
     # button on the "Moves" tab now, so it points at the button.
     "sort_confirm_move": {
@@ -3369,6 +3588,129 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "undo_cancel_requested": {
         "ru": "Отмена отката запрошена…", "en": "Rollback cancellation requested…",
         "ja": "元に戻す処理の中止をリクエストしました…",
+    },
+    # --- F104: the settings column + the summary before a layout ------------
+    "settings_title": {"ru": "Настройки", "en": "Settings", "ja": "設定"},
+    "settings_hint": {
+        "ru": "Меняются прямо здесь и сохраняются в config.yaml. Перезапускать "
+              "«sorta ui» не нужно — новые значения берёт следующий прогон.",
+        "en": "Changed right here and saved into config.yaml. No need to restart "
+              "`sorta ui` — the next run picks the new values up.",
+        "ja": "ここで変更すると config.yaml に保存されます。`sorta ui` の再起動は不要 — "
+              "次の処理から新しい値が使われます。",
+    },
+    "settings_vlm_enabled_label": {
+        "ru": "Глубокий анализ (VLM)", "en": "Deep analysis (VLM)", "ja": "詳細解析 (VLM)",
+    },
+    "settings_vlm_enabled_hint": {
+        "ru": "Отделяет товары и документы от личных кадров. Требует видеокарту и "
+              "extra «vlm»; без них прогон тихо откатывается на быстрый ярус (CLIP).",
+        "en": "Tells goods and documents apart from personal frames. Needs a GPU and "
+              "the `vlm` extra; without them a run falls back to the fast CLIP tier.",
+        "ja": "商品や書類を個人的な写真と区別します。GPU と extra「vlm」が必要で、"
+              "無い場合は高速な CLIP 層に静かにフォールバックします。",
+    },
+    "settings_vlm_model_label": {"ru": "Модель", "en": "Model", "ja": "モデル"},
+    "settings_vlm_workers_label": {
+        "ru": "Потоки подготовки", "en": "Preparation threads", "ja": "前処理スレッド数",
+    },
+    "settings_vlm_workers_hint": {
+        "ru": "Сколько кадров готовится к отправке в модель параллельно. Каждый поток "
+              "держит кадр в памяти — больше не значит быстрее.",
+        "en": "How many frames are prepared for the model in parallel. Every thread "
+              "holds a frame in RAM — more is not automatically faster.",
+        "ja": "モデルに渡すフレームを同時に何枚準備するか。各スレッドがフレームを"
+              "メモリに保持するため、増やせば速くなるとは限りません。",
+    },
+    "settings_vlm_max_edge_label": {
+        "ru": "Разрешение кадра, px", "en": "Frame resolution, px", "ja": "フレーム解像度 (px)",
+    },
+    "settings_vlm_max_edge_hint": {
+        "ru": "Длинная сторона кадра, который видит модель. Меньше — быстрее и "
+              "экономнее по видеопамяти, но мелкий текст на снимке различим хуже.",
+        "en": "The long edge of the frame the model sees. Smaller is faster and easier "
+              "on VRAM, but fine text in a shot becomes harder to make out.",
+        "ja": "モデルが見るフレームの長辺。小さいほど高速で VRAM も節約できますが、"
+              "写真内の細かい文字は読み取りにくくなります。",
+    },
+    "settings_folders_title": {"ru": "Папки", "en": "Folders", "ja": "フォルダ"},
+    "settings_folder_lang_hint": {
+        "ru": "Язык названий папок раскладки. План ниже пересчитывается сразу.",
+        "en": "The language of the layout's folder names. The plan below is recomputed "
+              "immediately.",
+        "ja": "振り分けフォルダ名の言語。下のプランはすぐに再計算されます。",
+    },
+    "settings_saved": {"ru": "Сохранено.", "en": "Saved.", "ja": "保存しました。"},
+    "settings_error_prefix": {
+        "ru": "Не удалось сохранить настройку: ", "en": "Could not save the setting: ",
+        "ja": "設定を保存できませんでした: ",
+    },
+    "settings_busy": {
+        "ru": "Идёт прогон — настройки не меняются на ходу. Дождитесь окончания.",
+        "en": "A run is in progress — settings do not change mid-run. Wait for it to end.",
+        "ja": "処理の実行中です — 途中で設定は変更できません。終了までお待ちください。",
+    },
+    "selection_delete_hint": {
+        "ru": "Файлы уедут в корзину системы — не мимо неё.",
+        "en": "The files go to the system trash, not past it.",
+        "ja": "ファイルはシステムのゴミ箱に移動します（完全削除ではありません）。",
+    },
+    "sort_confirm_title": {
+        "ru": "Разложить коллекцию?", "en": "Lay the collection out?",
+        "ja": "コレクションを振り分けますか?",
+    },
+    "sort_confirm_ok": {"ru": "Разложить", "en": "Apply", "ja": "振り分ける"},
+    "sort_confirm_cancel": {"ru": "Отмена", "en": "Cancel", "ja": "キャンセル"},
+    "sort_summary_dest": {
+        "ru": "Куда: {dest}", "en": "Where to: {dest}", "ja": "移動先: {dest}",
+    },
+    "sort_summary_mode_move": {
+        "ru": "Перемещение — оригиналы будут перенесены",
+        "en": "Move — the originals will be transferred",
+        "ja": "移動 — オリジナルが移されます",
+    },
+    "sort_summary_mode_copy": {
+        "ru": "Копирование — оригиналы останутся на месте",
+        "en": "Copy — the originals stay where they are",
+        "ja": "コピー — オリジナルはその場に残ります",
+    },
+    "sort_summary_files": {
+        "ru": "{n} файлов в {dirs} папок, {size}",
+        "en": "{n} files into {dirs} folders, {size}",
+        "ja": "{n} 件のファイルを {dirs} 個のフォルダへ、{size}",
+    },
+    "sort_summary_existing": {
+        "ru": "В назначении уже лежит {n} из них; {same} совпадут и будут пропущены",
+        "en": "{n} of them are already in the destination; {same} match and will be skipped",
+        "ja": "そのうち {n} 件はすでに移動先にあります。{same} 件は一致するためスキップされます",
+    },
+    "sort_summary_existing_none": {
+        "ru": "В назначении ничего из этого ещё нет",
+        "en": "None of this is in the destination yet",
+        "ja": "これらはまだ移動先にありません",
+    },
+    "sort_summary_existing_unknown": {
+        "ru": "Что уже лежит в назначении — неизвестно: папка не задана, а источник не один",
+        "en": "What is already in the destination is unknown: no folder given and more "
+              "than one source",
+        "ja": "移動先に何があるかは不明です: フォルダ未指定でソースが複数あります",
+    },
+    "sort_summary_service": {
+        "ru": "В служебные папки: товары — {products}, документы — {documents}",
+        "en": "Into the review folders: products — {products}, documents — {documents}",
+        "ja": "確認用フォルダへ: 商品 — {products} 件、書類 — {documents} 件",
+    },
+    "sort_summary_empty": {
+        "ru": "Раскладывать нечего: план пуст. Обработайте коллекцию на вкладке "
+              "«Обработка» — или снимите пометки «не трогать».",
+        "en": "There is nothing to lay out: the plan is empty. Process the collection on "
+              "the Process tab — or unmark the frames left alone.",
+        "ja": "振り分ける対象がありません: プランが空です。「処理」タブでコレクションを"
+              "処理するか、「そのままにする」の指定を解除してください。",
+    },
+    "sort_summary_error": {
+        "ru": "Не удалось посчитать сводку: ", "en": "Could not compute the summary: ",
+        "ja": "サマリーを計算できませんでした: ",
     },
     # --- F77: manual corrections to the layout (the "Cities" tab) ----------
     "override_exclude_button": {
@@ -4021,6 +4363,31 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
 .sort-mode-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
 
+/* --- F104 (layout A): the settings move into a right-hand column so the action row
+   can go back to being a row about STARTING a layout. What made the old row dangerous
+   was not the number of buttons but their neighbourhood: "Apply" transfers hundreds of
+   gigabytes, "Delete selected" erases files and "Expand all" does nothing at all — one
+   slip of the mouse costs wildly different amounts. The column drops below the tree on
+   a narrow screen (see the media query): the plan itself matters more. --- */
+.city-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+      gap: var(--space-lg); align-items: start; }
+.city-main { min-width: 0; }
+.city-side { display: flex; flex-direction: column; gap: var(--space-md);
+      position: sticky; top: var(--space-md); }
+.settings-block { display: flex; flex-direction: column; gap: var(--space-sm);
+      padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md);
+      background: var(--card); }
+.settings-head { font-weight: 600; }
+.settings-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
+.settings-field input, .settings-field select { padding: 6px 8px; }
+/* Deleting lives in the context of a selection: the row appears only once frames are
+   ticked, and never stands next to the button that starts a layout. */
+.selection-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; padding: var(--space-sm); border-radius: var(--radius-md);
+      border: 1px solid var(--line); background: var(--card); }
+.sort-dialog-list { margin: 0 0 var(--space-md) 0; padding-left: var(--space-lg); }
+.sort-dialog-list li { margin-bottom: 4px; }
+
 /* --- F93: подтверждение сброса. window.confirm не умеет галочку, а галочка
    «очистить кэш геоданных» обязана быть именно здесь: пользователь вспоминает про
    кэш в момент «хочу переделать начисто», а не в настройках. --- */
@@ -4057,6 +4424,11 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .lightbox-dot { width: 10px; height: 10px; padding: 0; border-radius: 50%; cursor: pointer;
       border: 1px solid rgba(255,255,255,.75); background: transparent; }
 .lightbox-dot.active { background: #fff; }
+
+@media (max-width: 1000px) {
+  .city-layout { grid-template-columns: minmax(0, 1fr); }
+  .city-side { position: static; }
+}
 
 @media (max-width: 640px) {
   body { padding: var(--space-md); }
@@ -4196,27 +4568,26 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </section>
 
 <section id="tab-city" class="tab-panel">
+<div class="city-layout">
+<div class="city-main">
 <div class="sort-controls">
-<label class="sort-mode-label" for="folder-lang-select">{{folder_lang_label}}
-<select id="folder-lang-select"><option value="ru">Русский</option><option value="en">English</option><option value="ja">日本語</option></select></label>
 <input type="text" id="sort-dest" placeholder="{{sort_dest_placeholder}}">
 <button type="button" id="sort-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
 <label class="sort-mode-label"><input type="radio" name="sort-mode" value="move" checked> {{sort_mode_move}}</label>
 <label class="sort-mode-label"><input type="radio" name="sort-mode" value="copy"> {{sort_mode_copy}}</label>
-<button type="button" id="sort-apply-btn" class="btn btn-primary">{{sort_apply_button}}</button>
+<button type="button" id="sort-apply-btn" class="btn btn-primary" disabled>{{sort_apply_button}}</button>
 <span class="sort-dest-hint">{{sort_dest_hint}}</span>
+<span class="sort-dest-hint" id="sort-empty-hint" style="display:none">{{sort_summary_empty}}</span>
 </div>
 <progress id="sort-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
 <div class="process-actions">
 <button type="button" id="sort-cancel-btn" class="btn btn-ghost" style="display:none">{{sort_cancel_button}}</button>
-<button type="button" id="sort-undo-btn" class="btn btn-danger" style="display:none">{{undo_button}}</button>
 </div>
 <div id="sort-status" class="process-status"></div>
 <div id="sort-warning" class="process-status"></div>
 <div class="tree-controls">
 <button type="button" class="btn btn-ghost expand-all-btn">{{expand_all}}</button>
 <button type="button" class="btn btn-ghost collapse-all-btn">{{collapse_all}}</button>
-<button type="button" id="city-delete-selected-btn" class="btn btn-danger" disabled>{{delete_selected}}<span id="city-delete-selected-count"></span></button>
 </div>
 <div class="override-controls">
 <button type="button" id="city-override-exclude-btn" class="btn btn-danger" disabled>{{override_exclude_button}}<span id="city-override-count"></span></button>
@@ -4231,7 +4602,38 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <span id="place-status" class="override-status"></span>
 <p class="override-hint">{{place_hint}}</p>
 </div>
+<div class="selection-controls" id="city-selection-controls" style="display:none">
+<button type="button" id="city-delete-selected-btn" class="btn btn-danger" disabled>{{delete_selected}}<span id="city-delete-selected-count"></span></button>
+<span class="override-hint">{{selection_delete_hint}}</span>
+</div>
 <div id="tree-city"><div class="state-msg state-loading">{{loading}}</div></div>
+</div>
+<aside class="city-side">
+<div class="settings-block">
+<div class="settings-head">{{settings_title}}</div>
+<span class="process-toggle-hint">{{settings_hint}}</span>
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="setting-vlm-enabled"> {{settings_vlm_enabled_label}}</label>
+<span class="process-toggle-hint">{{settings_vlm_enabled_hint}}</span>
+</div>
+<label class="settings-field" for="setting-vlm-model">{{settings_vlm_model_label}}
+<input type="text" id="setting-vlm-model"></label>
+<label class="settings-field" for="setting-vlm-workers">{{settings_vlm_workers_label}}
+<input type="number" id="setting-vlm-workers" min="1" max="32" step="1"></label>
+<span class="process-toggle-hint">{{settings_vlm_workers_hint}}</span>
+<label class="settings-field" for="setting-vlm-max-edge">{{settings_vlm_max_edge_label}}
+<input type="number" id="setting-vlm-max-edge" min="128" max="4096" step="1"></label>
+<span class="process-toggle-hint">{{settings_vlm_max_edge_hint}}</span>
+<div id="settings-status" class="override-status"></div>
+</div>
+<div class="settings-block">
+<div class="settings-head">{{settings_folders_title}}</div>
+<label class="settings-field" for="folder-lang-select">{{folder_lang_label}}
+<select id="folder-lang-select"><option value="ru">Русский</option><option value="en">English</option><option value="ja">日本語</option></select></label>
+<span class="process-toggle-hint">{{settings_folder_lang_hint}}</span>
+</div>
+</aside>
+</div>
 </section>
 
 <section id="tab-dupes" class="tab-panel">
@@ -4313,6 +4715,17 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <div class="reset-dialog-actions">
 <button type="button" id="undo-dialog-cancel" class="btn btn-ghost">{{undo_confirm_cancel}}</button>
 <button type="button" id="undo-dialog-ok" class="btn btn-danger">{{undo_confirm_ok}}</button>
+</div>
+</div>
+</div>
+<div id="sort-dialog" class="reset-dialog" hidden>
+<div class="reset-dialog-box">
+<p class="reset-dialog-text" id="sort-dialog-text"></p>
+<ul class="sort-dialog-list" id="sort-dialog-list"></ul>
+<p class="reset-dialog-text" id="sort-dialog-warning"></p>
+<div class="reset-dialog-actions">
+<button type="button" id="sort-dialog-cancel" class="btn btn-ghost">{{sort_confirm_cancel}}</button>
+<button type="button" id="sort-dialog-ok" class="btn btn-danger">{{sort_confirm_ok}}</button>
 </div>
 </div>
 </div>
@@ -4479,21 +4892,104 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       .catch(function () { /* keep the default option */ });
     select.addEventListener("change", function () {
       var next = select.value;
-      var statusEl = document.getElementById("sort-status");
       select.disabled = true;
       postJson("/api/config/language", { language: next }).then(function (resp) {
         select.disabled = false;
         if (resp && resp.ok) {
           renderPlanTab("city", "tree-city");
-          if (statusEl) statusEl.textContent = I18N.folder_lang_saved;
-        } else if (statusEl) {
-          statusEl.textContent = (resp && resp.error) ? resp.error : "error";
+          settingsStatus(I18N.folder_lang_saved);
+        } else {
+          settingsStatus((resp && resp.error === "already running")
+              ? I18N.settings_busy
+              : I18N.settings_error_prefix + ((resp && resp.error) || "error"));
         }
       }).catch(function () { select.disabled = false; });
     });
   }
 
   initFolderLang();
+
+  // F104: the settings column of the "Cities" tab. Every control writes ONE key
+  // through POST /api/settings; the server puts it into the RUNNING config and into
+  // config.yaml, so none of this needs `sorta ui` restarted. The whole reason these
+  // knobs got an interface is that a text editor plus a restart is not a switch.
+  //
+  // A rejected save (a run is in progress -> 409, garbage -> 400) is not swallowed:
+  // the control is put back to the value the SERVER holds, so the form can never show
+  // a setting the tool is not actually using.
+  var SETTING_CONTROLS = [
+    { key: "vlm.enabled", id: "setting-vlm-enabled", kind: "bool" },
+    { key: "vlm.model", id: "setting-vlm-model", kind: "text" },
+    { key: "vlm.workers", id: "setting-vlm-workers", kind: "int" },
+    { key: "vlm.max_edge", id: "setting-vlm-max-edge", kind: "int" }
+  ];
+  var settingsValues = {};
+
+  function settingsStatus(text) {
+    var el = document.getElementById("settings-status");
+    if (el) el.textContent = text;
+  }
+
+  function renderSettings(data) {
+    if (data) settingsValues = data;
+    SETTING_CONTROLS.forEach(function (control) {
+      var el = document.getElementById(control.id);
+      if (!el || !(control.key in settingsValues)) return;
+      if (control.kind === "bool") el.checked = !!settingsValues[control.key];
+      else el.value = settingsValues[control.key];
+    });
+  }
+
+  function readSetting(control) {
+    var el = document.getElementById(control.id);
+    if (!el) return null;
+    if (control.kind === "bool") return el.checked;
+    if (control.kind === "int") {
+      var n = parseInt(el.value, 10);
+      // An empty or non-numeric field is sent AS IS: the server owns the range and
+      // answers 400, and one refusal in one place beats two copies of the rule.
+      return isNaN(n) ? el.value : n;
+    }
+    return el.value.trim();
+  }
+
+  function saveSetting(control) {
+    var body = {};
+    body[control.key] = readSetting(control);
+    settingsStatus("");
+    postJson("/api/settings", body).then(function (resp) {
+      if (resp && resp.ok) {
+        renderSettings(resp.settings);
+        settingsStatus(I18N.settings_saved);
+        // The "Deep analysis (VLM)" checkbox of the "Process" tab is initialized from
+        // the very field this toggle writes — without this it would keep showing the
+        // old value until a reload, which is the "saved but not applied" trap.
+        if (control.key === "vlm.enabled") applyProcessDefaults();
+        return;
+      }
+      renderSettings(null);
+      settingsStatus((resp && resp.error === "already running")
+          ? I18N.settings_busy
+          : I18N.settings_error_prefix + ((resp && resp.error) || "error"));
+    }).catch(function () {
+      renderSettings(null);
+      settingsStatus(I18N.settings_error_prefix + "network");
+    });
+  }
+
+  function initSettings() {
+    fetch("/api/settings")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderSettings(data); })
+      .catch(function () { /* the column keeps its empty fields */ });
+    SETTING_CONTROLS.forEach(function (control) {
+      var el = document.getElementById(control.id);
+      if (!el) return;
+      el.addEventListener("change", function () { saveSetting(control); });
+    });
+  }
+
+  initSettings();
 
   // Дерево по списку элементов — осталось для вкладки «Перемещения»: там приходит
   // ОДИН батч (ограниченный по размеру), а не весь план коллекции, поэтому строить
@@ -4585,10 +5081,15 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   // Переиспользуемый множественный выбор + «Удалить выбранное» для любого
   // контейнера со строками, где есть чекбокс `.row-select` (value=file_id).
   // Делегирование на контейнер — работает и с лениво построенными строками.
-  function wireBulkDelete(containerId, buttonId, countId) {
+  // F104: barId — the row the button lives in; it is SHOWN only while something is
+  // selected. A permanently visible "Delete selected" next to "Apply" is a destructive
+  // button one row away from the button that moves the whole collection; in the context
+  // of a selection it is the obvious action, and nowhere near the layout controls.
+  function wireBulkDelete(containerId, buttonId, countId, barId) {
     var container = document.getElementById(containerId);
     var button = document.getElementById(buttonId);
     var countEl = countId ? document.getElementById(countId) : null;
+    var barEl = barId ? document.getElementById(barId) : null;
     function checked() {
       return Array.prototype.slice.call(container.querySelectorAll(".row-select:checked"));
     }
@@ -4596,6 +5097,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       var n = checked().length;
       if (countEl) countEl.textContent = n ? " (" + n + ")" : "";
       button.disabled = n === 0;
+      if (barEl) barEl.style.display = n === 0 ? "none" : "";
     }
     container.addEventListener("change", function (e) {
       if (e.target && e.target.classList && e.target.classList.contains("row-select")) refresh();
@@ -5154,10 +5656,13 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     return details;
   }
 
-  // F43: счётчики последнего city-плана — используются саммари подтверждения
-  // apply (не отдельным превью-запросом, агрегат уже загружен вкладкой).
+  // F43: счётчики последнего city-плана.
+  // F104: the numbers of the confirmation itself now come from /api/sort/summary (it
+  // also knows the volume and what is already in the destination); what stays here is
+  // the one question the START button needs answered — is there anything to lay out at
+  // all. `cityPlanLoaded` keeps "nothing to lay out" apart from "not counted yet".
   var cityPlanCount = 0;
-  var cityPlanDirCount = 0;
+  var cityPlanLoaded = false;
 
   // renderPlanTab: дерево папок плана режима (city/person/event) из агрегата —
   // общий код, переиспользуемый всеми план-вкладками (U2).
@@ -5171,7 +5676,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
           // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
           // в подтверждении раскладки их считать нельзя.
           cityPlanCount = (data.total || 0) - (data.excluded || 0);
-          cityPlanDirCount = categories.length;
+          cityPlanLoaded = true;
+          updateBusyControlsDisabled();
           fillOverrideTargets(categories);
         }
         container.textContent = "";
@@ -5192,7 +5698,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 
   cityPlacePicker = renderPlacePicker(document.getElementById("city-place-picker"));
   renderPlanTab("city", "tree-city");
-  wireBulkDelete("tree-city", "city-delete-selected-btn", "city-delete-selected-count");
+  wireBulkDelete("tree-city", "city-delete-selected-btn", "city-delete-selected-count",
+                 "city-selection-controls");
   wireOverrideControls("tree-city");
 
   document.querySelectorAll(".expand-all-btn").forEach(function (btn) {
@@ -6029,14 +6536,47 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   });
   updateSortApplyBtnStyle();
 
-  function sortConfirmText(dest, mode) {
-    var destLabel = dest || I18N.sort_dest_inplace_label;
-    var text = fmt(I18N.sort_confirm_summary,
-        { n: cityPlanCount, dirs: cityPlanDirCount, dest: destLabel });
-    if (!dest) text += "\\n" + I18N.sort_confirm_inplace;
-    else if (mode === "move") text += "\\n" + I18N.sort_confirm_move;
-    else text += "\\n" + I18N.sort_confirm_copy;
-    return text;
+  // F104: before a layout the user sees NUMBERS, not a question "are you sure?". They
+  // come from /api/sort/summary — the same built plan the tab's tree is drawn from, so
+  // the dialog cannot name a figure the tab does not show.
+  var sortDialogEl = document.getElementById("sort-dialog");
+
+  function sortSummaryLines(data, dest, mode) {
+    var lines = [fmt(I18N.sort_summary_dest,
+                     { dest: data.dest || dest || I18N.sort_dest_inplace_label })];
+    lines.push(mode === "move" ? I18N.sort_summary_mode_move : I18N.sort_summary_mode_copy);
+    lines.push(fmt(I18N.sort_summary_files,
+                   { n: data.files, dirs: data.dirs, size: formatSize(data.bytes) }));
+    if (data.dest === null) lines.push(I18N.sort_summary_existing_unknown);
+    else if (!data.dest_existing) lines.push(I18N.sort_summary_existing_none);
+    else lines.push(fmt(I18N.sort_summary_existing,
+                        { n: data.dest_existing, same: data.dest_same }));
+    if (data.products || data.documents) {
+      lines.push(fmt(I18N.sort_summary_service,
+                     { products: data.products, documents: data.documents }));
+    }
+    return lines;
+  }
+
+  function openSortDialog(data, dest, mode) {
+    document.getElementById("sort-dialog-text").textContent = I18N.sort_confirm_title;
+    var list = document.getElementById("sort-dialog-list");
+    list.textContent = "";
+    sortSummaryLines(data, dest, mode).forEach(function (line) {
+      var li = document.createElement("li");
+      li.textContent = line;
+      list.appendChild(li);
+    });
+    // A line of its own goes to what the numbers cannot say: an in-place run
+    // restructures the SOURCE tree rather than a copy in a separate folder.
+    document.getElementById("sort-dialog-warning").textContent =
+        dest ? (mode === "move" ? I18N.sort_confirm_move : I18N.sort_confirm_copy)
+             : I18N.sort_confirm_inplace;
+    sortDialogEl.hidden = false;
+  }
+
+  function closeSortDialog() {
+    sortDialogEl.hidden = true;
   }
 
   // Раскладка во время прогона запрещена и на сервере (409 «process is running»
@@ -6063,7 +6603,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 
   function updateBusyControlsDisabled() {
     var busy = sortRunning || processRunning || undoRunning;
-    ["sort-apply-btn", "sort-browse-btn", "sort-dest",
+    ["sort-browse-btn", "sort-dest",
      "process-reset-btn",
      "cache-clear-preview-btn", "cache-clear-geo-btn"].forEach(function (id) {
       var el = document.getElementById(id);
@@ -6072,8 +6612,15 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     var undoBtn = document.getElementById("undo-btn");
     // «Откатить» дополнительно требует батча в манифесте — см. applyUndoAvailability
     if (undoBtn) { undoBtn.disabled = busy || !undoAvailable; }
-    var sortUndoBtn = document.getElementById("sort-undo-btn");
-    if (sortUndoBtn) { sortUndoBtn.disabled = busy || !undoAvailable; }
+    // F104: an empty plan disables the start button and says WHY, instead of opening a
+    // dialog full of zeroes. Until the plan has arrived the button is dead too, but
+    // silently — "nothing to lay out" and "not counted yet" are different statements.
+    var applyBtn = document.getElementById("sort-apply-btn");
+    if (applyBtn) { applyBtn.disabled = busy || cityPlanCount === 0; }
+    var emptyHint = document.getElementById("sort-empty-hint");
+    if (emptyHint) {
+      emptyHint.style.display = (cityPlanLoaded && cityPlanCount === 0) ? "" : "none";
+    }
   }
 
   function renderSortStatus(data) {
@@ -6081,14 +6628,14 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     var statusEl = document.getElementById("sort-status");
     var warnEl = document.getElementById("sort-warning");
     var cancelBtn = document.getElementById("sort-cancel-btn");
-    var undoBtn = document.getElementById("sort-undo-btn");
     sortRunning = !!data.running;
+    // F104: "Cancel" is a contextual button — it exists exactly while a layout runs.
+    // A permanent cancel button next to the start button cancels nothing.
     cancelBtn.style.display = data.running ? "" : "none";
     cancelBtn.disabled = !!data.cancel_requested;
     updateBusyControlsDisabled();
     bar.style.display = data.running ? "" : "none";
     if (data.running) {
-      undoBtn.style.display = "none";
       bar.max = data.total || 0;
       bar.value = data.done || 0;
       statusEl.textContent = data.cancel_requested
@@ -6098,18 +6645,18 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       return;
     }
     if (!data.finished) {
-      undoBtn.style.display = "none";
       statusEl.textContent = ""; warnEl.textContent = ""; return;
     }
     if (data.error) {
-      undoBtn.style.display = "none";
       statusEl.textContent = I18N.sort_error_prefix + data.error;
       warnEl.textContent = "";
       return;
     }
     var r = data.result || {};
-    // F97: отменённый прогон обязан говорить «сколько из скольких», а не «готово»;
-    // и рядом с ним — вторая точка входа в тот же откат, что и на «Перемещениях».
+    // F97: отменённый прогон обязан говорить «сколько из скольких», а не «готово».
+    // F104: what stayed next to it is the HINT pointing at the "Moves" tab, not a roll
+    // back button. The manifest that says WHAT exactly would be rolled back lives
+    // there; rolling back from the plan screen is rolling back blind.
     if (r.cancelled) {
       statusEl.textContent = fmt(I18N.sort_cancelled_text,
           { n: r.moved || 0, all: r.total || 0, f: r.failed || 0 });
@@ -6121,7 +6668,6 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       statusEl.textContent += fmt(I18N.sort_already_copied_note,
           { c: r.skipped_already_copied });
     }
-    undoBtn.style.display = r.cancelled ? "" : "none";
     warnEl.textContent = r.preview_stale ? I18N.sort_preview_stale_warning
         : (r.cancelled ? I18N.sort_undo_hint : "");
     movesLoaded = false;
@@ -6144,11 +6690,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     postJson("/api/sort/cancel", {});
   });
 
-  document.getElementById("sort-apply-btn").addEventListener("click", function () {
+  function startSort() {
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
     var mode = checked ? checked.value : "move";
-    if (!window.confirm(sortConfirmText(dest, mode))) return;
     postJson("/api/sort", { dest: dest || null, mode: mode }).then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("sort-status").textContent =
@@ -6158,6 +6703,40 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       if (sortPollTimer) clearTimeout(sortPollTimer);
       pollSortStatus();
     });
+  }
+
+  document.getElementById("sort-apply-btn").addEventListener("click", function () {
+    // An empty plan never gets here (the button is dead, see updateBusyControlsDisabled)
+    // — a dialog full of zeroes is not an explanation.
+    if (!cityPlanCount) return;
+    var dest = document.getElementById("sort-dest").value.trim();
+    var checked = document.querySelector('input[name="sort-mode"]:checked');
+    var mode = checked ? checked.value : "move";
+    var statusEl = document.getElementById("sort-status");
+    statusEl.textContent = "";
+    fetch("/api/sort/summary?dest=" + encodeURIComponent(dest))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || data.error) {
+          statusEl.textContent = I18N.sort_summary_error + ((data && data.error) || "");
+          return;
+        }
+        openSortDialog(data, dest, mode);
+      })
+      .catch(function (err) {
+        statusEl.textContent = I18N.sort_summary_error + err;
+      });
+  });
+
+  document.getElementById("sort-dialog-cancel").addEventListener("click", closeSortDialog);
+
+  sortDialogEl.addEventListener("click", function (e) {
+    if (e.target === sortDialogEl) closeSortDialog();  // клик по фону — отмена
+  });
+
+  document.getElementById("sort-dialog-ok").addEventListener("click", function () {
+    closeSortDialog();
+    startSort();
   });
 
   document.getElementById("sort-browse-btn").addEventListener("click", function () {
@@ -6365,7 +6944,6 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   }
 
   document.getElementById("undo-btn").addEventListener("click", openUndoDialog);
-  document.getElementById("sort-undo-btn").addEventListener("click", openUndoDialog);
   document.getElementById("undo-dialog-cancel").addEventListener("click", closeUndoDialog);
 
   undoDialogEl.addEventListener("click", function (e) {
@@ -7248,6 +7826,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json(_process_defaults_payload(cfg))
             elif path == "/api/config":
                 self._send_json({"language": i18n.normalize_lang(cfg.raw.get("language"))})
+            elif path == "/api/settings":
+                self._send_json(_settings_payload(cfg))
             elif path == "/api/env":
                 self._send_json(_env_payload())
             elif path == "/api/sort/status":
@@ -7256,6 +7836,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json(undo_state.snapshot())
             elif path == "/api/sort/suggest-dest":
                 self._send_json({"dest": _suggested_sort_dest(cfg, db_path)})
+            elif path == "/api/sort/summary":
+                self._serve_sort_summary(parse_qs(parts.query))
             elif path == "/api/tabs/visibility":
                 self._send_json(_tabs_visibility_payload(db_path))
             elif path == "/api/cache":
@@ -7312,6 +7894,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_cache_clear()
             elif path == "/api/config/language":
                 self._handle_set_language()
+            elif path == "/api/settings":
+                self._handle_save_settings()
             elif path == "/api/browse":
                 self._handle_browse()
             elif path == "/api/source-tree/excludes":
@@ -7716,6 +8300,35 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                     conn.close()
             self._send_json({"ok": True, "language": lang})
 
+        def _handle_save_settings(self) -> None:
+            # F104: the settings column. Modelled on _handle_set_language above — the
+            # running cfg is changed first, then the file, under the same busy_lock.
+            # Changing the model or the frame size in the middle of a classification is
+            # not a setting but an accident, hence the 409: what the run would then be
+            # doing is neither what the file says nor what the user saw.
+            values = _validate_settings_payload(self._read_json_body())
+            if values is None:
+                self._send_json({"error": "invalid settings"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            with busy_lock:
+                if (process_state.snapshot()["running"]
+                        or sort_state.snapshot()["running"]
+                        or undo_state.snapshot()["running"]):
+                    self._send_json({"error": "already running"},
+                                    status=HTTPStatus.CONFLICT)
+                    return
+                _apply_settings(cfg, values)
+                if config_path is not None:
+                    try:
+                        for key, value in values.items():
+                            save_setting(config_path, key, value)  # type: ignore[arg-type]
+                    except OSError as exc:
+                        self._send_json({"error": f"could not save config: {exc}"},
+                                        status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                        return
+            self._send_json({"ok": True, "settings": _settings_payload(cfg)})
+
         def _handle_browse(self) -> None:
             self._send_json({"path": _browse_for_folder()})
 
@@ -7769,6 +8382,17 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
 
         def _serve_sort_status(self) -> None:
             self._send_json(sort_state.snapshot())
+
+        def _serve_sort_summary(self, query: dict[str, list[str]]) -> None:
+            # F104: what the confirmation dialog states before a layout starts. `dest`
+            # comes from the form field, so the "already in the destination" numbers
+            # are about the folder the user is actually about to write into.
+            dest = (query.get("dest") or [""])[0].strip()
+            payload = cache.summary("city", _summary_dest(cfg, dest or None))
+            if payload is None:  # only an unsupported mode, which "city" is not
+                self._send_json({"error": "no plan"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(payload)
 
         def _handle_sort_start(self) -> None:
             parsed = _validate_sort_payload(self._read_json_body())
