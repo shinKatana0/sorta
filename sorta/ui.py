@@ -3313,6 +3313,10 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
 .btn-danger { background: transparent; color: var(--danger); border-color: var(--danger-soft); }
 .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
 .btn-sm { padding: 4px 9px; font-size: 12px; }
+/* Plan-row buttons (delete / keep / folder place) sat in the cell with no layout:
+   labels of different widths drifted vertically and the three buttons read as
+   three different levels. One line, one gap. */
+.plan-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 /* --- шапка / вордмарк --------------------------------------------------- */
 .header-bar { display: flex; align-items: center; justify-content: space-between;
@@ -3511,7 +3515,10 @@ label { cursor: pointer; }
 /* F64: инфо-баннер о CPU-профиле (амбер, читается в обеих темах через --ink) */
 /* F94: the caches — a quiet block at the bottom of the tab. It is housekeeping, not a
    step of the run, so it looks like a card but is not numbered among the steps. */
-.cache-block { margin-top: var(--space-md); border: 1px solid var(--line);
+/* Width matches the three blocks above (.process-controls, capped at 42rem): this
+   one sits OUTSIDE that container and stretched across the full page, which made
+   the tab look assembled from two different layouts. */
+.cache-block { margin-top: var(--space-md); max-width: 42rem; border: 1px solid var(--line);
       border-radius: var(--radius-md); background: var(--surface); padding: var(--space-md);
       display: flex; flex-direction: column; gap: var(--space-sm); }
 .cache-head { display: flex; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; }
@@ -4537,6 +4544,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       }
       tr.appendChild(tdMeta);
       var tdActions = document.createElement("td");
+      tdActions.className = "plan-actions";
       var btnDelete = makeBtn("danger", "trash", I18N.delete, "btn-sm");
       btnDelete.addEventListener("click", function () {
         deletePhoto(item.file_id, function () { tr.remove(); });
@@ -6191,6 +6199,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       tr.appendChild(tdMeta);
 
       var tdActions = document.createElement("td");
+      tdActions.className = "plan-actions";
       var btnFrameDelete = makeBtn("danger", "trash", I18N.delete, "btn-sm");
       btnFrameDelete.addEventListener("click", function () {
         deletePhoto(f.file_id, function () { tr.remove(); });
