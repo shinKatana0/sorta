@@ -38,6 +38,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file (a copy interrupted mid-write) counts as different — the existing file is never
   overwritten. Albums go through the same `_resolve_dst` and inherit the behaviour.
 
+### Changed
+- **The deep classification tier overlaps its CPU work with the GPU** (F101): the tier
+  earns its keep — on the live run of 2026-07-28 it changed **2 592 verdicts of 24 196
+  (10.7%)**, 2 202 of them into `product`, a class the fast tier does not produce at all
+  — but at 1.38 frames/s it took ~95 minutes, which makes it a weekend job rather than
+  something you leave on. Profiling said why, and it was not what a "heavy model" would
+  suggest: the pass is **sequential**, ~0.6 s of CPU (decode + the processor's image
+  preprocessing) then ~0.19 s of GPU per frame, strictly alternating — **0.84 cores busy
+  out of 24** and the card at ~26%. Batching was ruled out by that same measurement: a
+  starved GPU does not want bigger portions. Two levers instead. The processor is now
+  built with `use_fast=True` (transformers had been warning about the slow one all
+  along, and the slow one is pure Python over PIL — a good part of that 0.6 s). And the
+  runtime is split into the two halves it always consisted of, so `naming.vlm_workers`
+  threads prepare frames while this thread runs the model — the shape F87 gave faces
+  (×1.47), with more headroom here because the skew is worse. **No verdict may move
+  because of it**, and that is enforced rather than hoped for: labels come back in the
+  candidate order (a FIFO of futures, not "whatever finishes first"), the model still
+  sees one frame per call with the same prompt and the same greedy decode, writes still
+  happen on one thread, and a frame whose preparation fails still keeps its fast verdict
+  and still steps the progress bar. VRAM does not grow — prepared tensors stay on the
+  CPU and only one frame's inputs are ever on the card — and the frames in flight are
+  capped at two per worker. Each preparation thread gets **its own processor** (a
+  processor is mutable state, the same reason every OCR worker has its own easyocr
+  Reader since F73). `scripts/measure_vlm_speed.py` runs the old and the new path over
+  the same frames on one load of the weights and prints median/p90 ms per frame, GPU
+  load, peak VRAM, cores busy — and a label-by-label comparison that exits non-zero if a
+  single verdict differs.
+
 ### Added
 - **The classification stage says which phase it is in — and how far the deep tier has
   got** (F100): with `--deep` the frame counter ran through the fast pass and then stood

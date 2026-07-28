@@ -5,8 +5,13 @@ counts what the real one would cost. What the tests pin down is the behaviour th
 makes the provider safe to switch on — one call per event, one model per run, a
 template name on every failure, and no document ever reaching a provider (not even
 the cloud one).
+
+F101 adds the split runtime (`SplitVlm`) the deep junk tier pipelines. It is tested
+here as what it has to remain for this module: an ordinary describe().
 """
 import tempfile
+import threading
+import types
 import unittest
 from pathlib import Path
 
@@ -17,11 +22,14 @@ from sorta.db import connect
 from sorta.naming import (
     DEFAULT_VLM_MODEL,
     EventContext,
+    SplitVlm,
     TemplateNamer,
+    ThreadLocalProcessors,
     VlmNamer,
     make_namer,
     name_events,
     naming_settings,
+    processor_is_fast,
     reset_shared_vlm,
     shared_vlm,
 )
@@ -324,6 +332,112 @@ class TestNameEventsWithVlm(NameEventsCase):
         self.assertEqual(self.event_name(first),
                          "2023-05-01..05-03 Тайланд Поход в горы")
         self.assertEqual(self.event_name(second), "2023-06-01 Прага Поход в горы")
+
+
+class TestSplitRuntime(VlmTestCase):
+    """F101: the runtime hands out its halves — and stays a describe() for this module.
+
+    The naming stage makes one call per EVENT (473 on a live collection, minutes), so
+    it has nothing to overlap and must simply not notice the split. The junk stage,
+    which makes one call per frame, is where the halves are used — see
+    tests/test_junk_vlm_pipeline.py.
+    """
+
+    def runtime(self, answer="Поход в горы"):
+        calls = {"prepare": [], "generate": []}
+
+        def prepare(frames, prompt):
+            calls["prepare"].append((len(frames), prompt))
+            return ("inputs", len(frames))
+
+        def generate(prepared, max_new_tokens):
+            calls["generate"].append((prepared, max_new_tokens))
+            return answer
+
+        return SplitVlm(prepare=prepare, generate=generate), calls
+
+    def test_calling_it_is_generate_of_prepare(self):
+        runtime, calls = self.runtime()
+        self.assertEqual(runtime([1, 2], "prompt", 8), "Поход в горы")
+        self.assertEqual(calls["prepare"], [(2, "prompt")])
+        self.assertEqual(calls["generate"], [(("inputs", 2), 8)])
+
+    def test_the_namer_does_not_notice_the_split(self):
+        runtime, calls = self.runtime()
+        namer = self.namer(loader=lambda _model: runtime)
+        name = namer.name(EventContext(**CTX_DATES, city="Пхукет",
+                                       sample_paths=self.make_images(3)))
+        self.assertEqual(name, "2023-05-01..05-03 Пхукет Поход в горы")
+        self.assertEqual(len(calls["generate"]), 1)  # still ONE call per event
+        self.assertEqual(calls["prepare"][0][0], 3)  # ...with all three frames in it
+
+
+class TestThreadLocalProcessors(unittest.TestCase):
+    """F101: a processor is mutable state — one per preparation thread, built once.
+
+    The weights are shared (read-only, 20.5 GB); the processor is not — its tokenizer
+    writes truncation/padding onto itself at every call. This is the F73 Reader rule
+    and the F12.1 session rule applied to the third model in the project.
+    """
+
+    def processors(self, factory=None):
+        return ThreadLocalProcessors("shared", factory)
+
+    def test_without_a_factory_everyone_gets_the_shared_one(self):
+        pool = self.processors()
+        seen = []
+        threads = [threading.Thread(target=lambda: seen.append(pool.get()))
+                   for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(seen, ["shared"] * 3)
+        self.assertEqual(pool.built, 0)
+
+    def test_one_processor_per_thread_reused_across_calls(self):
+        built = []
+        pool = self.processors(lambda: built.append(len(built)) or f"proc_{len(built)}")
+        got: dict[int, set] = {}
+
+        def work():
+            got[threading.get_ident()] = {pool.get() for _ in range(5)}
+
+        threads = [threading.Thread(target=work) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(pool.built, 4)                       # not one per call
+        self.assertTrue(all(len(v) == 1 for v in got.values()))  # stable per thread
+        self.assertEqual(len({next(iter(v)) for v in got.values()}), 4)  # all distinct
+
+    def test_the_calling_thread_gets_its_own_too(self):
+        pool = self.processors(lambda: object())
+        self.assertIs(pool.get(), pool.get())
+        self.assertEqual(pool.built, 1)
+
+
+class TestProcessorIsFast(unittest.TestCase):
+    """F101, lever 1: `use_fast=True` is a request — the report must print the answer."""
+
+    class Qwen2VLImageProcessorFast:
+        pass
+
+    class Qwen2VLImageProcessor:
+        pass
+
+    def test_fast_image_processor_is_recognized(self):
+        self.assertTrue(processor_is_fast(
+            types.SimpleNamespace(image_processor=self.Qwen2VLImageProcessorFast())))
+
+    def test_slow_image_processor_is_recognized(self):
+        self.assertFalse(processor_is_fast(
+            types.SimpleNamespace(image_processor=self.Qwen2VLImageProcessor())))
+
+    def test_processor_without_an_image_processor_answers_for_itself(self):
+        self.assertTrue(processor_is_fast(self.Qwen2VLImageProcessorFast()))
+        self.assertFalse(processor_is_fast(self.Qwen2VLImageProcessor()))
 
 
 class TestSamplePathsExcludesJunk(NameEventsCase):

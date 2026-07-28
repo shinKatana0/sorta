@@ -139,6 +139,25 @@ The one place the bar could genuinely freeze is fixed here too: a VLM error used
 as the model failed on. Observability only: no verdict, threshold or gate is touched,
 and a callback without a `phase` channel (the CLI, quiet mode, tests) behaves exactly
 as it did.
+
+F101: the deep tier earns its keep — on the live run of 2026-07-28 it changed 2 592 of
+24 196 verdicts (10.7%), 2 202 of them into `product`, a class the fast tier does not
+produce at all — but it took ~95 minutes at 1.38 frames/s, which is a weekend job, not
+a default. The profile said the pass is not heavy but SEQUENTIAL: ~0.6 s of CPU
+(decode + the processor's image preprocessing) then ~0.19 s of GPU per frame, strictly
+alternating — 0.84 cores busy out of 24, the card at ~26%. Batching was ruled out by
+that same measurement (a starved GPU does not want bigger portions), so the lever is
+the one F87 used for faces: run the CPU half of several frames while the GPU half of
+the previous one is running. `_vlm_labels` does that — `vlm_workers` threads prepare,
+this thread generates and writes, and the queue is bounded so the frames in flight
+cannot grow into RAM (the prepared tensors stay on the CPU, see naming.qwen_runtime,
+so the VRAM peak is what it was).
+
+Not one verdict may move because of it: labels come back in the CANDIDATE ORDER (a
+FIFO of futures, not "whatever finishes first"), the model still sees one frame per
+call with the same prompt and the same greedy decode, the writes still happen on this
+thread alone, and a frame whose preparation fails still keeps its fast verdict with a
+warning and still steps the progress bar (F100).
 """
 from __future__ import annotations
 
@@ -147,12 +166,14 @@ import os
 import re
 import sqlite3
 import threading
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Queue
-from typing import Callable
+from typing import Any, Callable, Generator, Sequence
 
 import numpy as np
+from PIL import Image
 
 from . import imaging
 from .config import Config
@@ -160,6 +181,7 @@ from .landmarks import Classifier, batched, clip_classifier
 from .naming import (
     DEFAULT_VLM_MODEL,
     VLM_MAX_EDGE,
+    SplitVlm,
     naming_settings,
     shared_vlm,
     utcnow_iso,
@@ -566,6 +588,11 @@ def easyocr_text_frac_detector(
 # a photo than to lose a real photo).
 VlmClassifyFn = Callable[[str], str]
 
+# F101: the label a frame gets without asking the model at all — it did not exist on
+# disk any more, or did not decode. Conservative by the rule above, and unchanged from
+# when these two returns sat inline in classify_media.
+_VLM_FALLBACK_LABEL = "personal_photo"
+
 _VLM_LABEL_TO_VERDICT: dict[str, str] = {
     "personal_photo": "photo",
     "document": "document",
@@ -595,6 +622,91 @@ _VLM_PROMPT = (
 )
 
 
+@dataclass(frozen=True)
+class PreparedFrame:
+    """What the CPU half of the deep tier produces for one frame (F101).
+
+    Either model `inputs` (the frame decoded and preprocessed, waiting for the GPU) or
+    a ready `label` — a frame that vanished or would not decode never reaches the
+    model, exactly as in the serial classifier, and carrying that answer through the
+    pipeline keeps the GPU half free of file-system branches.
+    """
+    inputs: Any = None
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class SplitVlmClassifier:
+    """classify_media(path) as its CPU half and its GPU half (F101).
+
+    It IS a VlmClassifyFn (calling it does both halves in turn, which is the serial
+    classifier), so nothing that only knows the old interface has to change. The deep
+    tier checks for this type to decide whether the pass can be pipelined at all.
+    """
+    prepare: Callable[[str], PreparedFrame]
+    classify_prepared: Callable[[PreparedFrame], str]
+
+    def __call__(self, path: str) -> str:
+        return self.classify_prepared(self.prepare(path))
+
+
+def _vlm_label(answer: str) -> str:
+    """The model's answer -> one of the three labels; anything else -> personal_photo."""
+    lowered = answer.lower()
+    for label in ("personal_photo", "document", "product"):
+        if label in lowered:
+            return label
+    return _VLM_FALLBACK_LABEL
+
+
+def vlm_classifier_from(describe: Callable[[Sequence[Image.Image], str, int], str],
+                        max_edge: int = _DEFAULT_VLM_MAX_EDGE) -> VlmClassifyFn:
+    """The stage's classifier over an ALREADY LOADED runtime — the halves included.
+
+    Everything that belongs to this stage lives here: the prompt, the decode and the
+    parsing of the answer. Decode — via imaging.decode_rgb_preview (Unicode/HEIC-safe,
+    the Phase A/F38 lesson; F67: through the shared preview cache), downscale to
+    max_edge before feeding the model.
+
+    F101: when the runtime offers its halves (naming.SplitVlm) so does the classifier —
+    `prepare` is the whole CPU part of a frame (decode + the processor), which is what
+    the pipeline in _vlm_labels moves off this thread, and `classify_prepared` is the
+    GPU part plus the label parsing. A runtime without the halves gets the plain
+    serial classifier, unchanged.
+    """
+    split = describe if isinstance(describe, SplitVlm) else None
+
+    def decode(path: str) -> Image.Image | None:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None  # unreadable — the caller answers conservatively
+        return imaging.decode_rgb_preview(
+            path, st.st_mtime, st.st_size, max_edge=max_edge)
+
+    if split is None:
+        def classify_media(path: str) -> str:
+            img = decode(path)
+            if img is None:
+                return _VLM_FALLBACK_LABEL
+            return _vlm_label(describe([img], _VLM_PROMPT, _VLM_MAX_NEW_TOKENS))
+
+        return classify_media
+
+    def prepare(path: str) -> PreparedFrame:
+        img = decode(path)
+        if img is None:
+            return PreparedFrame(label=_VLM_FALLBACK_LABEL)
+        return PreparedFrame(inputs=split.prepare([img], _VLM_PROMPT))
+
+    def classify_prepared(prepared: PreparedFrame) -> str:
+        if prepared.label is not None:
+            return prepared.label
+        return _vlm_label(split.generate(prepared.inputs, _VLM_MAX_NEW_TOKENS))
+
+    return SplitVlmClassifier(prepare=prepare, classify_prepared=classify_prepared)
+
+
 def qwen_vlm_classifier(
     model_name: str = _DEFAULT_VLM_MODEL,
 ) -> VlmClassifyFn:  # pragma: no cover — ML, smoke test
@@ -602,34 +714,106 @@ def qwen_vlm_classifier(
 
     F95: the weights are no longer loaded here — naming.shared_vlm hands out ONE
     runtime per model name for the whole process, because the naming stage now runs
-    the same model and a second copy does not fit in VRAM (peak 20.5 GB). What stays
-    here is what belongs to this stage: the prompt, the decode and the parsing of the
-    answer. The load is still lazy (transformers is imported inside the loader) and
-    still fails only when the classifier is actually built — which the caller in
-    classify() wraps in try/except for a graceful fallback to the fast tier.
-
-    Decode — via imaging.decode_rgb_preview (Unicode/HEIC-safe, the Phase A/F38
-    lesson), downscale to _DEFAULT_VLM_MAX_EDGE before feeding the model.
+    the same model and a second copy does not fit in VRAM (peak 20.5 GB). The load is
+    still lazy (transformers is imported inside the loader) and still fails only when
+    the classifier is actually built — which the caller in classify() wraps in
+    try/except for a graceful fallback to the fast tier.
     """
-    describe = shared_vlm(model_name)
+    return vlm_classifier_from(shared_vlm(model_name))
 
-    def classify_media(path: str) -> str:
-        # F67: via the shared preview cache (see easyocr_text_frac_detector).
-        try:
-            st = os.stat(path)
-        except OSError:
-            return "personal_photo"  # unreadable — conservative, as on a decode error
-        img = imaging.decode_rgb_preview(
-            path, st.st_mtime, st.st_size, max_edge=_DEFAULT_VLM_MAX_EDGE)
-        if img is None:
-            return "personal_photo"  # could not decode — conservative
-        answer = describe([img], _VLM_PROMPT, _VLM_MAX_NEW_TOKENS).lower()
-        for label in ("personal_photo", "document", "product"):
-            if label in answer:
-                return label
-        return "personal_photo"
 
-    return classify_media
+# F101: threads preparing frames for the deep tier — `naming.vlm_workers`, read from
+# cfg.raw the way resolve_ocr_workers reads naming.ocr_workers. The cap is deliberately
+# modest and NOT "all your cores": the machine that runs this may well have two, the
+# GPU half is a single consumer that only needs to be kept fed, and every worker in
+# flight holds a preprocessed frame in RAM (see _vlm_labels_pipelined on the window).
+_DEFAULT_VLM_WORKERS_CAP = 4
+
+
+def resolve_vlm_workers(raw: dict | None) -> int:
+    """How many threads prepare frames for the VLM — `naming.vlm_workers` in config.yaml.
+
+    Default min(4, cpu_count). 1 means the serial pass, which is what the stage did
+    before F101 and what a runtime without split halves does anyway. Absent / 0 /
+    negative / garbage -> the default; the result is always >= 1.
+    """
+    default = min(_DEFAULT_VLM_WORKERS_CAP, os.cpu_count() or 1)
+    workers = ((raw or {}).get("naming") or {}).get("vlm_workers")
+    if workers is None:
+        return default
+    try:
+        n = int(workers)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
+def _vlm_labels(vlm_fn: VlmClassifyFn, paths: list[str],
+                workers: int) -> Generator[str | BaseException, None, None]:
+    """Labels for `paths` IN INPUT ORDER, pipelined when that is possible (F101).
+
+    Yields one item per path, in the order given: the label, or the exception the
+    classifier raised on that frame (the caller logs it and keeps the fast verdict —
+    the same contract the try/except around vlm_fn(path) has always had, only the
+    raising moved).
+
+    The pipeline needs both halves from the runtime (SplitVlmClassifier) and more than
+    one worker; anything else — an injected test classifier, a runtime without halves,
+    vlm_workers=1 — takes the serial path, which is the pre-F101 loop verbatim.
+    """
+    split = vlm_fn if isinstance(vlm_fn, SplitVlmClassifier) else None
+    if split is None or workers < 2:
+        for path in paths:
+            try:
+                yield vlm_fn(path)
+            except Exception as exc:  # noqa: BLE001 — one bad frame is the caller's business
+                yield exc
+    else:
+        yield from _vlm_labels_pipelined(split, paths, workers)
+
+
+def _vlm_labels_pipelined(split: SplitVlmClassifier, paths: list[str],
+                          workers: int) -> Generator[str | BaseException, None, None]:
+    """`workers` threads preparing frames while this thread runs the model on them.
+
+    A FIFO of futures, not "first finished wins": the frame whose future is at the head
+    is the next one yielded, so the output order is the input order no matter how the
+    preparations interleave. The GPU half runs HERE, on the consumer's thread — one
+    stream of generate() calls, as before; several would only queue up inside the
+    driver and cost VRAM.
+
+    The window (2 per worker) is the RAM bound the brief asks for: at most that many
+    preprocessed frames exist at once, and they are CPU tensors (naming.qwen_runtime
+    keeps them off the card), so the VRAM peak is one frame's inputs — what it was when
+    the pass was serial.
+    """
+    from collections import deque
+    from concurrent.futures import Future, ThreadPoolExecutor
+
+    window = workers * 2
+    remaining = iter(paths)
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="sorta-vlm") as pool:
+        pending: deque[Future[PreparedFrame]] = deque()
+
+        def fill() -> None:
+            """Top the preparation queue up (this thread only — it owns the iterator)."""
+            while len(pending) < window:
+                path = next(remaining, None)
+                if path is None:
+                    return
+                pending.append(pool.submit(split.prepare, path))
+
+        fill()
+        while pending:
+            future = pending.popleft()
+            result: str | BaseException
+            try:
+                result = split.classify_prepared(future.result())
+            except Exception as exc:  # noqa: BLE001 — one bad frame must not end the pass
+                result = exc
+            fill()  # refill BEFORE yielding: the workers keep going while the caller writes
+            yield result
 
 
 def heuristic_verdict(
@@ -881,6 +1065,12 @@ def classify(
     enough VRAM), classify() catches the exception, logs it, and quietly continues
     on the fast tier (CLIP) — without crashing.
 
+    F101: the deep pass is pipelined when the classifier exposes its halves (the real
+    one does — SplitVlmClassifier) and `naming.vlm_workers` is above 1: that many
+    threads decode and preprocess frames while this thread runs the model and writes.
+    An injected `vlm_classifier` (tests) has no halves and takes the serial path, which
+    is why every verdict test below is unaffected by the pipeline.
+
     progress (F100): the usual `(done, total)` callback; if it also carries a
     `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
     which of its phases it is in — CLASSIFY_PHASE_*. A plain function without that
@@ -1064,8 +1254,8 @@ def classify(
                       ocr.detectors_built, ocr_workers)
 
     # #14/V1: the deep tier — the VLM only on the selected candidates (not all frames).
-    # Each call in try/except: a VLM runtime error on one frame does NOT crash the
-    # run (closes #31) — the file keeps its fast verdict.
+    # A VLM runtime error on one frame does NOT crash the run (closes #31) — the file
+    # keeps its fast verdict.
     if vlm_fn is not None and vlm_candidates:
         stats.vlm_candidates = len(vlm_candidates)
         # F100: the phase whose numbers used to arrive without a word of explanation.
@@ -1075,13 +1265,21 @@ def classify(
         # restarted and "2 201 of 7 896" is the difference between "probably hung" and
         # "about an hour left".
         report.start(CLASSIFY_PHASE_VLM, len(vlm_candidates))
-        with conn:
-            for j, (fid, path, fast_verdict) in enumerate(vlm_candidates):
-                try:
-                    label = vlm_fn(path)
-                except Exception as exc:  # noqa: BLE001 — deep is optional, do not crash the run
+        # F101: the labels arrive from _vlm_labels — in the candidate order, whether the
+        # pass was pipelined or serial. A frame the model failed on comes back as its
+        # exception instead of a label; everything below (the order of the writes, the
+        # mapping to a verdict, the stats, the progress step) is what it was.
+        # closing(): the preparation threads live exactly as long as the pass, the way
+        # the OCR pool does — not until the garbage collector gets round to the
+        # generator holding them.
+        labels = _vlm_labels(vlm_fn, [path for _fid, path, _v in vlm_candidates],
+                             resolve_vlm_workers(cfg.raw))
+        with closing(labels), conn:
+            for j, ((fid, _path, fast_verdict), label) in enumerate(
+                    zip(vlm_candidates, labels)):
+                if isinstance(label, BaseException):  # deep is optional, do not crash the run
                     _log.warning("junk: VLM-ошибка на file_id=%s (%s) — оставляю fast-вердикт",
-                                 fid, exc)
+                                 fid, label)
                 else:
                     verdict = _VLM_LABEL_TO_VERDICT.get(label, fast_verdict)
                     # source='vlm' — the VLM is what decided this verdict. The
@@ -1093,8 +1291,8 @@ def classify(
                         stats.by_verdict[fast_verdict] = stats.by_verdict.get(fast_verdict, 1) - 1
                         stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
                         stats.vlm_applied += 1
-                # F100: outside the try/else — a frame the model failed on is a frame
-                # the pass is done with (an error on the last candidate would otherwise
+                # F100: outside the `else` — a frame the model failed on is a frame the
+                # pass is done with (an error on the last candidate would otherwise
                 # leave the bar one short of its total for good).
                 report.step(j + 1)
     return stats
