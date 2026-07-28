@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from sorta.config import Config, _naming_from
+from sorta.config import Config, VlmConfig, _naming_from
 from sorta.db import connect
 from sorta.junk import (
     _VLM_PROMPT,
@@ -122,7 +122,10 @@ class Candidates:
             sources=[Path(self.tmp.name)],
             database=Path(self.tmp.name) / "test.db",
             naming=_naming_from({"clip": {"batch_size": batch_size}}),
-            raw={"naming": {"vlm_workers": vlm_workers}},
+            # F102: the preparation pool is `vlm.workers` now — the old
+            # naming.vlm_workers address still resolves to it (see TestResolveVlmWorkers
+            # below and tests/test_config_vlm.py), but the stage reads the typed section.
+            vlm=VlmConfig(enabled=True, workers=vlm_workers),
         )
         object.__setattr__(self.cfg.naming, "vlm_enabled", True)
         self.conn = connect(self.cfg.database)
@@ -169,7 +172,13 @@ class Candidates:
 
 
 class TestResolveVlmWorkers(unittest.TestCase):
-    """naming.vlm_workers comes straight out of cfg.raw, like naming.ocr_workers."""
+    """The legacy `naming.vlm_workers` address, seen from the stage that uses the pool.
+
+    F102 moved the knob to `vlm.workers` and the resolver to config.py (where the new
+    address and the garbage handling are covered in full — tests/test_config_vlm.py).
+    What is pinned here is the promise to a config.yaml written before that: the deep
+    tier still gets its preparation threads from the key it used to be told them by.
+    """
 
     def test_value_from_raw_wins(self):
         self.assertEqual(resolve_vlm_workers({"naming": {"vlm_workers": 6}}), 6)

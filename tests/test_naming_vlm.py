@@ -17,7 +17,9 @@ from pathlib import Path
 
 from PIL import Image
 
-from sorta.config import Config, _naming_from
+from sorta import imaging
+from sorta import naming as naming_module
+from sorta.config import DEFAULT_VLM_MAX_EDGE, Config, VlmConfig, _naming_from
 from sorta.db import connect
 from sorta.naming import (
     DEFAULT_VLM_MODEL,
@@ -66,9 +68,11 @@ class CountingLoader:
         return self.model
 
 
-def cfg_with(naming: dict | None = None, tmp: str = ".") -> Config:
+def cfg_with(naming: dict | None = None, tmp: str = ".",
+             vlm: VlmConfig | None = None) -> Config:
     return Config(sources=[Path(tmp)], database=Path(tmp) / "test.db",
-                  naming=_naming_from(naming or {}))
+                  naming=_naming_from(naming or {}),
+                  vlm=vlm if vlm is not None else VlmConfig())
 
 
 class VlmTestCase(unittest.TestCase):
@@ -332,6 +336,68 @@ class TestNameEventsWithVlm(NameEventsCase):
         self.assertEqual(self.event_name(first),
                          "2023-05-01..05-03 Тайланд Поход в горы")
         self.assertEqual(self.event_name(second), "2023-06-01 Прага Поход в горы")
+
+
+class TestVlmSection(VlmTestCase):
+    """F102: the model and its input size come from the `vlm:` section, not from here.
+
+    The namer and the deep junk tier run the SAME weights, so the size a frame is
+    decoded to has to be the same number in both places — and the namer is the half of
+    that pair nobody would think to check, because it makes one call per event and its
+    cost never showed up in a profile.
+    """
+
+    def decodes_at(self, namer, paths):
+        """The max_edge every frame of one naming call was decoded with."""
+        seen: list[int] = []
+        original = imaging.decode_rgb_preview
+
+        def recording(path, mtime, size, max_edge):
+            seen.append(max_edge)
+            return original(path, mtime, size, max_edge=max_edge)
+
+        imaging.decode_rgb_preview = recording
+        try:
+            namer.name(EventContext(**CTX_DATES, city="Пхукет", sample_paths=paths))
+        finally:
+            imaging.decode_rgb_preview = original
+        return seen
+
+    def test_frames_are_decoded_at_the_configured_size(self):
+        namer = VlmNamer(naming_settings(cfg_with({"provider": "vlm"})),
+                         loader=CountingLoader(), vlm=VlmConfig(max_edge=448))
+        self.assertEqual(self.decodes_at(namer, self.make_images(2)), [448, 448])
+
+    def test_without_a_section_the_896_that_shipped_is_used(self):
+        namer = self.namer(loader=CountingLoader())
+        self.assertEqual(self.decodes_at(namer, self.make_images(1)),
+                         [DEFAULT_VLM_MAX_EDGE])
+
+    def test_the_model_comes_from_the_section_when_there_is_one(self):
+        loader = CountingLoader()
+        namer = VlmNamer(naming_settings(cfg_with({"provider": "vlm"})), loader=loader,
+                         vlm=VlmConfig(model="Qwen/from-section"))
+        namer.name(EventContext(**CTX_DATES, city=None,
+                                sample_paths=self.make_images(1)))
+        self.assertEqual(loader.model_names, ["Qwen/from-section"])
+
+    def test_the_stage_hands_the_section_to_the_provider(self):
+        """make_namer is where name_events wires cfg.vlm into the provider."""
+        cfg = cfg_with({"provider": "vlm"}, tmp=self.tmp.name,
+                       vlm=VlmConfig(model="Qwen/wired", max_edge=672))
+        asked: list[str] = []
+        original = naming_module.shared_vlm
+
+        def fake_shared(model_name, loader=None):
+            asked.append(model_name)
+            return FakeVlm()
+
+        naming_module.shared_vlm = fake_shared
+        self.addCleanup(setattr, naming_module, "shared_vlm", original)
+        namer = make_namer(naming_settings(cfg), cfg.vlm)
+        self.assertIsInstance(namer, VlmNamer)
+        self.assertEqual(self.decodes_at(namer, self.make_images(1)), [672])
+        self.assertEqual(asked, ["Qwen/wired"])
 
 
 class TestSplitRuntime(VlmTestCase):

@@ -193,21 +193,11 @@ naming:
   # documents the gate misses TODAY (~1% of clear-scene frames), so the pressure on
   # this number is downward, not upward. Re-measure before touching it.
   text_frac_downscale_px: 1280   # downscale the frame to this before OCR detection (speed)
-  # F37-B: deep junk-classification tier — a local VLM (memory/document/product)
-  # instead of the fast CLIP. opt-in: needs the [vlm] extra (uv sync --extra vlm);
-  # default false, and with the extra missing it gracefully falls back to CLIP.
-  # The same is enabled by the `--deep` flag for one run and the "Deep analysis (VLM)"
-  # checkbox in the UI.
-  vlm_enabled: false
-  classify_vlm_model: "Qwen/Qwen2.5-VL-3B-Instruct"  # junk VLM classifier (deep tier)
-  # F101: threads that prepare frames (decode + image preprocessing) for the deep
-  # tier while the GPU classifies the previous one. The pass was not heavy but
-  # sequential — ~0.6 s of CPU then ~0.19 s of GPU per frame, one core busy out of 24
-  # and the card idle three quarters of the time. Verdicts do not depend on this
-  # number: the labels are applied in the candidate order whatever it is set to.
-  # Default min(4, cores) — modest on purpose (a two-core machine is a real machine),
-  # and the frames in flight (~2 per worker) are held in RAM, not in VRAM.
-  # vlm_workers: 4
+  # F102: the deep tier's switch, its model and its preparation threads moved to the
+  # `vlm:` section just below this one — they describe the shared model runtime, not the
+  # naming stage. The old addresses (naming.vlm_enabled, naming.classify_vlm_model,
+  # naming.vlm_workers) are STILL READ, so an existing config.yaml keeps working: the new
+  # key wins when both are set, and using only an old one logs one warning per run.
   product_candidate_min: 0.4  # product-CLIP above this → the frame goes to the VLM tier (candidate gate)
   # F65: the bundled list now ships inside the package (sorta/data/landmarks.yaml).
   # Leave this out to use it; set a path only to supply your OWN list — a path that
@@ -226,6 +216,42 @@ naming:
     model: claude-opus-4-8
     api_key_env: ANTHROPIC_API_KEY
     timeout: 60
+
+# F102: the local VLM (Qwen2.5-VL) as a runtime. Two stages use it — the deep junk
+# classification tier (memory/document/product) and the `vlm` event-name provider above
+# — and both run the SAME weights, one copy per process (the peak is 20.5 GB of VRAM, a
+# second instance does not fit). So everything that describes the model itself is here,
+# while what belongs to a stage stays with the stage (naming.provider chooses who names
+# events, naming.product_candidate_min decides which frame is worth a call at all).
+#
+# Migrating: the previous keys naming.vlm_enabled / naming.classify_vlm_model /
+# naming.vlm_workers are still read, so nothing has to be edited today. A key given in
+# both places is taken from `vlm:`; a key given only in the old place logs one warning
+# per run.
+vlm:
+  # The deep tier is opt-in: it needs the [vlm] extra (uv sync --extra vlm), and with
+  # the extra missing it falls back gracefully to the fast CLIP tier. The same is
+  # switched on for a single run by `--deep` and by the "Deep analysis (VLM)" checkbox
+  # in the web app. It is worth switching on when the hardware allows: on a live run it
+  # changed 10.7% of the verdicts, mostly into `product`, a class CLIP never produces.
+  enabled: false
+  model: "Qwen/Qwen2.5-VL-3B-Instruct"
+  # F101: threads that prepare frames (decode + image preprocessing) for the deep tier
+  # while the GPU classifies the previous one. The pass was not heavy but sequential —
+  # ~0.6 s of CPU then ~0.19 s of GPU per frame, one core busy out of 24 and the card
+  # idle three quarters of the time. Verdicts do not depend on this number: the labels
+  # are applied in the candidate order whatever it is set to. Default min(4, cores) —
+  # modest on purpose (a two-core machine is a real machine), and the frames in flight
+  # (~2 per worker) are held in RAM, not in VRAM.
+  # workers: 4
+  # F102: the longer side the frame is scaled to before the model sees it — the main
+  # lever on what the deep tier costs, since after F101 the remaining time is the GPU
+  # half and the GPU half is decided by the number of image tokens. Lowering it is NOT
+  # free: documents are the class that depends on small text, and they are exactly what
+  # this tier exists to find. Measure before you touch it —
+  # `python scripts/measure_vlm_resolution.py` prices 896/672/448 on your own frames and
+  # prints how many verdicts moved and in which direction.
+  max_edge: 896
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

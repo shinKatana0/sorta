@@ -4,12 +4,15 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from . import i18n
+
+_log = logging.getLogger(__name__)
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
@@ -150,6 +153,155 @@ class FacesConfig:
     max_distance: float = 0.5    # cosine similarity threshold (Immich default)
 
 
+# F102: the local VLM used to be configured out of the `naming:` section — the toggle
+# (naming.vlm_enabled), the model (naming.classify_vlm_model) and the preparation
+# threads (naming.vlm_workers) all sat under "naming" because there was no other
+# address, even though the first of them switches JUNK CLASSIFICATION on. The one knob
+# that decides what the pass costs — the input resolution — was not in the config at all
+# but a constant in the code, against the project rule that thresholds live in
+# config.yaml. `vlm:` is that address. The dividing line: what describes the shared
+# model RUNTIME lives here, what belongs to a consumer stays with the consumer
+# (naming.provider chooses who names events; naming.product_candidate_min is the junk
+# gate deciding which frame is worth a VLM call at all — a property of the gate, not of
+# the model).
+DEFAULT_VLM_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
+# The VLM input is not for fine details like OCR, a large frame is not needed; it saves
+# VRAM and generation time. Since F102 this is only the DEFAULT — the value in use comes
+# from vlm.max_edge, and scripts/measure_vlm_resolution.py prices what lowering it buys
+# and what it costs in verdicts.
+DEFAULT_VLM_MAX_EDGE = 896
+# The workers cap is deliberately modest and NOT "all your cores": the machine that runs
+# this may well have two, the GPU half is a single consumer that only needs to be kept
+# fed, and every worker in flight holds a preprocessed frame in RAM (F101).
+_VLM_WORKERS_CAP = 4
+
+
+def default_vlm_workers() -> int:
+    """Preparation threads when the config does not say: min(4, cores), always >= 1."""
+    return min(_VLM_WORKERS_CAP, os.cpu_count() or 1)
+
+
+@dataclass(frozen=True)
+class VlmConfig:
+    """`vlm:` — the shared runtime of the local VLM (F102).
+
+    Both consumers — the deep junk tier and the `vlm` event namer — run the SAME
+    weights, one copy per process (the peak is 20.5 GB of VRAM, a second instance does
+    not fit), so the model, its input size and the preparation pool describe that
+    runtime rather than either stage.
+
+    `enabled` is mirrored onto `NamingConfig.vlm_enabled` by load_config, and that is
+    deliberate: `--deep` and the "Deep analysis (VLM)" checkbox force the tier for ONE
+    run by replacing `cfg.naming.vlm_enabled` on their own copy of the config, so that
+    field stays the effective per-run toggle — this section is where the config FILE
+    states the default it starts from.
+    """
+    enabled: bool = False
+    model: str = DEFAULT_VLM_MODEL
+    workers: int = field(default_factory=default_vlm_workers)
+    max_edge: int = DEFAULT_VLM_MAX_EDGE
+
+
+# F102: the pre-`vlm:` address of each knob. A live config.yaml holds
+# `naming.vlm_enabled: false`, and silently ignoring that would switch a 20 GB tier ON
+# on somebody else's machine — so the old keys keep working. The new key wins when it is
+# given; otherwise the old one is used and says so ONCE per run (this is read once at
+# startup anyway, and a warning per frame is how a log becomes unreadable).
+#
+#     vlm.enabled  <- naming.vlm_enabled
+#     vlm.model    <- naming.classify_vlm_model
+#     vlm.workers  <- naming.vlm_workers
+#
+# vlm.max_edge has no old address: it was a constant in the code.
+#
+# Process-wide on purpose — "once per run", not once per load_config call (the web app
+# reloads the config on every request). Tests clear it.
+_ALIAS_WARNED: set[str] = set()
+
+
+def _mapping(value: Any) -> dict:
+    """A config section as a dict — `vlm:` left empty, or filled with junk, is not a crash."""
+    return value if isinstance(value, dict) else {}
+
+
+def _vlm_value(new: dict, old: dict, new_key: str, old_key: str) -> Any:
+    """The raw value of one knob: `vlm.<new_key>`, else the legacy `naming.<old_key>`."""
+    if new_key in new:
+        return new[new_key]
+    if old_key not in old:
+        return None
+    if old_key not in _ALIAS_WARNED:
+        _ALIAS_WARNED.add(old_key)
+        _log.warning(
+            "config: ключ naming.%s устарел — переименуйте его в vlm.%s "
+            "(пока читается по-старому)", old_key, new_key)
+    return old[old_key]
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    """YAML truth for a toggle; anything unrecognizable -> `default`, never a crash.
+
+    Strings are parsed instead of being handed to bool(): a quoted "false" is truthy in
+    Python, and a config that says false must never switch a heavy tier on.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "on", "1"):
+            return True
+        if lowered in ("false", "no", "off", "0"):
+            return False
+    return default
+
+
+def _as_positive_int(value: Any, default: int) -> int:
+    """A positive whole number; absent / 0 / negative / garbage -> `default`.
+
+    A bad number in a config file is a typo, not a reason to refuse to start — and a
+    silent 0 threads or a 0-pixel frame would be worse than the default either way.
+    """
+    if isinstance(value, bool):  # bool is an int in Python; `max_edge: true` is garbage
+        return default
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
+def resolve_vlm_workers(raw: dict | None) -> int:
+    """Threads preparing frames for the VLM — `vlm.workers` (was `naming.vlm_workers`).
+
+    Default min(4, cpu_count). 1 means the serial pass, which is what the deep tier did
+    before F101 and what a runtime without split halves does anyway. Absent / 0 /
+    negative / garbage -> the default; the result is always >= 1.
+
+    Takes the raw YAML rather than a Config so the measurement scripts can ask the same
+    question of a config they only parsed.
+    """
+    data = _mapping(raw)
+    value = _vlm_value(_mapping(data.get("vlm")), _mapping(data.get("naming")),
+                       "workers", "vlm_workers")
+    return _as_positive_int(value, default_vlm_workers())
+
+
+def _vlm_from(data: dict) -> VlmConfig:
+    """The `vlm:` section of the whole YAML, with the legacy `naming.*` keys honoured."""
+    new = _mapping(data.get("vlm"))
+    old = _mapping(data.get("naming"))
+    d = VlmConfig()
+    model = _vlm_value(new, old, "model", "classify_vlm_model")
+    return VlmConfig(
+        enabled=_as_bool(_vlm_value(new, old, "enabled", "vlm_enabled"), d.enabled),
+        model=model.strip() if isinstance(model, str) and model.strip() else d.model,
+        workers=resolve_vlm_workers(data),
+        max_edge=_as_positive_int(new.get("max_edge"), d.max_edge),
+    )
+
+
 @dataclass(frozen=True)
 class NamingConfig:
     """Phase 5 (F6): places without GPS, event names, junk. A flat view of the
@@ -180,9 +332,13 @@ class NamingConfig:
     #                                        (clear scenes doc_score≈0 spend no OCR — perf)
     text_frac_downscale_px: int = 1280   # F38: downscale the frame to this before easyocr.detect (×3–10 speed)
     vlm_enabled: bool = False            # F37-B: deep tier — VLM 3-way (memory/document/product).
-    #                                      opt-in (needs the [vlm] extra); default OFF, graceful fallback to CLIP
-    classify_vlm_model: str = "Qwen/Qwen2.5-VL-3B-Instruct"  # F37-B: classifier VLM (NOT vlm_model —
-    #                                      that is for event-naming/llava; a separate field to avoid a collision)
+    #                                      opt-in (needs the [vlm] extra); default OFF, graceful fallback to CLIP.
+    #                                      F102: the config key moved to `vlm.enabled` and load_config keeps this
+    #                                      field equal to it — but the field itself stays, because --deep and the
+    #                                      UI checkbox force the tier for one run through it (see _legacy_naming_view)
+    classify_vlm_model: str = DEFAULT_VLM_MODEL  # F37-B: classifier VLM (NOT vlm_model — that is for
+    #                                      event-naming/llava; a separate field to avoid a collision).
+    #                                      F102: superseded by `vlm.model`, kept in sync by load_config
     product_candidate_min: float = 0.4   # #14/V1: product-CLIP above this → the file goes to the VLM (candidate gate, not final)
     landmarks_file: str = "data/landmarks.yaml"
     clip_model: str = "ViT-L-14-quickgelu"  # the quickgelu variant for the openai weights (without it — a mismatch)
@@ -234,6 +390,19 @@ def _naming_from(raw: dict) -> NamingConfig:
     )
 
 
+def _legacy_naming_view(naming: NamingConfig, vlm: VlmConfig) -> NamingConfig:
+    """`naming.vlm_enabled`/`classify_vlm_model` held equal to the resolved `vlm:` (F102).
+
+    The two fields stay on NamingConfig instead of being deleted, and not only for the
+    sake of old configs: `--deep` (cli) and the "Deep analysis (VLM)" checkbox force the
+    tier for one run by replacing `cfg.naming.vlm_enabled` on their own copy of the
+    config, so that field is the effective toggle the junk stage reads. This makes it
+    agree with the section the value now comes from — whichever of the two addresses the
+    file happened to use.
+    """
+    return replace(naming, vlm_enabled=vlm.enabled, classify_vlm_model=vlm.model)
+
+
 @dataclass
 class Config:
     sources: list[Path] = field(default_factory=list)
@@ -246,6 +415,7 @@ class Config:
     events: EventsConfig = field(default_factory=EventsConfig)
     sort: SortConfig = field(default_factory=SortConfig)
     naming: NamingConfig = field(default_factory=NamingConfig)
+    vlm: VlmConfig = field(default_factory=VlmConfig)  # F102: the shared VLM runtime
     language: str = "en"  # folder/name language (ru|en|ja), normalized in load_config (F25/F27)
     log_level: str = "WARNING"  # DEBUG|INFO|WARNING|ERROR; validated in configure_logging (F52)
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
@@ -263,6 +433,7 @@ def _known(cls, raw: dict) -> dict:
 def load_config(path: str | Path = "config.yaml") -> Config:
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     idx = data.get("index", {})
+    vlm = _vlm_from(data)
     cfg = Config(
         sources=[Path(p) for p in data.get("sources", [])],
         database=Path(data.get("database", "sorta.db")),
@@ -279,7 +450,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         faces=FacesConfig(**_known(FacesConfig, data.get("faces") or {})),
         events=EventsConfig(**_known(EventsConfig, data.get("events") or {})),
         sort=SortConfig(**_known(SortConfig, data.get("sort") or {})),
-        naming=_naming_from(data.get("naming") or {}),
+        naming=_legacy_naming_view(_naming_from(data.get("naming") or {}), vlm),
+        vlm=vlm,
         language=i18n.normalize_lang(data.get("language")),
         log_level=str(data.get("log_level", "WARNING")),
         raw=data,
