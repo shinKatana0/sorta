@@ -147,6 +147,14 @@ faces:
 # Event-name provider: template (offline, default) | local_vlm (ollama)
 # | claude (Anthropic API, only when explicitly chosen — outbound traffic).
 naming:
+  # template | vlm | local_vlm | claude — what gives an event its name.
+  # F95: `vlm` adds WHAT the event was ("2025-04-24..05-06 Тайланд пляжный отдых") to
+  # the dates and the place, which the template already knows exactly, and asks the
+  # model for nothing else. It runs the local Qwen2.5-VL of `classify_vlm_model` —
+  # the same weights the deep junk tier loads, one copy per run — so it needs the
+  # [vlm] extra (uv sync --extra vlm) and a GPU worth the name. Opt-in on purpose:
+  # without the extra, or if the model does not load, names fall back to the template.
+  # One call per event (3-5 frames at once), so a full collection costs minutes.
   provider: template
   # CLIP zero-shot (landmarks + junk, shared model). Nested under naming.
   clip:

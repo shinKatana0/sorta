@@ -154,7 +154,10 @@ class FacesConfig:
 class NamingConfig:
     """Phase 5 (F6): places without GPS, event names, junk. A flat view of the
     nested naming section of config.yaml (clip.*/local_vlm.*/claude.* — see load_config)."""
-    provider: str = "template"           # template | local_vlm | claude
+    provider: str = "template"           # template | vlm | local_vlm | claude
+    #                                      F95: `vlm` describes the event with the local
+    #                                      Qwen2.5-VL of classify_vlm_model (the junk model,
+    #                                      one copy per run); opt-in, template stays the default
     landmark_threshold: float = 0.85     # CLIP threshold for places — conservative: 0.35
     #                                      gave false matches (cafe→Istanbul), and a wrong
     #                                      city is worse than unknown. Proper fix — a geo model (backlog #11)
