@@ -375,7 +375,10 @@ class TestProcessHtml(ProcessTestBase):
         self.assertIn('id="process-cancel-btn"', html)
         self.assertIn('id="process-progress"', html)
         self.assertIn("/api/process", html)
-        # "Process" — the first tab button and the default-active one (the landing).
+        # "Process" — the default-active tab of the MARKUP, and it stays ahead of the
+        # working tabs. F108 put "Overview" in front of it in the strip and switches to
+        # it from JS once the index turns out to be non-empty; on an empty index the
+        # landing is still this tab, because it is the only thing there is to do.
         process_pos = html.index('id="tab-btn-process"')
         city_pos = html.index('id="tab-btn-city"')
         self.assertLess(process_pos, city_pos)
