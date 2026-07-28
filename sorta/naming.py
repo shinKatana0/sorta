@@ -186,12 +186,32 @@ def _encode_images(paths: tuple[str, ...], max_n: int) -> list[tuple[str, str]]:
 # a caller with one call per event (VlmNamer) keeps using `describe` and notices
 # nothing. The split changes no tensor and no token: SplitVlm.__call__ is literally
 # generate(prepare(...)), which is the body the single function had.
+#
+# F105 adds the two levers that are the SAME MATHEMATICS done differently — the
+# attention kernel (`sdpa` instead of `eager`, another kernel of the same attention) and
+# the batch (the same frames counted together). Both are parameters here and both are
+# off by default: the product path is the one that shipped until the measurement
+# (`scripts/measure_vlm_speed.py`) says otherwise. Because neither changes what the
+# model is asked, the bar is that the verdicts match EXACTLY — a moved label is a bug,
+# not the price of speed.
 
 VlmDescribeFn = Callable[[Sequence[Image.Image], str, int], str]
 # The CPU half: frames + prompt -> whatever the GPU half needs (for Qwen — the
 # processor's BatchFeature, deliberately left on the CPU, see qwen_runtime).
 VlmPrepareFn = Callable[[Sequence[Image.Image], str], Any]
 VlmGenerateFn = Callable[[Any, int], str]
+# F105, the same two halves for SEVERAL frame groups at once: one prepared batch in,
+# one answer per group out, IN THE ORDER THE GROUPS CAME IN.
+VlmPrepareBatchFn = Callable[[Sequence[Sequence[Image.Image]], str], Any]
+VlmGenerateBatchFn = Callable[[Any, int], list[str]]
+
+# What transformers takes as `attn_implementation`: one name for the whole model, a
+# name per sub-config, or None — "whatever transformers picks", which is what shipped.
+AttnImplementation = str | dict[str, str] | None
+# The sub-config of the visual tower in Qwen2.5-VL. F105 measured (transformers 4.51.3)
+# that the language half is dispatched to `sdpa` and the tower to `eager` — and the
+# tower is the half that dominates: at 896px a frame is over a thousand visual tokens.
+VISION_SUBCONFIG = "vision_config"
 
 # F102: both of these were defined here, and both describe the shared runtime rather
 # than this module — so the values moved to the `vlm:` config section (config.VlmConfig)
@@ -221,6 +241,85 @@ class SplitVlm:
         return self.generate(self.prepare(frames, prompt), max_new_tokens)
 
 
+@dataclass(frozen=True)
+class BatchVlm(SplitVlm):
+    """A SplitVlm that can also answer for SEVERAL frame groups in one generate (F105).
+
+    It IS a SplitVlm and IS a VlmDescribeFn — every existing caller (the namer, the deep
+    junk tier, an injected test double) sees exactly what it saw before, and the batched
+    halves are extra. A caller that wants them asks for the type, as the junk pipeline
+    asks for SplitVlm.
+
+    The whole risk of batching lives in the two halves and is answered there: the
+    padding for generation has to be on the LEFT, the attention mask has to come from
+    the processor, and answer i has to belong to group i. `batched_describe` below is
+    the safe way to use them — it keeps the positions straight and never lets one bad
+    frame cost the batch.
+    """
+    prepare_batch: VlmPrepareBatchFn
+    generate_batch: VlmGenerateBatchFn
+
+
+def _one_answer(runtime: VlmDescribeFn, frames: Sequence[Image.Image], prompt: str,
+                max_new_tokens: int) -> str | BaseException:
+    """One group through the plain (unbatched) path; its exception, if it raised."""
+    try:
+        return runtime(frames, prompt, max_new_tokens)
+    except Exception as exc:  # noqa: BLE001 — one bad frame is the caller's business
+        return exc
+
+
+def _batch_answers(runtime: VlmDescribeFn, groups: list[list[Image.Image]], prompt: str,
+                   max_new_tokens: int) -> list[str | BaseException]:
+    """Answers for non-empty `groups`, batched when the runtime can and serially if not.
+
+    A batch that fails for ANY reason — a frame the processor chokes on, no VRAM for the
+    activations of N frames at once, a model that answered a different number of times
+    than it was asked — is retried one group at a time. That is the brief's rule that a
+    single bad frame must not take the batch with it, and it is also what keeps the
+    answers aligned: if the count does not match, nothing can be said about which answer
+    belongs to which frame, so the batch is thrown away rather than guessed at.
+    """
+    if isinstance(runtime, BatchVlm):
+        try:
+            answers = list(runtime.generate_batch(
+                runtime.prepare_batch(groups, prompt), max_new_tokens))
+            if len(answers) != len(groups):
+                raise ValueError(
+                    f"модель вернула {len(answers)} ответов на {len(groups)} кадров")
+            batched: list[str | BaseException] = [str(a) for a in answers]
+            return batched
+        except Exception:  # noqa: BLE001 — fall back to the path that cannot misalign
+            pass
+    return [_one_answer(runtime, group, prompt, max_new_tokens) for group in groups]
+
+
+def batched_describe(runtime: VlmDescribeFn,
+                     groups: Sequence[Sequence[Image.Image]], prompt: str,
+                     max_new_tokens: int) -> list[str | BaseException]:
+    """One answer per frame group, IN INPUT ORDER; the exception in place of a failure.
+
+    The order is the whole contract: a shuffled batch gives the verdicts of one file to
+    another, which is worse than being slow. Groups that hold no frames never reach the
+    model (there would be nothing to look at) and come back as an error, exactly as a
+    frame that did not decode does everywhere else in the project — the caller decides
+    what a frame without an answer is worth.
+
+    A runtime without the batched halves is not an error: the groups go through the
+    plain path one at a time, which is what the caller would have done anyway.
+    """
+    items = [list(group) for group in groups]
+    out: list[str | BaseException] = [
+        ValueError("нет кадров — модель не спрашивается") for _ in items]
+    kept = [i for i, group in enumerate(items) if group]
+    if not kept:
+        return out
+    answers = _batch_answers(runtime, [items[i] for i in kept], prompt, max_new_tokens)
+    for i, answer in zip(kept, answers):
+        out[i] = answer
+    return out
+
+
 _VLM_RUNTIMES: dict[str, VlmDescribeFn] = {}
 
 
@@ -235,6 +334,69 @@ def processor_is_fast(processor: Any) -> bool:
     fast" and "we got fast" must not be the same line in a report.
     """
     return type(getattr(processor, "image_processor", processor)).__name__.endswith("Fast")
+
+
+def processor_pads_left(processor: Any) -> bool:
+    """Is the processor's tokenizer padding on the LEFT — the side generation needs?
+
+    F105: right padding does not fail a batch, it answers WRONG. The short sequences get
+    their pad tokens at the END, generation continues from padding instead of from the
+    prompt, and the answers of those positions are decoded out of nothing. Asked off the
+    built processor for the same reason `processor_is_fast` is: "we asked for left" and
+    "we got left" must not be the same line in a report.
+    """
+    return str(getattr(getattr(processor, "tokenizer", processor),
+                       "padding_side", "right")) == "left"
+
+
+def pad_generation_left(processor: Any) -> Any:
+    """Set the processor's tokenizer to pad on the LEFT; returns the same processor.
+
+    The processor call is also given `padding_side="left"`, but a processor that does
+    not know the argument ignores it SILENTLY — and a silently right-padded batch is the
+    one failure mode of this feature that produces plausible wrong verdicts. So the
+    tokenizer is set as well, and `processor_pads_left` is what the report prints.
+
+    Mutating the tokenizer is safe here for the reason ThreadLocalProcessors exists: the
+    processor belongs to the thread that prepares with it. For a single sequence the
+    side is a no-op anyway — nothing is padded.
+    """
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is not None:
+        tokenizer.padding_side = "left"
+    return processor
+
+
+def attn_implementation(overall: str | None = None,
+                        vision: str | None = None) -> AttnImplementation:
+    """The `attn_implementation` argument for from_pretrained — None means "as before".
+
+    `overall` alone is one name for the whole model (transformers hands a plain string
+    down to every sub-config). `vision` is the visual tower ALONE, which needs the
+    per-sub-config dict form: the tower is where the slow kernel was found, and it has to
+    be switchable without touching the language half that was already on `sdpa`.
+    """
+    if vision is None:
+        return overall
+    spec = {VISION_SUBCONFIG: vision}
+    if overall is not None:
+        spec[""] = overall
+    return spec
+
+
+def attention_kernels(model: Any) -> dict[str, str]:
+    """What the LOADED model really dispatches to: {"language": ..., "vision": ...}.
+
+    Read off the config rather than assumed, because nobody had looked: the request is
+    one thing (and a request for a kernel that is unavailable is quietly downgraded),
+    the kernel that runs is another. "?" — this model does not have that half.
+    """
+    config = getattr(model, "config", None)
+    return {
+        "language": str(getattr(config, "_attn_implementation", "?")),
+        "vision": str(getattr(getattr(config, VISION_SUBCONFIG, None),
+                              "_attn_implementation", "?")),
+    }
 
 
 class ThreadLocalProcessors:
@@ -274,8 +436,7 @@ class ThreadLocalProcessors:
         return own
 
 
-def qwen_processor(model_name: str,
-                   use_fast: bool = True) -> Any:  # pragma: no cover — ML, smoke test
+def qwen_processor(model_name: str, use_fast: bool = True) -> Any:
     """The Qwen processor, fast by default (F101).
 
     Separate from the model on purpose: a processor costs milliseconds to build while
@@ -288,29 +449,34 @@ def qwen_processor(model_name: str,
     return AutoProcessor.from_pretrained(model_name, use_fast=use_fast)
 
 
-def load_qwen(model_name: str,
-              use_fast: bool = True) -> tuple[Any, Any, str]:  # pragma: no cover — ML
+def load_qwen(model_name: str, use_fast: bool = True,
+              attn: AttnImplementation = None) -> tuple[Any, Any, str]:
     """(model, processor, device) — the parts `qwen_vlm` assembles a runtime from.
 
     Lazy-import: the module loads without transformers installed (as junk did with
     easyocr/transformers before) — the build fails ONLY here, and every caller wraps
     that in a graceful fallback (junk → the fast CLIP tier, the namer → the template).
+
+    F105: `attn` is the attention implementation (see `attn_implementation`), and it is
+    passed to transformers ONLY when it is given. Not passing the argument at all and
+    passing None are not the same thing for a library that decides by "did the user set
+    it", so the default here is literally the call that shipped.
     """
     import torch
     from transformers import Qwen2_5_VLForConditionalGeneration
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
+    requested: dict[str, Any] = {} if attn is None else {"attn_implementation": attn}
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        model_name, torch_dtype=dtype, device_map=device)
+        model_name, torch_dtype=dtype, device_map=device, **requested)
     model.eval()
     return model, qwen_processor(model_name, use_fast=use_fast), device
 
 
 def qwen_runtime(model: Any, processor: Any, device: str,
-                 processor_factory: Callable[[], Any] | None = None,
-                 ) -> SplitVlm:  # pragma: no cover — ML, smoke test
-    """A loaded Qwen2.5-VL as its CPU and GPU halves (F101).
+                 processor_factory: Callable[[], Any] | None = None) -> BatchVlm:
+    """A loaded Qwen2.5-VL as its CPU and GPU halves (F101), batched or not (F105).
 
     `prepare` leaves the tensors ON THE CPU. That is the VRAM contract of the pipeline
     above it: with the halves overlapped several frames are in flight at once, and
@@ -322,22 +488,44 @@ def qwen_runtime(model: Any, processor: Any, device: str,
     ThreadLocalProcessors on why a shared one is not safe to preprocess with). The
     `generate` side keeps using `processor` for decoding, and it runs on one thread
     only, so no processor is ever touched by two threads.
+
+    F105: the halves take SEVERAL frame groups as easily as one — `prepare` is
+    `prepare_batch` of a single group and `generate` is the first answer of
+    `generate_batch`, so the unbatched path is not a different path, it is the batch of
+    one. Two things are true only of a real batch and are handled where they arise:
+    the sequences have different lengths, so they are padded (by the processor, which
+    also produces the attention mask — a hand-built mask is how a batch silently
+    becomes wrong), and the padding for GENERATION goes on the left.
     """
     import torch
 
     processors = ThreadLocalProcessors(processor, processor_factory)
 
-    def prepare(frames: Sequence[Image.Image], prompt: str) -> Any:
+    def prepare_batch(groups: Sequence[Sequence[Image.Image]], prompt: str) -> Any:
         own = processors.get()
-        images = list(frames)
-        content: list[dict[str, Any]] = [{"type": "image", "image": im} for im in images]
-        content.append({"type": "text", "text": prompt})
-        text = own.apply_chat_template(
-            [{"role": "user", "content": content}],
-            tokenize=False, add_generation_prompt=True)
-        return own(text=[text], images=images, return_tensors="pt")
+        texts: list[str] = []
+        images: list[Image.Image] = []
+        for frames in groups:
+            group = list(frames)
+            content: list[dict[str, Any]] = [
+                {"type": "image", "image": im} for im in group]
+            content.append({"type": "text", "text": prompt})
+            texts.append(own.apply_chat_template(
+                [{"role": "user", "content": content}],
+                tokenize=False, add_generation_prompt=True))
+            images.extend(group)
+        if len(texts) < 2:
+            # One sequence has nothing to pad, and this is the call that runs in
+            # production — it reaches the processor exactly as it did before F105.
+            return own(text=texts, images=images, return_tensors="pt")
+        return pad_generation_left(own)(
+            text=texts, images=images, padding=True, padding_side="left",
+            return_tensors="pt")
 
-    def generate(prepared: Any, max_new_tokens: int) -> str:
+    def prepare(frames: Sequence[Image.Image], prompt: str) -> Any:
+        return prepare_batch([frames], prompt)
+
+    def generate_batch(prepared: Any, max_new_tokens: int) -> list[str]:
         inputs = prepared.to(device)
         with torch.no_grad():
             # #30 (V1): greedy, NOT sampling. Qwen's default generation_config is
@@ -347,17 +535,29 @@ def qwen_runtime(model: Any, processor: Any, device: str,
             # also fail). Neither a label nor a short caption needs sampling.
             out_ids = model.generate(**inputs, max_new_tokens=max_new_tokens,
                                      do_sample=False)
+        # One offset for the whole batch is correct BECAUSE the padding is on the left:
+        # every row starts generating at the same index. With right padding this line
+        # would quietly slice somebody else's tokens.
         gen_ids = out_ids[:, inputs["input_ids"].shape[1]:]
-        answer = processor.batch_decode(gen_ids, skip_special_tokens=True)[0]
-        return str(answer).strip()
+        answers = processor.batch_decode(gen_ids, skip_special_tokens=True)
+        return [str(answer).strip() for answer in answers]
 
-    return SplitVlm(prepare=prepare, generate=generate)
+    def generate(prepared: Any, max_new_tokens: int) -> str:
+        return generate_batch(prepared, max_new_tokens)[0]
+
+    return BatchVlm(prepare=prepare, generate=generate,
+                    prepare_batch=prepare_batch, generate_batch=generate_batch)
 
 
-def qwen_vlm(model_name: str,
-             use_fast: bool = True) -> VlmDescribeFn:  # pragma: no cover — ML, smoke test
-    """Load Qwen2.5-VL through transformers → describe(frames, prompt, max_new_tokens)."""
-    model, processor, device = load_qwen(model_name, use_fast=use_fast)
+def qwen_vlm(model_name: str, use_fast: bool = True,
+             attn: AttnImplementation = None,
+             ) -> VlmDescribeFn:  # pragma: no cover — ML, smoke test
+    """Load Qwen2.5-VL through transformers → describe(frames, prompt, max_new_tokens).
+
+    `attn` is off by default (F105): the product path loads the weights exactly as it
+    did until the measurement decides otherwise.
+    """
+    model, processor, device = load_qwen(model_name, use_fast=use_fast, attn=attn)
     return qwen_runtime(model, processor, device,
                         lambda: qwen_processor(model_name, use_fast=use_fast))
 
