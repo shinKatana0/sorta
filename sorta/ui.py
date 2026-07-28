@@ -106,10 +106,12 @@ indexed files; see `_suggested_sort_dest`). JS prefills the `#sort-dest` field o
 the user has not entered anything yet.
 
 (12) `POST /api/overrides` (F77, the "Cities" tab) — the user's manual corrections to
-the layout: `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear",
+the layout: `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear"|"photo",
 "target": str?}`. `exclude` — "leave alone": the file is not moved anywhere by the next
 `sort --apply`; `reassign` — lay it out into `target` (a folder of the current plan,
-relative to the sort root) instead of wherever the automatic rules put it; `clear` —
+relative to the sort root) instead of wherever the automatic rules put it; `photo`
+(F103) — "the classifier is wrong, this IS a photo": the junk/document/product verdict
+stops deciding the route and the file goes back to the automatic city layout; `clear` —
 drop the correction. One row per file in `manual_overrides` (PRIMARY KEY file_id), a
 repeated correction overwrites it. Like every other write route, the body carries only
 ints and (for reassign) a target string — no paths from the client to a file: the
@@ -184,6 +186,20 @@ for `source_dir` is compared against `files.path` as a string and never opened (
 `_is_under`), which is why this route accepts it at all. Nothing moves on disk here; the
 plan cache IS dropped afterwards (unlike an F77 correction, an assignment changes the
 target folder of every file of the group).
+
+(16) `GET /api/junk` (F103, the "Not personal photos" tab) — the buckets the classifier
+carries out of the collection, shown AS buckets: every frame whose `media_class.verdict`
+is not `photo`, with per-verdict counters and one bounded page of one bucket
+(`?bucket=&offset=&limit=`, the plan-page bounds). Read-only and reclassifying nothing.
+The deep tier moves ~10% of the collection into service folders and a few of those
+verdicts are wrong; the fix is the EXISTING `POST /api/overrides` with the F103 action
+`photo` over the selected frames — one row per file in `manual_overrides`, so the
+sorter lays them out by city again while `media_class` keeps the model's verdict (a
+re-run of the junk tier therefore cannot silently wipe the correction). The `document`
+bucket answers WITHOUT `thumb_url`: those are passports, medical forms and bank papers,
+and the project rule is that such a frame is never decoded for display — the card
+carries a name and a date only. Returning a document to the photos is still allowed;
+only its preview is not built.
 
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
@@ -1033,18 +1049,23 @@ def _validate_file_ids_payload(payload: object) -> list[int] | None:
     return ids
 
 
-_OVERRIDE_ACTIONS = ("exclude", "reassign", "clear")
+_OVERRIDE_ACTIONS = ("exclude", "reassign", "clear", "photo")
 
 
 def _validate_overrides_payload(payload: object) -> tuple[list[int], str, str | None] | None:
     """Parse the body `POST /api/overrides` (F77):
-    `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear", "target": str?}`.
+    `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear"|"photo",
+    "target": str?}`.
 
     None -> invalid (400): not an object, an unknown/absent action, file_ids that is not
     a non-empty list of ints (bool excluded, like everywhere else), or `reassign`
     without a non-empty target. The target is NOT resolved into a path here — it is a
     folder of the layout, and sorter._manual_target_parts validates it against the sort
     root before a destination is built from it.
+
+    F103: `photo` ("the classifier is wrong, this IS a personal photo") carries no
+    target — the whole point is that the file goes back to the AUTOMATIC city layout,
+    not to a folder someone had to name.
     """
     if not isinstance(payload, dict):
         return None
@@ -1096,6 +1117,116 @@ def _apply_overrides(db_path: Path, file_ids: list[int], action: str,
     finally:
         conn.close()
     return known
+
+
+# --- F103: the "Not personal photos" view -------------------------------------------
+# The deep VLM tier carries away roughly every tenth frame of the collection into
+# service folders (2 202 `product` alone on the live 24k run), and until now those
+# buckets were visible only indirectly, as folders of the layout plan. A handful of
+# those verdicts are wrong, and "a handful out of 2 202" is dozens of frames nobody
+# could find. This view shows the buckets AS buckets and lets the wrong ones go back in
+# one action. It reclassifies nothing: the fix is a row in `manual_overrides` (F77),
+# `media_class` keeps whatever the model measured.
+
+# The `document` bucket is passports, medical forms and bank papers. Those frames get a
+# card with a name and a date and NO thumbnail — the project rule is that a document
+# verdict is never decoded for display (a preview is a derived copy of the contents).
+# Returning one to the photos is still allowed: the person knows what is in their own
+# file, they just do not need it rendered to decide.
+_JUNK_NO_PREVIEW = ("document",)
+
+
+def _junk_item_to_json(row: sqlite3.Row, restored: bool) -> dict:
+    """One card of the junk view. `thumb_url` is ABSENT for a no-preview bucket."""
+    path = Path(row["path"])
+    verdict = row["verdict"]
+    payload = {
+        "file_id": int(row["id"]),
+        "verdict": verdict,
+        "name": path.name,
+        "date": row["taken_at"],
+        # F77/F103: the frame already carries a manual "this is a photo" correction —
+        # the card says so instead of offering the same action twice.
+        "restored": restored,
+    }
+    if verdict not in _JUNK_NO_PREVIEW:
+        payload["thumb_url"] = f"/thumb/{int(row['id'])}"
+        payload["video"] = imaging.is_video_path(path)
+    return payload
+
+
+def _junk_payload(db_path: Path, bucket: str | None,
+                  offset: int, limit: int) -> dict:
+    """`GET /api/junk` — the buckets with their counts + one page of one bucket.
+
+    The selection is `media_class.verdict <> 'photo'` over canonical, readable files —
+    the same `dup_of IS NULL AND error IS NULL` population `junk.classify` writes and
+    the sorter lays out, so a bucket counter here matches what the plan will carry off.
+
+    `bucket=None` — every non-photo frame; otherwise exactly the requested verdict. The
+    `<> 'photo'` guard sits in the query itself rather than in the parameter check, so
+    no value of `bucket` can turn this route into a way of listing personal photos.
+
+    `buckets` is always the full set of counters (it is what the filter chips are drawn
+    from), independent of the current filter; `total` is the size of the CURRENT
+    selection. An unknown bucket is an empty page, not an error — the same rule as an
+    unknown category in `PlanCache.page`.
+    """
+    conn = _connect(db_path)
+    try:
+        counts = conn.execute(
+            """SELECT mc.verdict AS verdict, COUNT(*) AS n
+               FROM files f JOIN media_class mc ON mc.file_id = f.id
+               WHERE mc.verdict <> 'photo' AND f.dup_of IS NULL AND f.error IS NULL
+               GROUP BY mc.verdict"""
+        ).fetchall()
+        params: list[object] = []
+        clause = ""
+        if bucket is not None:
+            clause = " AND mc.verdict = ?"
+            params.append(bucket)
+        total = conn.execute(
+            f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
+                WHERE mc.verdict <> 'photo' AND f.dup_of IS NULL AND f.error IS NULL
+                      {clause}""", params).fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT f.id, f.path, f.taken_at, mc.verdict
+                FROM files f JOIN media_class mc ON mc.file_id = f.id
+                WHERE mc.verdict <> 'photo' AND f.dup_of IS NULL AND f.error IS NULL
+                      {clause}
+                ORDER BY f.path
+                LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
+    finally:
+        conn.close()
+    marks = _overrides_map(db_path) if rows else {}
+    buckets = [{"verdict": r["verdict"], "count": int(r["n"])} for r in counts]
+    buckets.sort(key=lambda b: (-b["count"], b["verdict"]))
+    return {
+        "bucket": bucket,
+        "buckets": buckets,
+        "total": int(total),
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            _junk_item_to_json(
+                r, (marks.get(int(r["id"])) or ("", None))[0] == "photo")
+            for r in rows
+        ],
+    }
+
+
+def _parse_junk_query(query: dict[str, list[str]]) -> tuple[str | None, int, int] | None:
+    """(bucket, offset, limit) for `GET /api/junk`, or None -> 400.
+
+    An empty/absent `bucket` means "every non-photo frame"; the window is parsed by the
+    same rules (and with the same bounds) as a plan page — a bad number is refused, an
+    over-eager limit is clamped rather than rejected.
+    """
+    window = _parse_page_window(query)
+    if window is None:
+        return None
+    raw_bucket = (query.get("bucket") or [""])[0].strip()
+    return (raw_bucket or None), window[0], window[1]
 
 
 # --- F85c: assigning a place to a whole group at once -------------------------------
@@ -2481,6 +2612,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "tab_person": {"ru": "Люди", "en": "People", "ja": "人物"},
     "tab_event": {"ru": "События", "en": "Events", "ja": "イベント"},
     "tab_moves": {"ru": "Перемещения", "en": "Moves", "ja": "移動"},
+    "tab_junk": {"ru": "Не личные фото", "en": "Not personal photos",
+                 "ja": "個人写真ではない"},
     "process_intro": {
         "ru": "Укажите папку с фото и нажмите «Обработать» — индекс наполнится "
               "(гео, лица, события, мусор, почти-дубликаты). Файлы не перемещаются.",
@@ -3362,6 +3495,75 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось назначить место: ", "en": "Could not assign the place: ",
         "ja": "場所を指定できません: ",
     },
+    # F103: the "Not personal photos" view — the buckets the classifier carries out of
+    # the collection, and the bulk way back for the frames it got wrong.
+    "junk_intro": {
+        "ru": "Кадры, которые классификатор посчитал не личными фото. Отметьте те, "
+              "что попали сюда зря, и верните их — они снова разложатся по городам. "
+              "Вердикт модели при этом не переписывается.",
+        "en": "Frames the classifier judged not to be personal photos. Tick the ones "
+              "that landed here by mistake and return them — they go back into the "
+              "city layout. The model's verdict itself is not rewritten.",
+        "ja": "分類器が個人写真ではないと判断したフレームです。誤って入ったものに"
+              "チェックを入れて戻すと、再び都市ごとに振り分けられます。モデルの"
+              "判定自体は書き換えません。",
+    },
+    "junk_bucket_all": {"ru": "Все", "en": "All", "ja": "すべて"},
+    "junk_bucket_product": {"ru": "Товары", "en": "Products", "ja": "商品"},
+    "junk_bucket_document": {"ru": "Документы", "en": "Documents", "ja": "書類"},
+    "junk_bucket_screenshot": {"ru": "Скриншоты", "en": "Screenshots",
+                               "ja": "スクリーンショット"},
+    "junk_bucket_meme": {"ru": "Мемы", "en": "Memes", "ja": "ミーム"},
+    "junk_empty": {
+        "ru": "Здесь пусто — таких кадров нет.",
+        "en": "Nothing here — there are no such frames.",
+        "ja": "ここは空です。該当するフレームはありません。",
+    },
+    "junk_restore_button": {
+        "ru": "Вернуть в фото", "en": "Return to photos", "ja": "写真に戻す",
+    },
+    "junk_restore_confirm": {
+        "ru": "Вернуть в обычную раскладку по городам: {n}?",
+        "en": "Return to the normal city layout: {n}?",
+        "ja": "通常の都市別振り分けに戻します: {n} 件？",
+    },
+    "junk_undo_restore_button": {
+        "ru": "Отменить возврат", "en": "Undo the return", "ja": "戻すのを取り消す",
+    },
+    "junk_restored_mark": {
+        "ru": "возвращено в фото", "en": "returned to photos", "ja": "写真に戻しました",
+    },
+    "junk_select_all": {"ru": "Выбрать всё на странице",
+                        "en": "Select everything on this page",
+                        "ja": "このページをすべて選択"},
+    "junk_select_none": {"ru": "Снять выделение", "en": "Clear the selection",
+                         "ja": "選択を解除"},
+    "junk_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
+    "junk_shown_label": {
+        "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
+        "ja": "{total} 件中 {shown} 件を表示",
+    },
+    "junk_document_no_preview": {
+        "ru": "без превью", "en": "no preview", "ja": "プレビューなし",
+    },
+    "junk_document_hint": {
+        "ru": "Документы не открываются и не показываются: в этой корзине паспорта, "
+              "справки и медицинские бланки. Видно имя файла и дату — этого хватает, "
+              "чтобы решить.",
+        "en": "Documents are neither opened nor rendered: this bucket holds passports, "
+              "certificates and medical forms. The file name and the date are shown — "
+              "enough to decide.",
+        "ja": "書類は開かず表示もしません。このバケットにはパスポート、証明書、"
+              "診断書が含まれます。判断にはファイル名と日付で十分です。",
+    },
+    "junk_error_prefix": {
+        "ru": "Не удалось вернуть кадры: ", "en": "Could not return the frames: ",
+        "ja": "フレームを戻せません: ",
+    },
+    "error_loading_junk": {
+        "ru": "Не удалось загрузить корзины: ", "en": "Could not load the buckets: ",
+        "ja": "バケットを読み込めません: ",
+    },
 }
 
 
@@ -3658,6 +3860,30 @@ label { cursor: pointer; }
 .thumb-video-badge svg { width: 11px; height: 11px; display: block; }
 .thumb-name { display: block; font-size: 0.8rem; color: var(--muted); word-break: break-all; margin-top: 2px; }
 .event-name-input { width: 100%; margin-bottom: var(--space-sm); box-sizing: border-box; }
+
+/* --- F103: корзины «не личные фото» ----------------------------------- */
+/* Сетка плиток, а не таблица: здесь смотрят глазами — «это правда товар?» —
+   и решение принимается по картинке, а не по колонкам. */
+.junk-buckets { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; }
+.junk-bucket-btn.active { background: var(--accent); color: var(--on-accent);
+      border-color: var(--accent); font-weight: 600; }
+#junk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.junk-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.junk-card.restored { outline: 2px solid var(--good); outline-offset: -2px;
+      background: var(--good-soft); }
+.junk-card img { width: 100%; height: 110px; margin: 0; }
+/* Документ вместо превью получает нейтральную заглушку того же размера: сетка не
+   ломается, а содержимое паспорта не декодируется вообще. */
+.junk-doc-box { height: 110px; display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm); border: 1px dashed var(--line); background: var(--chip);
+      color: var(--muted); font-size: 0.8rem; }
+.junk-card-name { font-size: 0.8rem; word-break: break-all; }
+.junk-card-meta { font-size: 0.75rem; color: var(--muted); }
+.junk-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
 .process-intro { max-width: 46rem; color: var(--muted); }
 /* F51: вертикальные группы (путь / каждый тумблер+hint / кнопки), а не один
    плоский flex — там .process-toggle-hint с flex-basis:100% уезжал в конец
@@ -3771,6 +3997,10 @@ tr.override-exclude, tr.override-exclude:hover { outline: 2px solid var(--danger
       outline-offset: -2px; background: var(--danger-soft); }
 tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--accent);
       outline-offset: -2px; background: var(--accent-soft); }
+/* F103: «возвращено в фото» — третье состояние, и оно не отрицательное: кадр
+   возвращается в обычную раскладку, поэтому зелёная рамка, а не красная. */
+tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
+      outline-offset: -2px; background: var(--good-soft); }
 .override-mark { margin-left: var(--space-sm); }
 .override-folder-btn { margin-left: var(--space-sm); font-weight: 500; }
 .override-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
@@ -3831,6 +4061,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 @media (max-width: 640px) {
   body { padding: var(--space-md); }
   #clusters-grid, #events-list { grid-template-columns: 1fr; }
+  #junk-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .process-path-row { flex-direction: column; align-items: stretch; }
   .process-path-row input[type="text"] { min-width: 100%; }
 }
@@ -3862,6 +4093,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 <button type="button" class="tab-btn" id="tab-btn-dupes">{{tab_dupes}}</button>
 <button type="button" class="tab-btn" id="tab-btn-person" style="display:none">{{tab_person}}</button>
 <button type="button" class="tab-btn" id="tab-btn-event" style="display:none">{{tab_event}}</button>
+<button type="button" class="tab-btn" id="tab-btn-junk">{{tab_junk}}</button>
 <button type="button" class="tab-btn" id="tab-btn-moves">{{tab_moves}}</button>
 </div>
 <p id="delete-remember-row" style="display:none"><label><input type="checkbox" id="delete-remember">
@@ -4023,6 +4255,23 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
 
 <section id="tab-event" class="tab-panel">
 <div id="events-list"><div class="state-msg state-loading">{{loading}}</div></div>
+</section>
+
+<section id="tab-junk" class="tab-panel">
+<p class="process-intro">{{junk_intro}}</p>
+<div id="junk-buckets" class="junk-buckets"></div>
+<div class="override-controls">
+<button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{junk_restore_button}}<span id="junk-selected-count"></span></button>
+<button type="button" id="junk-select-all-btn" class="btn btn-ghost">{{junk_select_all}}</button>
+<button type="button" id="junk-select-none-btn" class="btn btn-ghost">{{junk_select_none}}</button>
+<span id="junk-status" class="override-status"></span>
+</div>
+<div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
+<div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="junk-more-btn" class="btn btn-ghost" style="display:none">{{junk_load_more}}</button>
+<span id="junk-shown" class="override-hint"></span>
+</div>
 </section>
 
 <section id="tab-moves" class="tab-panel">
@@ -4461,7 +4710,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   // Строка помечается ДВУМЯ разными способами: исключённая (красная рамка) и
   // перенесённая (синяя пунктирная) — это разные состояния, путать их нельзя.
   function markOverrideRow(tr, action, target) {
-    tr.classList.remove("override-exclude", "override-reassign");
+    tr.classList.remove("override-exclude", "override-reassign", "override-photo");
     var old = tr.querySelector(".override-mark");
     if (old) old.remove();
     tr.dataset.override = action || "";
@@ -4473,13 +4722,20 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       tr.removeAttribute("title");
       return;
     }
+    // F103: третье состояние — «возвращено в фото» (правка из вкладки «Не личные
+    // фото»). Строка плана должна показывать его отдельно: это не «не трогать» и не
+    // «перенесено в папку», а снятие вердикта классификатора.
     var excluded = action === "exclude";
-    tr.classList.add(excluded ? "override-exclude" : "override-reassign");
+    var restored = action === "photo";
+    tr.classList.add(excluded ? "override-exclude"
+        : restored ? "override-photo" : "override-reassign");
     var label = excluded ? I18N.override_excluded_mark
+        : restored ? I18N.junk_restored_mark
         : fmt(I18N.override_reassigned_mark, { target: target || "" });
     tr.title = label;
     var chip = document.createElement("span");
-    chip.className = "chip override-mark " + (excluded ? "chip-danger" : "chip-accent");
+    chip.className = "chip override-mark " + (excluded ? "chip-danger"
+        : restored ? "chip-good" : "chip-accent");
     chip.textContent = label;
     var meta = tr.querySelector(".plan-meta");
     if (meta) meta.appendChild(chip);
@@ -4959,9 +5215,10 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
   var movesLoaded = false;
   var clustersLoaded = false;
   var eventsLoaded = false;
+  var junkLoaded = false;
 
   function activateTab(name) {
-    ["process", "city", "dupes", "person", "event", "moves"].forEach(function (t) {
+    ["process", "city", "dupes", "person", "event", "junk", "moves"].forEach(function (t) {
       document.getElementById("tab-btn-" + t).classList.toggle("active", t === name);
       document.getElementById("tab-" + t).classList.toggle("active", t === name);
     });
@@ -4981,13 +5238,17 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       clustersLoaded = true;
       loadClusters();
     }
+    if (name === "junk" && !junkLoaded) {
+      junkLoaded = true;
+      loadJunk();
+    }
     if (name === "moves" && !movesLoaded) {
       movesLoaded = true;
       loadMoves();
     }
   }
 
-  ["process", "city", "dupes", "person", "event", "moves"].forEach(function (t) {
+  ["process", "city", "dupes", "person", "event", "junk", "moves"].forEach(function (t) {
     document.getElementById("tab-btn-" + t).addEventListener("click", function () {
       activateTab(t);
     });
@@ -5179,6 +5440,7 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
     clustersLoaded = false;
     eventsLoaded = false;
     movesLoaded = false;
+    junkLoaded = false;  // F103: прогон junk-яруса меняет состав корзин
     renderPlanTab("city", "tree-city");
     applyTabVisibility();
     loadCacheSizes();  // F94: a run is what makes the preview cache grow
@@ -6549,6 +6811,187 @@ tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--acc
       });
   }
 
+  // --- F103: вкладка «Не личные фото» -------------------------------------
+  // Корзины классификатора видно КАК корзины: чипы-фильтры со счётчиком, сетка
+  // плиток, отметка нескольких кадров и ОДИН возврат на всё выделение (по одному
+  // это десятки кликов на «пару штук из 2 202»). Возврат — это POST /api/overrides
+  // с action="photo" (готовый механизм F77): вердикт в media_class не переписывается,
+  // поэтому повторный прогон яруса не сотрёт правку.
+
+  var JUNK_PAGE_SIZE = 200;
+  var junkBucket = null;   // null — «Все»
+  var junkOffset = 0;
+  var junkSelected = {};
+
+  function junkBucketLabel(verdict) {
+    return I18N["junk_bucket_" + verdict] || verdict;
+  }
+
+  function junkSelectedIds() {
+    return Object.keys(junkSelected).map(Number);
+  }
+
+  function refreshJunkControls() {
+    var n = junkSelectedIds().length;
+    document.getElementById("junk-selected-count").textContent = n ? " (" + n + ")" : "";
+    document.getElementById("junk-restore-btn").disabled = n === 0;
+  }
+
+  function renderJunkBuckets(buckets) {
+    var box = document.getElementById("junk-buckets");
+    box.textContent = "";
+    var total = buckets.reduce(function (acc, b) { return acc + b.count; }, 0);
+    [{ verdict: null, count: total }].concat(buckets).forEach(function (b) {
+      var label = (b.verdict === null ? I18N.junk_bucket_all : junkBucketLabel(b.verdict)) +
+          " (" + b.count + ")";
+      var btn = makeBtn(null, null, label, "btn-sm junk-bucket-btn");
+      if (b.verdict === junkBucket) btn.classList.add("active");
+      btn.addEventListener("click", function () {
+        junkBucket = b.verdict;
+        loadJunk();
+      });
+      box.appendChild(btn);
+    });
+  }
+
+  function renderJunkCard(item) {
+    var card = document.createElement("div");
+    card.className = "junk-card" + (item.restored ? " restored" : "");
+    if (item.thumb_url) {
+      card.appendChild(
+          clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
+    } else {
+      // Документ: превью не строим вовсе — сервер не прислал ссылку, и запроса к
+      // /thumb здесь нет. Заглушка того же размера, чтобы сетка не разъезжалась.
+      var stub = document.createElement("div");
+      stub.className = "junk-doc-box";
+      stub.textContent = I18N.junk_document_no_preview;
+      card.appendChild(stub);
+    }
+    var name = document.createElement("span");
+    name.className = "junk-card-name";
+    name.textContent = item.name;
+    card.appendChild(name);
+    var meta = document.createElement("span");
+    meta.className = "junk-card-meta";
+    meta.textContent = [junkBucketLabel(item.verdict), item.date || ""]
+        .filter(Boolean).join(" \\u00b7 ");
+    card.appendChild(meta);
+    if (item.restored) {
+      var chip = document.createElement("span");
+      chip.className = "chip chip-good";
+      chip.textContent = I18N.junk_restored_mark;
+      card.appendChild(chip);
+      var undoBtn = makeBtn("ghost", null, I18N.junk_undo_restore_button, "btn-sm");
+      undoBtn.addEventListener("click", function () { applyJunkAction([item.file_id], "clear"); });
+      card.appendChild(undoBtn);
+      return card;
+    }
+    var label = document.createElement("label");
+    label.className = "junk-card-select";
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "junk-select";
+    box.value = String(item.file_id);
+    box.checked = !!junkSelected[item.file_id];
+    box.addEventListener("change", function () {
+      if (box.checked) junkSelected[item.file_id] = true;
+      else delete junkSelected[item.file_id];
+      refreshJunkControls();
+    });
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(I18N.junk_restore_button));
+    card.appendChild(label);
+    return card;
+  }
+
+  function renderJunkPage(data, append) {
+    var grid = document.getElementById("junk-grid");
+    if (!append) grid.textContent = "";
+    var items = data.items || [];
+    items.forEach(function (it) { grid.appendChild(renderJunkCard(it)); });
+    var shown = grid.querySelectorAll(".junk-card").length;
+    // Пустая корзина — внятное «здесь пусто», а не вечный спиннер.
+    if (!shown) grid.appendChild(stateEl("empty", I18N.junk_empty));
+    document.getElementById("junk-shown").textContent =
+        shown ? fmt(I18N.junk_shown_label, { shown: shown, total: data.total }) : "";
+    document.getElementById("junk-more-btn").style.display =
+        shown && shown < data.total ? "" : "none";
+    // Пояснение про документы — только там, где карточки без превью реально есть
+    // (считаем по всей сетке, а не по последней подгруженной странице).
+    document.getElementById("junk-doc-hint").style.display =
+        grid.querySelector(".junk-doc-box") ? "" : "none";
+    junkOffset = shown;
+  }
+
+  function fetchJunk(offset, append) {
+    var grid = document.getElementById("junk-grid");
+    if (!append) {
+      grid.textContent = "";
+      grid.appendChild(stateEl("loading", I18N.loading));
+    }
+    var url = "/api/junk?offset=" + offset + "&limit=" + JUNK_PAGE_SIZE +
+        (junkBucket ? "&bucket=" + encodeURIComponent(junkBucket) : "");
+    return fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        renderJunkBuckets(data.buckets || []);
+        renderJunkPage(data, append);
+      })
+      .catch(function (err) {
+        grid.textContent = "";
+        grid.appendChild(stateEl("error", I18N.error_loading_junk + err));
+      });
+  }
+
+  function loadJunk() {
+    junkSelected = {};
+    refreshJunkControls();
+    document.getElementById("junk-status").textContent = "";
+    return fetchJunk(0, false);
+  }
+
+  function applyJunkAction(ids, action) {
+    var status = document.getElementById("junk-status");
+    status.textContent = "";
+    return postJson("/api/overrides", { file_ids: ids, action: action })
+      .then(function (resp) {
+        if (resp && resp.ok) {
+          junkSelected = {};
+          refreshJunkControls();
+          fetchJunk(0, false);
+        } else {
+          status.textContent = I18N.junk_error_prefix + ((resp && resp.error) || "");
+        }
+      })
+      .catch(function (err) { status.textContent = I18N.junk_error_prefix + err; });
+  }
+
+  document.getElementById("junk-restore-btn").addEventListener("click", function () {
+    var ids = junkSelectedIds();
+    if (!ids.length) return;
+    if (!window.confirm(fmt(I18N.junk_restore_confirm, { n: ids.length }))) return;
+    applyJunkAction(ids, "photo");
+  });
+  document.getElementById("junk-select-all-btn").addEventListener("click", function () {
+    document.querySelectorAll("#junk-grid .junk-select").forEach(function (box) {
+      box.checked = true;
+      junkSelected[parseInt(box.value, 10)] = true;
+    });
+    refreshJunkControls();
+  });
+  document.getElementById("junk-select-none-btn").addEventListener("click", function () {
+    document.querySelectorAll("#junk-grid .junk-select").forEach(function (box) {
+      box.checked = false;
+    });
+    junkSelected = {};
+    refreshJunkControls();
+  });
+  document.getElementById("junk-more-btn").addEventListener("click", function () {
+    fetchJunk(junkOffset, true);
+  });
+  refreshJunkControls();
+
   // --- вкладка «Дубли» ---------------------------------------------------
 
   function postJson(url, data) {
@@ -6795,6 +7238,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_clusters()
             elif path == "/api/events":
                 self._serve_events()
+            elif path == "/api/junk":
+                self._serve_junk(parse_qs(parts.query))
             elif path == "/api/places/search":
                 self._serve_places_search(parse_qs(parts.query))
             elif path == "/api/process/status":
@@ -6925,6 +7370,17 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
 
         def _serve_events(self) -> None:
             self._send_json(_events_payload(db_path))
+
+        def _serve_junk(self, query: dict[str, list[str]]) -> None:
+            # F103: read-only. Nothing here reclassifies anything — the correction is a
+            # POST to the existing /api/overrides.
+            parsed = _parse_junk_query(query)
+            if parsed is None:
+                self._send_json({"error": "invalid offset/limit"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            bucket, offset, limit = parsed
+            self._send_json(_junk_payload(db_path, bucket, offset, limit))
 
         def _serve_places_search(self, query: dict[str, list[str]]) -> None:
             # F85c: read-only, bundled data only. `?lang=` decides the language of the

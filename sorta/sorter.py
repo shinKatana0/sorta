@@ -26,6 +26,10 @@ SortReport.manual_excluded separately from the --exclude directories; action='re
 verdict, not_personal and geo. The reassign target comes from the DB, i.e. from
 outside, so it is validated against the sort root before a path is built from it (see
 _manual_target_parts) — an invalid target is ignored with a warning, never followed.
+F103 adds a third action, 'photo': "this is an ordinary photo, the classifier is
+wrong" — it neutralizes the junk/document/product verdict for ROUTING only (the file
+goes down the normal mode/date branch) and never touches media_class, so re-running the
+junk tier cannot wipe the correction.
 
 The low_date rule: any mode's layout includes the year (YYYY), so a file without
 taken_at or with taken_at_confidence='low' (a date only from mtime — often the copy
@@ -423,6 +427,16 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         # personal media, past the city/date/people layout, into a separate folder.
         return [i18n.folder("unsorted", lang), i18n.folder("not_personal", lang)], "not_personal"
     verdict = row["junk_verdict"]
+    if row["manual_action"] == "photo":
+        # F103: the user opened the "Not personal photos" view, looked at the frame and
+        # said it is an ordinary photo. Only the ROUTE changes here — media_class keeps
+        # the model's verdict, because that verdict is a measurement and a correction by
+        # eye is a separate layer on top of it. Overwriting the measurement would mean a
+        # re-run of the junk tier silently wipes the correction, with nothing to tell the
+        # user why their decisions disappeared. Dropping the verdict for routing purposes
+        # lets the file fall through to the ordinary mode/date layout below — exactly
+        # where a `photo` verdict would have taken it.
+        verdict = None
     if verdict == "document":
         # F15: a photographed document — a separate review category (not junk), its
         # own top-level folder regardless of the sort mode.
@@ -1275,6 +1289,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     suffixes (report.manual_reassigned). An invalid target (`..`, absolute, a drive) is
     ignored with a warning and the file is laid out automatically — a correction can
     never write outside dest. Files without a correction are laid out exactly as before.
+    action='photo' (F103) — the junk/document/product verdict is ignored for this file
+    and it is laid out like any other photo (by city/date); media_class is untouched.
 
     keep_manual_excluded=True — for the web app's PREVIEW only: files marked "leave
     alone" stay in the returned plan, carrying the target they WOULD have had and
