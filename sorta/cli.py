@@ -32,6 +32,12 @@ from .faces import merge as merge_clusters
 from .geo import clear_geo_cache, geo_cache_size, resolve_places
 from .indexer import index as run_index
 from .indexer import excludes_path, refresh_exif, save_excludes
+from .junk import (
+    CLASSIFY_PHASE_CLIP,
+    CLASSIFY_PHASE_OCR,
+    CLASSIFY_PHASE_VLM,
+    CLASSIFY_PHASE_WRITE,
+)
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
@@ -99,6 +105,21 @@ _CLUSTER_PHASE_LABELS = {
     CLUSTER_PHASE_CLUSTER: "кластеры: группировка лиц (без процента)",
     CLUSTER_PHASE_INHERIT: "кластеры: перенос имён",
     CLUSTER_PHASE_WRITE: "кластеры: запись",
+}
+
+# F100: the same for the junk stage. Keys: sorta.junk.CLASSIFY_PHASE_*. The VLM one
+# is the phase that matters here: with the deep tier on it is the long half of the
+# stage AND the one that changes the denominator under the reader — the counter
+# switches from every frame to the candidates of the gate (24 196 -> 7 896 on the
+# live run of 2026-07-28). Without a caption the bar simply restarts at zero against
+# a smaller number, which reads as a bar that lost its place rather than as a new
+# kind of work. An unknown key is shown as-is by TaskProgress.phase, so a phase added
+# later is never fatal here — it just goes unlabelled until someone names it.
+_JUNK_PHASE_LABELS = {
+    CLASSIFY_PHASE_CLIP: "junk: классификация CLIP",
+    CLASSIFY_PHASE_OCR: "junk: распознавание текста",
+    CLASSIFY_PHASE_VLM: "junk: глубокий анализ (VLM)",
+    CLASSIFY_PHASE_WRITE: "junk: запись вердиктов",
 }
 
 
@@ -234,7 +255,7 @@ def _cmd_junk(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     conn = connect(cfg.database)
-    with progress_task("junk: классификация") as cb:
+    with progress_task("junk: классификация", phase_labels=_JUNK_PHASE_LABELS) as cb:
         stats = classify_junk(cfg, conn, progress=cb)
     print(_summarize_junk(stats))
 
@@ -368,8 +389,12 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
             print(f"[этап {i}/{len(steps)}] {name}")
             # F69: the per-stage timing goes to the run log, so "which stage ate the
             # three hours" is answerable after the fact instead of by eye.
+            # F100: one map for the whole pipeline — the keys of the two stages that
+            # report phases do not overlap (cluster_* vs junk_*), and the loop does not
+            # know which stage it is about to run.
             with stage_timer(name), progress_task(
-                    name, phase_labels=_CLUSTER_PHASE_LABELS) as cb:
+                    name,
+                    phase_labels={**_CLUSTER_PHASE_LABELS, **_JUNK_PHASE_LABELS}) as cb:
                 summary = fn(cfg, conn, cb)  # type: ignore[operator]
             for line in str(summary).splitlines():
                 print(f"  {line}")
