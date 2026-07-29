@@ -30,6 +30,8 @@ from .faces import (
 )
 from .faces import merge as merge_clusters
 from .geo import clear_geo_cache, geo_cache_size, resolve_places
+from .i18n import Lang, normalize_lang
+from .i18n import cli_text as _t
 from .indexer import index as run_index
 from .indexer import excludes_path, refresh_exif, save_excludes
 from .junk import (
@@ -73,39 +75,68 @@ def _ensure_utf8_console() -> None:
                 pass
 
 
+# --- F112: the output language ----------------------------------------------
+# Every user-visible string of this module goes through `i18n.cli_text` (imported as
+# `_t`) with the language from `cfg.language`. The commands that load the config
+# anyway read it off `cfg`; the few checks that fire BEFORE the config is read (the
+# `typer.BadParameter` guards) use `_lang_of` below.
+#
+# `--help` texts are deliberately NOT localized — see the note above `_CLI_STRINGS`
+# in i18n.py: they are evaluated at import time, before any config is read.
+
+def _lang(cfg) -> Lang:
+    """The output language of a command that already holds a loaded config."""
+    return normalize_lang(getattr(cfg, "language", None))
+
+
+def _lang_of(config_path: str) -> Lang:
+    """The output language for a check that runs before the config is loaded.
+
+    An unreadable/absent config.yaml must not swallow the very message it was needed
+    for (a bad `--geo` value is still a bad `--geo` value without a config), so any
+    failure here falls back to the default language.
+    """
+    try:
+        return _lang(load_config(config_path))
+    except Exception:  # noqa: BLE001 — any unreadable config, the message still goes out
+        return normalize_lang(None)
+
+
 # --- Stage summaries (a single format for the standalone commands and the `run` pipeline) ----
 # Each helper returns a ready summary string for a step (multi-line where needed).
 # Used BOTH by the same-named command `_cmd_<step>` AND by the `_pipeline_steps`
 # step, so the output does not diverge (backlog #9 / F20).
 
-def _summarize_index(stats, dups: int) -> str:
-    return (f"Готово: +{stats.added} новых, ~{stats.updated} обновлено, "
-            f"{stats.skipped} пропущено, {stats.errors} ошибок, {dups} дубликатов помечено")
+def _summarize_index(stats, dups: int, lang: Lang) -> str:
+    return _t("cli.index.done", lang, added=stats.added, updated=stats.updated,
+              skipped=stats.skipped, errors=stats.errors, dups=dups)
 
 
-def _summarize_geo(stats) -> str:
-    return (f"Готово: {stats.total} файлов — exact_gps {stats.exact_gps}, "
-            f"session_inferred {stats.session_inferred}, "
-            f"trip_inferred {stats.trip_inferred}, "
-            f"path_inferred {stats.path_inferred}, unknown {stats.unknown}")
+def _summarize_geo(stats, lang: Lang) -> str:
+    return _t("cli.geo.done", lang, total=stats.total, exact_gps=stats.exact_gps,
+              session_inferred=stats.session_inferred,
+              trip_inferred=stats.trip_inferred,
+              path_inferred=stats.path_inferred, unknown=stats.unknown)
 
 
-def _summarize_landmarks(stats) -> str:
-    lines = [f"Места без GPS: просмотрено {stats.scanned}, определено {stats.matched}"]
+def _summarize_landmarks(stats, lang: Lang) -> str:
+    lines = [_t("cli.landmarks.done", lang, scanned=stats.scanned, matched=stats.matched)]
     for name, n in sorted(stats.by_landmark.items(), key=lambda kv: -kv[1]):
-        lines.append(f"  {name}: {n}")
+        lines.append(f"  {name}: {n}")  # landmark names are data, not chrome
     return "\n".join(lines)
 
 
 # F84: captions for the phases `cluster_faces` reports — the rich bar shows them in
 # its description, so the `faces` step no longer goes silent for the whole of
 # clustering. Keys: sorta.faces.CLUSTER_PHASE_*.
-_CLUSTER_PHASE_LABELS = {
-    CLUSTER_PHASE_READ: "кластеры: чтение эмбеддингов",
-    CLUSTER_PHASE_CLUSTER: "кластеры: группировка лиц (без процента)",
-    CLUSTER_PHASE_INHERIT: "кластеры: перенос имён",
-    CLUSTER_PHASE_WRITE: "кластеры: запись",
-}
+def _cluster_phase_labels(lang: Lang) -> dict[str, str]:
+    return {
+        CLUSTER_PHASE_READ: _t("cli.phase.cluster_read", lang),
+        CLUSTER_PHASE_CLUSTER: _t("cli.phase.cluster_cluster", lang),
+        CLUSTER_PHASE_INHERIT: _t("cli.phase.cluster_inherit", lang),
+        CLUSTER_PHASE_WRITE: _t("cli.phase.cluster_write", lang),
+    }
+
 
 # F100: the same for the junk stage. Keys: sorta.junk.CLASSIFY_PHASE_*. The VLM one
 # is the phase that matters here: with the deep tier on it is the long half of the
@@ -115,66 +146,68 @@ _CLUSTER_PHASE_LABELS = {
 # a smaller number, which reads as a bar that lost its place rather than as a new
 # kind of work. An unknown key is shown as-is by TaskProgress.phase, so a phase added
 # later is never fatal here — it just goes unlabelled until someone names it.
-_JUNK_PHASE_LABELS = {
-    CLASSIFY_PHASE_CLIP: "junk: классификация CLIP",
-    CLASSIFY_PHASE_OCR: "junk: распознавание текста",
-    CLASSIFY_PHASE_VLM: "junk: глубокий анализ (VLM)",
-    CLASSIFY_PHASE_WRITE: "junk: запись вердиктов",
-}
+def _junk_phase_labels(lang: Lang) -> dict[str, str]:
+    return {
+        CLASSIFY_PHASE_CLIP: _t("cli.phase.junk_clip", lang),
+        CLASSIFY_PHASE_OCR: _t("cli.phase.junk_ocr", lang),
+        CLASSIFY_PHASE_VLM: _t("cli.phase.junk_vlm", lang),
+        CLASSIFY_PHASE_WRITE: _t("cli.phase.junk_write", lang),
+    }
 
 
-def _summarize_faces(face_stats, cl_stats) -> str:
+def _summarize_faces(face_stats, cl_stats, lang: Lang) -> str:
     lines = [
-        f"Детекция: {face_stats.files_processed} файлов, {face_stats.faces_found} лиц, "
-        f"{face_stats.no_face_files} без лиц, {face_stats.errors} ошибок",
-        f"Кластеры: {cl_stats.clusters} (лиц в кластерах: "
-        f"{cl_stats.faces - cl_stats.noise}, шум: {cl_stats.noise}, "
-        f"имён сохранено: {cl_stats.labels_kept})",
+        _t("cli.faces.detected", lang, files=face_stats.files_processed,
+           faces=face_stats.faces_found, no_faces=face_stats.no_face_files,
+           errors=face_stats.errors),
+        _t("cli.faces.clusters", lang, clusters=cl_stats.clusters,
+           clustered=cl_stats.faces - cl_stats.noise, noise=cl_stats.noise,
+           labels_kept=cl_stats.labels_kept),
     ]
     if cl_stats.malformed:
-        lines.append(f"⚠ повреждённых эмбеддингов пропущено: {cl_stats.malformed}")
+        lines.append(_t("cli.faces.malformed", lang, n=cl_stats.malformed))
     return "\n".join(lines)
 
 
-def _summarize_events(stats) -> str:
-    return (f"События: {stats.auto_events} авто ({stats.auto_files} файлов, "
-            f"имён сохранено: {stats.names_preserved}), "
-            f"{stats.manual_events} ручных ({stats.manual_files} файлов)")
+def _summarize_events(stats, lang: Lang) -> str:
+    return _t("cli.events.done", lang, auto_events=stats.auto_events,
+              auto_files=stats.auto_files, names_preserved=stats.names_preserved,
+              manual_events=stats.manual_events, manual_files=stats.manual_files)
 
 
-def _summarize_junk(stats) -> str:
+def _summarize_junk(stats, lang: Lang) -> str:
     kinds = ", ".join(f"{v}: {n}" for v, n in sorted(stats.by_verdict.items()))
-    line = f"Классификация: {stats.processed}/{stats.total} обработано ({kinds})"
+    line = _t("cli.junk.done", lang, processed=stats.processed, total=stats.total,
+              kinds=kinds)
     # F68: makes incrementality observable — on a repeat run with nothing new this
     # should account for everything and `processed` should be 0.
     if getattr(stats, "skipped_incremental", 0):
-        line += f"; пропущено как уже обработанные: {stats.skipped_incremental}"
+        line += _t("cli.junk.skipped_incremental", lang, n=stats.skipped_incremental)
     if getattr(stats, "vlm_candidates", 0):
-        line += f"; VLM: {stats.vlm_applied}/{stats.vlm_candidates} кандидатов переклассифицировано"
+        line += _t("cli.junk.vlm", lang, applied=stats.vlm_applied,
+                   candidates=stats.vlm_candidates)
     return line
 
 
 def _cmd_index(config_path: str, src: str | None = None) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     if src:  # a positional source overrides config sources for this run
         cfg.sources = [Path(src).resolve()]
     if not cfg.sources:
-        raise ValueError(
-            "не задан источник: укажите каталог — sorta index <src_dir> — "
-            "или заполните секцию 'sources' в config.yaml")
+        raise ValueError(_t("cli.index.no_source", lang))
     conn = connect(cfg.database)
-    with progress_task("index: сканирование") as cb:
+    with progress_task(_t("cli.progress.index", lang)) as cb:
         stats = run_index(cfg, conn, progress=lambda s: cb(s.scanned, None))
         dups = assign_duplicates(conn, cfg.dedup.canonical_strategy)
-    print(_summarize_index(stats, dups))
+    print(_summarize_index(stats, dups, lang))
 
 
-def _summarize_refresh(stats) -> str:
-    return (f"Перечитано: {stats.scanned} файлов, обновлено {stats.updated}; "
-            f"вернулось координат: {stats.recovered_gps}, дат съёмки: "
-            f"{stats.recovered_date}; без EXIF: {stats.still_empty}, "
-            f"ошибок: {stats.errors}")
+def _summarize_refresh(stats, lang: Lang) -> str:
+    return _t("cli.refresh.done", lang, scanned=stats.scanned, updated=stats.updated,
+              gps=stats.recovered_gps, dates=stats.recovered_date,
+              empty=stats.still_empty, errors=stats.errors)
 
 
 def _cmd_refresh_exif(config_path: str) -> None:
@@ -185,12 +218,14 @@ def _cmd_refresh_exif(config_path: str) -> None:
     """
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
-    with stage_timer("refresh-exif"), progress_task("refresh-exif: метаданные") as cb:
+    with stage_timer("refresh-exif"), progress_task(
+            _t("cli.progress.refresh_exif", lang)) as cb:
         stats = refresh_exif(cfg, conn, progress=cb)
-    print(_summarize_refresh(stats))
+    print(_summarize_refresh(stats, lang))
     if stats.recovered_gps:
-        print("Появились новые координаты — перезапустите: sorta geo (и sorta events)")
+        print(_t("cli.refresh.rerun_geo", lang))
 
 
 def _cmd_add_excludes(config_path: str, src: str | None, values: list[str]) -> None:
@@ -202,72 +237,78 @@ def _cmd_add_excludes(config_path: str, src: str | None, values: list[str]) -> N
     """
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     root = Path(src).resolve() if src else (cfg.sources[0] if cfg.sources else None)
     if root is None:
-        raise SystemExit(
-            "--exclude-dir: не задан источник — укажите каталог позиционно "
-            "или заполните 'sources' в config.yaml")
+        raise SystemExit(_t("cli.excludes.no_source", lang))
     path = excludes_path(cfg)
     accepted = save_excludes(path, root, values)
-    print(f"Исключено из сканирования ({root}): {', '.join(accepted) or '—'}")
-    print(f"Файл исключений: {path}")
+    print(_t("cli.excludes.saved", lang, root=root, values=", ".join(accepted) or "—"))
+    print(_t("cli.excludes.file", lang, path=path))
 
 
 def _cmd_geo(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
-    with progress_task("geo: места") as cb:
+    with progress_task(_t("cli.progress.geo", lang)) as cb:
         stats = resolve_places(cfg, conn, progress=cb)
-    print(_summarize_geo(stats))
+    print(_summarize_geo(stats, lang))
 
 
 def _cmd_faces(config_path: str, rescan: bool = False, limit: int | None = None) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
-    title = "faces: пересканирование" if rescan else "faces: детекция"
-    with progress_task(title, phase_labels=_CLUSTER_PHASE_LABELS) as cb:
+    title = _t("cli.progress.faces_rescan" if rescan else "cli.progress.faces", lang)
+    with progress_task(title, phase_labels=_cluster_phase_labels(lang)) as cb:
         face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb,
                                                   rescan=rescan, limit=limit)
-    print(_summarize_faces(face_stats, cl_stats))
+    print(_summarize_faces(face_stats, cl_stats, lang))
 
 
 def _cmd_landmarks(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
-    with progress_task("landmarks: места без GPS") as cb:
+    with progress_task(_t("cli.progress.landmarks", lang)) as cb:
         stats = detect_landmarks(cfg, conn, progress=cb)
-    print(_summarize_landmarks(stats))
+    print(_summarize_landmarks(stats, lang))
 
 
 def _cmd_phash(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
-    with progress_task("phash: почти-дубликаты") as cb:
+    with progress_task(_t("cli.progress.phash", lang)) as cb:
         n = compute_phashes(cfg, conn, progress=cb)
-    print(f"pHash посчитан для {n} фото. Отчёт: sorta dupes --near")
+    print(_t("cli.phash.done", lang, n=n))
 
 
 def _cmd_junk(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
-    with progress_task("junk: классификация", phase_labels=_JUNK_PHASE_LABELS) as cb:
+    with progress_task(_t("cli.progress.junk", lang),
+                       phase_labels=_junk_phase_labels(lang)) as cb:
         stats = classify_junk(cfg, conn, progress=cb)
-    print(_summarize_junk(stats))
+    print(_summarize_junk(stats, lang))
 
 
 def _cmd_events(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
-    with progress_task("events: кластеризация") as cb:
+    with progress_task(_t("cli.progress.events", lang)) as cb:
         stats = build_events(cfg, conn, progress=cb)
         name_events(cfg, conn)  # naming by the provider (template by default)
-    print(_summarize_events(stats))
+    print(_summarize_events(stats, lang))
 
 
 # --- The `sorta run` pipeline -----------------------------------------------
@@ -319,27 +360,27 @@ def _pipeline_steps() -> list[tuple[str, object]]:
     def _index(cfg, conn, cb) -> str:
         stats = run_index(cfg, conn, progress=lambda s: cb(s.scanned, None))
         dups = assign_duplicates(conn, cfg.dedup.canonical_strategy)
-        return _summarize_index(stats, dups)
+        return _summarize_index(stats, dups, _lang(cfg))
 
     def _geo(cfg, conn, cb) -> str:
-        return _summarize_geo(resolve_places(cfg, conn, progress=cb))
+        return _summarize_geo(resolve_places(cfg, conn, progress=cb), _lang(cfg))
 
     def _landmarks(cfg, conn, cb) -> str:
         return _summarize_landmarks(
-            detect_landmarks(cfg, conn, classifier=_clip(cfg), progress=cb))
+            detect_landmarks(cfg, conn, classifier=_clip(cfg), progress=cb), _lang(cfg))
 
     def _faces(cfg, conn, cb) -> str:
         face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb)
-        return _summarize_faces(face_stats, cl_stats)
+        return _summarize_faces(face_stats, cl_stats, _lang(cfg))
 
     def _events(cfg, conn, cb) -> str:
         stats = build_events(cfg, conn, progress=cb)
         name_events(cfg, conn)
-        return _summarize_events(stats)
+        return _summarize_events(stats, _lang(cfg))
 
     def _junk(cfg, conn, cb) -> str:
         return _summarize_junk(
-            classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb))
+            classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb), _lang(cfg))
 
     return [
         ("index", _index),
@@ -367,15 +408,14 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     of each other and of `deep`/`geo`."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     log_environment()  # F69: versions, package origin, GPU, geo data — once per run
     warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
     warn_if_geo_data_missing()  # F65: an unreadable geo base empties every place
     if src:  # an explicit source overrides config sources for this run
         cfg.sources = [Path(src).resolve()]
     if not cfg.sources:
-        raise SystemExit(
-            "не задан источник: укажите --src <каталог> или заполните "
-            "'sources' в config.yaml")
+        raise SystemExit(_t("cli.run.no_source", lang))
     if deep is not None:
         cfg = dataclasses.replace(cfg, naming=dataclasses.replace(cfg.naming, vlm_enabled=deep))
     if geo is not None:
@@ -386,7 +426,7 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
         steps = [(name, fn) for name, fn in _pipeline_steps()
                  if name not in _OPTIONAL_STAGES or enabled_optional[name]]
         for i, (name, fn) in enumerate(steps, 1):
-            print(f"[этап {i}/{len(steps)}] {name}")
+            print(_t("cli.run.stage", lang, index=i, total=len(steps), name=name))
             # F69: the per-stage timing goes to the run log, so "which stage ate the
             # three hours" is answerable after the fact instead of by eye.
             # F100: one map for the whole pipeline — the keys of the two stages that
@@ -394,86 +434,94 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
             # know which stage it is about to run.
             with stage_timer(name), progress_task(
                     name,
-                    phase_labels={**_CLUSTER_PHASE_LABELS, **_JUNK_PHASE_LABELS}) as cb:
+                    phase_labels={**_cluster_phase_labels(lang),
+                                  **_junk_phase_labels(lang)}) as cb:
                 summary = fn(cfg, conn, cb)  # type: ignore[operator]
             for line in str(summary).splitlines():
                 print(f"  {line}")
         if by:
             plan_dest = Path(dest) if dest else None  # None -> in-place (source root)
-            print(f"[план] dry-run sort --by {by} -> {dest or 'in-place'}")
+            print(_t("cli.run.plan", lang, by=by, dest=dest or "in-place"))
             with progress_task(f"plan {by}") as cb:
                 plan_and_sort(cfg, conn, by, plan_dest, apply=False, progress=cb)
     finally:
         conn.close()
-    print("\nАнализ завершён. Индекс наполнен; просмотрите план и запустите sort при необходимости.")
+    print("\n" + _t("cli.run.finished", lang))
 
 
 def _cmd_stats(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
     q = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
     total = q("SELECT COUNT(*) FROM files WHERE error IS NULL")
     if not total:
-        print("Индекс пуст — запустите: sorta index")
+        print(_t("cli.stats.empty", lang))
         return
-    print(f"Файлов в индексе: {total} (+{q('SELECT COUNT(*) FROM files WHERE error IS NOT NULL')} с ошибками)")
-    print(f"  с GPS:            {q('SELECT COUNT(*) FROM files WHERE gps_lat IS NOT NULL')} "
-          f"({q('SELECT COUNT(*) FROM files WHERE gps_lat IS NOT NULL') * 100 // total}%)")
+    print(_t("cli.stats.files", lang, total=total,
+             errors=q("SELECT COUNT(*) FROM files WHERE error IS NOT NULL")))
+    with_gps = q("SELECT COUNT(*) FROM files WHERE gps_lat IS NOT NULL")
+    print(_t("cli.stats.gps", lang, n=with_gps, pct=with_gps * 100 // total))
     for src in ("exif", "filename", "mtime"):
         n = conn.execute("SELECT COUNT(*) FROM files WHERE taken_at_source = ?", (src,)).fetchone()[0]
-        print(f"  дата из {src:9}: {n} ({n * 100 // total}%)")
-    print(f"  дубликатов:       {q('SELECT COUNT(*) FROM files WHERE dup_of IS NOT NULL')}")
+        print(_t("cli.stats.date_source", lang, source=src, n=n, pct=n * 100 // total))
+    print(_t("cli.stats.dupes", lang,
+             n=q("SELECT COUNT(*) FROM files WHERE dup_of IS NOT NULL")))
     places_total = q("SELECT COUNT(*) FROM places")
     if places_total:
-        print(f"Гео (places): {places_total}")
+        print(_t("cli.stats.geo_total", lang, n=places_total))
         for conf, n in conn.execute(
             "SELECT confidence, COUNT(*) FROM places GROUP BY confidence ORDER BY 2 DESC"
         ):
-            print(f"  {conf:16}: {n} ({n * 100 // places_total}%)")
+            print(_t("cli.stats.geo_confidence", lang, confidence=conf, n=n,
+                     pct=n * 100 // places_total))
     n_faces = q("SELECT COUNT(*) FROM faces WHERE bbox != '[]'")
     if n_faces:
         n_clusters = q("SELECT COUNT(*) FROM face_clusters WHERE merged_into IS NULL")
         n_named = q("SELECT COUNT(*) FROM face_clusters "
                     "WHERE merged_into IS NULL AND label IS NOT NULL")
-        print(f"Лица: {n_faces} (кластеров: {n_clusters}, именованных: {n_named})")
+        print(_t("cli.stats.faces", lang, faces=n_faces, clusters=n_clusters,
+                 named=n_named))
 
 
 def _cmd_dupes(config_path: str, near: bool = False) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
+    lang = _lang(cfg)
     conn = connect(cfg.database)
     if near:
         have_phash = conn.execute(
             "SELECT COUNT(*) FROM files WHERE phash IS NOT NULL").fetchone()[0]
         if not have_phash:
-            print("pHash ещё не посчитан — запустите: sorta phash")
+            print(_t("cli.dupes.no_phash", lang))
             return
         groups = near_duplicate_groups(conn, cfg.index.phash_max_distance)
         if not groups:
-            print("Почти-дубликатов не найдено")
+            print(_t("cli.dupes.near_none", lang))
             return
         for group in groups:
-            print(f"Группа из {len(group)} похожих:")
+            print(_t("cli.dupes.near_group", lang, n=len(group)))
             for r in group:
-                print(f"  {r['path']}  ({r['size']} байт)")
-        print(f"\nГрупп: {len(groups)} (порог Хэмминга: {cfg.index.phash_max_distance})")
+                print(_t("cli.dupes.near_item", lang, path=r["path"], size=r["size"]))
+        print("\n" + _t("cli.dupes.near_total", lang, n=len(groups),
+                        threshold=cfg.index.phash_max_distance))
         return
     rows = conn.execute(
         """SELECT c.path AS canon, f.path AS dup FROM files f
            JOIN files c ON f.dup_of = c.id ORDER BY c.path"""
     ).fetchall()
     if not rows:
-        print("Точных дубликатов не найдено")
+        print(_t("cli.dupes.exact_none", lang))
         return
     for r in rows:
-        print(f"{r['dup']}\n  -> дубликат {r['canon']}")
-    print(f"\nВсего: {len(rows)}")
+        print(_t("cli.dupes.exact_item", lang, dup=r["dup"], canon=r["canon"]))
+    print("\n" + _t("cli.dupes.exact_total", lang, n=len(rows)))
 
 
-def _stub(name: str, doc: str):
+def _stub(name: str, doc: str, lang: Lang):
     def cmd(*_a, **_k):
-        print(f"'{name}' будет реализована в следующей фазе: {doc}")
+        print(_t("cli.stub.next_phase", lang, name=name, doc=doc))
         raise SystemExit(2)
     return cmd
 
@@ -541,16 +589,25 @@ try:
         _cmd_junk(config)
 
     @app.command()
-    def doctor():
-        """Диагностика окружения: torch/onnxruntime, GPU, гео-база, лог-файл."""
+    def doctor(config: str = _CFG):
+        """Диагностика окружения: torch/onnxruntime, GPU, гео-база, лог-файл.
+
+        F112: `--config` is here only to know the output language — the command still
+        works without a readable config (`_lang_of` falls back to the default), it just
+        prints in the default language then. The two health summaries below come from
+        diagnostics.py, which this feature does not own, so they stay as that module
+        writes them.
+        """
+        lang = _lang_of(config)
         print(gpu_health().summary)
         # F65: the geo base failing to load is invisible at runtime (every coordinate
         # just resolves to an empty place), so the doctor has to state it outright.
         geo = geo_data_health()
         print(("" if geo.available else "⚠ ") + geo.summary)
-        print(f"Лог прогона: {default_log_path()}")
-        print(f"Кэш превью: {imaging.preview_dir()}"
-              + ("" if imaging.preview_cache_enabled() else " (ОТКЛЮЧЁН)"))
+        print(_t("cli.doctor.log", lang, path=default_log_path()))
+        print(_t("cli.cache.preview_dir", lang, path=imaging.preview_dir())
+              + ("" if imaging.preview_cache_enabled()
+                 else _t("cli.cache.preview_disabled", lang)))
 
     @app.command("cache")
     def cache_cmd(
@@ -574,6 +631,7 @@ try:
         единственный способ переспросить провайдера, если он однажды ответил неверно.
         """
         cfg = load_config(config)  # applies the imaging: section onto the env
+        lang = _lang(cfg)
         directory = imaging.preview_dir()
         if clear_geo:
             conn = connect(cfg.database)
@@ -581,19 +639,19 @@ try:
                 removed = clear_geo_cache(conn)
             finally:
                 conn.close()
-            print(f"Кэш геоданных очищен: удалено записей {removed}")
+            print(_t("cli.cache.geo_cleared", lang, n=removed))
         if clear:
             imaging.preview_cache_clear()
-            print(f"Кэш превью удалён: {directory}")
+            print(_t("cli.cache.preview_cleared", lang, path=directory))
         if clear or clear_geo:
             return
         files = sum(1 for _ in directory.rglob("*.jpg")) if directory.exists() else 0
         size = sum(f.stat().st_size for f in directory.rglob("*.jpg")) if files else 0
-        print(f"Кэш превью: {directory}")
-        print(f"  файлов: {files}, размер: {size / 1e9:.2f} ГБ")
+        print(_t("cli.cache.preview_dir", lang, path=directory))
+        print(_t("cli.cache.preview_stats", lang, files=files, size_gb=size / 1e9))
         conn = connect(cfg.database)
         try:
-            print(f"Кэш геоданных (geo_cache): записей {geo_cache_size(conn)}")
+            print(_t("cli.cache.geo_size", lang, n=geo_cache_size(conn)))
         finally:
             conn.close()
 
@@ -629,9 +687,9 @@ try:
         if ctx.invoked_subcommand is not None:
             return
         if limit is not None and not rescan:
-            raise typer.BadParameter("--limit работает только вместе с --rescan")
+            raise typer.BadParameter(_t("cli.faces.limit_needs_rescan", _lang_of(config)))
         if limit is not None and limit <= 0:
-            raise typer.BadParameter("--limit должен быть положительным числом")
+            raise typer.BadParameter(_t("cli.faces.limit_positive", _lang_of(config)))
         _cmd_faces(config, rescan=rescan, limit=limit)
 
     @faces_app.command("label")
@@ -640,7 +698,7 @@ try:
         cfg = load_config(config)
         configure_logging(cfg.log_level)
         root = label_cluster(connect(cfg.database), cluster_id, name)
-        print(f"Кластер {root} назван: {name}")
+        print(_t("cli.faces.labeled", _lang(cfg), cluster=root, name=name))
 
     @faces_app.command("merge")
     def faces_merge(src_id: int, dst_id: int, config: str = _CFG):
@@ -648,7 +706,7 @@ try:
         cfg = load_config(config)
         configure_logging(cfg.log_level)
         root = merge_clusters(connect(cfg.database), src_id, dst_id)
-        print(f"Слито: {src_id} -> {root}")
+        print(_t("cli.faces.merged", _lang(cfg), src=src_id, dst=root))
 
     @faces_app.command("sheet")
     def faces_sheet(cluster_id: int, out_html: Path, config: str = _CFG):
@@ -656,7 +714,7 @@ try:
         cfg = load_config(config)
         configure_logging(cfg.log_level)
         n = export_contact_sheet(connect(cfg.database), cluster_id, out_html)
-        print(f"Готово: {n} лиц -> {out_html}")
+        print(_t("cli.faces.sheet_done", _lang(cfg), n=n, path=out_html))
 
     events_app = typer.Typer(help="События: автокластеризация, имена, ручные события.")
     app.add_typer(events_app, name="events")
@@ -673,7 +731,7 @@ try:
         cfg = load_config(config)
         configure_logging(cfg.log_level)
         rename_event(connect(cfg.database), event_id, name)
-        print(f"Событие {event_id}: {name}")
+        print(_t("cli.events.renamed", _lang(cfg), event_id=event_id, name=name))
 
     @events_app.command("add")
     def events_add(name: str, date_from: str, date_to: str, config: str = _CFG):
@@ -681,7 +739,8 @@ try:
         cfg = load_config(config)
         configure_logging(cfg.log_level)
         eid = add_manual_event(connect(cfg.database), name, date_from, date_to)
-        print(f"Ручное событие {eid}: {name} ({date_from}..{date_to})")
+        print(_t("cli.events.added", _lang(cfg), event_id=eid, name=name,
+                 date_from=date_from, date_to=date_to))
 
     @app.command()
     def sort(
@@ -706,6 +765,7 @@ try:
         """Разложить файлы перемещением. По умолчанию — dry-run с планом (CSV+HTML)."""
         cfg = load_config(config)
         configure_logging(cfg.log_level)
+        lang = _lang(cfg)
         conn = connect(cfg.database)
         with progress_task(f"sort --by {by}") as cb:
             report = plan_and_sort(cfg, conn, by, dest, apply=apply, copy=copy,
@@ -714,10 +774,13 @@ try:
                                    delete_worse_dupes=delete_worse_dupes,
                                    exclude=exclude or [], progress=cb)
         if apply:
-            verb = "Скопировано" if copy else "Перемещено"
-            extra = f", удалено дублей {report.deleted}" if report.deleted else ""
-            print(f"{verb} {report.moved}, на месте {report.skipped_in_place}, "
-                  f"ошибок {report.failed}{extra}. Откат: sorta undo")
+            # Copy and move are two whole sentences, not one sentence with the verb
+            # pasted in: the word order around the counts is not the same everywhere.
+            extra = (_t("cli.sort.deleted_dupes", lang, n=report.deleted)
+                     if report.deleted else "")
+            print(_t("cli.sort.copied" if copy else "cli.sort.moved", lang,
+                     moved=report.moved, in_place=report.skipped_in_place,
+                     failed=report.failed, extra=extra))
 
     @app.command()
     def album(
@@ -735,18 +798,21 @@ try:
     ):
         """Выгрузить срез (человека/события) в отдельную папку. По умолчанию — hardlink, dry-run."""
         if copy and move:
-            raise typer.BadParameter("--copy и --move взаимоисключающи")
+            raise typer.BadParameter(
+                _t("cli.album.copy_move_exclusive", _lang_of(config)))
         mode = "move" if move else "copy" if copy else "link"
         cfg = load_config(config)
         configure_logging(cfg.log_level)
+        lang = _lang(cfg)
         conn = connect(cfg.database)
         with progress_task(f"album {kind} {selector}"):
             report = plan_album(cfg, conn, kind, selector, dest, mode=mode,
                                 where=where or [], apply=apply, album_name=name)
         if apply:
-            extra = f", заблокировано (мульти) {report.blocked_multi}" if report.blocked_multi else ""
-            print(f"Альбом «{report.album_name}»: выгружено {report.transferred}, "
-                  f"ошибок {report.failed}{extra}. Откат: sorta undo")
+            extra = (_t("cli.album.blocked_multi", lang, n=report.blocked_multi)
+                     if report.blocked_multi else "")
+            print(_t("cli.album.done", lang, name=report.album_name,
+                     transferred=report.transferred, failed=report.failed, extra=extra))
 
     @app.command()
     def reset(
@@ -765,19 +831,19 @@ try:
         """
         cfg = load_config(config)
         configure_logging(cfg.log_level)
+        lang = _lang(cfg)
         if not yes:
             typer.confirm(
-                "Стереть весь индекс? Имена людей/событий и решения по дублям "
-                "пропадут; фото и уже разложенные папки НЕ тронутся"
-                + (", кэш геоданных тоже будет очищен" if clear_geo else ""),
+                _t("cli.reset.confirm", lang,
+                   extra=_t("cli.reset.confirm_geo", lang) if clear_geo else ""),
                 abort=True)
         conn = connect(cfg.database)
         try:
             reset_index(conn, clear_geo=clear_geo)
         finally:
             conn.close()
-        print("Индекс стёрт. Запустите `sorta index`/`sorta run` заново."
-              + (" Кэш геоданных очищен." if clear_geo else ""))
+        print(_t("cli.reset.done", lang,
+                 extra=_t("cli.reset.done_geo", lang) if clear_geo else ""))
 
     @app.command()
     def undo(
@@ -789,8 +855,8 @@ try:
         configure_logging(cfg.log_level)
         with progress_task("undo") as cb:
             stats = undo_batch(connect(cfg.database), batch, progress=cb)
-        print(f"Откат батча {stats.batch_id}: возвращено {stats.undone}, "
-              f"отсутствовало {stats.missing}, ошибок {stats.failed}")
+        print(_t("cli.undo.done", _lang(cfg), batch=stats.batch_id, undone=stats.undone,
+                 missing=stats.missing, failed=stats.failed))
 
     @app.command()
     def run(
@@ -829,7 +895,7 @@ try:
         in-place в корень источника, если --dest не задан).
         """
         if geo is not None and geo not in ("offline", "online"):
-            raise typer.BadParameter("--geo должен быть offline или online")
+            raise typer.BadParameter(_t("cli.run.geo_choice", _lang_of(config)))
         _cmd_run(config, by=by, dest=str(dest) if dest else None, deep=deep, geo=geo,
                   faces=faces, events=events, src=src)
 
