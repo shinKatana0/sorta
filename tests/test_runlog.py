@@ -207,7 +207,22 @@ class TestEnvOverrides:
         assert our_handlers()[0].level == logging.INFO
 
 
+# Faking `os.name` cuts BOTH ways, and the posix side is the loud one: `Path()` picks
+# its flavour from `os.name` at instantiation, so with "nt" faked on Linux it builds a
+# WindowsPath — which refuses to exist there and raises NotImplementedError. Worse, the
+# failure is reported while the patch is still in place, so pytest's own
+# `Path(os.getcwd())` raises too and the run dies with an INTERNALERROR instead of a
+# test name (caught by CI on 2026-07-29; the local gate runs on Windows and never saw
+# it). Each direction is therefore tested only on the platform where it is real.
+_WINDOWS_ONLY = pytest.mark.skipif(
+    os.name != "nt",
+    reason="Path() picks its flavour from os.name at instantiation, so faking nt on "
+           "posix builds a WindowsPath that cannot be instantiated at all.",
+)
+
+
 class TestDefaultLogPath:
+    @_WINDOWS_ONLY
     def test_windows_uses_localappdata(self, tmp_path, monkeypatch):
         monkeypatch.setattr(os, "name", "nt")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -226,6 +241,7 @@ class TestDefaultLogPath:
         expected = Path.home() / ".cache" / "sorta" / "logs" / "sorta.log"
         assert runlog.default_log_path() == expected
 
+    @_WINDOWS_ONLY
     def test_windows_without_localappdata_falls_back(self, monkeypatch):
         monkeypatch.setattr(os, "name", "nt")
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
