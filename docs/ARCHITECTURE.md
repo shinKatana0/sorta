@@ -101,10 +101,14 @@ Switching the sort mode does not require re-running the pipelines.
 
 ### media_class (written only by naming/junk)
 - 1:1 with files; `verdict`: photo | screenshot | meme | document | product;
-  `source`: heuristic | clip | vlm (a later one overrides the earlier);
+  `source`: heuristic | clip | ocr | vlm (a later one overrides the earlier);
   `score` — NULL for heuristics. Two-tier classifier: fast (CLIP zero-shot + OCR)
   by default, deep (VLM) — opt-in. verdict != photo → the sorter puts the file in
   a separate branch (documents/products/junk), not the main layout.
+- `tier`: heuristic | clip | vlm — WHICH tier produced the row, and the only thing
+  incrementality is decided on: a run redoes exactly the rows whose `tier` differs
+  from the one it is running (so a repeated run with the same tier processes
+  nothing, and the deep tier is paid for once).
 - A missing row = "not classified" — the sorter treats it as photo.
 
 ### move_batches / moves (written only by sorter)
