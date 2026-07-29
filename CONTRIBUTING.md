@@ -62,6 +62,13 @@ for filesystem operations. ML‑heavy paths (faces, CLIP, OCR) are **mocked** in
 - **Incremental.** Long stages should reprocess only new/changed files.
 - **i18n.** User‑facing folder names and the web UI support ru/en/ja; keep new
   strings translated.
+- **Comments and docstrings in English.** The repository is public, so the prose that
+  explains *why* the code is what it is has to be readable without Russian. Russian
+  stays where it is the subject — a folder name the product creates (`_удалить`), a
+  spelling people type for a trip folder (`Тайланд 2023`) — quoted, so it reads as data.
+  The exception is the command docstrings in `sorta/cli.py`: Typer prints them as
+  `--help`, so they follow the interface language. `tests/test_comments_english.py`
+  enforces this.
 
 ## Pull requests
 

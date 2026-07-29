@@ -1452,7 +1452,7 @@ class TestCountryWithoutCity(SorterTestBase):
 
 
 class TestLocalizedWhereFilter(SorterTestBase):
-    """F46: --where country=Россия/city=Москва (lang=ru) selects the same files
+    """F46: `--where country=Россия`/`city=Москва` (lang=ru) selects the same files
     as the canonical --where country=RU/city=Moscow."""
 
     def _report_where(self, where):

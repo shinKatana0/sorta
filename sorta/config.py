@@ -122,7 +122,8 @@ class EventsConfig:
 
 @dataclass
 class SortConfig:
-    # photos with multiple people: primary (largest face) | shared_folder (_Совместные)
+    # photos with multiple people: primary (largest face) | shared_folder (the folder
+    # is named «_Совместные» in a ru layout — the product spells it that way)
     multi_person: str = "primary"
     # directories of the already-manually-sorted part of the collection — files in
     # them (and subfolders) are not sorted (they stay in the index). Combined with --exclude (F16).

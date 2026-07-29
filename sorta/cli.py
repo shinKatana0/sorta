@@ -527,6 +527,11 @@ def _stub(name: str, doc: str, lang: Lang):
 
 
 # --- Typer interface (primary) --------------------------------------------
+# The interface itself speaks Russian, and so does the docstring of every command
+# below: Typer turns it into the `--help` text of that command (see the `faces --help`
+# test). Those docstrings are program OUTPUT, exactly like the `help=` strings and the
+# printed messages next to them — not documentation about the code — so they stay in
+# the interface language while the comments around them are English.
 try:
     import typer
 
