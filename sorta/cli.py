@@ -8,6 +8,13 @@ from typing import Callable
 
 import numpy as np
 
+try:
+    import typer
+except ImportError:  # pragma: no cover — a sandbox/CI without typer, see _argparse_main
+    _TYPER_AVAILABLE = False
+else:
+    _TYPER_AVAILABLE = True
+
 from . import __version__, imaging
 from .config import configure_logging, load_config
 from .db import connect, reset_index
@@ -81,8 +88,11 @@ def _ensure_utf8_console() -> None:
 # anyway read it off `cfg`; the few checks that fire BEFORE the config is read (the
 # `typer.BadParameter` guards) use `_lang_of` below.
 #
-# `--help` texts are deliberately NOT localized — see the note above `_CLI_STRINGS`
-# in i18n.py: they are evaluated at import time, before any config is read.
+# F114: the `--help` texts are in that same catalog now. They could not be: a
+# `typer.Option(..., help=...)` runs when this module is imported, and by then nothing
+# has read the config. So the interface is no longer built at import time either — it
+# is assembled by `build_app(lang)` after `_startup_lang()` has peeked at argv for
+# `--config` and read the language off it.
 
 def _lang(cfg) -> Lang:
     """The output language of a command that already holds a loaded config."""
@@ -100,6 +110,50 @@ def _lang_of(config_path: str) -> Lang:
         return _lang(load_config(config_path))
     except Exception:  # noqa: BLE001 — any unreadable config, the message still goes out
         return normalize_lang(None)
+
+
+_DEFAULT_CONFIG = "config.yaml"
+
+
+def _peek_config_path(argv: list[str]) -> str:
+    """The value of `--config`/`-c` in a command line, without parsing it.
+
+    F114: the help language comes out of the config, and the config path comes out of
+    the command line — but the command line cannot be parsed yet, because the parser is
+    what we are about to build. So this only LOOKS: it consumes nothing, validates
+    nothing and never raises. Whatever is wrong with the arguments is still typer's to
+    say, in typer's words, a moment later.
+
+    Every spelling click accepts is recognised — `--config x`, `--config=x`, `-c x`,
+    `-c=x`, `-cx` — and a repeated flag keeps its LAST value, the way click does. A bare
+    `--` ends the scan: after it click sees only positional arguments.
+    """
+    path = _DEFAULT_CONFIG
+    rest = list(argv)
+    while rest:
+        token = rest.pop(0)
+        if token == "--":
+            break
+        if token in ("--config", "-c"):
+            if rest:
+                path = rest.pop(0)
+        elif token.startswith("--config="):
+            path = token[len("--config="):]
+        elif token.startswith("-c="):
+            path = token[len("-c="):]
+        elif token.startswith("-c") and not token.startswith("--"):
+            path = token[2:]
+    return path
+
+
+def _startup_lang(argv: list[str] | None = None) -> Lang:
+    """The interface language, decided before anything has parsed the command line.
+
+    `_lang_of` swallows every read error, so `--help` keeps working with no config at
+    all and with a broken one — the person reading the help is precisely the one who
+    has not set anything up yet.
+    """
+    return _lang_of(_peek_config_path(sys.argv[1:] if argv is None else list(argv)))
 
 
 # --- Stage summaries (a single format for the standalone commands and the `run` pipeline) ----
@@ -526,33 +580,210 @@ def _stub(name: str, doc: str, lang: Lang):
     return cmd
 
 
-# --- Typer interface (primary) --------------------------------------------
-# The interface itself speaks Russian, and so does the docstring of every command
-# below: Typer turns it into the `--help` text of that command (see the `faces --help`
-# test). Those docstrings are program OUTPUT, exactly like the `help=` strings and the
-# printed messages next to them — not documentation about the code — so they stay in
-# the interface language while the comments around them are English.
-try:
-    import typer
+# --- The rest of the command bodies -----------------------------------------
+# What `build_app` registers with typer below is a thin shell: flags, arguments and
+# their help. The work itself lives here, in functions that know nothing about the
+# interface — which is also what keeps them callable from the argparse fallback.
 
-    app = typer.Typer(help=f"Sorta v{__version__} — сортировка фотоколлекции")
-    _CFG = typer.Option("config.yaml", "--config", "-c", help="Путь к config.yaml")
 
-    @app.command()
+def _cmd_doctor(config_path: str) -> None:
+    """F112: `--config` is here only to know the output language — the command still
+    works without a readable config (`_lang_of` falls back to the default), it just
+    prints in the default language then. The two health summaries below come from
+    diagnostics.py, which this feature does not own, so they stay as that module
+    writes them.
+    """
+    lang = _lang_of(config_path)
+    print(gpu_health().summary)
+    # F65: the geo base failing to load is invisible at runtime (every coordinate just
+    # resolves to an empty place), so the doctor has to state it outright.
+    geo = geo_data_health()
+    print(("" if geo.available else "⚠ ") + geo.summary)
+    print(_t("cli.doctor.log", lang, path=default_log_path()))
+    print(_t("cli.cache.preview_dir", lang, path=imaging.preview_dir())
+          + ("" if imaging.preview_cache_enabled()
+             else _t("cli.cache.preview_disabled", lang)))
+
+
+def _cmd_cache(config_path: str, *, clear: bool = False,
+               clear_geo: bool = False) -> None:
+    cfg = load_config(config_path)  # applies the imaging: section onto the env
+    lang = _lang(cfg)
+    directory = imaging.preview_dir()
+    if clear_geo:
+        conn = connect(cfg.database)
+        try:
+            removed = clear_geo_cache(conn)
+        finally:
+            conn.close()
+        print(_t("cli.cache.geo_cleared", lang, n=removed))
+    if clear:
+        imaging.preview_cache_clear()
+        print(_t("cli.cache.preview_cleared", lang, path=directory))
+    if clear or clear_geo:
+        return
+    files = sum(1 for _ in directory.rglob("*.jpg")) if directory.exists() else 0
+    size = sum(f.stat().st_size for f in directory.rglob("*.jpg")) if files else 0
+    print(_t("cli.cache.preview_dir", lang, path=directory))
+    print(_t("cli.cache.preview_stats", lang, files=files, size_gb=size / 1e9))
+    conn = connect(cfg.database)
+    try:
+        print(_t("cli.cache.geo_size", lang, n=geo_cache_size(conn)))
+    finally:
+        conn.close()
+
+
+def _cmd_ui(config_path: str, port: int) -> None:
+    from .ui import serve as ui_serve
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
+    conn = connect(cfg.database)
+    ui_serve(cfg, conn, port=port, config_path=config_path)
+
+
+def _cmd_faces_label(config_path: str, cluster_id: int, name: str) -> None:
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    root = label_cluster(connect(cfg.database), cluster_id, name)
+    print(_t("cli.faces.labeled", _lang(cfg), cluster=root, name=name))
+
+
+def _cmd_faces_merge(config_path: str, src_id: int, dst_id: int) -> None:
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    root = merge_clusters(connect(cfg.database), src_id, dst_id)
+    print(_t("cli.faces.merged", _lang(cfg), src=src_id, dst=root))
+
+
+def _cmd_faces_sheet(config_path: str, cluster_id: int, out_html: Path) -> None:
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    n = export_contact_sheet(connect(cfg.database), cluster_id, out_html)
+    print(_t("cli.faces.sheet_done", _lang(cfg), n=n, path=out_html))
+
+
+def _cmd_events_rename(config_path: str, event_id: int, name: str) -> None:
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    rename_event(connect(cfg.database), event_id, name)
+    print(_t("cli.events.renamed", _lang(cfg), event_id=event_id, name=name))
+
+
+def _cmd_events_add(config_path: str, name: str, date_from: str,
+                    date_to: str) -> None:
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    eid = add_manual_event(connect(cfg.database), name, date_from, date_to)
+    print(_t("cli.events.added", _lang(cfg), event_id=eid, name=name,
+             date_from=date_from, date_to=date_to))
+
+
+def _cmd_sort(config_path: str, by: str, dest: Path | None = None, *,
+              apply: bool = False, copy: bool = False,
+              where: list[str] | None = None, thumbnails: bool = False,
+              dedupe: bool = False, delete_worse_dupes: bool = False,
+              exclude: list[str] | None = None) -> None:
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    lang = _lang(cfg)
+    conn = connect(cfg.database)
+    with progress_task(f"sort --by {by}") as cb:
+        report = plan_and_sort(cfg, conn, by, dest, apply=apply, copy=copy,
+                               where=where or [],
+                               thumbnails=thumbnails, dedupe=dedupe,
+                               delete_worse_dupes=delete_worse_dupes,
+                               exclude=exclude or [], progress=cb)
+    if apply:
+        # Copy and move are two whole sentences, not one sentence with the verb
+        # pasted in: the word order around the counts is not the same everywhere.
+        extra = (_t("cli.sort.deleted_dupes", lang, n=report.deleted)
+                 if report.deleted else "")
+        print(_t("cli.sort.copied" if copy else "cli.sort.moved", lang,
+                 moved=report.moved, in_place=report.skipped_in_place,
+                 failed=report.failed, extra=extra))
+
+
+def _cmd_album(config_path: str, kind: str, selector: str, dest: Path, *,
+               copy: bool = False, move: bool = False,
+               where: list[str] | None = None, name: str | None = None,
+               apply: bool = False) -> None:
+    mode = "move" if move else "copy" if copy else "link"
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    lang = _lang(cfg)
+    conn = connect(cfg.database)
+    with progress_task(f"album {kind} {selector}"):
+        report = plan_album(cfg, conn, kind, selector, dest, mode=mode,
+                            where=where or [], apply=apply, album_name=name)
+    if apply:
+        extra = (_t("cli.album.blocked_multi", lang, n=report.blocked_multi)
+                 if report.blocked_multi else "")
+        print(_t("cli.album.done", lang, name=report.album_name,
+                 transferred=report.transferred, failed=report.failed, extra=extra))
+
+
+def _cmd_reset(config_path: str, *, clear_geo: bool = False,
+               confirm: Callable[[str], None] | None = None) -> None:
+    """`confirm` is injected instead of called here: the question is typer's
+    (`typer.confirm(..., abort=True)`), and this function has to stay callable where
+    typer is not installed. None means nothing is asked — which is what `--yes` does.
+    """
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    lang = _lang(cfg)
+    if confirm is not None:
+        confirm(_t("cli.reset.confirm", lang,
+                   extra=_t("cli.reset.confirm_geo", lang) if clear_geo else ""))
+    conn = connect(cfg.database)
+    try:
+        reset_index(conn, clear_geo=clear_geo)
+    finally:
+        conn.close()
+    print(_t("cli.reset.done", lang,
+             extra=_t("cli.reset.done_geo", lang) if clear_geo else ""))
+
+
+def _cmd_undo(config_path: str, batch: int | None = None) -> None:
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    with progress_task("undo") as cb:
+        stats = undo_batch(connect(cfg.database), batch, progress=cb)
+    print(_t("cli.undo.done", _lang(cfg), batch=stats.batch_id, undone=stats.undone,
+             missing=stats.missing, failed=stats.failed))
+
+
+# --- Typer interface (primary) ----------------------------------------------
+# A factory instead of a module-level application (F114): the help of an option is
+# written inside `typer.Option(...)`, which runs when this module is imported — too
+# early for anything to know the language. So the interface is assembled here, once,
+# after the language has been read. Nothing else about it moved: the same commands,
+# the same flags, the same guards raising typer's own errors.
+#
+# The bodies live in the `_cmd_*` functions above. What is left in each shell is the
+# part that IS the interface: the flags, and the two or three checks that have to
+# answer with `typer.BadParameter` before any work starts.
+
+
+def build_app(lang: Lang) -> typer.Typer:
+    """The whole command line, with every `--help` text in `lang`."""
+
+    def h(key: str, **fields: object) -> str:
+        return _t(key, lang, **fields)
+
+    app = typer.Typer(help=h("cli.help.app", version=__version__))
+    cfg_opt = typer.Option(_DEFAULT_CONFIG, "--config", "-c",
+                           help=h("cli.help.opt.config"))
+
+    @app.command(help=h("cli.help.index"))
     def index(
-        src: str = typer.Argument(
-            None, help="Каталог с фото (рекурсивно); переопределяет config sources"),
-        config: str = _CFG,
+        src: str = typer.Argument(None, help=h("cli.help.index.src")),
+        config: str = cfg_opt,
         refresh_exif: bool = typer.Option(
-            False, "--refresh-exif",
-            help="Перечитать метаданные уже проиндексированных файлов "
-                 "(вместо сканирования). Содержимое файлов не читается."),
+            False, "--refresh-exif", help=h("cli.help.index.refresh_exif")),
         exclude_dir: list[str] = typer.Option(
-            None, "--exclude-dir",
-            help="Не сканировать эту папку источника (путь относительно корня). "
-                 "Можно повторять. Сохраняется в файл исключений."),
+            None, "--exclude-dir", help=h("cli.help.index.exclude_dir")),
     ):
-        """Сканировать источники, извлечь метаданные, пометить дубликаты."""
         if refresh_exif:
             _cmd_refresh_exif(config)
             return
@@ -560,370 +791,220 @@ try:
             _cmd_add_excludes(config, src, exclude_dir)
         _cmd_index(config, src=src)
 
-    @app.command()
-    def stats(config: str = _CFG):
-        """Покрытие индекса: GPS, источники дат, дубликаты."""
+    @app.command(help=h("cli.help.stats"))
+    def stats(config: str = cfg_opt):
         _cmd_stats(config)
 
-    @app.command()
+    @app.command(help=h("cli.help.dupes"))
     def dupes(
-        near: bool = typer.Option(False, "--near", help="Показать почти-дубликаты (pHash)"),
-        config: str = _CFG,
+        near: bool = typer.Option(False, "--near", help=h("cli.help.dupes.near")),
+        config: str = cfg_opt,
     ):
-        """Список точных дубликатов; с --near — группы почти-дубликатов."""
         _cmd_dupes(config, near=near)
 
-    @app.command()
-    def geo(config: str = _CFG):
-        """Определить место каждого файла: GPS + наследование по сессиям."""
+    @app.command(help=h("cli.help.geo"))
+    def geo(config: str = cfg_opt):
         _cmd_geo(config)
 
-    @app.command()
-    def landmarks(config: str = _CFG):
-        """Места без GPS по известным достопримечательностям (CLIP). Запускать после geo."""
+    @app.command(help=h("cli.help.landmarks"))
+    def landmarks(config: str = cfg_opt):
         _cmd_landmarks(config)
 
-    @app.command()
-    def phash(config: str = _CFG):
-        """Посчитать pHash для почти-дубликатов (для `dupes --near`)."""
+    @app.command(help=h("cli.help.phash"))
+    def phash(config: str = cfg_opt):
         _cmd_phash(config)
 
-    @app.command()
-    def junk(config: str = _CFG):
-        """Классифицировать фото/мусор (screenshot|meme|document) для сортировки."""
+    @app.command(help=h("cli.help.junk"))
+    def junk(config: str = cfg_opt):
         _cmd_junk(config)
 
-    @app.command()
-    def doctor(config: str = _CFG):
-        """Диагностика окружения: torch/onnxruntime, GPU, гео-база, лог-файл.
+    @app.command(help=h("cli.help.doctor"))
+    def doctor(config: str = cfg_opt):
+        _cmd_doctor(config)
 
-        F112: `--config` is here only to know the output language — the command still
-        works without a readable config (`_lang_of` falls back to the default), it just
-        prints in the default language then. The two health summaries below come from
-        diagnostics.py, which this feature does not own, so they stay as that module
-        writes them.
-        """
-        lang = _lang_of(config)
-        print(gpu_health().summary)
-        # F65: the geo base failing to load is invisible at runtime (every coordinate
-        # just resolves to an empty place), so the doctor has to state it outright.
-        geo = geo_data_health()
-        print(("" if geo.available else "⚠ ") + geo.summary)
-        print(_t("cli.doctor.log", lang, path=default_log_path()))
-        print(_t("cli.cache.preview_dir", lang, path=imaging.preview_dir())
-              + ("" if imaging.preview_cache_enabled()
-                 else _t("cli.cache.preview_disabled", lang)))
-
-    @app.command("cache")
+    @app.command("cache", help=h("cli.help.cache"))
     def cache_cmd(
-        clear: bool = typer.Option(
-            False, "--clear", help="Удалить кэш превью (он пересоберётся сам)"),
+        clear: bool = typer.Option(False, "--clear", help=h("cli.help.cache.clear")),
         clear_geo: bool = typer.Option(
-            False, "--clear-geo",
-            help="Удалить кэш ответов онлайн-геокодера (F93): следующий `sorta geo` "
-                 "при provider: online снова сходит в сеть"),
-        config: str = _CFG,
+            False, "--clear-geo", help=h("cli.help.cache.clear_geo")),
+        config: str = cfg_opt,
     ):
-        """Кэши: показать путь и размер, при --clear/--clear-geo — удалить.
+        _cmd_cache(config, clear=clear, clear_geo=clear_geo)
 
-        Кэш превью безопасно удалять в любой момент: он ленивый и пересоздаётся той
-        стадией, которой первой понадобится кадр. Смысл команды — освободить место
-        (порядка 150 КБ на фото) или заставить перегенерировать превью после смены
-        настроек.
+    @app.command(help=h("cli.help.ui"))
+    def ui(port: int = typer.Option(8756, "--port", help=h("cli.help.ui.port")),
+           config: str = cfg_opt):
+        _cmd_ui(config, port)
 
-        Кэш геоданных (F93) — ответы онлайн-провайдера в таблице geo_cache. Он
-        переживает и повторный прогон, и «Начать заново», поэтому --clear-geo —
-        единственный способ переспросить провайдера, если он однажды ответил неверно.
-        """
-        cfg = load_config(config)  # applies the imaging: section onto the env
-        lang = _lang(cfg)
-        directory = imaging.preview_dir()
-        if clear_geo:
-            conn = connect(cfg.database)
-            try:
-                removed = clear_geo_cache(conn)
-            finally:
-                conn.close()
-            print(_t("cli.cache.geo_cleared", lang, n=removed))
-        if clear:
-            imaging.preview_cache_clear()
-            print(_t("cli.cache.preview_cleared", lang, path=directory))
-        if clear or clear_geo:
-            return
-        files = sum(1 for _ in directory.rglob("*.jpg")) if directory.exists() else 0
-        size = sum(f.stat().st_size for f in directory.rglob("*.jpg")) if files else 0
-        print(_t("cli.cache.preview_dir", lang, path=directory))
-        print(_t("cli.cache.preview_stats", lang, files=files, size_gb=size / 1e9))
-        conn = connect(cfg.database)
-        try:
-            print(_t("cli.cache.geo_size", lang, n=geo_cache_size(conn)))
-        finally:
-            conn.close()
-
-    @app.command()
-    def ui(port: int = typer.Option(8756, "--port", help="Порт локального сервера (127.0.0.1)"),
-           config: str = _CFG):
-        """Локальный веб-интерфейс: живой отчёт плана (пока режим city). Ctrl+C — стоп."""
-        from .ui import serve as ui_serve
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
-        conn = connect(cfg.database)
-        ui_serve(cfg, conn, port=port, config_path=config)
-
-    faces_app = typer.Typer(help="Лица: детекция, кластеры, именование.")
+    # A group's own help comes from `typer.Typer(help=...)`, which typer prefers over
+    # anything its callback says — so the callbacks below carry no help of their own.
+    faces_app = typer.Typer(help=h("cli.help.faces"))
     app.add_typer(faces_app, name="faces")
 
     @faces_app.callback(invoke_without_command=True)
     def faces_main(
         ctx: typer.Context,
         rescan: bool = typer.Option(
-            False, "--rescan",
-            help="Пересчитать лица заново: стереть строки faces и продетектировать "
-                 "все канонические фото (имена кластеров переносятся по файлам). "
-                 "Нужен после смены детектора; без флага шаг инкрементальный"),
-        limit: int = typer.Option(
-            None, "--limit",
-            help="Только с --rescan: пересчитать N случайных файлов, остальные не "
-                 "трогать (замер шага на живом пайплайне)"),
-        config: str = _CFG,
+            False, "--rescan", help=h("cli.help.faces.rescan")),
+        limit: int = typer.Option(None, "--limit", help=h("cli.help.faces.limit")),
+        config: str = cfg_opt,
     ):
-        """Без подкоманды: найти лица в новых фото и пересчитать кластеры."""
         if ctx.invoked_subcommand is not None:
             return
         if limit is not None and not rescan:
-            raise typer.BadParameter(_t("cli.faces.limit_needs_rescan", _lang_of(config)))
+            raise typer.BadParameter(
+                _t("cli.faces.limit_needs_rescan", _lang_of(config)))
         if limit is not None and limit <= 0:
             raise typer.BadParameter(_t("cli.faces.limit_positive", _lang_of(config)))
         _cmd_faces(config, rescan=rescan, limit=limit)
 
-    @faces_app.command("label")
-    def faces_label(cluster_id: int, name: str, config: str = _CFG):
-        """Назвать кластер: sorta faces label 3 "Мама"."""
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        root = label_cluster(connect(cfg.database), cluster_id, name)
-        print(_t("cli.faces.labeled", _lang(cfg), cluster=root, name=name))
+    @faces_app.command("label", help=h("cli.help.faces.label"))
+    def faces_label(cluster_id: int, name: str, config: str = cfg_opt):
+        _cmd_faces_label(config, cluster_id, name)
 
-    @faces_app.command("merge")
-    def faces_merge(src_id: int, dst_id: int, config: str = _CFG):
-        """Слить кластер src в dst (это один человек)."""
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        root = merge_clusters(connect(cfg.database), src_id, dst_id)
-        print(_t("cli.faces.merged", _lang(cfg), src=src_id, dst=root))
+    @faces_app.command("merge", help=h("cli.help.faces.merge"))
+    def faces_merge(src_id: int, dst_id: int, config: str = cfg_opt):
+        _cmd_faces_merge(config, src_id, dst_id)
 
-    @faces_app.command("sheet")
-    def faces_sheet(cluster_id: int, out_html: Path, config: str = _CFG):
-        """Экспорт контактного листа кластера в HTML."""
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        n = export_contact_sheet(connect(cfg.database), cluster_id, out_html)
-        print(_t("cli.faces.sheet_done", _lang(cfg), n=n, path=out_html))
+    @faces_app.command("sheet", help=h("cli.help.faces.sheet"))
+    def faces_sheet(cluster_id: int, out_html: Path, config: str = cfg_opt):
+        _cmd_faces_sheet(config, cluster_id, out_html)
 
-    events_app = typer.Typer(help="События: автокластеризация, имена, ручные события.")
+    events_app = typer.Typer(help=h("cli.help.events"))
     app.add_typer(events_app, name="events")
 
     @events_app.callback(invoke_without_command=True)
-    def events_main(ctx: typer.Context, config: str = _CFG):
-        """Без подкоманды: пересчитать события (время × место)."""
+    def events_main(ctx: typer.Context, config: str = cfg_opt):
         if ctx.invoked_subcommand is None:
             _cmd_events(config)
 
-    @events_app.command("rename")
-    def events_rename(event_id: int, name: str, config: str = _CFG):
-        """Переименовать событие (имя переживает пересчёт)."""
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        rename_event(connect(cfg.database), event_id, name)
-        print(_t("cli.events.renamed", _lang(cfg), event_id=event_id, name=name))
+    @events_app.command("rename", help=h("cli.help.events.rename"))
+    def events_rename(event_id: int, name: str, config: str = cfg_opt):
+        _cmd_events_rename(config, event_id, name)
 
-    @events_app.command("add")
-    def events_add(name: str, date_from: str, date_to: str, config: str = _CFG):
-        """Ручное событие на диапазон дат: events add "Конференция" 2024-01-01 2024-01-10."""
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        eid = add_manual_event(connect(cfg.database), name, date_from, date_to)
-        print(_t("cli.events.added", _lang(cfg), event_id=eid, name=name,
-                 date_from=date_from, date_to=date_to))
+    @events_app.command("add", help=h("cli.help.events.add"))
+    def events_add(name: str, date_from: str, date_to: str, config: str = cfg_opt):
+        _cmd_events_add(config, name, date_from, date_to)
 
-    @app.command()
+    @app.command(help=h("cli.help.sort"))
     def sort(
-        by: str = typer.Option(..., help="city | person | event"),
-        dest: Path = typer.Option(
-            None, "--dest", help="Каталог назначения; без него — in-place раскладка в корень источника (единственный sources)"),
-        apply: bool = typer.Option(False, "--apply", help="Реально переместить (иначе dry-run)"),
-        copy: bool = typer.Option(
-            False, "--copy", help="Копировать в новую структуру, оригиналы на месте (C16; иначе перемещение)"),
-        where: list[str] = typer.Option(
-            None, "--where", help='Фильтр, повторяемый: "country=DE", "year>=2020"'),
+        by: str = typer.Option(..., help=h("cli.help.sort.by")),
+        dest: Path = typer.Option(None, "--dest", help=h("cli.help.sort.dest")),
+        apply: bool = typer.Option(False, "--apply", help=h("cli.help.sort.apply")),
+        copy: bool = typer.Option(False, "--copy", help=h("cli.help.sort.copy")),
+        where: list[str] = typer.Option(None, "--where", help=h("cli.help.sort.where")),
         thumbnails: bool = typer.Option(
-            False, "--thumbnails", help="Миниатюры в HTML-отчёте (медленно: декод всех фото)"),
-        dedupe: bool = typer.Option(
-            False, "--dedupe", help="Почти-дубли: лучший — по режиму, худшие — в _Duplicates (нужен sorta phash)"),
+            False, "--thumbnails", help=h("cli.help.sort.thumbnails")),
+        dedupe: bool = typer.Option(False, "--dedupe", help=h("cli.help.sort.dedupe")),
         delete_worse_dupes: bool = typer.Option(
-            False, "--delete-worse-dupes", help="С --dedupe: БЕЗВОЗВРАТНО удалять худшие (не откатывается)"),
+            False, "--delete-worse-dupes", help=h("cli.help.sort.delete_worse_dupes")),
         exclude: list[str] = typer.Option(
-            None, "--exclude", help="Не сортировать файлы из этого каталога (повторяемый); объединяется с sort.exclude_dirs"),
-        config: str = _CFG,
+            None, "--exclude", help=h("cli.help.sort.exclude")),
+        config: str = cfg_opt,
     ):
-        """Разложить файлы перемещением. По умолчанию — dry-run с планом (CSV+HTML)."""
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        lang = _lang(cfg)
-        conn = connect(cfg.database)
-        with progress_task(f"sort --by {by}") as cb:
-            report = plan_and_sort(cfg, conn, by, dest, apply=apply, copy=copy,
-                                   where=where or [],
-                                   thumbnails=thumbnails, dedupe=dedupe,
-                                   delete_worse_dupes=delete_worse_dupes,
-                                   exclude=exclude or [], progress=cb)
-        if apply:
-            # Copy and move are two whole sentences, not one sentence with the verb
-            # pasted in: the word order around the counts is not the same everywhere.
-            extra = (_t("cli.sort.deleted_dupes", lang, n=report.deleted)
-                     if report.deleted else "")
-            print(_t("cli.sort.copied" if copy else "cli.sort.moved", lang,
-                     moved=report.moved, in_place=report.skipped_in_place,
-                     failed=report.failed, extra=extra))
+        _cmd_sort(config, by, dest, apply=apply, copy=copy, where=where,
+                  thumbnails=thumbnails, dedupe=dedupe,
+                  delete_worse_dupes=delete_worse_dupes, exclude=exclude)
 
-    @app.command()
+    @app.command(help=h("cli.help.album"))
     def album(
-        kind: str = typer.Argument(..., help="person | event"),
-        selector: str = typer.Argument(..., help="имя человека / имя или id события"),
-        dest: Path = typer.Option(..., "--dest", help="Куда выгрузить альбом"),
-        copy: bool = typer.Option(False, "--copy", help="Копировать (иначе hardlink)"),
-        move: bool = typer.Option(
-            False, "--move", help="Изъять из пула (перемещение); иначе hardlink"),
+        kind: str = typer.Argument(..., help=h("cli.help.album.kind")),
+        selector: str = typer.Argument(..., help=h("cli.help.album.selector")),
+        dest: Path = typer.Option(..., "--dest", help=h("cli.help.album.dest")),
+        copy: bool = typer.Option(False, "--copy", help=h("cli.help.album.copy")),
+        move: bool = typer.Option(False, "--move", help=h("cli.help.album.move")),
         where: list[str] = typer.Option(
-            None, "--where", help='Доп. фильтр среза: "city=Барселона", "year>=2020"'),
-        name: str = typer.Option(None, "--name", help="Имя папки альбома (иначе имя человека/события)"),
-        apply: bool = typer.Option(False, "--apply", help="Реально выгрузить (иначе dry-run)"),
-        config: str = _CFG,
+            None, "--where", help=h("cli.help.album.where")),
+        name: str = typer.Option(None, "--name", help=h("cli.help.album.name")),
+        apply: bool = typer.Option(False, "--apply", help=h("cli.help.album.apply")),
+        config: str = cfg_opt,
     ):
-        """Выгрузить срез (человека/события) в отдельную папку. По умолчанию — hardlink, dry-run."""
         if copy and move:
             raise typer.BadParameter(
                 _t("cli.album.copy_move_exclusive", _lang_of(config)))
-        mode = "move" if move else "copy" if copy else "link"
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        lang = _lang(cfg)
-        conn = connect(cfg.database)
-        with progress_task(f"album {kind} {selector}"):
-            report = plan_album(cfg, conn, kind, selector, dest, mode=mode,
-                                where=where or [], apply=apply, album_name=name)
-        if apply:
-            extra = (_t("cli.album.blocked_multi", lang, n=report.blocked_multi)
-                     if report.blocked_multi else "")
-            print(_t("cli.album.done", lang, name=report.album_name,
-                     transferred=report.transferred, failed=report.failed, extra=extra))
+        _cmd_album(config, kind, selector, dest, copy=copy, move=move, where=where,
+                   name=name, apply=apply)
 
-    @app.command()
+    @app.command(help=h("cli.help.reset"))
     def reset(
-        yes: bool = typer.Option(False, "--yes", "-y", help="Без подтверждения"),
+        yes: bool = typer.Option(False, "--yes", "-y", help=h("cli.help.reset.yes")),
         clear_geo: bool = typer.Option(
-            False, "--clear-geo",
-            help="Заодно очистить кэш ответов онлайн-геокодера (F93); без флага он "
-                 "переживает сброс, и повторный прогон geo не стоит сети"),
-        config: str = _CFG,
+            False, "--clear-geo", help=h("cli.help.reset.clear_geo")),
+        config: str = cfg_opt,
     ):
-        """Стереть индекс (БД) и начать с нуля. Фото и разложенные папки НЕ трогает.
+        def ask(text: str) -> None:
+            typer.confirm(text, abort=True)  # aborts the command on "no"
 
-        Внимание: пропадут имена людей/событий и решения по дублям. Кэш геоданных
-        (F93) остаётся — названия точек на карте не зависят от того, какие файлы лежат
-        у пользователя; стереть и его — `--clear-geo`.
-        """
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        lang = _lang(cfg)
-        if not yes:
-            typer.confirm(
-                _t("cli.reset.confirm", lang,
-                   extra=_t("cli.reset.confirm_geo", lang) if clear_geo else ""),
-                abort=True)
-        conn = connect(cfg.database)
-        try:
-            reset_index(conn, clear_geo=clear_geo)
-        finally:
-            conn.close()
-        print(_t("cli.reset.done", lang,
-                 extra=_t("cli.reset.done_geo", lang) if clear_geo else ""))
+        _cmd_reset(config, clear_geo=clear_geo, confirm=None if yes else ask)
 
-    @app.command()
+    @app.command(help=h("cli.help.undo"))
     def undo(
-        batch: int = typer.Option(None, "--batch", help="ID батча (по умолчанию последний)"),
-        config: str = _CFG,
+        batch: int = typer.Option(None, "--batch", help=h("cli.help.undo.batch")),
+        config: str = cfg_opt,
     ):
-        """Откатить перемещения последнего (или указанного) запуска sort по журналу."""
-        cfg = load_config(config)
-        configure_logging(cfg.log_level)
-        with progress_task("undo") as cb:
-            stats = undo_batch(connect(cfg.database), batch, progress=cb)
-        print(_t("cli.undo.done", _lang(cfg), batch=stats.batch_id, undone=stats.undone,
-                 missing=stats.missing, failed=stats.failed))
+        _cmd_undo(config, batch)
 
-    @app.command()
+    @app.command(help=h("cli.help.run"))
     def run(
-        by: str = typer.Option(None, "--by", help="city|person|event — построить dry-run план в конце"),
-        dest: Path = typer.Option(
-            None, "--dest", help="Каталог назначения для плана с --by; без него — in-place"),
+        by: str = typer.Option(None, "--by", help=h("cli.help.run.by")),
+        dest: Path = typer.Option(None, "--dest", help=h("cli.help.run.dest")),
         deep: bool = typer.Option(
-            None, "--deep/--no-deep",
-            help="Глубокий анализ VLM на этот прогон: медленнее, нужен "
-                 "`uv sync --extra vlm` (иначе откат на быстрый ярус); "
-                 "без флага — как в config.yaml (naming.vlm_enabled)"),
-        geo: str = typer.Option(
-            None, "--geo",
-            help="offline|online — online точнее для мест за границей, но "
-                 "отправляет GPS-координаты фото серверу геокодирования "
-                 "(Nominatim), сами фото не отправляются; без флага — как в "
-                 "config.yaml (geo.provider)"),
+            None, "--deep/--no-deep", help=h("cli.help.run.deep")),
+        geo: str = typer.Option(None, "--geo", help=h("cli.help.run.geo")),
         faces: bool = typer.Option(
-            False, "--faces/--no-faces",
-            help="Разбор по лицам (детекция + кластеризация) — самый долгий "
-                 "шаг; по умолчанию выключен, доступен отдельно как `sorta "
-                 "faces`"),
+            False, "--faces/--no-faces", help=h("cli.help.run.faces")),
         events: bool = typer.Option(
-            False, "--events/--no-events",
-            help="Группировка в события по времени/месту; по умолчанию "
-                 "выключена, доступна отдельно как `sorta events`"),
-        src: str = typer.Option(
-            None, "--src",
-            help="Каталог-источник для этого прогона; переопределяет "
-                 "config sources (как позиционный аргумент у `index`)"),
-        config: str = _CFG,
+            False, "--events/--no-events", help=h("cli.help.run.events")),
+        src: str = typer.Option(None, "--src", help=h("cli.help.run.src")),
+        config: str = cfg_opt,
     ):
-        """Анализ одним прогоном: index -> geo -> landmarks -> junk (+faces/+events с флагами).
-
-        Ничего не перемещает. С --by в конце строит dry-run план (в --dest либо
-        in-place в корень источника, если --dest не задан).
-        """
         if geo is not None and geo not in ("offline", "online"):
             raise typer.BadParameter(_t("cli.run.geo_choice", _lang_of(config)))
         _cmd_run(config, by=by, dest=str(dest) if dest else None, deep=deep, geo=geo,
-                  faces=faces, events=events, src=src)
+                 faces=faces, events=events, src=src)
 
-    def main():
-        _configure_runtime()
+    return app
+
+
+# --- The argparse fallback (no typer) ---------------------------------------
+# Localized for the same reason as the interface above: help whose language depends on
+# which packages happen to be installed is the least predictable kind there is (F114).
+
+_FALLBACK_COMMANDS = ("index", "stats", "dupes", "geo", "phash", "landmarks", "junk",
+                      "faces", "events", "run")
+
+
+def _argparse_main(lang: Lang, argv: list[str] | None = None) -> None:
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="sorta", description=_t("cli.help.app", lang, version=__version__))
+    parser.add_argument("command", choices=list(_FALLBACK_COMMANDS),
+                        help=_t("cli.help.fallback.command", lang))
+    parser.add_argument("-c", "--config", default=_DEFAULT_CONFIG,
+                        help=_t("cli.help.opt.config", lang))
+    parser.add_argument("--near", action="store_true",
+                        help=_t("cli.help.dupes.near", lang))
+    args = parser.parse_args(argv)
+    if args.command == "dupes":
+        _cmd_dupes(args.config, near=args.near)
+    else:
+        {"index": _cmd_index, "stats": _cmd_stats, "geo": _cmd_geo, "phash": _cmd_phash,
+         "landmarks": _cmd_landmarks, "junk": _cmd_junk, "faces": _cmd_faces,
+         "events": _cmd_events, "run": _cmd_run}[args.command](args.config)
+
+
+# The application the tests and the entry point reach for. Built at import, which in a
+# `sorta ...` process is the same moment as `main()` — the argv it peeks at is the one
+# the user typed.
+app = build_app(_startup_lang()) if _TYPER_AVAILABLE else None
+
+
+def main():
+    _configure_runtime()
+    if app is not None:
         app()
-
-except ImportError:  # pragma: no cover — fallback without typer
-    def main():
-        _configure_runtime()
-        import argparse
-        p = argparse.ArgumentParser(prog="sorta")
-        p.add_argument("command", choices=["index", "stats", "dupes", "geo", "phash",
-                                            "landmarks", "junk", "faces", "events", "run"])
-        p.add_argument("-c", "--config", default="config.yaml")
-        p.add_argument("--near", action="store_true")
-        a = p.parse_args()
-        if a.command == "dupes":
-            _cmd_dupes(a.config, near=a.near)
-        else:
-            {"index": _cmd_index, "stats": _cmd_stats, "geo": _cmd_geo, "phash": _cmd_phash,
-             "landmarks": _cmd_landmarks, "junk": _cmd_junk, "faces": _cmd_faces,
-             "events": _cmd_events, "run": _cmd_run}[a.command](a.config)
+    else:  # no typer: the same commands and the same help, through argparse
+        _argparse_main(_startup_lang())
 
 
 if __name__ == "__main__":
