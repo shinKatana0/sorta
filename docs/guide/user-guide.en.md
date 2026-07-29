@@ -1229,6 +1229,8 @@ copy per process, so the settings are shared.
 | `vlm.model` | The model id. Default `Qwen/Qwen2.5-VL-3B-Instruct`. |
 | `vlm.workers` | Threads preparing frames (decode + preprocessing) while the GPU classifies the previous one. Default `min(4, cores)`. It does not affect verdicts — labels are applied in candidate order whatever it is set to. |
 | `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |
+| `vlm.quality` | A toggle of its own for the questions about a frame's quality: are the eyes open, is there a subject worth keeping, is this an accidental shot. Default `false`. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
+| `vlm.quality_scope` | Who gets asked: `groups` (frames of near-duplicate groups, the default), `events` (plus a sample from every event), `all` (every live photo). On 20 000 frames `all` means hours of GPU, which is why the default is narrow. |
 
 > **An old config needs no editing.** The previous addresses
 > `naming.vlm_enabled`, `naming.classify_vlm_model` and `naming.vlm_workers` are
