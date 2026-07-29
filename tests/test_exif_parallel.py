@@ -176,7 +176,17 @@ class TestSessionReuse(FakeExifToolTestCase):
         exif.read_batch(self.paths, 2)
         self.assertEqual(self.fake.launches(), 2)
         exif.read_batch(self.paths, 4)
-        self.assertEqual(self.fake.launches(), 4)
+        # Same reasoning as the neighbour above, and the same fix: a session that dies
+        # is transparently restarted by `_ensure`, which happens now and then under the
+        # load of the full suite, so an exact count is a coin toss rather than a check.
+        # This test was the last one still asserting equality and it was the flake that
+        # turned CI red at random (twice on 2026-07-28, once on Windows CI the day
+        # after). The invariant is bounded on both sides: all four sessions must exist,
+        # and the first two must NOT have been rebuilt — a fresh pool on top of the old
+        # one would take 2 + 4 launches.
+        self.assertGreaterEqual(self.fake.launches(), 4, "не все сессии подняты")
+        self.assertLess(self.fake.launches(), 6,
+                        "широкий вызов пересоздал пул вместо добавления недостающих")
 
 
 class TestFailureIsolation(FakeExifToolTestCase):
