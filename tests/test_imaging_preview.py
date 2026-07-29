@@ -77,12 +77,38 @@ class TestPreviewSettings(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {imaging.ENV_PREVIEW_DIR: "/tmp/pv"}):
             self.assertEqual(imaging.preview_dir(), Path("/tmp/pv"))
 
+    @unittest.skipUnless(os.name == "nt", "the LOCALAPPDATA branch builds a WindowsPath")
     def test_dir_default_windows(self):
+        """The mirror image of test_dir_falls_back_to_home_cache, and the same rule.
+
+        Path() picks its flavour from os.name at instantiation, so the patch makes
+        preview_dir() build a WindowsPath, which cannot exist on Linux. And the skip has
+        to be the decorator rather than a check inside the test: an exception raised while
+        `os.name` is patched takes the whole session down with an INTERNALERROR — pytest's
+        own Path(os.getcwd()) fails too, so there is not even a test name in the report.
+        """
         env = {"LOCALAPPDATA": r"C:\Users\u\AppData\Local"}
         with unittest.mock.patch.dict(os.environ, env, clear=True), \
                 unittest.mock.patch.object(os, "name", "nt"):
             self.assertEqual(
                 imaging.preview_dir(), Path(r"C:\Users\u\AppData\Local") / "sorta" / "previews")
+
+    def test_dir_ignores_localappdata_off_windows(self):
+        """The other side of the `os.name == "nt"` condition, and it runs everywhere.
+
+        Keeps the skip above from hiding anything: the guard itself — LOCALAPPDATA is
+        only honoured on Windows — is checked on every platform, without patching
+        os.name in the direction that the running interpreter cannot construct.
+        """
+        home = Path(tempfile.gettempdir()) / "fake-home"
+        env = {"LOCALAPPDATA": str(Path(tempfile.gettempdir()) / "appdata")}
+        with unittest.mock.patch.dict(os.environ, env, clear=True), \
+                unittest.mock.patch.object(Path, "home", lambda: home):
+            expected = (
+                Path(env["LOCALAPPDATA"]) / "sorta" / "previews" if os.name == "nt"
+                else home / ".cache" / "sorta" / "previews"
+            )
+            self.assertEqual(imaging.preview_dir(), expected)
 
     def test_dir_falls_back_to_home_cache(self):
         """Without LOCALAPPDATA the dir comes from the home cache.

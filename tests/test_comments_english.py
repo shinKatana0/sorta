@@ -164,6 +164,19 @@ class TestCliDocstringsAreHelpText(unittest.TestCase):
         from typer.testing import CliRunner
         self.runner = CliRunner()
 
+    def test_the_help_output_carries_no_terminal_styling(self):
+        """The guard behind the assertion below, checked on output rather than on faith.
+
+        conftest.py sets `_TYPER_FORCE_DISABLE_TERMINAL` because typer styles `--help`
+        whenever GITHUB_ACTIONS is set, and the escapes cut a docstring into pieces:
+        "--near" comes back as a bold "-" followed by a bold "-near". A switch that
+        stops working — renamed upstream, or read after typer was already imported —
+        would otherwise surface as a mystery failure on CI only; here it fails by name.
+        """
+        result = self.runner.invoke(cli.app, ["phash", "--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn("\x1b", result.output)
+
     def test_a_command_docstring_is_what_help_prints(self):
         for command, function in (("stats", "stats"), ("geo", "geo"), ("phash", "phash")):
             with self.subTest(command=command):
