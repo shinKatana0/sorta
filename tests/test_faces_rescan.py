@@ -515,6 +515,9 @@ class TestCliFlags(unittest.TestCase):
         with mock.patch.object(cli, "_cmd_faces") as cmd:
             result = self.runner.invoke(cli.app, ["faces", "--help"])
         self.assertEqual(result.exit_code, 0)
+        # A plain substring, and it stays plain: typer styles --help whenever
+        # GITHUB_ACTIONS is set, and "--rescan" then arrives split by ANSI escapes.
+        # conftest.py turns that styling off for the whole run — see the note there.
         self.assertIn("--rescan", result.output)
         cmd.assert_not_called()
 

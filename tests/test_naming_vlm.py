@@ -462,21 +462,33 @@ class TestThreadLocalProcessors(unittest.TestCase):
         self.assertEqual(pool.built, 0)
 
     def test_one_processor_per_thread_reused_across_calls(self):
+        """One processor per thread that ran, shared with no other thread.
+
+        The results used to be keyed by `threading.get_ident()`, which is only unique
+        among *live* threads: on Linux a thread often finishes inside `start()` and the
+        next one is handed the same ident, so all four entries collapsed into one and
+        the test failed with "1 != 4" on a pool that was behaving correctly. The Thread
+        object stays unique for the whole run, so counting threads is no longer a race —
+        what is asserted is the invariant (as many processors as threads, none shared),
+        not how the interpreter happened to schedule them.
+        """
         built = []
         pool = self.processors(lambda: built.append(len(built)) or f"proc_{len(built)}")
-        got: dict[int, set] = {}
+        got: dict[threading.Thread, set] = {}
 
         def work():
-            got[threading.get_ident()] = {pool.get() for _ in range(5)}
+            got[threading.current_thread()] = {pool.get() for _ in range(5)}
 
         threads = [threading.Thread(target=work) for _ in range(4)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        self.assertEqual(pool.built, 4)                       # not one per call
+        self.assertEqual(len(got), len(threads))                 # every thread reported
+        self.assertEqual(pool.built, len(got))                   # not one per call
         self.assertTrue(all(len(v) == 1 for v in got.values()))  # stable per thread
-        self.assertEqual(len({next(iter(v)) for v in got.values()}), 4)  # all distinct
+        self.assertEqual(
+            len({next(iter(v)) for v in got.values()}), len(got))  # never shared
 
     def test_the_calling_thread_gets_its_own_too(self):
         pool = self.processors(lambda: object())
