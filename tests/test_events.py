@@ -13,8 +13,8 @@ from sorta.geodata import GeoResolver
 
 # geonameid from bundled data/geo (real records — brief F30 allows testing
 # localization either with a geodata.name mock or a real bundled record)
-MOSCOW = 524901   # ru: Москва
-PARIS = 2988507   # ru: Париж
+MOSCOW = 524901   # ru name: «Москва»
+PARIS = 2988507   # ru name: «Париж»
 
 # F44/#19-B: a fixture set of geonameid for the region/proximity merge tests —
 # admin1.tsv/countries.tsv are not in this worktree yet, so the merge tests use their

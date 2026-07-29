@@ -148,8 +148,8 @@ class CityFallbackTestBase(unittest.TestCase):
 
 class TestOfflineFallback(CityFallbackTestBase):
     def test_country_without_city_takes_the_city_from_the_offline_base(self):
-        # the live pair: online returned only the country, the bundled base knows
-        # Домодедово (district Яковлевское)
+        # the live pair: online returned only the country, the bundled base knows the
+        # place as «Домодедово» (district «Яковлевское»)
         photo = self.add_file(_DOMODEDOVO)
         stats = self.run_geo()
         row = self.place_of(photo)

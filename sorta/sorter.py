@@ -209,7 +209,7 @@ def parse_where(exprs: Sequence[str], lang: i18n.Lang = "en",
 
     F46: country/city with a value in the config language (lang) are resolved via
     resolver (GeoResolver.country_cc_by_name/city_ids_by_name) into a canonical
-    ISO cc / list of geonameid — so config-language folders (Россия/Москва) and
+    ISO cc / list of geonameid — so config-language folders («Россия»/«Москва») and
     --where in the same language stay in sync. resolver=None (as before, without it)
     or a non-resolving value — a fallback to the previous string comparison (canonical
     country=RU/city=Moscow keeps working). A city with several geonameid (same-named
@@ -419,8 +419,8 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
             return manual_parts, "manual_reassign"
     if row["dedup_action"] == "to_delete":
         # U3b: an explicit user decision from the web app (sorta ui) — the highest
-        # priority of all (city/junk/document/not_personal), the file goes to
-        # _удалить regardless of the sort mode.
+        # priority of all (city/junk/document/not_personal), the file goes to the
+        # to_delete folder («_удалить» in a ru layout) regardless of the sort mode.
         return [i18n.folder("to_delete", lang)], "dedup_delete"
     if row["not_personal"]:
         # F17: a downloaded movie/series (release name, marked at indexing) — not
@@ -442,7 +442,7 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         # own top-level folder regardless of the sort mode.
         return [i18n.folder("documents", lang)], "document"
     if verdict == "product":
-        # F37-B (deep VLM tier): an item for sale — its own review folder _Товары,
+        # F37-B (deep VLM tier): an item for sale — its own review folder («_Товары»),
         # not junk and not a memory. Only with vlm_enabled (the fast tier gives no product).
         return [i18n.folder("products", lang)], "product"
     if verdict is not None and verdict != "photo" and not _is_indistinguishable_meme(row):
@@ -494,7 +494,7 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         if district_gid is not None:
             # F49: a foreign transliterated district (no localized name in
             # names.tsv) is dropped — only Country/City/Year. RU and localized
-            # foreign districts (Убуд/Кута) stay.
+            # foreign districts (named «Убуд»/«Кута» in the base) stay.
             if not drop_unlocalized_district or resolver.has_localized_name(district_gid, lang):
                 district_name = resolver.name(district_gid, lang)
                 # G3: the same refusal as in _city_display_name — a district the

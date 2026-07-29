@@ -105,7 +105,7 @@ _CITY_MISSING_WARN_EVERY = 50
 _DEFAULT_TRIP_MERGE_GAP_HOURS = 48.0
 _DEFAULT_TRIP_MERGE_MAX_KM = 120.0
 _EARTH_RADIUS_KM = 6371.0088
-# F85c: a maximal run of letters — one WORD of a folder name («Тайланд 2023» -> Тайланд).
+# F85c: a maximal run of letters — one WORD of a folder name («Тайланд 2023» -> «Тайланд»).
 # Digits and punctuation are separators, so a year or a date glued to the name does not
 # hide the country behind it.
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
@@ -541,7 +541,7 @@ class _CityFallbackResolver:
     is read by, and the place used to end up as "country known, city NULL". On the live
     collection that is 1 596 files (1 471 exact_gps + 125 inherited) that the sorter then
     hid in _Unsorted/no_place — while the SAME coordinates resolve to a city in the
-    bundled GeoNames data (55.4138, 37.8976 -> Домодедово; -8.79806, 115.2349 ->
+    bundled GeoNames data (55.4138, 37.8976 -> «Домодедово»; -8.79806, 115.2349 ->
     Jabajero). Turning the online provider on made the result worse than offline; here
     the online answer stays primary and only a missing city is completed offline. Since
     F93 the offline lookup happens for every coordinate regardless (it is what the cache

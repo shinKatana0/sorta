@@ -1,4 +1,4 @@
-"""U3b: the sorter routes dedup_choice.action='to_delete' into the _удалить folder.
+"""U3b: the sorter routes dedup_choice.action='to_delete' into the «_удалить» folder.
 
 All FS operations — on tmp_path only (inheriting the SorterTestBase fixtures from
 test_sorter.py). dedup_choice — the v7 table (U3), populated by the web app (U3);
@@ -103,7 +103,7 @@ class TestToDeleteDedupeExclusion(DedupDeleteTestBase):
         return next(it for it in report.plan if it.file_id == file_id)
 
     def test_to_delete_excluded_from_near_dup_grouping(self):
-        # marked goes to _удалить and must neither "win" the near-duplicate group
+        # marked goes to «_удалить» and must neither "win" the near-duplicate group
         # with its higher resolution nor drag a normal file with it into
         # near_dup/_Duplicates — there are only two in the group, marked is
         # excluded -> the single remaining one is sorted normally.

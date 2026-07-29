@@ -32,7 +32,7 @@ class TestExcludeDirs(SorterTestBase):
         self.assertEqual(report.excluded, 0)
 
     def test_directory_boundary_not_string_prefix(self):
-        # Япония excludes its subfolders, but NOT ЯпонияДругое (a shared string
+        # «Япония» excludes its subfolders, but NOT «ЯпонияДругое» (a shared string
         # prefix, but not a directory boundary).
         self.add_file("Япония/tokyo.jpg", country="Japan", city="Tokyo")
         self.add_file("ЯпонияДругое/osaka.jpg", country="Japan", city="Osaka")

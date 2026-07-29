@@ -158,9 +158,9 @@ def main() -> None:
     print(f"выборка: {len(rows)} кадров из {db_path}")
     print(f"прогрев файлового кэша: {warm_os_cache(rows):.1f} с")
 
-    # insightface печатает в stdout по десятку строк на каждую поднятую сессию, так
-    # что построчный вывод тонет в шуме — итоговая таблица собирается и печатается
-    # ОДНИМ блоком в конце.
+    # insightface prints a dozen stdout lines for every session it brings up, so a
+    # line-per-measurement output drowns in the noise — the final table is collected
+    # and printed as ONE block at the end.
     results: list[tuple[str, int, float, float, int]] = []
 
     def measure(shape: str, workers: int, run) -> None:

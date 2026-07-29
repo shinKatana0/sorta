@@ -532,9 +532,10 @@ def decide(evaluation: Evaluation, curve: list[GateRow]) -> tuple[str, str]:
             f"утечка документов {leak:.1%} при {MAX_DOCUMENT_LEAK:.0%}), но гейт по "
             f"неуверенности работает: при N={pick.share:.0%} сохраняется "
             f"{pick.kept_frac:.1%} изменённых вердиктов при {MIN_CHANGES_KEPT:.0%} — "
-            # N — доля КАНДИДАТОВ, а не коллекции: сравнивать её с
-            # CURRENT_CANDIDATE_SHARE (доля коллекции) значит сравнивать разные
-            # знаменатели и занижать выигрыш втрое. Пишем оба числа явно.
+            # N is a share of the CANDIDATES, not of the collection: comparing it
+            # against CURRENT_CANDIDATE_SHARE (a share of the collection) means
+            # comparing two different denominators, which understates the gain
+            # threefold. Both numbers are spelled out.
             f"это {pick.share:.0%} нынешних кандидатов, то есть "
             f"{pick.share * CURRENT_CANDIDATE_SHARE:.1%} коллекции вместо "
             f"{CURRENT_CANDIDATE_SHARE:.1%} — умный гейт вместо порога")
