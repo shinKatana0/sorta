@@ -46,6 +46,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v12 (manual_overrides) — a new table, created by executescript below
     # v13 (geo_cache, F93) — a new table, created by executescript below
     # v14 (manual_places, F85c) — a new table, created by executescript below
+    # v15 (frame_quality, F113) — a new table, created by executescript below
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

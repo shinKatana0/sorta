@@ -244,6 +244,19 @@ vlm:
   # modest on purpose (a two-core machine is a real machine), and the frames in flight
   # (~2 per worker) are held in RAM, not in VRAM.
   # workers: 4
+  # F113: the second consumer of these weights — the frame-quality questions no cheap
+  # tool answers (are the eyes open, is there a subject at all, is this a pocket shot).
+  # Its own toggle, separate from `enabled` above: the deep junk tier and the quality
+  # band are different populations, and wanting one says nothing about the other.
+  quality: false
+  # Which frames the quality VLM may be asked about at all — the uncertainty band
+  # (features.sharpness_band_* / features.subject_score_min) narrows it further:
+  #   groups — frames of pHash near-duplicate groups (default). That is where the
+  #            question is actually asked: five frames of one moment, which is the keeper.
+  #   events — every frame that belongs to an event.
+  #   all    — no restriction. READ THE PRICE FIRST: ~0.78 s per frame, so a 20 000-frame
+  #            collection is about 4.3 hours of GPU. It is a weekend job, not a default.
+  quality_scope: groups
   # F102: the longer side the frame is scaled to before the model sees it — the main
   # lever on what the deep tier costs, since after F101 the remaining time is the GPU
   # half and the GPU half is decided by the number of image tokens. Lowering it is NOT
@@ -252,6 +265,35 @@ vlm:
   # `python scripts/measure_vlm_resolution.py` prices 896/672/448 on your own frames and
   # prints how many verdicts moved and in which direction.
   max_edge: 896
+
+# F113: per-frame quality signals (table frame_quality), each taken with the cheapest
+# tool that can answer it. Sharpness is a laplacian over the preview every other stage has
+# already decoded — milliseconds, so it has no toggle and is always written. Pets are a
+# prompt group inside the CLIP call the junk stage already makes, so switching them on
+# costs no second pass over the collection — but a new function gets a new toggle, and
+# this is it. Everything the two of them cannot decide is a question for the VLM, over the
+# uncertain band only (see vlm.quality above).
+features:
+  pets: false
+  # The pet-group CLIP score at or above which cat/dog/pet is written to the frame.
+  # PROVISIONAL: CLIP's accuracy on this question has never been measured on a real
+  # collection, so this number is a starting point, not a result. Measure before trusting
+  # it — `python scripts/measure_frame_quality.py --features pets` prints the score
+  # distribution and what each threshold would fire on, over >= 200 of your own frames.
+  pet_threshold: 0.6
+  # The longer side the frame is scaled to before the laplacian. Fixed on purpose: the
+  # variance of the laplacian is scale-dependent, so frames measured at different
+  # resolutions are not comparable and every threshold below is tied to this number.
+  sharpness_max_edge: 512
+  # The band where sharpness decides nothing — below it a frame is clearly blurred, above
+  # it clearly sharp — and one of the two ways into the VLM population. Also provisional:
+  # `python scripts/measure_frame_quality.py --features sharpness` prints the distribution
+  # these two should be read off.
+  sharpness_band_min: 30.0
+  sharpness_band_max: 300.0
+  # The other way in: a junk-group CLIP probability of "a photograph" below this means
+  # CLIP does not know what it is looking at.
+  subject_score_min: 0.9
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

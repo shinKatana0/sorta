@@ -149,6 +149,9 @@ class TestAlreadyIndexedRowsAreRemoved(ExcludesTestBase):
         self.conn.execute(
             "INSERT INTO manual_overrides (file_id, action, target, updated_at)"
             " VALUES (?, 'exclude', NULL, '2026-01-01')", (file_id,))
+        self.conn.execute(  # F113
+            "INSERT INTO frame_quality (file_id, sharpness, source, updated_at)"
+            " VALUES (?, 120.0, 'classic', '2026-01-01')", (file_id,))
         self.conn.commit()
 
     def test_rows_under_a_new_exclusion_are_deleted_without_dangling_dependents(self):
@@ -167,7 +170,7 @@ class TestAlreadyIndexedRowsAreRemoved(ExcludesTestBase):
         self.assertEqual(self.indexed_names(), {"keep.jpg"})
         alive = {r["id"] for r in self.conn.execute("SELECT id FROM files")}
         for table in ("places", "media_class", "faces", "event_files", "dedup_choice",
-                      "manual_overrides"):
+                      "manual_overrides", "frame_quality"):
             orphans = [r["file_id"] for r in self.conn.execute(
                 f"SELECT file_id FROM {table}") if r["file_id"] not in alive]
             self.assertEqual(orphans, [], f"висячие строки в {table}: {orphans}")

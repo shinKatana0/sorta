@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 14;
+PRAGMA user_version = 15;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -93,6 +93,36 @@ CREATE TABLE IF NOT EXISTS media_class (
     -- personal photo) still keeps source='clip' but was fully handled by tier='vlm'.
     -- Conflating the two made every run reclassify the whole collection.
     tier TEXT
+);
+
+-- v15 (F113): per-frame quality signals, each taken with the CHEAPEST tool that can
+-- answer it — the laplacian for sharpness, the junk stage's own CLIP call for pets, and
+-- the VLM only for what neither of them decides. One row per canonical photo the frame
+-- quality stage touched.
+--
+-- NULL MEANS "NOT ASKED", NOT "NO". The distinction is the whole point of the nullable
+-- columns: a consumer that reads a NULL `eyes_open` as "eyes closed" would throw away
+-- frames nobody ever looked at. Only `source` is NOT NULL — a row exists exactly because
+-- some tier processed it.
+CREATE TABLE IF NOT EXISTS frame_quality (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),
+    sharpness REAL,                       -- variance of the laplacian over the shared
+    --                                       preview, at a FIXED resolution (the number is
+    --                                       scale-dependent — see features.sharpness_max_edge).
+    --                                       NULL = the frame did not decode.
+    pet TEXT,                             -- cat | dog | pet — the CLIP class above
+    --                                       features.pet_threshold; NULL = below it, or
+    --                                       features.pets is off (then pet_score is NULL too)
+    pet_score REAL,                       -- the pet-group CLIP score, written whether or not
+    --                                       it reached the threshold (so a threshold can be
+    --                                       re-measured without a new pass)
+    eyes_open INTEGER,                    -- the three VLM answers: 1 | 0 | NULL (not asked,
+    has_subject INTEGER,                  -- or the answer did not parse — never guessed as 0)
+    is_accidental INTEGER,
+    source TEXT NOT NULL,                 -- classic | clip | vlm — WHICH TIER processed the
+    --                                       row, and with it the incrementality marker (the
+    --                                       F68 lesson, one column that means the tier)
+    updated_at TEXT NOT NULL
 );
 
 -- v7 (U3): user decisions on near-duplicates from the web app (sorta ui).
