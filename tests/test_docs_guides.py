@@ -12,13 +12,22 @@ repeat: they do not judge prose, they check the properties a reader depends on �
 * the English files hold no Russian prose (quoted CLI output and the links to the
   translations are the deliberate exceptions);
 * the wrong install form never comes back.
+
+F115 adds the other half of the same problem. The 2026-07-29 audit found not gaps but
+false statements — a `ru` default language, a junk class list without `product`, a
+superseded timing reference — so the cases below read each of those facts out of the
+module that owns it (`config.Config`, `config.VlmConfig`, `scripts/check.py`) instead
+of hard-coding the prose. A key added to `vlm:` fails the suite until it is written up.
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 import unittest
 import unicodedata
 from pathlib import Path
+
+from sorta import config
 
 _ROOT = Path(__file__).resolve().parent.parent
 _GUIDE_DIR = _ROOT / "docs" / "guide"
@@ -180,6 +189,8 @@ class TestDocumentedTopics(unittest.TestCase):
         "naming.ocr_workers",
         "naming.clip.batch_size",
         "naming.clip.decode_workers",
+        # F115 §8 — the deep tier is paid for once, and this column is the reason why
+        "media_class.tier",
     ]
 
     def test_every_topic_is_documented_in_every_language(self):
@@ -206,6 +217,72 @@ class TestNoWrongInstallForm(unittest.TestCase):
         for lang, path in {**GUIDES, **READMES}.items():
             with self.subTest(lang=lang):
                 self.assertIsNone(pattern.search(read(path)))
+
+
+class TestGuidesAgreeWithTheCode(unittest.TestCase):
+    """F115: the claims that had drifted — checked against the modules, not by eye.
+
+    The 2026-07-29 audit found the guides asserting things the code had stopped doing
+    a day earlier (a `ru` default language, a CLI that ignores `language`, a junk
+    class list without `product`). Prose can drift again; what these cases pin is the
+    pairing — every fact below is read out of the module that owns it, so the guide
+    and the code cannot disagree silently.
+    """
+
+    def test_the_guides_do_not_promise_ru_as_the_default_language(self):
+        """`config.py` defaults to `en`; the guides used to promise `ru`."""
+        self.assertEqual(config.Config().language, "en")
+        wrong = re.compile(r"(?:default|по умолчанию|既定)[ 　]*`?ru\b")
+        for lang, path in {**GUIDES, **READMES}.items():
+            with self.subTest(lang=lang):
+                found = wrong.search(read(path))
+                self.assertIsNone(found, found.group(0) if found else "")
+
+    def test_every_junk_verdict_the_sorter_routes_is_documented(self):
+        """A class that gets its own layout branch has to be named in the guides.
+
+        `product` is the one this test was written for: it is every tenth frame of a
+        deep-tier run and a review folder of its own, and the guides listed four
+        classes for a long time after it appeared.
+        """
+        for verdict in ("photo", "screenshot", "meme", "document", "product"):
+            for lang, path in GUIDES.items():
+                with self.subTest(lang=lang, verdict=verdict):
+                    self.assertIn(f"`{verdict}`", read(path))
+
+    def test_every_key_of_the_vlm_section_is_documented(self):
+        """Read off `VlmConfig`, so a key added there fails here until it is written up."""
+        for field in dataclasses.fields(config.VlmConfig):
+            for lang, path in GUIDES.items():
+                with self.subTest(lang=lang, key=field.name):
+                    self.assertIn(f"vlm.{field.name}", read(path))
+
+    def test_the_legacy_naming_aliases_are_documented(self):
+        """A live config.yaml still holds the old keys — the guides have to say so."""
+        for legacy in ("naming.vlm_enabled", "naming.classify_vlm_model",
+                       "naming.vlm_workers"):
+            for lang, path in GUIDES.items():
+                with self.subTest(lang=lang, key=legacy):
+                    self.assertIn(legacy, read(path))
+
+    def test_the_superseded_timings_do_not_come_back(self):
+        """The 6,298-photo reference run was replaced by the 24,196-photo measurement."""
+        stale = re.compile(r"6[ ,]?298")
+        for lang, path in {**GUIDES, **READMES}.items():
+            with self.subTest(lang=lang):
+                self.assertIsNone(stale.search(read(path)))
+
+
+class TestContributingDescribesTheGate(unittest.TestCase):
+    """The gate script grew two halves; CONTRIBUTING has to describe the one that runs."""
+
+    def test_both_halves_are_documented_and_exist(self):
+        gate = read(_ROOT / "scripts" / "check.py")
+        contributing = read(_ROOT / "CONTRIBUTING.md")
+        for flag in ("--fast", "--slow"):
+            with self.subTest(flag=flag):
+                self.assertIn(f'"{flag}"', gate)
+                self.assertIn(f"scripts/check.py {flag}", contributing)
 
 
 class TestEnglishFilesStayEnglish(unittest.TestCase):

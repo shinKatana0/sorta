@@ -60,7 +60,7 @@ two **mutually exclusive install profiles** — pick the one matching your hardw
 |---|---|---|
 | Hardware | Any x86‑64 machine, no GPU needed | NVIDIA GPU + driver supporting **CUDA 13** (verified on Blackwell/RTX 5090) |
 | Backend | `onnxruntime` (CPU) + CPU‑build torch/torchvision | `onnxruntime-gpu` + CUDA 13/cuDNN 9 runtime (pip wheels) + CUDA‑build torch/torchvision |
-| Faces / CLIP speed | Works, correctly, just **slow** — expect hours of `faces`/`junk`/`landmarks` on a large collection. Fine for city‑sorting + duplicates (faces/events are opt‑in anyway, see §8), usable for smaller collections with faces/events on. | Fast. Reference timings from our own 6,298‑photo test collection, faces+events+junk enabled: **≈ 45 min** (fast/CLIP tier), **≈ 77 min** with the optional deep VLM tier (`naming.vlm_enabled` + the `vlm` extra). |
+| Faces / CLIP speed | Works, correctly, just **slow** — expect hours of `faces`/`junk`/`landmarks` on a large collection. Fine for city‑sorting + duplicates (faces/events are opt‑in anyway, see §8), usable for smaller collections with faces/events on. | Fast. Measured on 2026‑07‑28 on a 24,196‑photo collection, faces+events+junk enabled: **≈ 40 min** for a full run without the deep tier. The optional deep VLM tier (`vlm.enabled` + the `vlm` extra) adds **+122 min**, but only once — per‑stage breakdown in §8. |
 | RAM | 8 GB+ recommended (indexing/hashing is the RAM‑heavy part, independent of profile) | Same, plus whatever the GPU driver reserves |
 | VRAM | n/a | **~3 GB** for base + faces (measured on RTX 5090: CLIP ViT‑L ≈2.0 GB + buffalo_l ≈0.6 GB) — a **≥4 GB** GPU is comfortable. The optional deep VLM tier (Qwen2.5‑VL‑3B) adds ≈7 GB (estimated from the 3B fp16 model, not measured) → **≥8 GB** total |
 
@@ -106,7 +106,7 @@ install one, never both. What each combination actually resolves to (checked wit
 | `gpu,vlm` | the `gpu` set + `transformers==4.51.3` |
 | `cpu,vlm` | the `cpu` set + `transformers==4.51.3` |
 
-`vlm` is the optional deep VLM classification tier (`naming.vlm_enabled` / `--deep`,
+`vlm` is the optional deep VLM classification tier (`vlm.enabled` / `--deep`,
 see §8); without it that tier silently falls back to the fast CLIP tier. `dev` adds
 the quality-gate tools (ruff, mypy, pytest) — needed only to run `scripts/check.py`
 or the test suite.
@@ -217,9 +217,13 @@ How to read it, line by line:
 - **`Кэш превью:`** ("preview cache") — where decoded previews are cached (§18); a
   ` (ОТКЛЮЧЁН)` suffix means the cache is switched off.
 
-Like every other CLI message, the last two labels are fixed Russian text (see §4);
-`sorta doctor` itself reads no `config.yaml`, so the preview path it prints is the
-default one plus any `SORTA_PREVIEW_DIR` in the environment.
+The capture above was taken with `language: ru`, which is why those last two labels are
+Russian; with the default `en` they read "Run log:" and "Preview cache:". The two health
+summaries above them (`torch`/`onnxruntime` and `geo data`) come from the diagnostics
+module and stay English in every language. `sorta doctor` reads `config.yaml` only to
+learn the output language — it works fine without one, just in the default language —
+so the preview path it prints is the default one plus any `SORTA_PREVIEW_DIR` in the
+environment.
 
 ### 3.6 Known trap: `onnxruntime` overwriting `onnxruntime-gpu`
 
@@ -259,19 +263,21 @@ must review:
 sources:
   - "D:/Photos"          # folder(s) with your photos/videos (scanned recursively)
 database: "sorta.db"     # where the SQLite index is stored
-language: ru             # UI/folder language: ru | en | ja  (default ru)
+language: ru             # UI/folder language: ru | en | ja  (default en)
 ```
 
 - **`sources`** — one or more root folders to scan. You can also pass the folder on
   the command line (`sorta index /path/to/photos`), which overrides this.
 - **`language`** — controls the language of generated **folder names** (e.g.
-  `Россия/…` vs `Russia/…`) and the **web UI** chrome. Supported: `ru`, `en`, `ja`.
+  `Россия/…` vs `Russia/…`), the **web UI** chrome and the **CLI's console
+  messages**. Supported: `ru`, `en`, `ja`. With the key absent, the language is `en`.
 
-> **Note:** `language` does **not** affect the CLI's own console messages (progress
-> lines like `Готово: +13 новых, ...`) — those are fixed text, independent of config.
-> Folder names and the web UI *are* fully localized. See the worked examples in §9
-> for what real CLI output looks like, and §22 if it renders as `????` in your
-> terminal.
+> **Note:** the one exception is the `--help` texts. They live in typer decorators and
+> are evaluated at import time, before any config is read, so `sorta --help` and
+> `sorta sort --help` stay English whatever `language` says. Everything else — folder
+> names, the web UI, progress lines and command summaries — is localized. See the
+> worked examples in §7 and §9 for what real CLI output looks like, and §22 if it
+> renders as `????` in your terminal.
 
 See the [Configuration reference](#21-configuration-reference) for every option.
 
@@ -315,26 +321,46 @@ sorta ui                       # opens a local server on http://127.0.0.1:8756
 
 Then in the browser:
 
-1. **Process** tab → enter the path to your photo folder. Two checkboxes, both
+1. **Overview** tab → the state of the collection on one screen: how many files are
+   indexed, photos and videos, duplicates, read errors, events; where the place came
+   from (exact GPS, set by hand, inherited from the session/trip/folder name,
+   recognised from the frame) and how many frames have no place at all; what the
+   classifier decided (personal photos, products, documents, screenshots, memes — by
+   which signal and which tier); whether a layout has run, where to, in which mode and
+   how many files made it. The numbers are **clickable**: a click takes you to the tab
+   where you can act on that group. Always visible; on an empty index it shows a
+   **Go to Process** button instead.
+2. **Process** tab → enter the path to your photo folder. Two checkboxes, both
    **unchecked by default**: **"Detect faces"** and **"Detect events"** — the
    pipeline's slowest stages, opt‑in on purpose (see §8). Leave them off for a fast
    city‑sorting‑only run, or tick what you need. Click **Process**: it runs in the
    background with per‑stage progress (index → geo → landmarks → [faces] → [events]
    → junk → near‑duplicates — faces/events only if ticked). You can close the tab;
    processing continues.
-2. **Cities** tab → review the proposed structure (`Country/City/Year/District`).
-   Always visible.
-3. **Duplicates** tab → review near‑duplicate groups; the recommended keeper is
+3. **Cities** tab → review the proposed structure (`Country/City/Year/District`).
+   This is also where the **Settings** column (below) and the button that starts the
+   layout live. Always visible.
+4. **Duplicates** tab → review near‑duplicate groups; the recommended keeper is
    pre‑selected. Adjust where you disagree, then click **Save all choices** once.
    Always visible.
-4. **People** tab → only appears once face clusters exist (you ticked "Detect faces"
+5. **People** tab → only appears once face clusters exist (you ticked "Detect faces"
    at least once, or ran `sorta faces`). Name clusters and merge duplicates of the
    same person.
-5. **Events** tab → only appears once events exist (you ticked "Detect events" at
+6. **Events** tab → only appears once events exist (you ticked "Detect events" at
    least once, or ran `sorta events`). Rename events; collect any person/event into
    a folder with **Collect into folder**.
-6. **Moves** tab → after you apply a sort/album, see exactly what went where. Always
+7. **Not personal photos** tab → the buckets the classifier carried out of your
+   memories: **Products**, **Documents**, **Screenshots**, **Memes** (and "All" at
+   once). Tick the frames that landed there by mistake and press **Return to
+   photos** — they go back into the city layout; the model's verdict is not
+   rewritten, and the return itself is reversible with **Undo the return**. Always
    visible.
+   **Documents are shown without thumbnails** — file name and date only. That is a
+   rule, not an unfinished corner: this bucket holds passports, certificates and
+   medical forms, and Sorta neither opens nor renders them even locally; the name and
+   the date are enough to decide.
+8. **Moves** tab → after you apply a sort/album, see exactly what went where. This is
+   also where a layout is **rolled back** (§15). Always visible.
 
 The **Process** tab has two more checkboxes beyond faces/events, both reflecting
 `config.yaml` and acting as a full override for this run only (checked = force on,
@@ -343,7 +369,7 @@ unchecked = force off) — the UI equivalent of the CLI's `--deep`/`--no-deep` a
 
 - **"Deep analysis (VLM)"** — use the deep VLM tier instead of the fast CLIP tier
   for junk/document classification. It only actually takes effect if it's *both*
-  requested (this checkbox, `--deep`, or `naming.vlm_enabled: true` in config)
+  requested (this checkbox, `--deep`, or `vlm.enabled: true` in config)
   *and* installed (the `vlm` extra, e.g. `uv tool install ".[gpu,vlm]"` or
   `uv sync --extra gpu --extra vlm --extra dev`) — without that extra it silently
   falls back to the fast CLIP tier, and the UI hint under the checkbox says so.
@@ -354,6 +380,23 @@ unchecked = force off) — the UI equivalent of the CLI's `--deep`/`--no-deep` a
 People/Events staying hidden on a fresh Process run is expected — it means faces/
 events weren't enabled for that run, not that something broke; re‑run with the
 checkbox ticked (or `sorta faces`/`sorta events`) and the tab appears.
+
+### The Settings column
+
+On the right of the **Cities** tab there is a **Settings** column. It edits
+`config.yaml` for real: the value is written to the file straight away and **there is
+no need to restart `sorta ui`** — the next run reads the new one. What lives there:
+
+- **Deep analysis (VLM)** — `vlm.enabled` (§21). Unlike the checkbox of the same name
+  on the Process tab, which only covers a single run, this toggle writes the value
+  into the config for good.
+- **Model**, **Preparation threads**, **Frame resolution, px** — `vlm.model`,
+  `vlm.workers`, `vlm.max_edge`.
+- **Folders → folder‑name language** — `language`. The plan below is recomputed
+  immediately, with no restart.
+
+Settings do not change mid‑run: while a run is in progress the column says so and asks
+you to wait for it to finish.
 
 The server binds to `127.0.0.1` only (not reachable from the network). Stop it with
 `Ctrl+C`.
@@ -394,7 +437,9 @@ collection (13 generated JPEGs with embedded EXIF/GPS: a 2‑day "Paris" trip, a
 "Tokyo" day that's too small to become an event, an exact duplicate, a near‑duplicate,
 a screenshot, and two placeholder "face" images used only to exercise the pipeline —
 not real photographs of anyone). It's here so you know exactly what to expect; the
-full walkthrough of every mode continues in §9–§13.
+full walkthrough of every mode continues in §9–§13. It was captured with
+`language: ru` in the config — on the default `en` the same commands print the same
+thing in English (§4).
 
 ```
 $ sorta index -c config.yaml
@@ -431,10 +476,11 @@ $ sorta stats -c config.yaml
 
 A few things worth noticing here (real, not edited for effect):
 
-- **CLI messages print in Russian regardless of `language`** — see the note in §4.
-  The numbers are what matter; a rough gloss: *"Готово: +13 новых"* = "Done: +13 new",
-  *"дубликатов"* = duplicates, *"с GPS"* = with GPS, *"Детекция"* = Detection,
-  *"Кластеры"* = Clusters, *"События"* = Events, *"Классификация"* = Classification.
+- **The messages are Russian because the config said `language: ru`** — see the note
+  in §4. A rough gloss, in case you read the capture rather than run it yourself:
+  *"Готово: +13 новых"* = "Done: +13 new", *"дубликатов"* = duplicates, *"с GPS"* =
+  with GPS, *"Детекция"* = Detection, *"Кластеры"* = Clusters, *"События"* = Events,
+  *"Классификация"* = Classification.
 - `index` found **13** files but `stats` later also says 13 — the exact‑duplicate
   file *is* indexed (with `dup_of` set), it just doesn't get its own place/event/junk
   row, which is why `geo`/`junk` report **12**.
@@ -464,7 +510,7 @@ new/changed files):
 | Landmarks | `sorta landmarks` | always | Visual place guess for GPS‑less scenes, conservative threshold — fills in city for e.g. an indoor landmark photo with no GPS. |
 | Faces | `sorta faces` | **opt‑in** (`--faces`) | Detect faces (insightface), compute embeddings, cluster people (HDBSCAN). The slowest stage; skipped unless you ask for it. |
 | Events | `sorta events` | **opt‑in** (`--events`) | Group photos into events by time gaps + city; name them by date + city. Independent of faces — enable either, both, or neither. |
-| Junk | `sorta junk` | always | Classify each photo: `photo` / `screenshot` / `meme` / `document` (heuristics + CLIP + text‑density). |
+| Junk | `sorta junk` | always | Classify each photo: `photo` / `screenshot` / `meme` / `document` / `product` (heuristics + CLIP + text‑density). The `product` class (an item photographed for sale) comes from the deep VLM tier only — the fast tier never produces it, see §14. |
 | Near‑dup hashes | `sorta phash` | always (UI); separate command in the CLI (`sorta run` doesn't call it — run `sorta phash` yourself) | Compute perceptual hashes for near‑duplicate detection. |
 
 **`sorta run` flags** (all optional, all overrides for *this run only* — nothing is
@@ -476,7 +522,7 @@ written to `config.yaml`):
 --deep / --no-deep         Use the deep VLM classification tier for junk this run
                             (needs `uv sync --extra vlm`; gracefully falls back to
                             the fast CLIP tier without it). Default: from config.yaml
-                            (naming.vlm_enabled).
+                            (vlm.enabled).
 --geo offline|online       Reverse-geocoding provider for this run. `online` is more
                             accurate abroad but sends GPS coordinates (never images)
                             to Nominatim. Default: from config.yaml (geo.provider).
@@ -489,6 +535,30 @@ and duplicate detection, nothing else. Enable `--faces`/`--events` when you actu
 want people/event sorting or albums — running `sorta faces`/`sorta events` on their
 own afterwards works exactly the same and is fully incremental either way. Check
 coverage anytime with `sorta stats`.
+
+### What it costs
+
+Measured on 2026‑07‑28 on a live collection of **24,196 photos** (RTX 5090, the `gpu`
+profile, faces and events enabled):
+
+| Stage | Time |
+|---|---|
+| `index` | 6.1 min |
+| `landmarks` | 2.8 min |
+| `faces` | 16.1 min |
+| `junk` (fast tier) | 14.1 min |
+| `geo`, `events`, `phash` | seconds |
+| **Full run without the deep tier** | **≈ 40 min** |
+| The deep VLM tier (7,896 candidates out of 24,196) | **+122 min, once** |
+
+"Once" is literal: junk incrementality runs on `media_class.tier`, so a repeated run
+only touches new files and frames already labelled by the deep tier are never sent to
+the model a second time. The first `--deep` run is an entry price, not a permanent tax
+on every processing run.
+
+These are observations from our hardware, not a guarantee: on yours it depends on what
+the collection is made of (video, RAW, the number of faces per frame are the main cost
+drivers).
 
 ---
 
@@ -511,7 +581,7 @@ sorta sort --by event  --dest <dir> [--apply] …
 - **`--exclude <path>`** — skip an already‑sorted subfolder.
 
 Files that don't fit a mode land in review folders: `_Unsorted/` (no place / no
-date / junk), `_Documents/` (see §14).
+date / junk), `_Documents/` and `_Products/` (see §14).
 
 Without `--apply` you get a **dry‑run**: a CSV + a browsable HTML plan in `report_output/` next to
 the database, and **nothing is moved**.
@@ -785,11 +855,20 @@ city/person/event folders:
 - **`document`** (passports, receipts, forms, medical papers…) → `_Documents/` — a
   **review folder**, *not* junk. Detection combines CLIP with a **text‑density**
   signal (documents are text‑dense; beaches and product shots are not).
+- **`product`** (an item photographed for sale: a listing shot, a marketplace frame)
+  → `_Products/` — also a **review folder**, neither junk nor a memory. This class
+  comes from the **deep VLM tier only** (§8): the fast tier does not produce it at
+  all, and there such frames stay `photo` or end up in `_Documents/`. On a live
+  collection that is every tenth frame — 2,202 out of 24,196.
 
 `_Documents/` deliberately **over‑collects** (a real photo landing there is easy to
 pull out; a real document leaking into your city memories is worse). Review it
-manually. Note: automatic separation of "for‑sale item" photos from documents is a
-known limitation — those may co‑mingle in `_Documents/`.
+manually.
+
+These buckets are easier to review from the web UI: the **Not personal photos** tab
+(§6) shows them side by side, returns the frames you tick back into the normal layout
+in bulk, and **renders no thumbnails for documents** — deliberately, because that
+bucket is where personal papers are.
 
 > **Privacy:** documents may contain personal data. Sorta processes them **locally**
 > and never uploads them (unless you enable an online provider). See §15.
@@ -807,9 +886,24 @@ $ sorta junk -c config.yaml
 ## 15. Safety, undo & privacy
 
 - **Dry‑run by default** — nothing moves until `--apply`.
+- **A summary before the start (web UI)** — the layout button first opens a dialog
+  with the numbers: where to, move or copy, how many files into how many folders and
+  at what size, how many of them are already in the destination, and how many go into
+  `_Products/` and `_Documents/`. An empty plan says exactly that: there is nothing to
+  lay out.
+- **A Cancel button while it runs** — a layout can be stopped without waiting for the
+  end: the file in flight is finished whole, the rest are left alone, and the result
+  says how much did get sorted. What was sorted rolls back from the Moves tab.
 - **Move journal** — every operation is recorded *before* it happens.
 - **Undo** — `sorta undo` reverses the last batch (`--batch <id>` for a specific
-  one). For copy/link batches, undo deletes the copies/links, never the originals.
+  one). For copy/link batches, undo deletes the copies/links, never the originals. In
+  the web UI the **Roll back** button on the **Moves** tab does the same — with a
+  confirmation, a progress line and a cancel button of its own; an interrupted
+  rollback continues when you press it again.
+- **Running it again does not duplicate anything** — a second layout into the same
+  destination recognises the files the previous one copied there (by content, not by
+  name) and skips them instead of dropping a `_1` copy next to them. The suffix stays
+  where it belongs: on a *different* file that happens to share a name.
 - **Hash‑verified, never overwrites** — blake3 checked before moving; name conflicts
   get `_1`, `_2`.
 - **Originals untouched with copy/link.** With move, files relocate but content and
@@ -846,7 +940,7 @@ sorta faces sheet <cluster> <out.html> Contact sheet to identify a cluster
 sorta events                      (Re)build events
 sorta events add <name> <from> <to>    Manual event over a date range
 sorta events rename <id> <name>        Manual event name
-sorta junk                        Classify photo/screenshot/meme/document
+sorta junk                        Classify photo/screenshot/meme/document/product
 sorta phash                       Perceptual hashes (for near-duplicates)
 sorta stats                       Index coverage (GPS, date sources, duplicates)
 sorta dupes [--near]              List exact / near duplicates
@@ -1063,7 +1157,7 @@ Key sections of `config.yaml` (see `config.example.yaml` for the full template):
 ```yaml
 sources: ["D:/Photos"]         # folders to scan (recursive)
 database: "sorta.db"           # SQLite index path
-language: ru                   # ru | en | ja — folder & UI language
+language: ru                   # ru | en | ja — folder, UI and CLI-message language (default en)
 
 index:
   min_file_size_kb: 5          # ignore tiny files
@@ -1102,11 +1196,17 @@ naming:
   text_frac_document: 0.15     # text-area fraction above which a photo → document
   text_rescue_docscore_min: 0.3  # only run OCR on photos with this doc-score+
   ocr_workers: 4               # parallel OCR detectors (default min(4, cores))
-  vlm_enabled: false           # deep VLM classification tier (needs the `vlm` extra);
-                               #   same as `--deep` / the UI "Deep analysis" checkbox
+  product_candidate_min: 0.4   # product-CLIP above this → the frame goes to the VLM tier
   clip:
     batch_size: 16             # GPU forward batch for CLIP
     decode_workers: 0          # CLIP decode threads; 0 = auto min(cores, 16)
+
+vlm:                           # the local VLM runtime — shared by junk and event naming
+  enabled: false               # deep VLM classification tier (needs the `vlm` extra);
+                               #   same as `--deep` / the UI "Deep analysis" checkbox
+  model: "Qwen/Qwen2.5-VL-3B-Instruct"
+  workers: 4                   # frame-preparation threads (default min(4, cores))
+  max_edge: 896                # the long edge of the frame the model sees
 
 imaging:                       # the preview cache — see §18
   preview_cache: true
@@ -1115,6 +1215,31 @@ imaging:                       # the preview cache — see §18
 
 log_level: WARNING             # console verbosity only; the run log stays at INFO (§19)
 ```
+
+### The `vlm:` section
+
+Everything that describes the **runtime of the local model itself** lives in the
+`vlm:` section, and both of its consumers use it: the deep junk classification tier
+(§14) and the `naming.provider: vlm` event namer (§12). The weights are the same, one
+copy per process, so the settings are shared.
+
+| Key | What it does |
+|---|---|
+| `vlm.enabled` | Turns the deep tier on for good, in the config. Default `false`. For a single run the same is done by `--deep`/`--no-deep` and by the "Deep analysis (VLM)" checkbox in the web UI. Without the `vlm` extra a run falls back gracefully to the fast CLIP tier. |
+| `vlm.model` | The model id. Default `Qwen/Qwen2.5-VL-3B-Instruct`. |
+| `vlm.workers` | Threads preparing frames (decode + preprocessing) while the GPU classifies the previous one. Default `min(4, cores)`. It does not affect verdicts — labels are applied in candidate order whatever it is set to. |
+| `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |
+| `vlm.quality` | A toggle of its own for the questions about a frame's quality: are the eyes open, is there a subject worth keeping, is this an accidental shot. Default `false`. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
+| `vlm.quality_scope` | Who gets asked: `groups` (frames of near-duplicate groups, the default), `events` (plus a sample from every event), `all` (every live photo). On 20 000 frames `all` means hours of GPU, which is why the default is narrow. |
+
+> **An old config needs no editing.** The previous addresses
+> `naming.vlm_enabled`, `naming.classify_vlm_model` and `naming.vlm_workers` are
+> **still read** and work as aliases for `vlm.enabled` / `vlm.model` / `vlm.workers`.
+> A key given in both places is taken from `vlm:`; a key given only at the old address
+> makes Sorta log one warning per run saying that `naming.<key>` is deprecated and
+> should be renamed. It is a warning, not an error — nothing broke, and you can rename
+> it whenever it suits you. `vlm.max_edge` has no old address: it used to be a
+> constant in the code.
 
 ### Throughput settings
 
@@ -1279,10 +1404,12 @@ named as a verdict — forwarded pictures are often worth looking through.
   weights.
 - **A folder with non‑ASCII name (e.g. Cyrillic) seemed skipped by OCR** — fixed:
   images are decoded via an Unicode‑safe path; update to the latest version.
-- **CLI console messages print in Russian even with `language: en`/`ja`** — expected,
-  not a bug: `language` controls folder names and the web UI, not the CLI's own
-  progress text (see §4 and the worked example in §7). If it also renders as `????`
-  in your terminal, that's a separate, purely cosmetic encoding issue (next bullet).
+- **`sorta --help` is English even though the config says `language: ru`/`ja`** —
+  expected, not a bug: the help texts live in typer decorators and are evaluated at
+  import time, before the config is read. Everything else — progress lines, command
+  summaries, folder names, the web UI — speaks the language from `language` (see §4).
+  If messages come out in the right language but render as `????` in your terminal,
+  that's a separate, purely cosmetic encoding issue (next bullet).
 - **Cyrillic/Japanese text garbled in a Windows console** — cosmetic; the files and
   the web UI are unaffected. Use the web UI, a UTF‑8 terminal, or set
   `PYTHONUTF8=1` before running `sorta`.

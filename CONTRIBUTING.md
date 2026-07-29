@@ -22,12 +22,20 @@ pytest) on top and is required for the commands below.
 
 ## Quality gates
 
-All changes must pass the gate script before being committed:
+All changes must pass the gate script before being committed. The gate is split in
+two halves by how long they take, and you are expected to run both:
 
 ```bash
-uv run --extra cpu --extra dev python scripts/check.py  # or --extra gpu
-# ruff (lint) + mypy (types) + pytest (with coverage)
+uv run --extra cpu --extra dev python scripts/check.py --fast  # ~3 s, before committing
+uv run --extra cpu --extra dev python scripts/check.py --slow  # the test suite, ~9 min
+uv run --extra cpu --extra dev python scripts/check.py         # everything, in order
 ```
+
+| Invocation | What runs | When |
+|---|---|---|
+| `--fast` | version sync + ruff + mypy | Before every commit — it takes seconds and catches what makes a diff not worth reading. |
+| `--slow` | pytest with coverage | Start it in the background and wait for it; a fast pass is not a green gate on its own. |
+| no flags | both, fast half first | What CI runs and what a merge is checked with. |
 
 Pass the same profile you installed with (`cpu` or `gpu`) plus `dev`. A bare
 `uv run python scripts/check.py` re‑syncs the environment to the base
@@ -36,6 +44,9 @@ dependencies and drops the dev tools — always include the extras.
 - **ruff** — linting/formatting.
 - **mypy** — static typing.
 - **pytest** — tests, with a coverage floor enforced in `pyproject.toml`.
+
+Any half exits non‑zero on the first failed check and says which one it was;
+committing is blocked until the run is green.
 
 Tests must not touch a real photo collection — use `tmp_path` and synthetic fixtures
 for filesystem operations. ML‑heavy paths (faces, CLIP, OCR) are **mocked** in tests
