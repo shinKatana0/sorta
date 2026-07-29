@@ -1,4 +1,9 @@
-"""F20: stage summaries (_summarize_*) and printing per-step results in `sorta run`."""
+"""F20: stage summaries (_summarize_*) and printing per-step results in `sorta run`.
+
+F112: the summaries take the output language. These cases keep asserting on the
+Russian wording, which is what `lang="ru"` now means; the byte-for-byte guarantee for
+the whole CLI lives in test_cli_i18n.py.
+"""
 from __future__ import annotations
 
 import contextlib
@@ -17,7 +22,7 @@ from sorta import cli
 class TestSummaries(unittest.TestCase):
     def test_index(self):
         s = SimpleNamespace(added=2, updated=1, skipped=3, errors=1)
-        out = cli._summarize_index(s, 4)
+        out = cli._summarize_index(s, 4, "ru")
         self.assertIn("+2 новых", out)
         self.assertIn("~1 обновлено", out)
         self.assertIn("1 ошибок", out)
@@ -26,7 +31,7 @@ class TestSummaries(unittest.TestCase):
     def test_geo(self):
         s = SimpleNamespace(total=10, exact_gps=4, session_inferred=2, trip_inferred=1,
                             path_inferred=2, unknown=1)
-        out = cli._summarize_geo(s)
+        out = cli._summarize_geo(s, "ru")
         self.assertIn("10 файлов", out)
         self.assertIn("exact_gps 4", out)
         # F85a/F85c: every inference level is reported apart — the summary is how the
@@ -38,7 +43,7 @@ class TestSummaries(unittest.TestCase):
 
     def test_landmarks_with_breakdown(self):
         s = SimpleNamespace(scanned=5, matched=2, by_landmark={"Айя-София": 1, "Колизей": 1})
-        out = cli._summarize_landmarks(s)
+        out = cli._summarize_landmarks(s, "ru")
         self.assertIn("просмотрено 5, определено 2", out)
         self.assertIn("  Айя-София: 1", out)
         self.assertIn("  Колизей: 1", out)
@@ -46,7 +51,7 @@ class TestSummaries(unittest.TestCase):
     def test_faces_with_malformed(self):
         fs = SimpleNamespace(files_processed=8, faces_found=12, no_face_files=2, errors=1)
         cs = SimpleNamespace(clusters=3, faces=12, noise=2, labels_kept=1, malformed=4)
-        out = cli._summarize_faces(fs, cs)
+        out = cli._summarize_faces(fs, cs, "ru")
         self.assertIn("8 файлов, 12 лиц", out)
         self.assertIn("лиц в кластерах: 10", out)  # faces - noise
         self.assertIn("повреждённых эмбеддингов пропущено: 4", out)
@@ -54,19 +59,19 @@ class TestSummaries(unittest.TestCase):
     def test_faces_without_malformed_omits_warning(self):
         fs = SimpleNamespace(files_processed=1, faces_found=1, no_face_files=0, errors=0)
         cs = SimpleNamespace(clusters=1, faces=1, noise=0, labels_kept=0, malformed=0)
-        out = cli._summarize_faces(fs, cs)
+        out = cli._summarize_faces(fs, cs, "ru")
         self.assertNotIn("повреждённых", out)
 
     def test_events(self):
         s = SimpleNamespace(auto_events=3, auto_files=20, names_preserved=1,
                             manual_events=1, manual_files=5)
-        out = cli._summarize_events(s)
+        out = cli._summarize_events(s, "ru")
         self.assertIn("3 авто (20 файлов", out)
         self.assertIn("1 ручных (5 файлов)", out)
 
     def test_junk_verdict_breakdown(self):
         s = SimpleNamespace(total=100, processed=40, by_verdict={"photo": 30, "screenshot": 10})
-        out = cli._summarize_junk(s)
+        out = cli._summarize_junk(s, "ru")
         self.assertIn("40/100 обработано", out)
         self.assertIn("photo: 30", out)
         self.assertIn("screenshot: 10", out)
@@ -82,7 +87,8 @@ class TestRunPrintsSummaries(unittest.TestCase):
         self.cfg_path = root / "config.yaml"
         self.cfg_path.write_text(
             f'sources: ["{(root / "src").as_posix()}"]\n'
-            f'database: "{(root / "test.db").as_posix()}"\n',
+            f'database: "{(root / "test.db").as_posix()}"\n'
+            'language: ru\n',  # F112: these cases assert on the Russian wording
             encoding="utf-8")
 
     def tearDown(self):
@@ -122,7 +128,8 @@ class TestRunDeepGeoOverride(unittest.TestCase):
         self.cfg_path = root / "config.yaml"
         self.cfg_path.write_text(
             f'sources: ["{(root / "src").as_posix()}"]\n'
-            f'database: "{(root / "test.db").as_posix()}"\n',
+            f'database: "{(root / "test.db").as_posix()}"\n'
+            'language: ru\n',  # F112: these cases assert on the Russian wording
             encoding="utf-8")
 
     def tearDown(self):
@@ -178,7 +185,8 @@ class TestRunOptionalStages(unittest.TestCase):
         self.cfg_path = root / "config.yaml"
         self.cfg_path.write_text(
             f'sources: ["{(root / "src").as_posix()}"]\n'
-            f'database: "{(root / "test.db").as_posix()}"\n',
+            f'database: "{(root / "test.db").as_posix()}"\n'
+            'language: ru\n',  # F112: these cases assert on the Russian wording
             encoding="utf-8")
 
     def tearDown(self):
@@ -330,7 +338,8 @@ class TestIndexSourceArg(unittest.TestCase):
 
     def _write_cfg(self, sources_line: str = "") -> None:
         self.cfg_path.write_text(
-            sources_line + f'database: "{(self.root / "t.db").as_posix()}"\n',
+            sources_line + f'database: "{(self.root / "t.db").as_posix()}"\n'
+            'language: ru\n',  # F112: the no-source message is asserted in Russian
             encoding="utf-8")
 
     def test_load_config_tolerates_empty_sources(self):
