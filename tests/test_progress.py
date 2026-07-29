@@ -47,11 +47,15 @@ class TestPhaseChannel(unittest.TestCase):
 
     def test_cli_labels_cover_every_cluster_phase(self):
         # A phase without a caption would show a raw identifier next to the bar.
+        # F112: the map became a function of the language — the captions live in i18n
+        # now — so the coverage has to hold in EVERY language, not just the one that
+        # happened to be built at import time.
         from sorta import faces
-        from sorta.cli import _CLUSTER_PHASE_LABELS
+        from sorta.cli import _cluster_phase_labels
         keys = {value for name, value in vars(faces).items()
                 if name.startswith("CLUSTER_PHASE_")}
-        self.assertEqual(set(_CLUSTER_PHASE_LABELS), keys)
+        for lang in ("ru", "en", "ja"):
+            self.assertEqual(set(_cluster_phase_labels(lang)), keys, lang)
 
 
 class TestPipelineSteps(unittest.TestCase):

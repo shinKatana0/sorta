@@ -614,8 +614,12 @@ class TestCliFlags(unittest.TestCase):
         self.assertEqual(self._cache_size(), 1)
 
     def test_cache_clear_geo_empties_it(self):
+        # F112: the CLI speaks the configured language, and the DEFAULT is `en` — this
+        # fixture writes no `language:` key, so the message arrives in English. The
+        # assertion is on the effect plus a language-independent number; the wording of
+        # each language is covered by the i18n tests, not here.
         result = self._invoke("cache", "--clear-geo")
-        self.assertIn("Кэш геоданных очищен", result.output)
+        self.assertIn("cache cleared", result.output.lower())
         self.assertEqual(self._cache_size(), 0)
 
     def test_reset_keeps_the_geo_cache_by_default(self):
