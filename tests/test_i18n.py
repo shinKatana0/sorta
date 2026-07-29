@@ -107,8 +107,11 @@ class TestCliStrings:
     def test_no_key_is_identical_across_all_three(self) -> None:
         # A key whose three variants are the same string is almost always a variant
         # someone forgot to translate. The exceptions are texts that are pure code
-        # (option names, DB confidence values) and genuinely have no words in them.
-        untranslatable = {"cli.stats.geo_confidence"}
+        # (option names, DB confidence values) and genuinely have no words in them:
+        # the DB confidence column, and the two F114 help texts that are nothing but
+        # the list of values the option accepts ("city | person | event").
+        untranslatable = {"cli.stats.geo_confidence", "cli.help.sort.by",
+                          "cli.help.album.kind"}
         for key, entry in _CLI_STRINGS.items():
             if key in untranslatable:
                 continue

@@ -167,12 +167,9 @@ def country_cc_by_name(name: str) -> str | None:
 # translation. The padding of the aligned `stats` block is baked into each language's
 # template for the same reason — a label's width is a property of the language.
 #
-# NOT COVERED HERE: `--help` texts. They live inside `typer.Option(..., help=...)`
-# decorators, which are evaluated at import time — before the config is read and the
-# language is known. Localizing the help needs a different mechanism (deferred
-# descriptors or an own command factory), which is a feature of its own, not a tail of
-# this one. Also not covered: the summaries `sorta doctor` gets from diagnostics.py —
-# they are produced by another module (see the note in cli.doctor).
+# F114 added the `--help` texts to the same catalog — see the `cli.help.*` block at the
+# end. NOT COVERED HERE: the summaries `sorta doctor` gets from diagnostics.py — they
+# are produced by another module (see the note in cli._cmd_doctor).
 _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # index
     "cli.index.done": {
@@ -631,7 +628,481 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "junk: запись вердиктов", "en": "junk: writing verdicts",
         "ja": "junk: 判定の書き込み",
     },
+
+    # --- F114: the texts `--help` prints -------------------------------------
+    # The same catalog as everything above, for the same reason: the `ru` variants are
+    # the strings that used to sit in the `typer.Option(..., help=...)` decorators and
+    # in the command docstrings of cli.py, word for word — `language: ru` has to print
+    # the help it printed yesterday.
+    #
+    # They could not be localized where they were written: a decorator runs when the
+    # module is imported, long before anything has read the config. `cli.build_app`
+    # solves that by assembling the interface only once the language is known, and
+    # these keys are what it assembles it from.
+    #
+    # The line breaks inside the multi-paragraph texts are meaningful — Typer keeps
+    # them and only wraps what is too long — so the `ru` ones repeat the line breaks of
+    # the docstrings they came from. The `en`/`ja` variants leave the wrapping to Typer.
+    "cli.help.app": {
+        "ru": "Sorta v{version} — сортировка фотоколлекции",
+        "en": "Sorta v{version} — sorting a photo collection",
+        "ja": "Sorta v{version} — 写真コレクションの整理",
+    },
+    "cli.help.opt.config": {
+        "ru": "Путь к config.yaml",
+        "en": "Path to config.yaml",
+        "ja": "config.yaml へのパス",
+    },
+    # index
+    "cli.help.index": {
+        "ru": "Сканировать источники, извлечь метаданные, пометить дубликаты.",
+        "en": "Scan the sources, extract the metadata, mark the duplicates.",
+        "ja": "ソースをスキャンし、メタデータを抽出し、重複をマークします。",
+    },
+    "cli.help.index.src": {
+        "ru": "Каталог с фото (рекурсивно); переопределяет config sources",
+        "en": "Photo directory (recursively); overrides config sources",
+        "ja": "写真のディレクトリ（再帰的）。config の sources を上書きします",
+    },
+    "cli.help.index.refresh_exif": {
+        "ru": "Перечитать метаданные уже проиндексированных файлов "
+              "(вместо сканирования). Содержимое файлов не читается.",
+        "en": "Re-read the metadata of the already indexed files (instead of "
+              "scanning). File contents are not read.",
+        "ja": "インデックス済みファイルのメタデータを読み直します（スキャンの代わり）。"
+              "ファイルの中身は読みません。",
+    },
+    "cli.help.index.exclude_dir": {
+        "ru": "Не сканировать эту папку источника (путь относительно корня). "
+              "Можно повторять. Сохраняется в файл исключений.",
+        "en": "Do not scan this source folder (path relative to the root). "
+              "Repeatable. Saved into the excludes file.",
+        "ja": "このソースフォルダをスキャンしません（ルートからの相対パス）。"
+              "繰り返し指定できます。除外ファイルに保存されます。",
+    },
+    # stats
+    "cli.help.stats": {
+        "ru": "Покрытие индекса: GPS, источники дат, дубликаты.",
+        "en": "Index coverage: GPS, date sources, duplicates.",
+        "ja": "インデックスのカバレッジ: GPS、日付のソース、重複。",
+    },
+    # dupes
+    "cli.help.dupes": {
+        "ru": "Список точных дубликатов; с --near — группы почти-дубликатов.",
+        "en": "List the exact duplicates; with --near — the near-duplicate groups.",
+        "ja": "完全一致の重複を一覧表示します。--near を付けると類似写真のグループを表示します。",
+    },
+    "cli.help.dupes.near": {
+        "ru": "Показать почти-дубликаты (pHash)",
+        "en": "Show the near-duplicates (pHash)",
+        "ja": "類似写真を表示します (pHash)",
+    },
+    # geo
+    "cli.help.geo": {
+        "ru": "Определить место каждого файла: GPS + наследование по сессиям.",
+        "en": "Resolve the place of every file: GPS + inheritance across sessions.",
+        "ja": "各ファイルの場所を判定します: GPS + セッション単位の継承。",
+    },
+    # landmarks
+    "cli.help.landmarks": {
+        "ru": "Места без GPS по известным достопримечательностям (CLIP). "
+              "Запускать после geo.",
+        "en": "Places without GPS, from well-known landmarks (CLIP). Run after geo.",
+        "ja": "GPS のない場所を有名なランドマークから判定します (CLIP)。"
+              "geo の後に実行してください。",
+    },
+    # phash
+    "cli.help.phash": {
+        "ru": "Посчитать pHash для почти-дубликатов (для `dupes --near`).",
+        "en": "Compute the pHash for near-duplicates (for `dupes --near`).",
+        "ja": "類似写真のための pHash を計算します（`dupes --near` 用）。",
+    },
+    # junk
+    "cli.help.junk": {
+        "ru": "Классифицировать фото/мусор (screenshot|meme|document) для сортировки.",
+        "en": "Classify photos/junk (screenshot|meme|document) for sorting.",
+        "ja": "写真とゴミを分類します (screenshot|meme|document)。整理に使います。",
+    },
+    # doctor
+    "cli.help.doctor": {
+        "ru": "Диагностика окружения: torch/onnxruntime, GPU, гео-база, лог-файл.",
+        "en": "Environment diagnostics: torch/onnxruntime, GPU, geo data, log file.",
+        "ja": "環境の診断: torch/onnxruntime、GPU、地理データ、ログファイル。",
+    },
+    # cache
+    "cli.help.cache": {
+        "ru": "Кэши: показать путь и размер, при --clear/--clear-geo — удалить.\n"
+              "\n"
+              "Кэш превью безопасно удалять в любой момент: он ленивый и пересоздаётся той\n"
+              "стадией, которой первой понадобится кадр. Смысл команды — освободить место\n"
+              "(порядка 150 КБ на фото) или заставить перегенерировать превью после смены\n"
+              "настроек.\n"
+              "\n"
+              "Кэш геоданных (F93) — ответы онлайн-провайдера в таблице geo_cache. Он\n"
+              "переживает и повторный прогон, и «Начать заново», поэтому --clear-geo —\n"
+              "единственный способ переспросить провайдера, если он однажды ответил неверно.",
+        "en": "Caches: show the path and the size, with --clear/--clear-geo — remove.\n"
+              "\n"
+              "The preview cache is safe to delete at any moment: it is lazy and is "
+              "rebuilt by whichever stage needs a frame first. The point of the command "
+              "is to free up space (some 150 KB per photo) or to force previews to be "
+              "regenerated after a settings change.\n"
+              "\n"
+              "The geo cache (F93) holds the answers of the online provider, in the "
+              "geo_cache table. It survives both a repeated run and “Start over”, so "
+              "--clear-geo is the only way to ask the provider again once it has "
+              "answered wrongly.",
+        "ja": "キャッシュ: パスとサイズを表示します。--clear/--clear-geo で削除します。\n"
+              "\n"
+              "プレビューキャッシュはいつ削除しても安全です。遅延生成なので、フレームを"
+              "最初に必要とするステージが作り直します。このコマンドの目的は、容量を空けること"
+              "（写真 1 枚あたり約 150 KB）と、設定変更後にプレビューを作り直させることです。\n"
+              "\n"
+              "位置情報キャッシュ (F93) は geo_cache テーブルにあるオンラインプロバイダの"
+              "応答です。再実行しても「最初からやり直す」を実行しても残るため、"
+              "プロバイダが一度誤った応答を返した場合に問い合わせ直す唯一の方法が "
+              "--clear-geo です。",
+    },
+    "cli.help.cache.clear": {
+        "ru": "Удалить кэш превью (он пересоберётся сам)",
+        "en": "Remove the preview cache (it rebuilds itself)",
+        "ja": "プレビューキャッシュを削除します（自動で再生成されます）",
+    },
+    "cli.help.cache.clear_geo": {
+        "ru": "Удалить кэш ответов онлайн-геокодера (F93): следующий `sorta geo` "
+              "при provider: online снова сходит в сеть",
+        "en": "Remove the cached answers of the online geocoder (F93): the next "
+              "`sorta geo` with provider: online goes to the network again",
+        "ja": "オンラインジオコーダの応答キャッシュ (F93) を削除します。"
+              "provider: online の場合、次の `sorta geo` は再びネットワークに接続します",
+    },
+    # ui
+    "cli.help.ui": {
+        "ru": "Локальный веб-интерфейс: живой отчёт плана (пока режим city). "
+              "Ctrl+C — стоп.",
+        "en": "The local web interface: a live report of the plan (city mode so far). "
+              "Ctrl+C stops it.",
+        "ja": "ローカルのウェブインターフェース: プランのライブレポート（現状は city モード）。"
+              "Ctrl+C で停止します。",
+    },
+    "cli.help.ui.port": {
+        "ru": "Порт локального сервера (127.0.0.1)",
+        "en": "Port of the local server (127.0.0.1)",
+        "ja": "ローカルサーバのポート (127.0.0.1)",
+    },
+    # faces
+    "cli.help.faces": {
+        "ru": "Лица: детекция, кластеры, именование.",
+        "en": "Faces: detection, clusters, naming.",
+        "ja": "顔: 検出、クラスタ、名前付け。",
+    },
+    "cli.help.faces.rescan": {
+        "ru": "Пересчитать лица заново: стереть строки faces и продетектировать "
+              "все канонические фото (имена кластеров переносятся по файлам). "
+              "Нужен после смены детектора; без флага шаг инкрементальный",
+        "en": "Recompute the faces from scratch: erase the faces rows and detect over "
+              "all canonical photos (cluster names are carried over by file). Needed "
+              "after changing the detector; without the flag the step is incremental",
+        "ja": "顔を最初から計算し直します: faces の行を削除し、すべての正本写真で検出します"
+              "（クラスタ名はファイル単位で引き継がれます）。検出器を変更した後に必要です。"
+              "フラグなしの場合、このステップは差分処理です",
+    },
+    "cli.help.faces.limit": {
+        "ru": "Только с --rescan: пересчитать N случайных файлов, остальные не "
+              "трогать (замер шага на живом пайплайне)",
+        "en": "Only with --rescan: recompute N random files and leave the rest alone "
+              "(timing the step on the live pipeline)",
+        "ja": "--rescan と併用する場合のみ: ランダムな N 件のファイルだけを再計算し、"
+              "残りには触れません（実パイプラインでのステップ計測用）",
+    },
+    "cli.help.faces.label": {
+        "ru": 'Назвать кластер: sorta faces label 3 "Мама".',
+        "en": 'Name a cluster: sorta faces label 3 "Mum".',
+        "ja": 'クラスタに名前を付けます: sorta faces label 3 "母".',
+    },
+    "cli.help.faces.merge": {
+        "ru": "Слить кластер src в dst (это один человек).",
+        "en": "Merge cluster src into dst (they are one person).",
+        "ja": "クラスタ src を dst に統合します（同一人物の場合）。",
+    },
+    "cli.help.faces.sheet": {
+        "ru": "Экспорт контактного листа кластера в HTML.",
+        "en": "Export a contact sheet of the cluster into HTML.",
+        "ja": "クラスタのコンタクトシートを HTML に書き出します。",
+    },
+    # events
+    "cli.help.events": {
+        "ru": "События: автокластеризация, имена, ручные события.",
+        "en": "Events: automatic clustering, names, manual events.",
+        "ja": "イベント: 自動クラスタリング、名前、手動イベント。",
+    },
+    "cli.help.events.rename": {
+        "ru": "Переименовать событие (имя переживает пересчёт).",
+        "en": "Rename an event (the name survives a recompute).",
+        "ja": "イベントの名前を変更します（名前は再計算後も残ります）。",
+    },
+    "cli.help.events.add": {
+        "ru": 'Ручное событие на диапазон дат: events add "Конференция" '
+              '2024-01-01 2024-01-10.',
+        "en": 'A manual event over a date range: events add "Conference" '
+              '2024-01-01 2024-01-10.',
+        "ja": '日付範囲を指定する手動イベント: events add "会議" 2024-01-01 2024-01-10.',
+    },
+    # sort
+    "cli.help.sort": {
+        "ru": "Разложить файлы перемещением. По умолчанию — dry-run с планом "
+              "(CSV+HTML).",
+        "en": "Lay the files out by moving them. By default — a dry run with a plan "
+              "(CSV+HTML).",
+        "ja": "ファイルを移動して整理します。デフォルトはプラン付きの dry-run です"
+              "（CSV+HTML）。",
+    },
+    "cli.help.sort.by": {
+        "ru": "city | person | event",
+        "en": "city | person | event",
+        "ja": "city | person | event",
+    },
+    "cli.help.sort.dest": {
+        "ru": "Каталог назначения; без него — in-place раскладка в корень источника "
+              "(единственный sources)",
+        "en": "Destination directory; without it — an in-place layout into the source "
+              "root (the single sources entry)",
+        "ja": "出力先のディレクトリ。指定しない場合はソースのルートに in-place で配置します"
+              "（sources が 1 つのときのみ）",
+    },
+    "cli.help.sort.apply": {
+        "ru": "Реально переместить (иначе dry-run)",
+        "en": "Actually move (otherwise a dry run)",
+        "ja": "実際に移動します（指定しない場合は dry-run）",
+    },
+    "cli.help.sort.copy": {
+        "ru": "Копировать в новую структуру, оригиналы на месте (C16; иначе "
+              "перемещение)",
+        "en": "Copy into the new structure, leaving the originals in place (C16; "
+              "otherwise a move)",
+        "ja": "元のファイルを残したまま新しい構造にコピーします（C16。指定しない場合は移動）",
+    },
+    "cli.help.sort.where": {
+        "ru": 'Фильтр, повторяемый: "country=DE", "year>=2020"',
+        "en": 'Filter, repeatable: "country=DE", "year>=2020"',
+        "ja": '繰り返し指定できるフィルタ: "country=DE"、"year>=2020"',
+    },
+    "cli.help.sort.thumbnails": {
+        "ru": "Миниатюры в HTML-отчёте (медленно: декод всех фото)",
+        "en": "Thumbnails in the HTML report (slow: every photo is decoded)",
+        "ja": "HTML レポートにサムネイルを付けます（すべての写真をデコードするため遅い）",
+    },
+    "cli.help.sort.dedupe": {
+        "ru": "Почти-дубли: лучший — по режиму, худшие — в _Duplicates "
+              "(нужен sorta phash)",
+        "en": "Near-duplicates: the best one goes by the mode, the worse ones into "
+              "_Duplicates (needs sorta phash)",
+        "ja": "類似写真: 最良の 1 枚は通常どおり、それ以外は _Duplicates に入れます"
+              "（sorta phash が必要）",
+    },
+    "cli.help.sort.delete_worse_dupes": {
+        "ru": "С --dedupe: БЕЗВОЗВРАТНО удалять худшие (не откатывается)",
+        "en": "With --dedupe: delete the worse ones IRREVERSIBLY (no undo)",
+        "ja": "--dedupe と併用: 劣る方を完全に削除します（取り消せません）",
+    },
+    "cli.help.sort.exclude": {
+        "ru": "Не сортировать файлы из этого каталога (повторяемый); объединяется "
+              "с sort.exclude_dirs",
+        "en": "Do not sort the files from this directory (repeatable); merged with "
+              "sort.exclude_dirs",
+        "ja": "このディレクトリのファイルを整理しません（繰り返し指定可）。"
+              "sort.exclude_dirs と統合されます",
+    },
+    # album
+    "cli.help.album": {
+        "ru": "Выгрузить срез (человека/события) в отдельную папку. По умолчанию — "
+              "hardlink, dry-run.",
+        "en": "Export a slice (a person/an event) into a separate folder. By default — "
+              "hardlink, dry run.",
+        "ja": "スライス（人物・イベント）を別のフォルダに書き出します。"
+              "デフォルトはハードリンクの dry-run です。",
+    },
+    "cli.help.album.kind": {
+        "ru": "person | event",
+        "en": "person | event",
+        "ja": "person | event",
+    },
+    "cli.help.album.selector": {
+        "ru": "имя человека / имя или id события",
+        "en": "a person's name / an event's name or id",
+        "ja": "人物の名前 / イベントの名前または id",
+    },
+    "cli.help.album.dest": {
+        "ru": "Куда выгрузить альбом",
+        "en": "Where to export the album",
+        "ja": "アルバムの書き出し先",
+    },
+    "cli.help.album.copy": {
+        "ru": "Копировать (иначе hardlink)",
+        "en": "Copy (otherwise a hardlink)",
+        "ja": "コピーします（指定しない場合はハードリンク）",
+    },
+    "cli.help.album.move": {
+        "ru": "Изъять из пула (перемещение); иначе hardlink",
+        "en": "Take out of the pool (a move); otherwise a hardlink",
+        "ja": "プールから取り出します（移動）。指定しない場合はハードリンク",
+    },
+    "cli.help.album.where": {
+        "ru": 'Доп. фильтр среза: "city=Барселона", "year>=2020"',
+        "en": 'An extra filter on the slice: "city=Barcelona", "year>=2020"',
+        "ja": 'スライスの追加フィルタ: "city=バルセロナ"、"year>=2020"',
+    },
+    "cli.help.album.name": {
+        "ru": "Имя папки альбома (иначе имя человека/события)",
+        "en": "Name of the album folder (otherwise the person's/event's name)",
+        "ja": "アルバムフォルダの名前（指定しない場合は人物・イベントの名前）",
+    },
+    "cli.help.album.apply": {
+        "ru": "Реально выгрузить (иначе dry-run)",
+        "en": "Actually export (otherwise a dry run)",
+        "ja": "実際に書き出します（指定しない場合は dry-run）",
+    },
+    # reset
+    "cli.help.reset": {
+        "ru": "Стереть индекс (БД) и начать с нуля. Фото и разложенные папки НЕ "
+              "трогает.\n"
+              "\n"
+              "Внимание: пропадут имена людей/событий и решения по дублям. Кэш геоданных\n"
+              "(F93) остаётся — названия точек на карте не зависят от того, какие файлы лежат\n"
+              "у пользователя; стереть и его — `--clear-geo`.",
+        "en": "Erase the index (the DB) and start from scratch. Photos and already "
+              "sorted folders are NOT touched.\n"
+              "\n"
+              "Careful: people/event names and duplicate decisions will be lost. The "
+              "geo cache (F93) stays — the names of the points on the map do not depend "
+              "on which files a user happens to have; to erase it too — `--clear-geo`.",
+        "ja": "インデックス（DB）を消去して最初からやり直します。"
+              "写真と整理済みのフォルダには手を触れません。\n"
+              "\n"
+              "注意: 人物・イベントの名前と重複の判断は失われます。"
+              "位置情報キャッシュ (F93) は残ります — 地図上の地点の名前は、"
+              "利用者がどのファイルを持っているかに依存しないためです。"
+              "これも消すには `--clear-geo` を使います。",
+    },
+    "cli.help.reset.yes": {
+        "ru": "Без подтверждения",
+        "en": "Without a confirmation",
+        "ja": "確認なしで実行します",
+    },
+    "cli.help.reset.clear_geo": {
+        "ru": "Заодно очистить кэш ответов онлайн-геокодера (F93); без флага он "
+              "переживает сброс, и повторный прогон geo не стоит сети",
+        "en": "Clear the cached answers of the online geocoder (F93) as well; without "
+              "the flag it survives the reset and a repeated geo run costs no network",
+        "ja": "オンラインジオコーダの応答キャッシュ (F93) も消去します。"
+              "フラグなしの場合はリセット後も残るため、geo の再実行はネットワークを使いません",
+    },
+    # undo
+    "cli.help.undo": {
+        "ru": "Откатить перемещения последнего (или указанного) запуска sort по "
+              "журналу.",
+        "en": "Undo the moves of the last (or the given) sort run, from the journal.",
+        "ja": "直近（または指定した）sort 実行の移動を、ジャーナルに従って取り消します。",
+    },
+    "cli.help.undo.batch": {
+        "ru": "ID батча (по умолчанию последний)",
+        "en": "Batch id (the last one by default)",
+        "ja": "バッチの ID（デフォルトは直近のもの）",
+    },
+    # run
+    "cli.help.run": {
+        "ru": "Анализ одним прогоном: index -> geo -> landmarks -> junk "
+              "(+faces/+events с флагами).\n"
+              "\n"
+              "Ничего не перемещает. С --by в конце строит dry-run план (в --dest либо\n"
+              "in-place в корень источника, если --dest не задан).",
+        "en": "The whole analysis in one run: index -> geo -> landmarks -> junk "
+              "(+faces/+events behind flags).\n"
+              "\n"
+              "Moves nothing. With --by it builds a dry-run plan at the end (into "
+              "--dest, or in place into the source root if --dest is not given).",
+        "ja": "分析を 1 回の実行で: index -> geo -> landmarks -> junk"
+              "（フラグで +faces/+events）。\n"
+              "\n"
+              "何も移動しません。--by を指定すると、最後に dry-run のプランを作成します"
+              "（--dest に、--dest がなければソースのルートに in-place で）。",
+    },
+    "cli.help.run.by": {
+        "ru": "city|person|event — построить dry-run план в конце",
+        "en": "city|person|event — build a dry-run plan at the end",
+        "ja": "city|person|event — 最後に dry-run のプランを作成します",
+    },
+    "cli.help.run.dest": {
+        "ru": "Каталог назначения для плана с --by; без него — in-place",
+        "en": "Destination directory for the --by plan; without it — in place",
+        "ja": "--by のプランの出力先ディレクトリ。指定しない場合は in-place",
+    },
+    "cli.help.run.deep": {
+        "ru": "Глубокий анализ VLM на этот прогон: медленнее, нужен "
+              "`uv sync --extra vlm` (иначе откат на быстрый ярус); "
+              "без флага — как в config.yaml (naming.vlm_enabled)",
+        "en": "Deep VLM analysis for this run: slower, needs `uv sync --extra vlm` "
+              "(otherwise it falls back to the fast tier); without the flag — as in "
+              "config.yaml (naming.vlm_enabled)",
+        "ja": "この実行で VLM による詳細分析を行います: 低速で、`uv sync --extra vlm` が"
+              "必要です（ない場合は高速な階層にフォールバックします）。"
+              "フラグなしの場合は config.yaml のとおり (naming.vlm_enabled)",
+    },
+    "cli.help.run.geo": {
+        "ru": "offline|online — online точнее для мест за границей, но "
+              "отправляет GPS-координаты фото серверу геокодирования "
+              "(Nominatim), сами фото не отправляются; без флага — как в "
+              "config.yaml (geo.provider)",
+        "en": "offline|online — online is more precise for places abroad, but it sends "
+              "the GPS coordinates of the photos to a geocoding server (Nominatim); "
+              "the photos themselves are not sent; without the flag — as in "
+              "config.yaml (geo.provider)",
+        "ja": "offline|online — online は国外の場所でより正確ですが、写真の GPS 座標を"
+              "ジオコーディングサーバ (Nominatim) に送信します（写真自体は送信しません）。"
+              "フラグなしの場合は config.yaml のとおり (geo.provider)",
+    },
+    "cli.help.run.faces": {
+        "ru": "Разбор по лицам (детекция + кластеризация) — самый долгий "
+              "шаг; по умолчанию выключен, доступен отдельно как `sorta "
+              "faces`",
+        "en": "The face pass (detection + clustering) — the longest step; off by "
+              "default, available on its own as `sorta faces`",
+        "ja": "顔の処理（検出 + クラスタリング）— 最も時間のかかるステップです。"
+              "デフォルトは無効で、`sorta faces` として個別に実行できます",
+    },
+    "cli.help.run.events": {
+        "ru": "Группировка в события по времени/месту; по умолчанию "
+              "выключена, доступна отдельно как `sorta events`",
+        "en": "Grouping into events by time/place; off by default, available on its "
+              "own as `sorta events`",
+        "ja": "時間・場所によるイベントへのグループ化。デフォルトは無効で、"
+              "`sorta events` として個別に実行できます",
+    },
+    "cli.help.run.src": {
+        "ru": "Каталог-источник для этого прогона; переопределяет "
+              "config sources (как позиционный аргумент у `index`)",
+        "en": "Source directory for this run; overrides config sources (like the "
+              "positional argument of `index`)",
+        "ja": "この実行のソースディレクトリ。config の sources を上書きします"
+              "（`index` の位置引数と同じ）",
+    },
+    # the argparse fallback (no typer): its one positional argument
+    "cli.help.fallback.command": {
+        "ru": "Команда",
+        "en": "The command",
+        "ja": "コマンド",
+    },
 }
+
+
+# The `--help` half of the catalog: `build_app` reads exactly these, and the parity of
+# the three languages over them is checked apart from the rest (tests/test_cli_help.py).
+HELP_PREFIX = "cli.help."
+
+
+def help_keys() -> tuple[str, ...]:
+    """Every key of the catalog that a `--help` text is built from."""
+    return tuple(sorted(k for k in _CLI_STRINGS if k.startswith(HELP_PREFIX)))
 
 
 def cli_text(key: str, lang: Lang, **fields: object) -> str:

@@ -24,6 +24,24 @@ _LANGS = ("ru", "en", "ja")
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 
 
+def command_callback(app, name: str):
+    """The function typer registered for `sorta <name>` (F114: the commands are built
+    by `cli.build_app`, so they are reached through an application, not by module
+    attribute)."""
+    for info in app.registered_commands:
+        if (info.name or info.callback.__name__) == name:
+            return info.callback
+    raise KeyError(name)
+
+
+def group_callback(app, name: str):
+    """The callback of a sub-application — `sorta faces` without a subcommand."""
+    for info in app.registered_groups:
+        if info.name == name:
+            return info.typer_instance.registered_callback.callback
+    raise KeyError(name)
+
+
 def _seed(db_path: Path) -> None:
     """Three good files (one a duplicate, two with GPS) + one with an error, two
     places and one named face cluster — enough for every branch of `stats`/`dupes`."""
@@ -150,18 +168,18 @@ class _Env:
 
         with patch.object(cli, "label_cluster", lambda n, cid, name: 3):
             out["faces_label"] = self._cap(
-                lambda: cli.faces_label(3, self.data, cfg))
+                lambda: cli._cmd_faces_label(cfg, 3, self.data))
         with patch.object(cli, "merge_clusters", lambda n, a, b: 5):
-            out["faces_merge"] = self._cap(lambda: cli.faces_merge(7, 5, cfg))
+            out["faces_merge"] = self._cap(lambda: cli._cmd_faces_merge(cfg, 7, 5))
         with patch.object(cli, "export_contact_sheet", lambda n, cid, html: 12):
             out["faces_sheet"] = self._cap(
-                lambda: cli.faces_sheet(3, self.root / "sheet.html", cfg))
+                lambda: cli._cmd_faces_sheet(cfg, 3, self.root / "sheet.html"))
         with patch.object(cli, "rename_event", lambda n, eid, name: None):
             out["events_rename"] = self._cap(
-                lambda: cli.events_rename(2, self.data, cfg))
+                lambda: cli._cmd_events_rename(cfg, 2, self.data))
         with patch.object(cli, "add_manual_event", lambda n, name, a, b: 9):
             out["events_add"] = self._cap(
-                lambda: cli.events_add(self.data, "2024-01-01", "2024-01-10", cfg))
+                lambda: cli._cmd_events_add(cfg, self.data, "2024-01-01", "2024-01-10"))
 
         report = SimpleNamespace(moved=10, skipped_in_place=2, failed=1, deleted=3)
         with patch.object(cli, "plan_and_sort", lambda *a, **k: report):
@@ -181,45 +199,43 @@ class _Env:
             out["album_no_blocked"] = self._cap(lambda: self._album(cfg))
 
         with patch.object(cli, "reset_index", lambda n, clear_geo=False: None):
-            out["reset"] = self._cap(
-                lambda: cli.reset(yes=True, clear_geo=False, config=cfg))
-            out["reset_geo"] = self._cap(
-                lambda: cli.reset(yes=True, clear_geo=True, config=cfg))
+            out["reset"] = self._cap(lambda: cli._cmd_reset(cfg, clear_geo=False))
+            out["reset_geo"] = self._cap(lambda: cli._cmd_reset(cfg, clear_geo=True))
             out["reset_confirm"] = self._confirm_text(cfg, clear_geo=False)
             out["reset_confirm_geo"] = self._confirm_text(cfg, clear_geo=True)
 
         undone = SimpleNamespace(batch_id=4, undone=10, missing=1, failed=2)
         with patch.object(cli, "undo_batch", lambda n, b, progress=None: undone):
-            out["undo"] = self._cap(lambda: cli.undo(batch=None, config=cfg))
+            out["undo"] = self._cap(lambda: cli._cmd_undo(cfg, None))
 
         with patch.object(cli, "geo_cache_size", lambda n: 42), \
                 patch.object(cli, "clear_geo_cache", lambda n: 17), \
                 patch("sorta.imaging.preview_dir", lambda: self.previews), \
                 patch("sorta.imaging.preview_cache_clear", lambda: None):
             out["cache_show"] = self._cap(
-                lambda: cli.cache_cmd(clear=False, clear_geo=False, config=cfg))
+                lambda: cli._cmd_cache(cfg, clear=False, clear_geo=False))
             out["cache_clear_geo"] = self._cap(
-                lambda: cli.cache_cmd(clear=False, clear_geo=True, config=cfg))
+                lambda: cli._cmd_cache(cfg, clear=False, clear_geo=True))
             out["cache_clear"] = self._cap(
-                lambda: cli.cache_cmd(clear=True, clear_geo=False, config=cfg))
+                lambda: cli._cmd_cache(cfg, clear=True, clear_geo=False))
             out["doctor"] = self._doctor(cfg)
 
         out["stub"] = self._cap(cli._stub("step", "doc", self.lang))
         return out
 
     def _sort(self, cfg: str, *, copy: bool) -> None:
-        cli.sort(by="city", dest=None, apply=True, copy=copy, where=[],
-                 thumbnails=False, dedupe=False, delete_worse_dupes=False,
-                 exclude=[], config=cfg)
+        cli._cmd_sort(cfg, "city", None, apply=True, copy=copy, where=[],
+                      thumbnails=False, dedupe=False, delete_worse_dupes=False,
+                      exclude=[])
 
     def _album(self, cfg: str) -> None:
-        cli.album("person", self.data, self.root / "album", copy=False, move=False,
-                  where=[], name=None, apply=True, config=cfg)
+        cli._cmd_album(cfg, "person", self.data, self.root / "album", copy=False,
+                       move=False, where=[], name=None, apply=True)
 
     def _confirm_text(self, cfg: str, *, clear_geo: bool) -> str:
         seen: list[str] = []
-        with patch("typer.confirm", lambda text, **kw: seen.append(text)):
-            self._cap(lambda: cli.reset(yes=False, clear_geo=clear_geo, config=cfg))
+        self._cap(lambda: cli._cmd_reset(cfg, clear_geo=clear_geo,
+                                         confirm=seen.append))
         return seen[0]
 
     def _doctor(self, cfg: str) -> str:
@@ -228,7 +244,7 @@ class _Env:
                 patch.object(cli, "geo_data_health", lambda: health), \
                 patch.object(cli, "default_log_path", lambda: "run.log"), \
                 patch("sorta.imaging.preview_cache_enabled", lambda: False):
-            return self._cap(lambda: cli.doctor(cfg))
+            return self._cap(lambda: cli._cmd_doctor(cfg))
 
 
 class _EnvCase(unittest.TestCase):
@@ -547,11 +563,16 @@ class TestUnknownLanguageFallsBack(unittest.TestCase):
 
 class TestBadParameterMessagesAreLocalized(unittest.TestCase):
     """The `typer.BadParameter` guards fire before the command loads the config, so
-    they go through `_lang_of` — they must still speak the configured language."""
+    they go through `_lang_of` — they must still speak the configured language.
+
+    F114: the guards stayed in the typer shells (they answer with typer's own error),
+    so each case reaches for the registered command of a built application.
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.root = Path(self.tmp.name)
+        self.app = cli.build_app("en")  # the guards' language comes from --config
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -564,42 +585,57 @@ class TestBadParameterMessagesAreLocalized(unittest.TestCase):
 
     def test_geo_choice(self):
         import typer
+        run = command_callback(self.app, "run")
         with self.assertRaises(typer.BadParameter) as ctx:
-            cli.run(by=None, dest=None, deep=None, geo="nope", faces=False,
-                    events=False, src=None, config=self._cfg("ru"))
+            run(by=None, dest=None, deep=None, geo="nope", faces=False,
+                events=False, src=None, config=self._cfg("ru"))
         self.assertEqual(str(ctx.exception.message),
                          "--geo должен быть offline или online")
         with self.assertRaises(typer.BadParameter) as ctx:
-            cli.run(by=None, dest=None, deep=None, geo="nope", faces=False,
-                    events=False, src=None, config=self._cfg("en"))
+            run(by=None, dest=None, deep=None, geo="nope", faces=False,
+                events=False, src=None, config=self._cfg("en"))
         self.assertIsNone(_CYRILLIC.search(str(ctx.exception.message)))
 
     def test_faces_limit_guards(self):
         import typer
+        faces_main = group_callback(self.app, "faces")
         ctx_obj = SimpleNamespace(invoked_subcommand=None)
         with self.assertRaises(typer.BadParameter) as ctx:
-            cli.faces_main(ctx_obj, rescan=False, limit=5, config=self._cfg("ru"))
+            faces_main(ctx_obj, rescan=False, limit=5, config=self._cfg("ru"))
         self.assertEqual(str(ctx.exception.message),
                          "--limit работает только вместе с --rescan")
         with self.assertRaises(typer.BadParameter) as ctx:
-            cli.faces_main(ctx_obj, rescan=True, limit=0, config=self._cfg("ru"))
+            faces_main(ctx_obj, rescan=True, limit=0, config=self._cfg("ru"))
         self.assertEqual(str(ctx.exception.message),
                          "--limit должен быть положительным числом")
         with self.assertRaises(typer.BadParameter) as ctx:
-            cli.faces_main(ctx_obj, rescan=True, limit=-1, config=self._cfg("ja"))
+            faces_main(ctx_obj, rescan=True, limit=-1, config=self._cfg("ja"))
         self.assertIsNone(_CYRILLIC.search(str(ctx.exception.message)))
 
     def test_album_copy_and_move(self):
         import typer
+        album = command_callback(self.app, "album")
         with self.assertRaises(typer.BadParameter) as ctx:
-            cli.album("person", "X", self.root, copy=True, move=True, where=[],
-                      name=None, apply=False, config=self._cfg("ru"))
+            album("person", "X", self.root, copy=True, move=True, where=[],
+                  name=None, apply=False, config=self._cfg("ru"))
         self.assertEqual(str(ctx.exception.message),
                          "--copy и --move взаимоисключающи")
         with self.assertRaises(typer.BadParameter) as ctx:
-            cli.album("person", "X", self.root, copy=True, move=True, where=[],
-                      name=None, apply=False, config=self._cfg("en"))
+            album("person", "X", self.root, copy=True, move=True, where=[],
+                  name=None, apply=False, config=self._cfg("en"))
         self.assertIsNone(_CYRILLIC.search(str(ctx.exception.message)))
+
+    def test_the_reset_shell_asks_with_typer(self):
+        """`--yes` aside, the question is typer's: `_cmd_reset` only gets handed one."""
+        reset = command_callback(self.app, "reset")
+        with patch.object(cli, "_cmd_reset") as cmd, \
+                patch("typer.confirm") as confirm:
+            reset(yes=False, clear_geo=False, config=self._cfg("ru"))
+            cmd.call_args.kwargs["confirm"]("question?")
+        confirm.assert_called_once_with("question?", abort=True)
+        with patch.object(cli, "_cmd_reset") as cmd:
+            reset(yes=True, clear_geo=False, config=self._cfg("ru"))
+        self.assertIsNone(cmd.call_args.kwargs["confirm"])
 
 
 class TestEveryKeyTheCliAsksForExists(unittest.TestCase):
