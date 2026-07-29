@@ -173,20 +173,26 @@ class TestSessionReuse(FakeExifToolTestCase):
                         "второй вызов поднял новый пул вместо переиспользования")
 
     def test_a_wider_call_only_adds_the_missing_sessions(self):
+        # A session that dies is transparently restarted by `_ensure` — deliberate
+        # behaviour that fires now and then under the load of the full suite, so ANY
+        # exact launch count here is a coin toss rather than a check. The neighbour
+        # above was fixed for this long ago; this test kept two equalities and was the
+        # flake that turned CI red at random (twice locally on 2026-07-28, then on
+        # Windows CI twice more the day after — the second time because the first fix
+        # only replaced the LOWER of its two exact counts and left this one).
+        #
+        # Both bounds are stated against what was actually launched, not against a
+        # constant: at least as many sessions as were asked for, and no full rebuild of
+        # the ones that already exist.
         exif.read_batch(self.paths, 2)
-        self.assertEqual(self.fake.launches(), 2)
+        after_first = self.fake.launches()
+        self.assertGreaterEqual(after_first, 2, "обе сессии первого вызова не поднялись")
+
         exif.read_batch(self.paths, 4)
-        # Same reasoning as the neighbour above, and the same fix: a session that dies
-        # is transparently restarted by `_ensure`, which happens now and then under the
-        # load of the full suite, so an exact count is a coin toss rather than a check.
-        # This test was the last one still asserting equality and it was the flake that
-        # turned CI red at random (twice on 2026-07-28, once on Windows CI the day
-        # after). The invariant is bounded on both sides: all four sessions must exist,
-        # and the first two must NOT have been rebuilt — a fresh pool on top of the old
-        # one would take 2 + 4 launches.
         self.assertGreaterEqual(self.fake.launches(), 4, "не все сессии подняты")
-        self.assertLess(self.fake.launches(), 6,
-                        "широкий вызов пересоздал пул вместо добавления недостающих")
+        self.assertLess(self.fake.launches(), after_first + 4,
+                        f"широкий вызов пересоздал пул вместо добавления недостающих: "
+                        f"{self.fake.launches()} запусков при {after_first} до него")
 
 
 class TestFailureIsolation(FakeExifToolTestCase):
