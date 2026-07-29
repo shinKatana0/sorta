@@ -45,13 +45,17 @@ app**.
   events too.
 - **Duplicates:** exact (blake3) and near‑duplicate (perceptual hash) with a
   batch‑review UI.
-- **Junk & documents:** screenshots/memes routed out; documents collected into a
-  `_Documents/` review folder (CLIP + text‑density).
+- **Junk, documents & products:** screenshots/memes routed out; documents collected
+  into a `_Documents/` review folder (CLIP + text‑density), and — with the deep VLM
+  tier on — for‑sale product shots into `_Products/`.
 - **Albums:** collect a person/event slice into a named folder via **hardlinks**
   (near‑zero extra space), copy, or move.
 - **Local web app** (`sorta ui`): process a folder, review the plan, resolve
   duplicates, name people, and materialize sorts/albums — all in the browser. The
-  **People**/**Events** tabs only appear once you've actually run those stages.
+  **Overview** tab states the collection's condition on one screen with clickable
+  numbers; **Not personal photos** is where products/documents/screenshots/memes are
+  reviewed and sent back in bulk. The **People**/**Events** tabs only appear once
+  you've actually run those stages.
 - **Trilingual** UI and folder names: **ru / en / ja**.
 - **Safe by design:** dry‑run, journal + `undo`, blake3 verification, never
   overwrites (suffix `_1`, `_2`).
@@ -66,7 +70,7 @@ app**.
 |---|---|---|
 | Hardware | Any x86‑64 machine | NVIDIA GPU + driver supporting **CUDA 13** |
 | VRAM | n/a | **~3 GB** base + faces (measured on RTX 5090: CLIP ViT‑L 2.0 GB + buffalo_l 0.6 GB) — **≥ 4 GB** comfortable, **≥ 8 GB** for the deep VLM tier (Qwen2.5‑VL‑3B, ~7 GB est.) |
-| Faces / CLIP speed | Works, but **slow** (hours on a large, faces/events‑enabled collection) | Fast — reference: 6,298 photos, faces+events+junk ≈ **45 min** (fast tier) / ≈ **77 min** with the optional deep VLM tier |
+| Faces / CLIP speed | Works, but **slow** (hours on a large, faces/events‑enabled collection) | Fast — measured 2026‑07‑28: 24,196 photos, faces+events+junk ≈ **40 min** without the deep tier; the optional deep VLM tier adds **+122 min**, once |
 | Best for | City sorting + duplicates on any machine; smaller collections with faces/events on | Large collections (300 GB+) with faces/events routinely on |
 
 Common to both: Python **3.11–3.14**, [`uv`](https://docs.astral.sh/uv/), and
