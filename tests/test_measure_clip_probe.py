@@ -42,8 +42,19 @@ PRODUCT = "product"
 DOC = "document"
 
 
-def sample(features, label, before=PHOTO):
-    return probe.Sample(features=tuple(features), label=label, before=before)
+def sample(features, label, before=PHOTO, embed=None):
+    """One labelled frame for the tests.
+
+    F109 split the single `features` field into the two sets a frame now carries at
+    once (`probs` and `embed`), because both come out of the same CLIP pass and the
+    comparison is only meaningful when both probes see the same frames on the same
+    side of the split. The helper fills both from one vector unless a test cares about
+    the difference: which set is actually used is chosen by the caller of the probe,
+    not by which field happens to be populated.
+    """
+    values = tuple(features)
+    return probe.Sample(probs=values, embed=values if embed is None else tuple(embed),
+                        label=label, before=before)
 
 
 def answer(label=PHOTO, predicted=None, confidence=0.9, before=PHOTO):
@@ -365,9 +376,18 @@ class TestOutcome(unittest.TestCase):
         self.assertIn(f"нет N <= {probe.MAX_SMART_GATE_SHARE:.0%}", why)
 
     def test_the_outcome_line_carries_the_letter(self):
+        # F109: the outcome is formatted from the whole VariantReport, so the line can
+        # name WHICH feature set it is about — a report that says "ИСХОД C" without
+        # saying "17 признаков" or "768" is unreadable once there are two of them.
         evaluation = probe.confusion([answer(PHOTO)] * 100)
-        self.assertTrue(
-            probe.format_outcome(evaluation, self.curve(50)).startswith("ИСХОД A"))
+        report = probe.VariantReport(
+            variant="probs", dim=probe.N_FEATURES,
+            run=probe.ProbeRun(trained_on=100, answers=[]),
+            evaluation=evaluation, curve=self.curve(50))
+        line = probe.format_outcome(report)
+        self.assertTrue(line.startswith("ИСХОД A"))
+        self.assertIn("probs", line)
+        self.assertIn(str(probe.N_FEATURES), line)
 
     def test_noise_ends_in_outcome_c(self):
         """The end-to-end shape of the failure the brief calls a normal result."""
@@ -417,21 +437,29 @@ class TestReportIdentifiesNothing(unittest.TestCase):
         run = probe.run_probe(samples, test_size=0.3, seed=1)
         evaluation = probe.confusion(run.answers)
         curve = probe.gate_curve(run.answers)
+        report = probe.VariantReport(
+            variant="probs", dim=len(samples[0].probs), run=run,
+            evaluation=evaluation, curve=curve)
         text = "\n".join([
-            probe.format_header(run, len(samples), 0.3, 1),
+            # F109: the header now describes the whole run — several feature sets at
+            # once — so it takes the reports, not one run.
+            probe.format_header([report], len(samples), 0.3, 1),
             probe.format_agreement(evaluation),
             probe.format_confusion(evaluation),
             probe.format_documents(evaluation),
             probe.format_gate_curve(curve),
             probe.format_baseline(run.answers),
-            probe.format_outcome(evaluation, curve),
+            probe.format_outcome(report),
         ])
         for leak in ("/photos", ".jpg", "file_id", "IMG_", "\\"):
             self.assertNotIn(leak, text)
 
     def test_the_sample_carries_no_identity_at_all(self):
+        # F109: `features` became `probs` + `embed` — two feature sets of the same
+        # frame, still nothing that identifies it. The assertion is on the WHOLE field
+        # set on purpose: it is what would catch a path or an id being added later.
         self.assertEqual(set(probe.Sample.__dataclass_fields__),
-                         {"features", "label", "before"})
+                         {"probs", "embed", "label", "before"})
         self.assertEqual(set(probe.Answer.__dataclass_fields__),
                          {"label", "predicted", "confidence", "before"})
 
