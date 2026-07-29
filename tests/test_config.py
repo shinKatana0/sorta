@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sorta.config import configure_logging, load_config
+from sorta.config import FeaturesConfig, configure_logging, load_config
 
 
 class TestLogLevelConfig(unittest.TestCase):
@@ -46,6 +46,11 @@ class TestExampleConfigLoads(unittest.TestCase):
         self.assertFalse(cfg.naming.vlm_enabled)
         self.assertIsNone(cfg.sort.report_dir)
         self.assertTrue(cfg.sort.drop_unlocalized_district)
+        # F113: the example documents the frame-quality section at its defaults — the
+        # toggles off, so copying it changes nothing about how a run behaves.
+        self.assertEqual(cfg.features, FeaturesConfig())
+        self.assertFalse(cfg.vlm.quality)
+        self.assertEqual(cfg.vlm.quality_scope, "groups")
 
 
 class TestRawOnlyKeysDoNotCrash(unittest.TestCase):
@@ -71,6 +76,92 @@ class TestRawOnlyKeysDoNotCrash(unittest.TestCase):
         self.cfg_path.write_text("geo:\n  future_phase_option: 1\n", encoding="utf-8")
         cfg = load_config(str(self.cfg_path))  # must not raise
         self.assertEqual((cfg.raw.get("geo") or {}).get("future_phase_option"), 1)
+
+
+class TestFeaturesSection(unittest.TestCase):
+    """F113: `features:` — the frame-quality toggle and the thresholds it needs.
+
+    Every value is garbage-tolerant for the same reason the `vlm:` section is: a typo in a
+    config file is a typo, not a reason to refuse to start — and a threshold silently read
+    as 0 would switch a feature on across a whole collection.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg_path = Path(self.tmp.name) / "config.yaml"
+
+    def _load(self, body: str):
+        self.cfg_path.write_text(body, encoding="utf-8")
+        return load_config(str(self.cfg_path))
+
+    def test_absent_section_gives_the_defaults(self):
+        cfg = self._load("")
+        self.assertEqual(cfg.features, FeaturesConfig())
+        self.assertFalse(cfg.features.pets)  # a new feature is off until asked for
+
+    def test_values_are_read(self):
+        cfg = self._load(
+            "features:\n"
+            "  pets: true\n"
+            "  pet_threshold: 0.42\n"
+            "  sharpness_max_edge: 640\n"
+            "  sharpness_band_min: 10\n"
+            "  sharpness_band_max: 500\n"
+            "  subject_score_min: 0.75\n")
+        self.assertTrue(cfg.features.pets)
+        self.assertAlmostEqual(cfg.features.pet_threshold, 0.42)
+        self.assertEqual(cfg.features.sharpness_max_edge, 640)
+        self.assertAlmostEqual(cfg.features.sharpness_band_min, 10.0)
+        self.assertAlmostEqual(cfg.features.sharpness_band_max, 500.0)
+        self.assertAlmostEqual(cfg.features.subject_score_min, 0.75)
+
+    def test_a_quoted_false_does_not_switch_the_feature_on(self):
+        self.assertFalse(self._load('features:\n  pets: "false"\n').features.pets)
+
+    def test_garbage_falls_back_to_the_defaults(self):
+        cfg = self._load("features:\n  pet_threshold: many\n  sharpness_max_edge: 0\n")
+        d = FeaturesConfig()
+        self.assertAlmostEqual(cfg.features.pet_threshold, d.pet_threshold)
+        self.assertEqual(cfg.features.sharpness_max_edge, d.sharpness_max_edge)
+
+    def test_an_empty_section_is_not_a_crash(self):
+        self.assertEqual(self._load("features:\n").features, FeaturesConfig())
+
+
+class TestVlmQualityKeys(unittest.TestCase):
+    """F113: `vlm.quality` / `vlm.quality_scope` — the band's own toggle and population."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg_path = Path(self.tmp.name) / "config.yaml"
+
+    def _load(self, body: str):
+        self.cfg_path.write_text(body, encoding="utf-8")
+        return load_config(str(self.cfg_path))
+
+    def test_defaults_are_off_and_groups(self):
+        cfg = self._load("")
+        self.assertFalse(cfg.vlm.quality)
+        self.assertEqual(cfg.vlm.quality_scope, "groups")
+
+    def test_the_quality_toggle_is_separate_from_the_deep_tier(self):
+        cfg = self._load("vlm:\n  quality: true\n")
+        self.assertTrue(cfg.vlm.quality)
+        self.assertFalse(cfg.vlm.enabled)  # the deep junk tier stays off
+
+    def test_every_scope_is_accepted(self):
+        for scope in ("groups", "events", "all"):
+            with self.subTest(scope=scope):
+                self.assertEqual(
+                    self._load(f"vlm:\n  quality_scope: {scope}\n").vlm.quality_scope,
+                    scope)
+
+    def test_a_misspelled_scope_does_not_become_the_expensive_one(self):
+        with self.assertLogs("sorta.config", level=logging.WARNING):
+            cfg = self._load("vlm:\n  quality_scope: everything\n")
+        self.assertEqual(cfg.vlm.quality_scope, "groups")
 
 
 class TestConfigureLogging(unittest.TestCase):

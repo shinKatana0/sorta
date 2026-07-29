@@ -89,7 +89,7 @@ _SKIP_LAYOUT = "skip_layout"
 # here: it is the history of operations that really happened, not index state.
 _DEPENDENT_TABLES = (
     "places", "media_class", "faces", "event_files", "dedup_choice", "manual_overrides",
-    "manual_places",
+    "manual_places", "frame_quality",
 )
 
 

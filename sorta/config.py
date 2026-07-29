@@ -182,6 +182,12 @@ def default_vlm_workers() -> int:
     return min(_VLM_WORKERS_CAP, os.cpu_count() or 1)
 
 
+# F113: the scopes `vlm.quality_scope` accepts — which frames the quality VLM may be
+# asked about at all, on top of the uncertainty band. `all` is the expensive one and says
+# so in config.example.yaml (0.78 s per frame is 4.3 hours on a 20k collection).
+VLM_QUALITY_SCOPES = ("groups", "events", "all")
+
+
 @dataclass(frozen=True)
 class VlmConfig:
     """`vlm:` — the shared runtime of the local VLM (F102).
@@ -201,6 +207,15 @@ class VlmConfig:
     model: str = DEFAULT_VLM_MODEL
     workers: int = field(default_factory=default_vlm_workers)
     max_edge: int = DEFAULT_VLM_MAX_EDGE
+    # F113: the SECOND consumer of the same runtime — the frame-quality questions the
+    # cheap tiers cannot answer (eyes open, a subject at all, an accidental shot). Its
+    # own toggle, deliberately not `enabled`: the deep junk tier and the quality band
+    # are different populations and a user may well want one without the other.
+    quality: bool = False
+    # Which frames the quality VLM may be asked about (the uncertainty band narrows this
+    # further). groups — frames of pHash near-duplicate groups (the default: that is
+    # where "which of these five is the good one" is actually asked), events, all.
+    quality_scope: str = "groups"
 
 
 # F102: the pre-`vlm:` address of each knob. A live config.yaml holds
@@ -273,6 +288,34 @@ def _as_positive_int(value: Any, default: int) -> int:
     return number if number > 0 else default
 
 
+def _as_float(value: Any, default: float) -> float:
+    """A finite number; absent / garbage -> `default` (a typo must not stop a run).
+
+    Booleans are rejected for the same reason `_as_positive_int` rejects them: YAML `true`
+    is a 1 nobody meant as a threshold.
+    """
+    if isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number == number and abs(number) != float("inf") else default
+
+
+def _as_scope(value: Any, default: str) -> str:
+    """One of VLM_QUALITY_SCOPES; anything else -> the default, with a warning.
+
+    A misspelled scope must not silently become `all` — that is the 4.3-hour option.
+    """
+    if isinstance(value, str) and value.strip().lower() in VLM_QUALITY_SCOPES:
+        return value.strip().lower()
+    if value is not None:
+        _log.warning("config: vlm.quality_scope=%r не из %s — использую %r",
+                     value, "/".join(VLM_QUALITY_SCOPES), default)
+    return default
+
+
 def resolve_vlm_workers(raw: dict | None) -> int:
     """Threads preparing frames for the VLM — `vlm.workers` (was `naming.vlm_workers`).
 
@@ -300,6 +343,53 @@ def _vlm_from(data: dict) -> VlmConfig:
         model=model.strip() if isinstance(model, str) and model.strip() else d.model,
         workers=resolve_vlm_workers(data),
         max_edge=_as_positive_int(new.get("max_edge"), d.max_edge),
+        quality=_as_bool(new.get("quality"), d.quality),
+        quality_scope=_as_scope(new.get("quality_scope"), d.quality_scope),
+    )
+
+
+@dataclass(frozen=True)
+class FeaturesConfig:
+    """`features:` — the F113 frame-quality cascade: one toggle, then its thresholds.
+
+    The rule the section exists for: every signal is taken with the cheapest tool that
+    can answer it, and a new function gets a new toggle. Sharpness has none — it is a
+    laplacian over a preview that every other stage has already paid for, and both the
+    "best frame of a group" and the "blurred junk" consumers need it — while pets, which
+    cost a prompt group inside the junk stage's CLIP call, do.
+
+    The thresholds are HERE and not in the code because none of them can be guessed:
+    `scripts/measure_frame_quality.py` prints the distributions they have to be chosen
+    from, on the collection they will be applied to.
+    """
+    pets: bool = False
+    # The pet-group CLIP score at or above which the class is written. Provisional until
+    # measured — CLIP's accuracy on this question has never been measured here.
+    pet_threshold: float = 0.6
+    # The longer side the frame is scaled to before the laplacian. FIXED on purpose: the
+    # variance of the laplacian is scale-dependent, so two frames measured at different
+    # resolutions are not comparable and no threshold over them means anything.
+    sharpness_max_edge: int = 512
+    # The band where sharpness decides nothing — clearly blurred is below it, clearly
+    # sharp above — and one of the two ways into the VLM population.
+    sharpness_band_min: float = 30.0
+    sharpness_band_max: float = 300.0
+    # The other way in: the junk-group CLIP probability of "a photograph" below this is
+    # CLIP saying it does not know what it is looking at.
+    subject_score_min: float = 0.9
+
+
+def _features_from(raw: dict) -> FeaturesConfig:
+    """The `features:` section — every value tolerant of garbage, like `vlm:` above."""
+    d = FeaturesConfig()
+    return FeaturesConfig(
+        pets=_as_bool(raw.get("pets"), d.pets),
+        pet_threshold=_as_float(raw.get("pet_threshold"), d.pet_threshold),
+        sharpness_max_edge=_as_positive_int(
+            raw.get("sharpness_max_edge"), d.sharpness_max_edge),
+        sharpness_band_min=_as_float(raw.get("sharpness_band_min"), d.sharpness_band_min),
+        sharpness_band_max=_as_float(raw.get("sharpness_band_max"), d.sharpness_band_max),
+        subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
     )
 
 
@@ -417,6 +507,7 @@ class Config:
     sort: SortConfig = field(default_factory=SortConfig)
     naming: NamingConfig = field(default_factory=NamingConfig)
     vlm: VlmConfig = field(default_factory=VlmConfig)  # F102: the shared VLM runtime
+    features: FeaturesConfig = field(default_factory=FeaturesConfig)  # F113: frame quality
     language: str = "en"  # folder/name language (ru|en|ja), normalized in load_config (F25/F27)
     log_level: str = "WARNING"  # DEBUG|INFO|WARNING|ERROR; validated in configure_logging (F52)
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
@@ -453,6 +544,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         sort=SortConfig(**_known(SortConfig, data.get("sort") or {})),
         naming=_legacy_naming_view(_naming_from(data.get("naming") or {}), vlm),
         vlm=vlm,
+        features=_features_from(_mapping(data.get("features"))),
         language=i18n.normalize_lang(data.get("language")),
         log_level=str(data.get("log_level", "WARNING")),
         raw=data,

@@ -95,6 +95,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single verdict differs.
 
 ### Added
+- **Per-frame quality signals, each taken with the cheapest tool that answers it** (F113):
+  choosing the best frame of a burst, or spotting the one nobody meant to take, needs
+  facts the index did not hold — how sharp a frame is, whether there is an animal in it,
+  whether the eyes are open, whether there is a subject at all. The new table
+  `frame_quality` (schema v15) holds them, and the point of the feature is the price of
+  each: **sharpness** is the variance of the laplacian over the preview every other stage
+  has already decoded — milliseconds, no model, so it has no toggle and is written always;
+  **pets** (cat/dog/pet) are a prompt group **appended to the CLIP call the junk stage
+  already makes** — no second pass, no second call, behind `features.pets`; and only what
+  neither of them can decide — eyes open, a subject at all, an accidental pocket shot —
+  goes to the local VLM at ~0.78 s a frame, behind `vlm.quality`, and only over the
+  **uncertain band** (sharpness in the zone where it decides nothing, or a CLIP score too
+  low to mean anything) inside `vlm.quality_scope` (pHash groups by default, `events` or
+  `all` on request — `all` is 4.3 hours on 20 000 frames and says so in the config).
+  Asking the VLM about pets across a collection would have been exactly those 4.3 hours;
+  CLIP does it in minutes because it is already looking at every frame, and "is there a
+  cat in this picture" is a question about an object — which is what CLIP is good at,
+  unlike the question about a frame's PURPOSE that F110 measured it failing. The junk
+  verdicts do not move a millimetre under the added prompts: a softmax restricted to a
+  subset of its own inputs and renormalized *is* the softmax over that subset, so
+  `naming.junk_threshold` still means what it was measured to mean. **NULL means "not
+  asked", never "no"** — an answer the model gives in prose instead of keywords leaves the
+  columns NULL rather than guessing False, because a consumer that read a defaulted False
+  would decide a frame nobody ever looked at has its eyes shut. The three thresholds ship
+  as **provisional** values with the measurement that has to replace them:
+  `python scripts/measure_frame_quality.py --features pets sharpness band` prints the
+  score distribution, what each candidate threshold would fire on, and how large the VLM
+  band would be — over at least 200 of your own frames, in aggregates that identify none
+  of them.
 - **The state of the collection, on one screen** (F108): every key number of an archive
   was reachable only through a hand-written SQL query. On 2026-07-28 the numbers that
   actually decided what to do next — **7 619 frames with no place, 2 202 products, 819
