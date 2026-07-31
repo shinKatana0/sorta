@@ -31,7 +31,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sorta import cli, i18n
+from sorta import __version__, cli, i18n
 
 _LANGS = ("ru", "en", "ja")
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
@@ -101,9 +101,13 @@ class TestHelpSpeaksTheConfigLanguage(_HelpCase):
                 result = self.help_for(["--help"])
             self.assertEqual(result.exit_code, 0, result.output)
             printed[lang] = flat(result.output)
-        self.assertIn("Sorta v0.2.0 — сортировка фотоколлекции", printed["ru"])
-        self.assertIn("Sorta v0.2.0 — sorting a photo collection", printed["en"])
-        self.assertIn("Sorta v0.2.0 — 写真コレクションの整理", printed["ja"])
+        # The version is taken from the package, not spelled out: this case is about the
+        # three languages being three texts, and a literal here turns every release bump
+        # into a red CI run (it did, on the v0.3.0 commit). The `v{version}` shape itself
+        # is pinned by the catalog case below.
+        self.assertIn(f"Sorta v{__version__} — сортировка фотоколлекции", printed["ru"])
+        self.assertIn(f"Sorta v{__version__} — sorting a photo collection", printed["en"])
+        self.assertIn(f"Sorta v{__version__} — 写真コレクションの整理", printed["ja"])
         self.assertEqual(len(set(printed.values())), 3)
 
     def test_a_command_help_follows_the_config_given_by_flag(self):

@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-31
+
+A re-cut of 0.3.0 on a green commit. **No module under `sorta/` changed** — install
+either and you get the same program; this tag exists so the released commit carries a
+passing CI run.
+
+### Fixed
+- **A release bump no longer fails the test suite**: `test_cli_help.py` spelled the
+  version out as a literal (`"Sorta v0.2.0 — …"`) inside a case that is about the three
+  interface languages, not about the version, so bumping to 0.3.0 turned all four CI
+  matrices red. It reads `sorta.__version__` now; the `v{version}` shape of the string
+  is still pinned, by the catalog case that owns it. The local gate had gone green on
+  the same tree by accident of timing — it started before the bump, and that test runs
+  in the first minute of a twelve-minute suite.
+- `uv.lock` still declared `sorta 0.2.0` after the version bump.
+
 ## [0.3.0] - 2026-07-31
 
 ### Fixed
