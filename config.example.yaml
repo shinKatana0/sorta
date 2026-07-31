@@ -213,7 +213,7 @@ naming:
     model: llava
     timeout: 120
   claude:                    # if provider: claude
-    model: claude-opus-4-8
+    model: claude-opus-5
     api_key_env: ANTHROPIC_API_KEY
     timeout: 60
 

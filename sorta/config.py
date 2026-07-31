@@ -440,7 +440,7 @@ class NamingConfig:
     vlm_base_url: str = "http://localhost:11434"
     vlm_model: str = "llava"
     vlm_timeout: float = 120.0
-    claude_model: str = "claude-opus-4-8"
+    claude_model: str = "claude-opus-5"
     claude_api_key_env: str = "ANTHROPIC_API_KEY"
     claude_timeout: float = 60.0
 
