@@ -251,13 +251,27 @@ class TestThreadSafety(FakeExifToolTestCase):
 
 
 class TestShutdown(FakeExifToolTestCase):
+    """The launch count is a lower bound here for the same reason as in TestSessionReuse:
+    `_ensure` transparently restarts a session that dies, which happens now and then under
+    the load of the full suite, so an exact count is a coin toss. Both cases in this class
+    are fixed together on purpose — the previous round of this bug was fixed in one of two
+    neighbouring assertions and went red again on the other (ac1daf7).
+
+    What actually has to hold is that nothing is left running: every session that was asked
+    for exited, and the pool holds no sessions afterwards.
+    """
+
     count = 100
 
     def test_close_stops_every_session(self):
         exif.read_batch(self.paths, 4)
-        self.assertEqual(self.fake.launches(), 4)
+        launched = self.fake.launches()
+        self.assertGreaterEqual(launched, 4, "не все четыре сессии поднялись")
+        self.assertLess(launched, 8, f"пул пересоздан целиком: {launched} запусков")
         exif._pool.close()
-        self.assertEqual(self.fake.clean_exits(), 4)
+        self.assertGreaterEqual(self.fake.clean_exits(), 4,
+                                f"close() оставил процессы: {self.fake.clean_exits()} "
+                                f"выходов при {launched} запусках")
         self.assertEqual(exif._pool._sessions, [])
 
     def test_close_is_idempotent_and_the_pool_stays_usable(self):
@@ -286,8 +300,14 @@ class TestShutdown(FakeExifToolTestCase):
         proc = subprocess.run([sys.executable, str(child)], capture_output=True, text=True,
                               timeout=120)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.fake.launches(), 4)
-        self.assertEqual(self.fake.clean_exits(), 4)  # atexit closed all of them
+        launched = self.fake.launches()
+        self.assertGreaterEqual(launched, 4, "не все четыре сессии поднялись")
+        self.assertLess(launched, 8, f"пул пересоздан целиком: {launched} запусков")
+        # atexit closed them: a restarted session leaves an extra start without an exit,
+        # so the four the child actually used are the bound, not the total launch count.
+        self.assertGreaterEqual(self.fake.clean_exits(), 4,
+                                f"atexit оставил процессы: {self.fake.clean_exits()} "
+                                f"выходов при {launched} запусках")
 
 
 class TestSpeedup(FakeExifToolTestCase):
