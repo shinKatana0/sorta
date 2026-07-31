@@ -6,7 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-31
+
 ### Fixed
+- **The offline geo base is shipped inside the package** (F65): `v0.1.0` and `v0.2.0`
+  were installable but not usable — `data/geo/*.tsv` (the bundled `places`/`names`/
+  `admin1` tables) was never listed as package data, so a wheel-based install resolved
+  no city at all and wrote garbage into `places`. The tables now live under
+  `sorta/data/geo/` and are declared in `pyproject.toml`; a missing base fails loudly at
+  startup instead of degrading into empty results. Anyone who installed an earlier
+  release must re-run `sorta geo` after upgrading — the `places` rows written by those
+  versions are wrong. **This is the reason 0.3.0 supersedes both earlier releases.**
+- **A forwarded picture is one thing, not two** (F83): the same frame could be counted
+  as junk by one signal and as "downloaded" by another, landing in two buckets and two
+  folders of the layout. One verdict now decides where it goes.
+- **The offline base answers when the online provider has no city** (F86): with
+  `geo.provider: online`, coordinates the provider resolved to a region but not a city
+  used to leave the file place-less; the bundled base is now asked as a second step.
+- **Trips merge by where the files are, not by which city id they got** (F92): two legs
+  of one journey were split whenever the geocoder handed neighbouring frames different
+  geonameids for the same town.
+- **The detector no longer runs the network twice per frame** (F88): the insightface
+  input size was left unpinned, so the model was re-prepared per call.
+- **The test suite passes on Linux** (F116): four failures were properties of the tests
+  themselves — terminal styling forced under `GITHUB_ACTIONS`, a faked `os.name`
+  building an impossible `WindowsPath`, a test keyed by thread ident. No product code
+  changed; CI is green on both platforms.
 - **City folders are named in the layout language** (F99): with `language: ru` the
   layout produced `Россия\St Petersburg\2023\` — a localized country over an English
   city. The geo layer writes the English anchor plus `places.city_geonameid` on purpose
@@ -93,6 +118,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same frames on one load of the weights and prints median/p90 ms per frame, GPU
   load, peak VRAM, cores busy — and a label-by-label comparison that exits non-zero if a
   single verdict differs.
+- **The CLI answers in the language from the config** (F112, F114): every runtime message
+  and, since F114, `--help` itself — command summaries and option descriptions — are
+  read from the i18n dictionaries. **Behaviour change:** the default is now `en`, so a
+  user with no explicit `language:` key sees English where 0.2.0 showed Russian; set
+  `language: ru` to keep the old output word for word. `--help` peeks at `--config`
+  without consuming it, and an unreadable or missing config falls back to the default
+  language rather than a traceback.
+- **`media_class.tier` separates the processing tier from the deciding signal** (F68):
+  which tier looked at a frame and which signal produced its verdict were the same
+  column, so re-running a tier erased the provenance of the answer.
+- **A CPU-only install on a CUDA machine is surfaced, not silently slow** (F76):
+  `sorta doctor` and the startup check report a PyTorch/onnxruntime mismatch instead of
+  letting CLIP and OCR run for hours on the CPU with the GPU idle.
+- **Comments and docstrings are English** (F111): an audit converted 41 comments and 81
+  docstrings; the Russian that remains is the *subject* — folder-name parsing, country
+  names that double as ordinary words, service folder names, test fixtures. No
+  functional string was touched: CLI messages, i18n dictionaries and layout folder names
+  are the product, not documentation about it.
 
 ### Added
 - **Per-frame quality signals, each taken with the cheapest tool that answers it** (F113):
@@ -283,6 +326,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself, but the next run decodes at 336 ms per frame instead of 73. Both clears are
   refused while a run or a layout is in flight, and nothing is ever cleared
   automatically: there is no size ceiling and no eviction.
+- **A source-folder tree with pre-index exclusions** (F81, F82): before indexing, the
+  source tree is shown as it is on disk and folders are switched off — tri-state, so a
+  folder can be excluded from the *scan* entirely or scanned but kept out of the
+  *layout*. Nothing is read that the user marked as not theirs.
+- **Manual exclude and reassign from the web app** (F77): a single frame can be pulled
+  out of the layout or moved to another place/person/event without editing the DB by
+  hand; the correction is stored as a layer over the computed verdict and survives a
+  re-run.
+- **A settings column and a summary before the layout** (F104): toggles are switched in
+  the interface and applied without restarting the server. The config writer is textual
+  and line-based, so the user's comments survive an edit made from the UI. Undo moved
+  out of the plan screen to the "Moves" tab, next to the manifest it acts on — an undo
+  made from the plan screen is an undo made blind, and it deletes files.
+- **Downloaded pictures get their own folder** (F78): frames saved from messengers and
+  the web no longer share `_Unsorted` with undated shots — two different problems that
+  needed two different answers.
+- **Landmark matches are corroborated, not just thresholded** (F75): a zero-shot CLIP
+  score above the bar is no longer enough on its own; a match must agree with a second
+  signal before it names a place.
+- **`sorta faces --rescan`, with labels that survive it** (F89): re-running detection on
+  a changed collection no longer costs the names already assigned to clusters.
+- **The clustering phase of `faces` is visible** (F84): HDBSCAN over tens of thousands of
+  embeddings is minutes of silence; it now reports where it is.
+- **Video files get a preview frame, and clips get a filmstrip** (F74, F80): videos enter
+  the shared preview cache like stills, and a clip is shown as six frames instead of one
+  tile — one frame is not enough to tell what a clip is.
+- **A run log with stage timings and an environment header** (F69): every run writes what
+  ran, how long each stage took, and on what hardware — the first thing to ask for when
+  a run behaves differently than the last one.
+- **The install section rewritten, and the documentation matches the product** (F79,
+  F115): three statements in the guide were not gaps but errors — the default language,
+  a "known limitation" already fixed, and a list of junk classes missing the biggest new
+  one. A gap is noticed by a reader; a false statement is believed.
+
+### Performance
+- **EXIF through a pool of exiftool sessions, read with `-fast`** (F71, F72): the
+  metadata stage runs several `-stay_open` sessions in parallel and uses the cheap read
+  path, recovering by a second pass only the fields `-fast2` drops.
+- **A lazy disk preview cache — one decode per frame** (F67): a frame is decoded once and
+  reused by every later stage and by the web app (73 ms against 336 ms per frame on a
+  cold cache).
+- **Near-duplicate grouping sped up, "Duplicates" tab cached** (F66); **a lazy plan cache
+  and a paged `/api/plan`** (F70), so a collection of tens of thousands of frames opens
+  in the browser instead of timing out.
+- **OCR in a pool of detector sessions** (F73) and **frame decode off the inference
+  thread** (F87): the junk stage no longer blocks its own GPU session on I/O.
+- **The original is decoded only where there is a face to crop** (F91).
+- Measured and **rejected** on purpose, so the questions stay closed: raising the VLM
+  candidate gate (F106 — 9.8% of the time for 6% of the findings), lowering the VLM input
+  resolution (F102 — drops documents), sdpa attention in the vision tower and batching
+  (F105 — 1.5× *slower*, twice the VRAM), a CLIP probe as a cheaper gate (F109, F110),
+  StreetCLIP for places (F85b), an OCR gate (F90). The VLM pass gained ×1.20 in total,
+  and the numbers behind each rejection are in the commit messages.
 
 ## [0.2.0] - 2026-07-25
 
