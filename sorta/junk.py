@@ -189,6 +189,7 @@ at all.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -1402,11 +1403,47 @@ def _unused_classifier(paths: list[str], prompts: list[str]) -> np.ndarray:
         "junk: CLIP вызван в прогоне, где он не нужен")
 
 
+def quality_prompt_fingerprint(pets: bool, *, with_vlm: bool) -> str:
+    """Eight hex characters over the TEXT that decides what lands in `frame_quality`.
+
+    F120: the marker used to name the tier and nothing else, so editing a prompt left
+    every stored answer looking fresh. That is not hypothetical — F120 rewrote the pet
+    group (five anti-classes for drawings, toys, food, screens and clothing) and the old
+    labels would have survived it untouched, because a tier called `vlm` still equals a
+    tier called `vlm`. Nobody should have to remember to empty a table by hand after
+    editing a prompt.
+
+    Only the text that actually reaches the stored columns is hashed: the CLIP prompt
+    list (the pet group writes `pet`/`pet_score`, the junk group decides through the
+    subject score who is asked at all) and, when the model runs, the question it is
+    asked. Sharpness depends on neither, which is why the `classic` tier carries no
+    fingerprint and a sharpness-only collection is not invalidated by prompt work.
+    """
+    parts = list(clip_prompts(pets))
+    if with_vlm:
+        parts.append(_QUALITY_PROMPT)
+    raw = "\x00".join(parts)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+
+
+def quality_tier(source: str) -> str:
+    """The tier out of a stored marker — `vlm#1a2b3c4d` -> `vlm`.
+
+    Consumers care which tier answered, not which revision of the prompts did; the
+    fingerprint is for invalidation alone.
+    """
+    return source.split("#", 1)[0]
+
+
 def _quality_source(use_clip: bool, pets: bool, ask: QualityAskFn | None) -> str:
     """The tier marker this run writes — and therefore what it considers up to date."""
     if ask is not None:
-        return QUALITY_SOURCE_VLM
-    return QUALITY_SOURCE_CLIP if use_clip and pets else QUALITY_SOURCE_CLASSIC
+        return f"{QUALITY_SOURCE_VLM}#{quality_prompt_fingerprint(pets, with_vlm=True)}"
+    if use_clip and pets:
+        return f"{QUALITY_SOURCE_CLIP}#{quality_prompt_fingerprint(pets, with_vlm=False)}"
+    # Sharpness only: no prompt took part, so there is nothing for a prompt edit to
+    # invalidate — and a bare marker keeps the cheap case cheap to read.
+    return QUALITY_SOURCE_CLASSIC
 
 
 # F100: the phases `classify` reports. Stable identifiers, not captions — the served

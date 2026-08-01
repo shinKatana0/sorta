@@ -431,7 +431,7 @@ class TestPetsToggle(FrameQualityCase):
         row = self.quality(fid)
         self.assertEqual(row["pet"], "cat")
         self.assertGreater(row["pet_score"], 0.5)
-        self.assertEqual(row["source"], junk.QUALITY_SOURCE_CLIP)
+        self.assertEqual(junk.quality_tier(row["source"]), junk.QUALITY_SOURCE_CLIP)
         self.assertEqual(stats.pets_found, 1)
 
     def test_the_threshold_comes_from_the_config(self):
@@ -776,11 +776,41 @@ class TestQualitySettings(unittest.TestCase):
         self.assertEqual(q.vlm_scope, "events")
 
     def test_the_source_marker_names_the_tier_that_ran(self):
-        self.assertEqual(junk._quality_source(True, False, None), "classic")
-        self.assertEqual(junk._quality_source(True, True, None), "clip")
-        self.assertEqual(junk._quality_source(True, True, lambda _p: ""), "vlm")
+        tier = junk.quality_tier
+        self.assertEqual(tier(junk._quality_source(True, False, None)), "classic")
+        self.assertEqual(tier(junk._quality_source(True, True, None)), "clip")
+        self.assertEqual(tier(junk._quality_source(True, True, lambda _p: "")), "vlm")
         # a heuristics-only run has no CLIP, so pets cannot have been computed
-        self.assertEqual(junk._quality_source(False, True, None), "classic")
+        self.assertEqual(tier(junk._quality_source(False, True, None)), "classic")
+
+    def test_the_marker_carries_a_prompt_fingerprint(self):
+        """F120: a prompt edit has to invalidate what the prompt produced.
+
+        The marker used to name the tier alone, so rewriting the pet group left every
+        stored label looking fresh — `vlm` still equals `vlm`. That is exactly what
+        happened when F120 added five anti-classes, and the alternative to a fingerprint
+        is asking a person to remember to empty a table by hand.
+        """
+        with_pets = junk._quality_source(True, True, None)
+        self.assertRegex(with_pets, r"^clip#[0-9a-f]{8}$")
+        with_model = junk._quality_source(True, True, lambda _p: "")
+        self.assertRegex(with_model, r"^vlm#[0-9a-f]{8}$")
+        # The model is asked a question of its own, so its tier has its own fingerprint.
+        self.assertNotEqual(with_pets.split("#")[1], with_model.split("#")[1])
+        # Sharpness depends on no prompt: a sharpness-only collection must NOT be
+        # invalidated every time somebody edits a CLIP prompt.
+        self.assertEqual(junk._quality_source(True, False, None), "classic")
+
+    def test_editing_a_prompt_changes_the_fingerprint(self):
+        """The property the whole mechanism exists for, stated against the real list."""
+        before = junk.quality_prompt_fingerprint(True, with_vlm=False)
+        # `_PET_CLASSES` is what clip_prompts reads; `_PET_ANTI_CLASSES` is folded into
+        # it at import, so patching that one would change nothing and prove nothing.
+        extra = junk._PET_CLASSES + (("statue", "a photo of a statue of an animal"),)
+        with unittest.mock.patch.object(junk, "_PET_CLASSES", extra):
+            after = junk.quality_prompt_fingerprint(True, with_vlm=False)
+        self.assertNotEqual(before, after)
+        self.assertEqual(before, junk.quality_prompt_fingerprint(True, with_vlm=False))
 
 
 class TestFrameQualityWithTheOldJunkMock(FrameQualityCase):
