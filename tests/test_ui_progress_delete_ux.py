@@ -15,9 +15,10 @@ class TestDeleteRememberContextual(UiServerTestBase):
         html = body.decode("utf-8")
         self.assertIn('id="delete-remember-row"', html)
         self.assertIn('id="delete-remember-row" style="display:none"', html)
-        # activateTab shows the row only on city/dupes
+        # activateTab shows the row only on city/review (F126: the duplicates tab is
+        # the review workspace now, and deleting still happens on those two)
         self.assertIn('"delete-remember-row").style.display', html)
-        self.assertIn('(name === "city" || name === "dupes") ? "" : "none"', html)
+        self.assertIn('(name === "city" || name === "review") ? "" : "none"', html)
 
 
 class TestIndeterminateProgress(UiServerTestBase):

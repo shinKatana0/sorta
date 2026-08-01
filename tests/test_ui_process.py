@@ -393,7 +393,7 @@ class TestProcessHtml(ProcessTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        for tab_id in ("tab-btn-city", "tab-btn-dupes", "tab-btn-person",
+        for tab_id in ("tab-btn-city", "tab-btn-review", "tab-btn-person",
                       "tab-btn-event", "tab-btn-moves"):
             self.assertIn(f'id="{tab_id}"', html)
 
