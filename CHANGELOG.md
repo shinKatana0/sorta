@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Animals are visible and actionable in the web app** (F123): a checkbox on the
+  "Process" tab, an "Animals" tab, a counter in "Overview" and an album. The signal has
+  been computed since F113 and calibrated in F122 — 805 frames of the live collection at
+  92% precision — and until now **not one of them was reachable from the interface**:
+  no list, no counter, no action. The checkbox is deliberately built like `deep` and not
+  like `faces`: animals are not a pipeline stage but three prompts inside the CLIP call
+  the `junk` stage makes anyway, so `pets` overrides `features.pets` for the run
+  (`/api/process`, `/api/process/rerun-optional`) and the list of stages is left exactly
+  as it was — with `deep` it still means **one** run of `junk`, not two. Its hint says
+  the thing that decides whether it is ever ticked: this one is almost free, unlike
+  faces (17 minutes) and the deep tier (hours). The tab appears by data presence like
+  "People" and "Events", pages its grid like the junk buckets, and is ordered **by
+  confidence descending** with the score printed on every card: about 64 of those 805
+  frames are not animals, and reading down until the quality stops is how a person finds
+  where that border sits. `sorter.plan_album` gained `kind='animal'` — the slice needs
+  no selector, journals into `move_batches.mode='album_animal'`, defaults to a dry run
+  and inherits the F97 rule, so gathering the same album twice makes no `_1` copies.
+  Taking a false mark off a frame is **not** part of this: `frame_quality` has one
+  writer and every run recomputes it from scratch, so that correction needs a table of
+  its own (F124).
 - **The frame-quality cascade is reachable from the web app** (F119): `vlm.quality`,
   `vlm.quality_scope` and all six `features.*` keys now have controls in the settings
   column, applied without a restart like the rest of it. F113 shipped them into the

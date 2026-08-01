@@ -228,6 +228,15 @@ SQL aggregates: no plan, no cache, nothing precomputed. Both properties are load
 the question the user opens this tab with ("what did the run just change?") with the
 state from before it. Aggregates only: no file path and no file id is in the answer.
 
+(20) `GET /api/animals` (F123, the "Animals" tab) — one bounded page of the frames the
+frame-quality stage marked as holding an animal (`frame_quality.pet IS NOT NULL` over
+canonical, readable files), most confident FIRST: `pet_score DESC, id`. The score
+travels with every card, because the verdict is 92% right and the remaining 8% are found
+by reading the list down until the quality stops. Read-only; the album this tab offers is
+the existing `POST /api/album` with the new `kind='animal'`, and taking a false mark off
+a frame is F124's job (`frame_quality` has one writer and every run recomputes it, so a
+correction written there would not survive).
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -1344,6 +1353,68 @@ def _junk_payload(db_path: Path, bucket: str | None,
     }
 
 
+# --- F123: the "Animals" tab — the pet verdicts of the frame-quality stage ----------
+# The signal has been computed since F113 and calibrated in F122 (805 frames of the live
+# collection at 92% precision), and until now nobody could see a single one of them. The
+# view is the junk grid's twin — a page of thumbnails over a read-only query — with one
+# deliberate difference: the order is by CONFIDENCE, not by path. About 64 of those 805
+# frames are not animals, and reading top-down until the quality runs out is how a person
+# finds where that border sits, so the score travels to the card and is shown on it.
+
+
+def _animal_item_to_json(row: sqlite3.Row) -> dict:
+    """One card of the animal view: a thumbnail, a name, a date and the pet score."""
+    path = Path(row["path"])
+    return {
+        "file_id": int(row["id"]),
+        "name": path.name,
+        "date": row["taken_at"],
+        # NULL is impossible for a frame that carries a verdict (junk writes the score
+        # alongside it) — but a payload that pretends 0.0 was measured would lie about
+        # exactly the number this tab exists to show.
+        "score": None if row["pet_score"] is None else float(row["pet_score"]),
+        "thumb_url": f"/thumb/{int(row['id'])}",
+        "video": imaging.is_video_path(path),
+    }
+
+
+_ANIMALS_POPULATION = "fq.pet IS NOT NULL AND f.dup_of IS NULL AND f.error IS NULL"
+
+
+def _animals_payload(db_path: Path, offset: int, limit: int) -> dict:
+    """`GET /api/animals` — one page of the animal slice, most confident first.
+
+    The population is `frame_quality.pet IS NOT NULL` over canonical, readable files —
+    the same `dup_of IS NULL AND error IS NULL` rule as everywhere else, so the counter
+    here, the number in "Overview" and the album `sorter.plan_album(kind='animal')`
+    gathers are the same number by construction.
+
+    `ORDER BY pet_score DESC, f.id` — the id breaks ties, so two frames with an equal
+    score keep a stable place between pages instead of swapping and being shown twice
+    (or never) as the reader pages down.
+    """
+    conn = _connect(db_path)
+    try:
+        total = conn.execute(
+            f"""SELECT COUNT(*) FROM files f
+                JOIN frame_quality fq ON fq.file_id = f.id
+                WHERE {_ANIMALS_POPULATION}""").fetchone()[0]
+        rows = conn.execute(
+            f"""SELECT f.id, f.path, f.taken_at, fq.pet_score
+                FROM files f JOIN frame_quality fq ON fq.file_id = f.id
+                WHERE {_ANIMALS_POPULATION}
+                ORDER BY fq.pet_score DESC, f.id
+                LIMIT ? OFFSET ?""", (limit, offset)).fetchall()
+    finally:
+        conn.close()
+    return {
+        "total": int(total),
+        "offset": offset,
+        "limit": limit,
+        "items": [_animal_item_to_json(r) for r in rows],
+    }
+
+
 def _parse_junk_query(query: dict[str, list[str]]) -> tuple[str | None, int, int] | None:
     """(bucket, offset, limit) for `GET /api/junk`, or None -> 400.
 
@@ -1773,10 +1844,12 @@ def _events_payload(db_path: Path,
 
 
 def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
-    """F54: visibility of the "People"/"Events" tabs — by data presence (variant B,
-    without a meta table). person ⇔ there is a faces row with a non-empty cluster_id
-    (the same source as `_clusters_payload`); event ⇔ non-empty `events`. Light
-    EXISTS queries, we do not build the full payload.
+    """F54: visibility of the "People"/"Events"/"Animals" tabs — by data presence
+    (variant B, without a meta table). person ⇔ there is a faces row with a non-empty
+    cluster_id (the same source as `_clusters_payload`); event ⇔ non-empty `events`;
+    animal (F123) ⇔ some `frame_quality` row carries a pet verdict, which is false for
+    every collection processed with `features.pets` off. Light EXISTS queries, we do not
+    build the full payload.
 
     `indexed` rides along for the same cost: "re-run the selected stage" only makes
     sense over files that exist. Right after "Start over" the index is empty and
@@ -1791,12 +1864,15 @@ def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
         event = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM events)"
         ).fetchone()[0])
+        animal = bool(conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM frame_quality WHERE pet IS NOT NULL)"
+        ).fetchone()[0])
         indexed = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files)"
         ).fetchone()[0])
     finally:
         conn.close()
-    return {"person": person, "event": event, "indexed": indexed}
+    return {"person": person, "event": event, "animal": animal, "indexed": indexed}
 
 
 # --- F108: the "Overview" tab — the state of the collection in one screen -----------
@@ -1933,6 +2009,12 @@ def _overview_payload(db_path: Path) -> dict:
                       COALESCE(SUM(error IS NOT NULL), 0) AS errors
                FROM files""").fetchone()
         events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        # F123: counted over the same population as the "Animals" tab and the animal
+        # album (`_ANIMALS_POPULATION`), so the three cannot disagree.
+        animals = conn.execute(
+            f"""SELECT COUNT(*) FROM files f
+                JOIN frame_quality fq ON fq.file_id = f.id
+                WHERE {_ANIMALS_POPULATION}""").fetchone()[0]
         place = _overview_place(conn)
         classes_total = conn.execute(
             f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
@@ -1965,6 +2047,7 @@ def _overview_payload(db_path: Path) -> dict:
             "duplicates": int(files["duplicates"]),
             "errors": int(files["errors"]),
             "events": int(events),
+            "animals": int(animals),
         },
         "place": place,
         "classes": classes,
@@ -1982,6 +2065,11 @@ def _validate_album_payload(
     strip is treated as absent — the default name is used), `apply` (opt., default
     False) — bool, `dest` (opt., F60) — the album destination path as a string;
     empty/absent -> None (the server resolves the default itself via `_album_dest`).
+
+    F123: `kind='animal'` is the one kind with nothing to select — the collection has a
+    single animal slice — so an empty selector is accepted there (and only there: for a
+    person or an event an empty selector is a client that lost its subject, and
+    gathering "everything" would be the wrong answer to it).
     """
     if not isinstance(payload, dict):
         return None
@@ -1991,8 +2079,10 @@ def _validate_album_payload(
     mode = payload.get("mode")
     if mode not in ALBUM_MODES:
         return None
-    selector = payload.get("selector")
-    if not isinstance(selector, str) or not selector.strip():
+    selector = payload.get("selector", "" if kind == "animal" else None)
+    if not isinstance(selector, str):
+        return None
+    if kind != "animal" and not selector.strip():
         return None
     where = payload.get("where", [])
     if not isinstance(where, list) or not all(isinstance(w, str) for w in where):
@@ -2481,10 +2571,16 @@ def _process_defaults_payload(cfg: Config) -> dict:
     """F57: defaults for the "Process" checkboxes — JS sets .checked by these values
     on page init (otherwise the checkboxes always start empty regardless of
     config.yaml). `vlm_available` — whether the `transformers` package is installed
-    (`find_spec`, WITHOUT importing the module/loading the model)."""
+    (`find_spec`, WITHOUT importing the module/loading the model).
+
+    F123: `pets` rides here for the same reason and from the same place — the config
+    (`features.pets`), which the settings column also edits. Two entry points, one
+    source of truth, exactly as `deep` lives next to `naming.vlm_enabled`.
+    """
     return {
         "deep": bool(cfg.naming.vlm_enabled),
         "geo_online": cfg.geo.provider == "online",
+        "pets": bool(cfg.features.pets),
         "vlm_available": importlib.util.find_spec("transformers") is not None,
     }
 
@@ -2542,60 +2638,58 @@ def _validate_cache_clear_payload(payload: object) -> str | None:
     return target
 
 
-def _validate_process_payload(payload: object) -> tuple[str, bool, bool, bool, bool] | None:
+def _validate_process_payload(
+        payload: object) -> tuple[str, bool, bool, bool, bool, bool] | None:
     """Parse `{"source_dir": str, "deep": bool=False, "geo_online": bool=False,
-    "faces": bool=False, "events": bool=False}` (F50/#34: opt-in VLM tier /
-    online geo for THIS run, without editing config.yaml; F53/#39: opt-in steps
-    faces/events, the same principle — default False).
+    "faces": bool=False, "events": bool=False, "pets": bool=False}` (F50/#34: opt-in
+    VLM tier / online geo for THIS run, without editing config.yaml; F53/#39: opt-in
+    steps faces/events, the same principle — default False; F123: `pets` is an opt-in
+    of the THIRD shape — neither a tier nor a step, but a config override on the junk
+    stage, `features.pets`).
     None -> invalid: not dict / `source_dir` not a string or empty after strip /
-    `deep`, `geo_online`, `faces`, `events` given but not bool."""
+    `deep`, `geo_online`, `faces`, `events`, `pets` given but not bool."""
     if not isinstance(payload, dict):
         return None
     source_dir = payload.get("source_dir")
     if not isinstance(source_dir, str) or not source_dir.strip():
         return None
-    deep = payload.get("deep", False)
-    if not isinstance(deep, bool):
-        return None
-    geo_online = payload.get("geo_online", False)
-    if not isinstance(geo_online, bool):
-        return None
-    faces = payload.get("faces", False)
-    if not isinstance(faces, bool):
-        return None
-    events = payload.get("events", False)
-    if not isinstance(events, bool):
-        return None
-    return source_dir.strip(), deep, geo_online, faces, events
+    flags: list[bool] = []
+    for key in ("deep", "geo_online", "faces", "events", "pets"):
+        value = payload.get(key, False)
+        if not isinstance(value, bool):
+            return None
+        flags.append(value)
+    deep, geo_online, faces, events, pets = flags
+    return source_dir.strip(), deep, geo_online, faces, events, pets
 
 
-def _validate_rerun_optional_payload(payload: object) -> tuple[bool, bool, bool] | None:
-    """Parse `{"faces": bool=False, "events": bool=False, "deep": bool=False}`
-    for F62/F63 `POST /api/process/rerun-optional` (re-running the SELECTED on an
-    already-built index: faces / events / junk-with-VLM when deep). None ->
-    invalid: not dict / a field is given but not bool / all three False (nothing to
-    re-run)."""
+def _validate_rerun_optional_payload(
+        payload: object) -> tuple[bool, bool, bool, bool] | None:
+    """Parse `{"faces": bool=False, "events": bool=False, "deep": bool=False,
+    "pets": bool=False}` for F62/F63 `POST /api/process/rerun-optional` (re-running the
+    SELECTED on an already-built index: faces / events / junk-with-VLM when deep).
+    F123: `pets` re-runs the junk stage too — the animals are counted inside it — so
+    `deep` and `pets` together still mean ONE junk run, not two. None -> invalid: not
+    dict / a field is given but not bool / all four False (nothing to re-run)."""
     if not isinstance(payload, dict):
         return None
-    faces = payload.get("faces", False)
-    if not isinstance(faces, bool):
+    flags: list[bool] = []
+    for key in ("faces", "events", "deep", "pets"):
+        value = payload.get(key, False)
+        if not isinstance(value, bool):
+            return None
+        flags.append(value)
+    if not any(flags):
         return None
-    events = payload.get("events", False)
-    if not isinstance(events, bool):
-        return None
-    deep = payload.get("deep", False)
-    if not isinstance(deep, bool):
-        return None
-    if not faces and not events and not deep:
-        return None
-    return faces, events, deep
+    faces, events, deep, pets = flags
+    return faces, events, deep, pets
 
 
 def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                   state: _ProcessState, cache: PlanCache,
                   deep: bool = False, geo_online: bool = False,
                   faces: bool = False, events: bool = False,
-                  only_optional: bool = False) -> None:
+                  only_optional: bool = False, pets: bool = False) -> None:
     """The body of the `POST /api/process` background thread: its own sqlite
     connection (not transferable between threads), source_dir overrides cfg.sources
     only for this run (F28-style, like `cli._cmd_index` with a positional src) — the
@@ -2616,11 +2710,19 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     run builds only `index/geo/landmarks/junk/phash`, the heaviest steps are skipped.
     `stage_total`/the "stage i/N" numbering are computed from the actual filtered list.
 
+    `pets` (F123) — the same kind of override as `deep`, on `features.pets`, and NOT a
+    stage: animals are three extra prompts inside the CLIP call the `junk` stage makes
+    anyway, so the flag changes what that stage computes and leaves the list of stages
+    exactly as it was. Making it an `_OPTIONAL_STAGES` entry would put a stage that does
+    not exist into the run.
+
     `only_optional` (F62/F63: "Re-run selected" — POST
     `/api/process/rerun-optional`) — steps are narrowed to the SELECTED stages over the
     already-built index: `faces` (with faces), `events` (with events), `junk` (with
-    deep — reclassification with the VLM, `naming.vlm_enabled=deep`). The other base
-    ones (index/geo/landmarks/phash) are not run at all.
+    deep — reclassification with the VLM, `naming.vlm_enabled=deep` — or with `pets`,
+    which recomputes the animal verdicts). `deep` and `pets` together are still ONE junk
+    run: they are two settings of one stage. The other base ones
+    (index/geo/landmarks/phash) are not run at all.
 
     Cancellation is checked BETWEEN stages (not mid-stage — MVP). After a successful
     finish (without an error/cancel) the plan cache (the Cities tab) is recomputed
@@ -2632,14 +2734,18 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     try:
         naming = dataclasses.replace(cfg.naming, vlm_enabled=deep)
         geo = dataclasses.replace(cfg.geo, provider="online" if geo_online else "offline")
+        features = dataclasses.replace(cfg.features, pets=pets)
         sources = [Path(source_dir).resolve()] if source_dir is not None else cfg.sources
-        run_cfg = dataclasses.replace(cfg, sources=sources, naming=naming, geo=geo)
+        run_cfg = dataclasses.replace(cfg, sources=sources, naming=naming, geo=geo,
+                                      features=features)
         enabled_optional = {"faces": faces, "events": events}
         if only_optional:
             # F63: re-run the selected — faces/events by flags + junk with deep
             # (reclassification with the VLM). The order from _pipeline_steps is kept.
+            # F123: pets asks for the same junk stage — a set, so two reasons to run it
+            # still add up to one entry.
             rerun = {name for name in _OPTIONAL_STAGES if enabled_optional[name]}
-            if deep:
+            if deep or pets:
                 rerun.add("junk")
             steps = [(name, fn) for name, fn in _pipeline_steps() if name in rerun]
         else:
@@ -3116,6 +3222,7 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "tab_dupes": {"ru": "Дубли", "en": "Duplicates", "ja": "重複"},
     "tab_person": {"ru": "Люди", "en": "People", "ja": "人物"},
     "tab_event": {"ru": "События", "en": "Events", "ja": "イベント"},
+    "tab_animal": {"ru": "Животные", "en": "Animals", "ja": "動物"},
     "tab_moves": {"ru": "Перемещения", "en": "Moves", "ja": "移動"},
     "tab_junk": {"ru": "Не личные фото", "en": "Not personal photos",
                  "ja": "個人写真ではない"},
@@ -3180,6 +3287,22 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_events_label": {
         "ru": "Разбор по событиям", "en": "Detect events",
         "ja": "イベントの検出",
+    },
+    # F123: the hint has one job — to say that this checkbox is NOT another long step.
+    # It stands next to faces (17 minutes) and deep analysis (hours), and read as one of
+    # them it simply never gets ticked; the animals ride on the CLIP pass the junk stage
+    # makes anyway.
+    "process_pets_label": {
+        "ru": "Искать животных", "en": "Detect animals",
+        "ja": "動物の検出",
+    },
+    "process_pets_hint": {
+        "ru": "Почти бесплатно: едет на уже идущем проходе CLIP (не отдельный "
+              "долгий шаг), добавляет вкладку «Животные» и альбом.",
+        "en": "Almost free: it rides on the CLIP pass that already runs (not another "
+              "long step), and adds the “Animals” tab and album.",
+        "ja": "ほぼ無料です。すでに実行中の CLIP パスに相乗りするため（別の長い"
+              "ステップではありません）、「動物」タブとアルバムが追加されます。",
     },
     "process_events_hint": {
         "ru": "Группировка в поездки/события по времени и месту (нужен geo); "
@@ -4388,6 +4511,35 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось загрузить корзины: ", "en": "Could not load the buckets: ",
         "ja": "バケットを読み込めません: ",
     },
+    # --- F123: the "Animals" tab -----------------------------------------------------
+    "animals_intro": {
+        "ru": "Кадры с животными, сверху — те, в которых модель уверена больше. "
+              "Точность около 92%: ниже по списку начинают попадаться шубы и игрушки, "
+              "и видно, где проходит граница.",
+        "en": "Frames with animals, the ones the model is most confident about first. "
+              "Precision is about 92%: fur coats and plush toys start showing up "
+              "further down, which is where the border of confidence is.",
+        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 92% "
+              "で、下に行くほど毛皮のコートやぬいぐるみが混じり始め、そこが確信度の"
+              "境目です。",
+    },
+    "animals_empty": {
+        "ru": "Здесь пусто — животные не найдены.",
+        "en": "Nothing here — no animals were found.",
+        "ja": "ここは空です。動物は見つかりませんでした。",
+    },
+    "animals_score_label": {
+        "ru": "уверенность {score}", "en": "confidence {score}", "ja": "確信度 {score}",
+    },
+    "animals_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
+    "animals_shown_label": {
+        "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
+        "ja": "{total} 件中 {shown} 件を表示",
+    },
+    "error_loading_animals": {
+        "ru": "Не удалось загрузить животных: ", "en": "Could not load the animals: ",
+        "ja": "動物を読み込めません: ",
+    },
     # --- F108: the "Overview" tab ---------------------------------------------------
     "tab_overview": {"ru": "Обзор", "en": "Overview", "ja": "概要"},
     "overview_empty": {
@@ -4412,6 +4564,7 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "overview_duplicates": {"ru": "Дубликатов", "en": "Duplicates", "ja": "重複"},
     "overview_errors": {"ru": "Ошибок чтения", "en": "Read errors", "ja": "読み込みエラー"},
     "overview_events": {"ru": "Событий", "en": "Events", "ja": "イベント"},
+    "overview_animals": {"ru": "С животными", "en": "With animals", "ja": "動物あり"},
     "overview_place_exact_gps": {"ru": "Точный GPS", "en": "Exact GPS", "ja": "正確なGPS"},
     "overview_place_manual": {"ru": "Указано вручную", "en": "Set by hand", "ja": "手動指定"},
     "overview_place_session_inferred": {
@@ -4825,6 +4978,21 @@ label { cursor: pointer; }
 .junk-card-meta { font-size: 0.75rem; color: var(--muted); }
 .junk-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
 
+/* --- F123: the "Animals" tab -------------------------------------------- */
+/* The same tile grid as the junk buckets: the decision is made by looking. The one
+   difference is the confidence score on the card — the list is sorted by it, and the
+   reader is looking for the place where the quality runs out. */
+#animals-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.animal-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.animal-card img { width: 100%; height: 110px; margin: 0; }
+.animal-card-name { font-size: 0.8rem; word-break: break-all; }
+.animal-card-meta { font-size: 0.75rem; color: var(--muted); }
+.animal-card-score { font-size: 0.75rem; color: var(--muted);
+      font-variant-numeric: tabular-nums; }
+
 /* --- F108: вкладка «Обзор» ---------------------------------------------- */
 /* Четыре группы рядом, а не одна длинная простыня: вопрос «что с архивом»
    распадается ровно на них, и ответ должен читаться без прокрутки. */
@@ -5064,7 +5232,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 @media (max-width: 640px) {
   body { padding: var(--space-md); }
   #clusters-grid, #events-list { grid-template-columns: 1fr; }
-  #junk-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  #junk-grid, #animals-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .process-path-row { flex-direction: column; align-items: stretch; }
   .process-path-row input[type="text"] { min-width: 100%; }
 }
@@ -5097,6 +5265,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <button type="button" class="tab-btn" id="tab-btn-dupes">{{tab_dupes}}</button>
 <button type="button" class="tab-btn" id="tab-btn-person" style="display:none">{{tab_person}}</button>
 <button type="button" class="tab-btn" id="tab-btn-event" style="display:none">{{tab_event}}</button>
+<button type="button" class="tab-btn" id="tab-btn-animal" style="display:none">{{tab_animal}}</button>
 <button type="button" class="tab-btn" id="tab-btn-junk">{{tab_junk}}</button>
 <button type="button" class="tab-btn" id="tab-btn-moves">{{tab_moves}}</button>
 </div>
@@ -5163,6 +5332,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <div class="process-option">
 <label class="process-toggle-label"><input type="checkbox" id="process-events-checkbox"> {{process_events_label}}</label>
 <span class="process-toggle-hint">{{process_events_hint}}</span>
+</div>
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="process-pets-checkbox"> {{process_pets_label}}</label>
+<span class="process-toggle-hint">{{process_pets_hint}}</span>
 </div>
 </div>
 </div>
@@ -5329,6 +5502,16 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 
 <section id="tab-event" class="tab-panel">
 <div id="events-list"><div class="state-msg state-loading">{{loading}}</div></div>
+</section>
+
+<section id="tab-animal" class="tab-panel">
+<p class="process-intro">{{animals_intro}}</p>
+<div id="animals-album" class="album-controls"></div>
+<div id="animals-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="animals-more-btn" class="btn btn-ghost" style="display:none">{{animals_load_more}}</button>
+<span id="animals-shown" class="override-hint"></span>
+</div>
 </section>
 
 <section id="tab-junk" class="tab-panel">
@@ -6410,9 +6593,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   var clustersLoaded = false;
   var eventsLoaded = false;
   var junkLoaded = false;
+  var animalsLoaded = false;
 
   var TAB_NAMES = ["overview", "process", "city", "dupes", "person", "event",
-                   "junk", "moves"];
+                   "animal", "junk", "moves"];
 
   function activateTab(name) {
     TAB_NAMES.forEach(function (t) {
@@ -6438,6 +6622,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     if (name === "junk" && !junkLoaded) {
       junkLoaded = true;
       loadJunk();
+    }
+    if (name === "animal" && !animalsLoaded) {
+      animalsLoaded = true;
+      loadAnimals();
     }
     if (name === "moves" && !movesLoaded) {
       movesLoaded = true;
@@ -6476,10 +6664,15 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
             data.person ? "" : "none";
         document.getElementById("tab-btn-event").style.display =
             data.event ? "" : "none";
+        // F123: "Animals" follows the same rule — the tab exists exactly when there
+        // is something to show (features.pets off => no verdicts at all).
+        document.getElementById("tab-btn-animal").style.display =
+            data.animal ? "" : "none";
         var activeBtn = document.querySelector(".tab-btn.active");
         var activeName = activeBtn ? activeBtn.id.replace("tab-btn-", "") : null;
         if ((activeName === "person" && !data.person) ||
-            (activeName === "event" && !data.event)) {
+            (activeName === "event" && !data.event) ||
+            (activeName === "animal" && !data.animal)) {
           activateTab("process");
         }
         if (firstTabVisibility) {
@@ -6582,6 +6775,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     card.appendChild(overviewRow(I18N.overview_duplicates, overviewCount(c.duplicates, "dupes")));
     card.appendChild(overviewRow(I18N.overview_errors, overviewValue(overviewNum(c.errors))));
     card.appendChild(overviewRow(I18N.overview_events, overviewCount(c.events, "event")));
+    card.appendChild(overviewRow(I18N.overview_animals, overviewCount(c.animals, "animal")));
     return card;
   }
 
@@ -6732,6 +6926,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       .then(function (data) {
         document.getElementById("process-deep-checkbox").checked = !!data.deep;
         document.getElementById("process-geo-online-checkbox").checked = !!data.geo_online;
+        document.getElementById("process-pets-checkbox").checked = !!data.pets;
         vlmAvailable = !!data.vlm_available;
         updateVlmMissingWarning();
         updateStepLayout();  // сводка блока «Параметры запуска» — по фактическим галочкам
@@ -6778,8 +6973,12 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   // (базовые + включённые опциональные), здесь ТОЛЬКО выбранное: faces/events
   // по флагам + junk при deep (переклассификация с VLM). Базовые index/geo/
   // landmarks/phash сервер не запускает. Порядок из ALL_PROCESS_STAGES.
-  function filterRerunStages(faces, events, deep) {
-    var enabled = { faces: faces, events: events, junk: deep };
+  //
+  // F123: pets asks for junk as well, and `deep || pets` is what keeps the two of them
+  // ONE stage here — the same set the server builds. Animals are not a stage: nothing
+  // is added to ALL_PROCESS_STAGES, so no phantom chip can appear.
+  function filterRerunStages(faces, events, deep, pets) {
+    var enabled = { faces: faces, events: events, junk: deep || pets };
     return ALL_PROCESS_STAGES.filter(function (name) { return enabled[name]; });
   }
 
@@ -6794,7 +6993,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     return indexHasFiles && (
         document.getElementById("process-faces-checkbox").checked ||
         document.getElementById("process-events-checkbox").checked ||
-        document.getElementById("process-deep-checkbox").checked);
+        document.getElementById("process-deep-checkbox").checked ||
+        document.getElementById("process-pets-checkbox").checked);
   }
 
   // Последнее известное состояние пайплайна. Обработчик галочек срабатывает
@@ -6817,13 +7017,15 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   function updateProcessInputsDisabled() {
     ["process-browse-btn", "process-source-dir", "process-excludes-btn",
      "process-deep-checkbox", "process-geo-online-checkbox",
-     "process-faces-checkbox", "process-events-checkbox"].forEach(function (id) {
+     "process-faces-checkbox", "process-events-checkbox",
+     "process-pets-checkbox"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = processRunning; }
     });
   }
 
-  ["process-faces-checkbox", "process-events-checkbox", "process-deep-checkbox"]
+  ["process-faces-checkbox", "process-events-checkbox", "process-deep-checkbox",
+   "process-pets-checkbox"]
       .forEach(function (id) {
         document.getElementById(id).addEventListener("change", updateRerunSelectedDisabled);
       });
@@ -6870,6 +7072,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     eventsLoaded = false;
     movesLoaded = false;
     junkLoaded = false;  // F103: прогон junk-яруса меняет состав корзин
+    animalsLoaded = false;  // F123: the same run recomputes the animal verdicts
     renderPlanTab("city", "tree-city");
     applyTabVisibility();
     loadCacheSizes();  // F94: a run is what makes the preview cache grow
@@ -6966,9 +7169,13 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     var geoOnline = document.getElementById("process-geo-online-checkbox").checked;
     var faces = document.getElementById("process-faces-checkbox").checked;
     var events = document.getElementById("process-events-checkbox").checked;
+    // F123: pets does NOT go into filterProcessStages — it is a setting of the junk
+    // stage, not a stage, and the chip row has to show the run that will actually happen.
+    var pets = document.getElementById("process-pets-checkbox").checked;
     currentProcessStages = filterProcessStages(faces, events);
     postJson("/api/process", {
       source_dir: path, deep: deep, geo_online: geoOnline, faces: faces, events: events,
+      pets: pets,
     }).then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
@@ -6984,8 +7191,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     var faces = document.getElementById("process-faces-checkbox").checked;
     var events = document.getElementById("process-events-checkbox").checked;
     var deep = document.getElementById("process-deep-checkbox").checked;
-    currentProcessStages = filterRerunStages(faces, events, deep);
-    postJson("/api/process/rerun-optional", { faces: faces, events: events, deep: deep })
+    var pets = document.getElementById("process-pets-checkbox").checked;
+    currentProcessStages = filterRerunStages(faces, events, deep, pets);
+    postJson("/api/process/rerun-optional",
+             { faces: faces, events: events, deep: deep, pets: pets })
         .then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
@@ -7061,7 +7270,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     [["process-deep-checkbox", I18N.process_deep_label],
      ["process-geo-online-checkbox", I18N.process_geo_online_label],
      ["process-faces-checkbox", I18N.process_faces_label],
-     ["process-events-checkbox", I18N.process_events_label]].forEach(function (pair) {
+     ["process-events-checkbox", I18N.process_events_label],
+     ["process-pets-checkbox", I18N.process_pets_label]].forEach(function (pair) {
       if (document.getElementById(pair[0]).checked) on.push(pair[1]);
     });
     return I18N.step_options_summary_prefix +
@@ -8510,6 +8720,99 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   });
   refreshJunkControls();
 
+  // --- F123: the "Animals" tab -------------------------------------------
+  // A page of tiles ordered by confidence, plus the one action the slice affords:
+  // gather it into an album. Paged for the same reason as the junk grid (F70) — 805
+  // cards with previews are not put into the DOM at once. The score is printed on the
+  // card: the verdict is 92% right, and the only way to see where the wrong 8% start
+  // is to read down a list that is sorted by exactly that number.
+
+  var ANIMALS_PAGE_SIZE = 200;
+  var animalsOffset = 0;
+
+  function renderAnimalCard(item) {
+    var card = document.createElement("div");
+    card.className = "animal-card";
+    card.appendChild(
+        clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
+    var name = document.createElement("span");
+    name.className = "animal-card-name";
+    name.textContent = item.name;
+    card.appendChild(name);
+    var meta = document.createElement("span");
+    meta.className = "animal-card-meta";
+    meta.textContent = item.date || "";
+    card.appendChild(meta);
+    if (item.score !== null && item.score !== undefined) {
+      var score = document.createElement("span");
+      score.className = "animal-card-score";
+      score.textContent = fmt(I18N.animals_score_label,
+                              { score: Number(item.score).toFixed(2) });
+      card.appendChild(score);
+    }
+    return card;
+  }
+
+  function renderAnimalsPage(data, append) {
+    var grid = document.getElementById("animals-grid");
+    if (!append) grid.textContent = "";
+    (data.items || []).forEach(function (it) {
+      grid.appendChild(renderAnimalCard(it));
+    });
+    var shown = grid.querySelectorAll(".animal-card").length;
+    if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
+    document.getElementById("animals-shown").textContent =
+        shown ? fmt(I18N.animals_shown_label, { shown: shown, total: data.total }) : "";
+    document.getElementById("animals-more-btn").style.display =
+        shown && shown < data.total ? "" : "none";
+    animalsOffset = shown;
+  }
+
+  function fetchAnimals(offset, append) {
+    var grid = document.getElementById("animals-grid");
+    if (!append) {
+      grid.textContent = "";
+      grid.appendChild(stateEl("loading", I18N.loading));
+    }
+    return fetch("/api/animals?offset=" + offset + "&limit=" + ANIMALS_PAGE_SIZE)
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderAnimalsPage(data, append); })
+      .catch(function (err) {
+        grid.textContent = "";
+        grid.appendChild(stateEl("error", I18N.error_loading_animals + err));
+      });
+  }
+
+  // The album controls of the People/Events cards, one per tab instead of one per
+  // card: the slice is single, so there is nothing to pick a subject from. The
+  // selector goes out empty and the server ignores it (kind='animal'), and the album
+  // name is left to the server too — it is a folder name, and it follows `language:`.
+  function renderAnimalsAlbumControls() {
+    var box = document.getElementById("animals-album");
+    if (box.childNodes.length) return;
+    var modeSelect = albumModeSelect();
+    box.appendChild(modeSelect);
+    var destInput = appendAlbumDestControls(box);
+    var albumBtn = makeBtn("primary", "folder", I18N.album_button, "btn-sm album-gather-btn");
+    var albumStatus = document.createElement("span");
+    albumStatus.className = "album-status";
+    albumBtn.addEventListener("click", function () {
+      gatherAlbum("animal", "", modeSelect.value, null, null,
+          destInput.value.trim() || null, albumStatus);
+    });
+    box.appendChild(albumBtn);
+    box.appendChild(albumStatus);
+  }
+
+  function loadAnimals() {
+    renderAnimalsAlbumControls();
+    return fetchAnimals(0, false);
+  }
+
+  document.getElementById("animals-more-btn").addEventListener("click", function () {
+    fetchAnimals(animalsOffset, true);
+  });
+
   // --- вкладка «Дубли» ---------------------------------------------------
 
   function postJson(url, data) {
@@ -8758,6 +9061,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_events()
             elif path == "/api/junk":
                 self._serve_junk(parse_qs(parts.query))
+            elif path == "/api/animals":
+                self._serve_animals(parse_qs(parts.query))
             elif path == "/api/places/search":
                 self._serve_places_search(parse_qs(parts.query))
             elif path == "/api/process/status":
@@ -8909,6 +9214,18 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 return
             bucket, offset, limit = parsed
             self._send_json(_junk_payload(db_path, bucket, offset, limit))
+
+        def _serve_animals(self, query: dict[str, list[str]]) -> None:
+            # F123: read-only, like /api/junk. The action this tab offers (gather an
+            # album) is the existing POST /api/album with kind='animal'; taking a
+            # false mark off a frame is F124 and needs a table of its own.
+            window = _parse_page_window(query)
+            if window is None:
+                self._send_json({"error": "invalid offset/limit"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            offset, limit = window
+            self._send_json(_animals_payload(db_path, offset, limit))
 
         def _serve_places_search(self, query: dict[str, list[str]]) -> None:
             # F85c: read-only, bundled data only. `?lang=` decides the language of the
@@ -9086,7 +9403,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            source_dir, deep, geo_online, faces, events = parsed
+            source_dir, deep, geo_online, faces, events, pets = parsed
             if not Path(source_dir).is_dir():
                 self._send_json({"error": "not a directory"}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -9108,6 +9425,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 target=_run_pipeline,
                 args=(db_path, cfg, source_dir, process_state, cache, deep, geo_online,
                       faces, events),
+                kwargs={"pets": pets},
                 daemon=True,
             )
             thread.start()
@@ -9117,12 +9435,13 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # F62/F63: "Re-run selected" — the same _ProcessState/busy_lock as
             # /api/process; no source_dir from the client — indexing is not
             # overridden (_run_pipeline(source_dir=None) leaves cfg.sources).
-            # deep -> junk with the VLM (naming.vlm_enabled=deep).
+            # deep -> junk with the VLM (naming.vlm_enabled=deep); F123: pets -> the
+            # same junk stage with features.pets, and both together are one run of it.
             parsed = _validate_rerun_optional_payload(self._read_json_body())
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            faces, events, deep = parsed
+            faces, events, deep, pets = parsed
             # No "index is empty" guard here on purpose: re-running the optional
             # stages over nothing is a no-op, not a hazard — unlike a layout over a
             # half-built index or a reset mid-run, which the server does refuse. The
@@ -9141,7 +9460,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             thread = threading.Thread(
                 target=_run_pipeline,
                 args=(db_path, cfg, None, process_state, cache),
-                kwargs={"faces": faces, "events": events, "deep": deep,
+                kwargs={"faces": faces, "events": events, "deep": deep, "pets": pets,
                         "only_optional": True},
                 daemon=True,
             )

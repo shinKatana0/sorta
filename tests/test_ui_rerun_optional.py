@@ -259,15 +259,18 @@ class TestRerunOptionalJs(ProcessTestBase):
         self.assertIn(
             'document.getElementById("process-rerun-optional-btn").addEventListener('
             '"click", function () {', html)
-        self.assertIn('postJson("/api/process/rerun-optional", '
-                      '{ faces: faces, events: events, deep: deep })', html)
+        # F123: `pets` rides in the same body — it re-runs the same junk stage.
+        self.assertIn('postJson("/api/process/rerun-optional",\n'
+                      '             { faces: faces, events: events, deep: deep, '
+                      'pets: pets })', html)
 
     def test_current_process_stages_set_to_selected_on_rerun_click(self):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn("filterRerunStages", html)
-        self.assertIn("currentProcessStages = filterRerunStages(faces, events, deep);", html)
+        self.assertIn(
+            "currentProcessStages = filterRerunStages(faces, events, deep, pets);", html)
 
 
 class TestRerunOptionalHintPlacement(ProcessTestBase):
