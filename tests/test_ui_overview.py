@@ -119,7 +119,8 @@ class TestEmptyIndex(OverviewTestBase):
         self.assertTrue(data["empty"])
         self.assertEqual(data["collection"], {"files": 0, "photos": 0, "videos": 0,
                                               "duplicates": 0, "errors": 0, "events": 0,
-                                              "animals": 0})
+                                              "animals": 0, "blurred": 0,
+                                              "eyes_closed": 0, "no_subject": 0})
         self.assertEqual(data["place"]["total"], 0)
         self.assertEqual(data["place"]["confidence"], [])
         self.assertEqual(data["place"]["no_place"], 0)
@@ -162,7 +163,8 @@ class TestCollectionCounts(OverviewTestBase):
         self.assertEqual(collection["events"], self.scalar("SELECT COUNT(*) FROM events"))
         self.assertEqual(collection, {"files": 7, "photos": 6, "videos": 1,
                                       "duplicates": 1, "errors": 1, "events": 1,
-                                      "animals": 0})
+                                      "animals": 0, "blurred": 0, "eyes_closed": 0,
+                                      "no_subject": 0})
 
     def test_photos_and_videos_add_up_to_the_whole_index(self):
         self.add_file("a.jpg")
@@ -502,7 +504,7 @@ class TestOverviewMarkup(OverviewTestBase):
         self.assertIn('fetch("/api/overview")', self.html)
 
     def test_the_numbers_lead_to_their_tabs(self):
-        self.assertIn('overviewCount(c.duplicates, "dupes")', self.html)
+        self.assertIn('overviewCount(c.duplicates, "review", "dupes")', self.html)
         self.assertIn('overviewCount(c.events, "event")', self.html)
         self.assertIn('row.key === "photo" ? null : "junk"', self.html)
 
