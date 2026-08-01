@@ -999,11 +999,12 @@ $ sorta index --refresh-exif -c config.yaml
 
 ```
 $ sorta cache -c config.yaml
-Кэш превью: C:\Users\you\AppData\Local\sorta\previews
-  файлов: 34887, размер: 12.60 ГБ
+プレビューキャッシュ: C:\Users\you\AppData\Local\sorta\previews
+  ファイル: 34887、サイズ: 12.60 GB
+  上限: 未設定 (imaging.preview_cache_max_gb)
 
 $ sorta cache --clear -c config.yaml
-Кэш превью удалён: C:\Users\you\AppData\Local\sorta\previews
+プレビューキャッシュを削除しました: C:\Users\you\AppData\Local\sorta\previews
 ```
 
 キャッシュはいつ削除しても安全です: 遅延生成なので、そのフレームを次に必要とした
@@ -1050,11 +1051,56 @@ imaging:
   # preview_dir: D:/sorta-previews   # 既定は上の表のとおり
   preview_max_edge: 1536  # キャッシュする JPEG の長辺
   preview_quality: 88     # キャッシュする JPEG の品質
+  # preview_cache_max_gb: 40   # 上限 (GB)。0（既定）は上限なし
 ```
 
+`imaging.preview_max_edge` はキャッシュする JPEG の長辺で、利用側すべてに余裕をもって
+足ります（OCR は 1280、VLM は 896、CLIP は 448、pHash は 96 を要求します）。
+`imaging.preview_quality` は JPEG の品質で、88 なら 1 コマおよそ 150 KB、この大きさでは
+フルデコードと見分けがつきません。
+
 各キーには同じ形の環境変数（`SORTA_PREVIEW_CACHE`、`SORTA_PREVIEW_DIR`、
-`SORTA_PREVIEW_MAX_EDGE`、`SORTA_PREVIEW_QUALITY`）があり、両方指定されている場合は
-**環境変数が優先**されます。
+`SORTA_PREVIEW_MAX_EDGE`、`SORTA_PREVIEW_QUALITY`、`SORTA_PREVIEW_MAX_GB`）があり、
+両方指定されている場合は**環境変数が優先**されます。
+
+**上限: `imaging.preview_cache_max_gb`。** 既定は `0`、つまり上限なしで、ディスクに
+空きがある限りキャッシュは増えます。これは意図的な既定です。キャッシュは完全な実行の
+たびに元が取れるので、「ディスクが一杯になった」への正しい答えは**キャッシュを切ること
+ではなく、上限を設けること**です。切ってしまうと各段階がオリジナルを再びデコードし、
+1 コマ 73 ms が 336 ms に戻ります。
+
+上限を設定していてキャッシュがそれを超えると、**最も長く読まれていない**プレビューから、
+収まるのに必要な分だけ削除されます。最も古いものではありません。後続の段階が読み続けて
+いるプレビューは、削除して再デコードするより残すほうが安上がりだからです。ディレクトリ
+全体が空にされることはありません — ファイルを削除する理由は、合計が収まらないこと
+だけです。
+
+サイズの確認は**書き込みごとではなく 512 枚ごと**に行います。確認はディレクトリ全体を
+走査し、そこには数万のファイルがあるためです。確認と確認のあいだにキャッシュが上限を
+超える量はおよそ 75 MB で、設定する価値のある上限に対しては誤差の範囲です。
+
+値の目安: 1 枚およそ 150 KB なので、30 万コマで ~45 GB、50 万コマで ~75 GB。現在の
+サイズと上限は `sorta cache` が表示します（§17）。`sorta ui` の「処理」タブにも同じ値が
+出て、設定列から再起動なしで変更できます。
+
+**動画もこのキャッシュに入ります。** クリップから 1 コマを取り出し、写真のプレビューと
+同じ場所に保存します。実際のコレクションでは動画の 68% が HEVC で、ブラウザーが再生
+できないため、どこでも同じように見せられるのはコマだけだからです。パイプラインのどの
+段階も動画をデコードしません — これらのプレビューは画面のためだけにあります。
+
+```yaml
+imaging:
+  # video_previews: true   # false → クリップに UI のタイルが付かない
+  # video_workers: 4       # コマ抽出のスレッド数
+  # video_frames: 6        # ライトボックスのフィルムストリップの枚数; 1 → タイル 1 枚
+```
+
+`imaging.video_previews` はこのタイル自体の有効・無効、`imaging.video_workers` は
+コマ抽出のスレッド数、そして `imaging.video_frames` はライトボックスのフィルム
+ストリップです。1 コマではどんなクリップかしか分かりませんが、6 コマあれば自分のものか、
+どこで撮ったかまで分かります。ストリップは 1 回のパスで作られ、ライトボックスを実際に
+開いたときにだけ生成されます。環境変数は `SORTA_VIDEO_PREVIEWS`、
+`SORTA_VIDEO_WORKERS`、`SORTA_VIDEO_FRAMES` です。
 
 ---
 
@@ -1200,6 +1246,7 @@ imaging:                       # プレビューキャッシュ — §18 参照
   preview_cache: true
   preview_max_edge: 1536
   preview_quality: 88
+  preview_cache_max_gb: 0      # 0 = 上限なし。それ以外は上限まで削除
 
 log_level: WARNING             # コンソールのみ; 実行ログは INFO のまま（§19）
 ```

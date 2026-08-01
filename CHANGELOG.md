@@ -6,6 +6,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A ceiling for the preview cache** (F117): `imaging.preview_cache_max_gb`, reachable
+  from `config.yaml`, from `sorta cache` and from the settings column of the web app.
+  The cache has had no bound since F67 — it grew until the disk did, and the only
+  cleanup was `sorta cache --clear`, which empties it whole. Measured at ~150 KB a
+  frame (12 GB for 38 485 files), which extrapolates to ~45 GB at 300 000 and ~75 GB at
+  half a million. The default is **0, meaning no ceiling**, deliberately: the cache pays
+  for itself on every full run (a frame is touched 3-5 times, and a cold frame costs
+  336 ms against 73), so the answer to a full disk is a bound rather than switching the
+  cache off — nothing is ever deleted unless a person sets a number. Over the ceiling
+  the previews that have gone **longest without being read** are dropped (atime, with
+  mtime as the fallback where Windows updates atime lazily), and only as many as it
+  takes to fit: a preview later stages keep reading is cheaper to keep than to decode
+  again, and the directory is never emptied wholesale. The size is checked every 512
+  writes rather than per write — the check walks the whole directory — so the cache can
+  overshoot by ~75 MB between checks, which is nothing against any ceiling worth
+  setting. `sorta cache` now prints the ceiling and the share used, or says none is set
+  and names the key that would set one.
+
+### Changed
+- **The cloud naming provider defaults to Claude Opus 5** instead of Claude Opus 4.8.
+  Not a fix — 4.8 is a live model — simply the current recommendation at the same price,
+  and the provider stays opt-in behind `naming.provider: claude`, off by default.
+
+### Fixed
+- **A release bump no longer fails the suite, and neither does a restarted exiftool
+  session.** Four rounds of one bug: `test_exif_parallel` asserted exact process counts
+  while `_ensure` transparently restarts a session that dies, so any exact count was a
+  coin toss. Each earlier fix was scoped to the assertions in front of it rather than to
+  a search of the file, and the next CI run found the next one. The file is now audited
+  in full: every launch count is bounded on both sides against what the pool was asked
+  for, and the only exact equalities left are `launches() == 0`, where nothing was
+  started and there is nothing to restart.
+- **The guides describe the preview cache as it is.** `imaging.video_previews`,
+  `imaging.video_workers` and `imaging.video_frames` were documented in
+  `config.example.yaml` and in none of the three guides. The docs watchdog now covers
+  the whole `imaging:` section the way it already covered `vlm:` — it stayed green while
+  the ceiling went undocumented, which is the failure it exists to prevent.
+
 ## [0.3.1] - 2026-07-31
 
 A re-cut of 0.3.0 on a green commit. **No module under `sorta/` changed** — install

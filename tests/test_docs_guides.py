@@ -257,6 +257,21 @@ class TestGuidesAgreeWithTheCode(unittest.TestCase):
                 with self.subTest(lang=lang, key=field.name):
                     self.assertIn(f"vlm.{field.name}", read(path))
 
+    def test_every_key_of_the_imaging_section_is_documented(self):
+        """F117: the same watchdog over `imaging:`, and for the same reason.
+
+        The vlm case above was written after an audit found not gaps but false
+        statements, and it only ever watched one section. `imaging.preview_cache_max_gb`
+        was then added and all three guides stayed silent — the suite was green while
+        the documentation described a cache with no ceiling. Read off `_IMAGING_ENV`
+        rather than a dataclass: this section has no config object, because imaging.py
+        is a leaf module configured through the environment.
+        """
+        for key in config._IMAGING_ENV:
+            for lang, path in GUIDES.items():
+                with self.subTest(lang=lang, key=key):
+                    self.assertIn(f"imaging.{key}", read(path))
+
     def test_the_legacy_naming_aliases_are_documented(self):
         """A live config.yaml still holds the old keys — the guides have to say so."""
         for legacy in ("naming.vlm_enabled", "naming.classify_vlm_model",

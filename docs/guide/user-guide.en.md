@@ -1010,11 +1010,12 @@ Reports the preview cache (§18), or clears it:
 
 ```
 $ sorta cache -c config.yaml
-Кэш превью: C:\Users\you\AppData\Local\sorta\previews
-  файлов: 34887, размер: 12.60 ГБ
+Preview cache: C:\Users\you\AppData\Local\sorta\previews
+  files: 34887, size: 12.60 GB
+  ceiling: none set (imaging.preview_cache_max_gb)
 
 $ sorta cache --clear -c config.yaml
-Кэш превью удалён: C:\Users\you\AppData\Local\sorta\previews
+Preview cache removed: C:\Users\you\AppData\Local\sorta\previews
 ```
 
 Deleting the cache is safe at any moment: it is lazy and rebuilds itself, one frame
@@ -1061,11 +1062,60 @@ imaging:
   # preview_dir: D:/sorta-previews   # default: see the table above
   preview_max_edge: 1536  # long edge of the cached JPEG
   preview_quality: 88     # JPEG quality of the cached copy
+  # preview_cache_max_gb: 40   # ceiling in GB; 0 (the default) means none
 ```
 
+`imaging.preview_max_edge` is the long edge of the cached JPEG, and it covers every
+consumer with headroom (OCR asks for 1280, the VLM 896, CLIP 448, pHash 96).
+`imaging.preview_quality` is the JPEG quality: at 88 a frame weighs about 150 KB and is
+visually indistinguishable from a full decode at these sizes.
+
 Each key has an environment variable of the same shape — `SORTA_PREVIEW_CACHE`,
-`SORTA_PREVIEW_DIR`, `SORTA_PREVIEW_MAX_EDGE`, `SORTA_PREVIEW_QUALITY` — and the
-variable **wins** over `config.yaml` when both are set.
+`SORTA_PREVIEW_DIR`, `SORTA_PREVIEW_MAX_EDGE`, `SORTA_PREVIEW_QUALITY`,
+`SORTA_PREVIEW_MAX_GB` — and the variable **wins** over `config.yaml` when both are
+set.
+
+**A ceiling: `imaging.preview_cache_max_gb`.** The default is `0` — no ceiling, and
+the cache grows for as long as the disk allows. That is deliberate: the cache pays for
+itself on every full run, so the answer to a full disk is to **bound the cache, not to
+switch it off**. Switching it off puts the decode of the original back into every
+stage — 336 ms a frame instead of 73.
+
+With a ceiling set and the cache over it, the previews that have gone **longest
+without being read** are deleted, and only as many as it takes to fit. Not the oldest:
+a preview later stages keep reading is cheaper to keep than to decode again. The
+directory is never emptied wholesale — the only reason to delete a file is that the
+total does not fit.
+
+The size is checked **every 512 previews rather than on each write**, because the
+check walks the whole directory and that is tens of thousands of files. Between checks
+the cache can exceed the ceiling by roughly 75 MB, which is nothing against any
+ceiling worth setting.
+
+To pick a number: about 150 KB a photo, so ~45 GB at 300 000 frames and ~75 GB at half
+a million. `sorta cache` prints the current size and the ceiling (§17); the "Process"
+tab of `sorta ui` shows the same, and the settings column changes the value without a
+restart.
+
+**Video goes into this cache too.** A frame is extracted from the clip and stored
+beside the photo previews: 68% of the videos in a real collection turned out to be
+HEVC, which browsers do not play, so a frame is the one thing that shows the same
+everywhere. No pipeline stage decodes video at all — these previews exist for the
+interface.
+
+```yaml
+imaging:
+  # video_previews: true   # false → clips get no tile in the UI
+  # video_workers: 4       # frame-extraction threads
+  # video_frames: 6        # frames in the lightbox filmstrip; 1 → a single tile
+```
+
+`imaging.video_previews` switches these tiles on or off entirely, `imaging.video_workers`
+sets the number of extraction threads, and `imaging.video_frames` is the filmstrip in
+the lightbox: one frame says what the clip is, six say whether it is yours and where it
+was shot. The strip is built in one pass and only once the lightbox is actually opened.
+The environment variables are `SORTA_VIDEO_PREVIEWS`, `SORTA_VIDEO_WORKERS`,
+`SORTA_VIDEO_FRAMES`.
 
 ---
 
@@ -1212,6 +1262,7 @@ imaging:                       # the preview cache — see §18
   preview_cache: true
   preview_max_edge: 1536
   preview_quality: 88
+  preview_cache_max_gb: 0      # 0 = no ceiling; otherwise evict down to the limit
 
 log_level: WARNING             # console verbosity only; the run log stays at INFO (§19)
 ```
