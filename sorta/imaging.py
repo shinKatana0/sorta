@@ -209,6 +209,7 @@ ENV_PREVIEW_CACHE = "SORTA_PREVIEW_CACHE"
 ENV_PREVIEW_DIR = "SORTA_PREVIEW_DIR"
 ENV_PREVIEW_MAX_EDGE = "SORTA_PREVIEW_MAX_EDGE"
 ENV_PREVIEW_QUALITY = "SORTA_PREVIEW_QUALITY"
+ENV_PREVIEW_MAX_GB = "SORTA_PREVIEW_MAX_GB"
 
 # 1536 on the long edge covers every consumer with headroom (OCR 1280, VLM 896,
 # CLIP 448, pHash 96); q88 keeps a frame at ~150 KB and is visually lossless at
@@ -217,8 +218,23 @@ ENV_PREVIEW_QUALITY = "SORTA_PREVIEW_QUALITY"
 PREVIEW_MAX_EDGE = 1536
 PREVIEW_QUALITY = 88
 
+# 0 = no ceiling, which is what the cache did from F67 until now. The cache is worth
+# keeping on by default (a full run touches a frame 3-5 times), so the answer to "the
+# disk filled up" is a bound, not switching it off — measured at ~150 KB per photo,
+# 38 485 files took 12 GB, which extrapolates to ~45 GB at 300k and ~75 GB at 500k.
+PREVIEW_MAX_GB = 0.0
+
+# Checking the ceiling costs a walk of the whole directory, so it cannot run per write:
+# on a cold collection that would be tens of thousands of stats per stage. Every 512th
+# write is ~75 MB of previews between checks at the measured 150 KB each — small against
+# any ceiling worth setting, and negligible against the walk it avoids.
+_EVICT_EVERY_N_WRITES = 512
+
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _EXIF_ORIENTATION = 274
+
+_writes_since_evict = 0
+_evict_lock = threading.Lock()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -256,6 +272,106 @@ def preview_max_edge() -> int:
 
 def preview_quality() -> int:
     return _env_int(ENV_PREVIEW_QUALITY, PREVIEW_QUALITY)
+
+
+def preview_cache_max_gb() -> float:
+    """Ceiling in GB; 0 (the default) means the cache grows without a bound.
+
+    Garbage and negatives fall back to the default rather than raising: this is read on
+    a hot write path, and a typo in a config file must not take a run down.
+    """
+    try:
+        value = float(os.environ.get(ENV_PREVIEW_MAX_GB, "").strip())
+    except ValueError:
+        return PREVIEW_MAX_GB
+    return value if value > 0 else PREVIEW_MAX_GB
+
+
+def preview_cache_size() -> tuple[int, int]:
+    """(files, bytes) of the preview cache — one walker for the CLI, the UI and eviction.
+
+    A cache that was never written is not an error: a missing directory is (0, 0).
+    """
+    directory = preview_dir()
+    if not directory.exists():
+        return 0, 0
+    files = 0
+    total = 0
+    for entry in directory.rglob("*.jpg"):
+        try:
+            total += entry.stat().st_size
+        except OSError:
+            continue  # evicted or replaced under us — it is not in the cache any more
+        files += 1
+    return files, total
+
+
+def preview_cache_evict(max_bytes: int | None = None) -> tuple[int, int]:
+    """Delete the least recently USED previews until the cache fits. Returns (files, bytes).
+
+    Least recently used, not oldest: the read path opens these files, so atime tracks
+    what is still in play, and a preview from the first stage that every later stage
+    keeps reading is cheaper to keep than to decode again. Windows updates atime lazily,
+    so mtime is the fallback — the ordering is then "least recently written", which is
+    still far better than deleting an arbitrary half.
+
+    Purging by age alone is deliberately NOT what happens here: the ceiling is about
+    disk, so the only reason to delete a file is that the total does not fit.
+
+    `max_bytes=None` reads the configured ceiling; 0 means no ceiling and nothing is
+    deleted. Eviction never touches the directory when the cache already fits, so the
+    common call is one walk and no writes.
+    """
+    if max_bytes is None:
+        max_bytes = int(preview_cache_max_gb() * 1e9)
+    if max_bytes <= 0:
+        return 0, 0
+    directory = preview_dir()
+    if not directory.exists():
+        return 0, 0
+    entries: list[tuple[float, int, Path]] = []
+    total = 0
+    for entry in directory.rglob("*.jpg"):
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
+        used = max(st.st_atime, st.st_mtime)
+        entries.append((used, st.st_size, entry))
+        total += st.st_size
+    if total <= max_bytes:
+        return 0, 0
+    removed_files = 0
+    removed_bytes = 0
+    for _used, size, entry in sorted(entries):  # oldest use first
+        if total <= max_bytes:
+            break
+        try:
+            entry.unlink()
+        except OSError:
+            continue  # a reader holds it open (Windows); the next pass will get it
+        total -= size
+        removed_files += 1
+        removed_bytes += size
+    return removed_files, removed_bytes
+
+
+def _note_preview_write() -> None:
+    """Count a stored preview and enforce the ceiling every Nth one.
+
+    Called from the write path, which runs on pool threads — the counter is guarded,
+    and the eviction itself runs OUTSIDE the lock so a directory walk never serializes
+    the pool. Two overlapping evictions are harmless: both skip files the other removed.
+    """
+    global _writes_since_evict
+    if preview_cache_max_gb() <= 0:
+        return
+    with _evict_lock:
+        _writes_since_evict += 1
+        if _writes_since_evict < _EVICT_EVERY_N_WRITES:
+            return
+        _writes_since_evict = 0
+    preview_cache_evict()
 
 
 def preview_key(path: str | Path, mtime: float, size: int, frame: int = 0) -> str:
@@ -369,6 +485,7 @@ def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
             if not dest.exists():
                 raise  # a real failure (no space, no permission on the directory)
             tmp.unlink(missing_ok=True)  # someone else won the race — their file stands
+        _note_preview_write()
     except Exception:
         try:
             tmp.unlink(missing_ok=True)

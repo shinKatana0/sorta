@@ -2499,7 +2499,11 @@ def _cache_payload(db_path: Path) -> dict:
     finally:
         conn.close()
     return {
-        "preview": {"dir": str(directory), "files": files, "bytes": size},
+        # F117: `max_gb` is 0 when no ceiling is set, and the front end renders that as
+        # a state rather than as a limit of zero. The share is computed here so the two
+        # entry points cannot disagree on the arithmetic.
+        "preview": {"dir": str(directory), "files": files, "bytes": size,
+                    "max_gb": imaging.preview_cache_max_gb()},
         "geo": {"entries": entries},
     }
 
@@ -2806,6 +2810,17 @@ _SETTINGS_SPEC: dict[str, _SettingSpec] = {
     "vlm.model": _SettingSpec("str"),
     "vlm.workers": _SettingSpec("int", 1, 32),
     "vlm.max_edge": _SettingSpec("int", 128, 4096),
+    # F117: the preview-cache ceiling in GB. 0 is a legal value and the default — it
+    # means "no ceiling", the behaviour since F67, so the minimum cannot be 1. The
+    # upper rail is a typo guard: nobody caps a preview cache at four terabytes.
+    "imaging.preview_cache_max_gb": _SettingSpec("int", 0, 4096),
+}
+
+# The one settings key that is not a field of a config dataclass: `imaging:` is applied
+# to the environment (see config._IMAGING_ENV — imaging.py is a leaf module that pool
+# workers call with a path and nothing else), so applying it means setting the variable.
+_IMAGING_SETTING_ENV = {
+    "imaging.preview_cache_max_gb": imaging.ENV_PREVIEW_MAX_GB,
 }
 
 
@@ -2816,6 +2831,9 @@ def _settings_payload(cfg: Config) -> dict:
         "vlm.model": cfg.vlm.model,
         "vlm.workers": cfg.vlm.workers,
         "vlm.max_edge": cfg.vlm.max_edge,
+        # Read through imaging, not off cfg: the environment is the source of truth for
+        # this one, and a shell export legitimately overrides the file.
+        "imaging.preview_cache_max_gb": int(imaging.preview_cache_max_gb()),
     }
 
 
@@ -2856,10 +2874,28 @@ def _apply_settings(cfg: Config, values: dict[str, object]) -> None:
     """Put validated values into the RUNNING config (see the note above: nothing else
     has to be invalidated — every one of them is read when the next run starts)."""
     fields = {key: key.split(".", 1)[1] for key in _SETTINGS_SPEC}
+    # F117: the imaging keys live in the environment rather than on a dataclass, so they
+    # are applied separately and taken OUT before the vlm replace below — passing one to
+    # dataclasses.replace would raise on an unknown field.
+    # `values` is NOT mutated here: the caller iterates the same dict afterwards to
+    # persist each key into config.yaml, and removing one would save a setting that
+    # applied but never reached the file.
+    for key, env_name in _IMAGING_SETTING_ENV.items():
+        if key not in values:
+            continue
+        os.environ[env_name] = str(values[key])
+        section = cfg.raw.get("imaging")
+        if not isinstance(section, dict):
+            section = {}
+            cfg.raw["imaging"] = section
+        section[fields[key]] = values[key]
+    vlm_values = {k: v for k, v in values.items() if k not in _IMAGING_SETTING_ENV}
+    if not vlm_values:
+        return
     # The values were type-checked one by one against _SETTINGS_SPEC, which mypy cannot
     # follow through a dict[str, object] — the cast says so rather than widening the
     # spec into something the validator would have to trust the caller about.
-    changed: Any = {fields[key]: value for key, value in values.items()}
+    changed: Any = {fields[key]: value for key, value in vlm_values.items()}
     cfg.vlm = dataclasses.replace(cfg.vlm, **changed)
     # F102: `naming.vlm_enabled`/`classify_vlm_model` are the effective per-run toggle
     # the junk stage reads, and load_config holds them equal to the `vlm:` section. A
@@ -2870,7 +2906,7 @@ def _apply_settings(cfg: Config, values: dict[str, object]) -> None:
     if not isinstance(section, dict):  # `vlm:` absent, or present and left empty
         section = {}
         cfg.raw["vlm"] = section
-    for key, value in values.items():
+    for key, value in vlm_values.items():
         section[fields[key]] = value
 
 
@@ -3371,10 +3407,22 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # F94: the caches were reachable only from `sorta cache`, while the web app is
     # advertised as a full entry point — so on a live collection 12 GB of previews had
-    # no way out for anyone who does not use the terminal. Sizes are shown, both
-    # clears are offered, and nothing is deleted without being asked for: a ceiling
-    # with eviction would be deciding for the user which frames to throw away.
+    # no way out for anyone who does not use the terminal. Sizes are shown and both
+    # clears are offered. F117 added a ceiling, and it does not change that stance: it
+    # is 0 by default, so nothing is ever deleted unless a person sets a number — the
+    # ceiling answers "my disk filled up", it is not a policy applied on their behalf.
     "cache_title": {"ru": "Кэши", "en": "Caches", "ja": "キャッシュ"},
+    # F117: shown next to the size, because a size without its bound says nothing.
+    "cache_limit": {
+        "ru": "Потолок: {limit} ГБ — занято {percent}%",
+        "en": "Ceiling: {limit} GB — {percent}% used",
+        "ja": "上限: {limit} GB — {percent}% 使用",
+    },
+    "cache_no_limit": {
+        "ru": "Потолок не задан — кэш растёт, пока есть место на диске",
+        "en": "No ceiling — the cache grows for as long as the disk allows",
+        "ja": "上限なし — ディスクの空きがある限り増えます",
+    },
     "cache_sizes": {
         "ru": "Кэш превью: {preview} ({files} файлов) · Кэш геоданных: {geo} записей",
         "en": "Preview cache: {preview} ({files} files) · Geo cache: {geo} entries",
@@ -3383,15 +3431,18 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "cache_hint": {
         "ru": "Кэш превью — уменьшенные копии кадров, он ускоряет прогон и "
               "пересобирается сам. Кэш геоданных — ответы онлайн-геокодера, они "
-              "избавляют повторный прогон от сети. Ни один из них не чистится "
-              "автоматически.",
+              "избавляют повторный прогон от сети. Сами по себе они не уменьшаются; "
+              "если задать потолок, кэш превью удаляет самые давно не читанные копии, "
+              "пока не уложится в него.",
         "en": "The preview cache holds downscaled copies of the frames: it speeds the "
               "run up and rebuilds itself. The geo cache holds the online geocoder's "
-              "answers, which spare a repeat run the network. Neither is ever cleared "
-              "automatically.",
+              "answers, which spare a repeat run the network. Neither shrinks on its "
+              "own; with a ceiling set, the preview cache drops its least recently read "
+              "copies until it fits.",
         "ja": "プレビューキャッシュは縮小したコマの控えで、処理を速くし、自動的に作り直されます。"
               "位置情報キャッシュはオンライン地理コーダーの応答で、再実行時の通信を省きます。"
-              "どちらも自動では消去されません。",
+              "自動では減りませんが、上限を設定すると、収まるまで最も長く読まれていない"
+              "プレビューから削除されます。",
     },
     "cache_clear_preview_button": {
         "ru": "Очистить кэш превью", "en": "Clear the preview cache",
@@ -3814,6 +3865,29 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "on VRAM, but fine text in a shot becomes harder to make out.",
         "ja": "モデルが見るフレームの長辺。小さいほど高速で VRAM も節約できますが、"
               "写真内の細かい文字は読み取りにくくなります。",
+    },
+    # F117: the ceiling belongs in the settings column rather than next to the cache
+    # sizes, because it is a stored preference and the numbers next to the buttons are
+    # a measurement. 0 is spelled out in the hint: an empty-looking limit is the one
+    # value a person is most likely to misread.
+    "settings_preview_max_gb_label": {
+        "ru": "Потолок кэша превью, ГБ",
+        "en": "Preview cache ceiling, GB",
+        "ja": "プレビューキャッシュ上限 (GB)",
+    },
+    "settings_preview_max_gb_hint": {
+        "ru": "0 — без потолка: кэш растёт, пока есть место (около 150 КБ на снимок, "
+              "то есть ~45 ГБ на 300 тысячах). С потолком удаляются самые давно не "
+              "читанные превью, пока кэш не уложится; выключать кэш ради места не "
+              "стоит — холодный кадр стоит 336 мс против 73.",
+        "en": "0 means no ceiling: the cache grows while there is room (about 150 KB a "
+              "shot, so ~45 GB at 300 000). With a ceiling the least recently read "
+              "previews are dropped until it fits. Do not switch the cache off to save "
+              "space — a cold frame costs 336 ms against 73.",
+        "ja": "0 は上限なし: 空きがある限り増えます (1 枚およそ 150 KB、30 万枚で ~45 GB)。"
+              "上限を設けると、収まるまで最も長く読まれていないプレビューから削除されます。"
+              "容量のためにキャッシュを切るのは得策ではありません — 未キャッシュのコマは "
+              "73 ms に対し 336 ms かかります。",
     },
     "settings_folders_title": {"ru": "Папки", "en": "Folders", "ja": "フォルダ"},
     "settings_folder_lang_hint": {
@@ -4889,6 +4963,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <span class="step-title">{{cache_title}}</span>
 <span id="cache-sizes" class="cache-sizes">{{loading}}</span>
 </div>
+<span id="cache-limit" class="cache-sizes"></span>
 <span class="process-toggle-hint">{{cache_hint}}</span>
 <div class="process-actions">
 <button type="button" id="cache-clear-preview-btn" class="btn btn-ghost">{{cache_clear_preview_button}}</button>
@@ -4955,6 +5030,9 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <label class="settings-field" for="setting-vlm-max-edge">{{settings_vlm_max_edge_label}}
 <input type="number" id="setting-vlm-max-edge" min="128" max="4096" step="1"></label>
 <span class="process-toggle-hint">{{settings_vlm_max_edge_hint}}</span>
+<label class="settings-field" for="setting-imaging-preview-cache-max-gb">{{settings_preview_max_gb_label}}
+<input type="number" id="setting-imaging-preview-cache-max-gb" min="0" max="4096" step="1"></label>
+<span class="process-toggle-hint">{{settings_preview_max_gb_hint}}</span>
 <div id="settings-status" class="override-status"></div>
 </div>
 <div class="settings-block">
@@ -5252,7 +5330,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     { key: "vlm.enabled", id: "setting-vlm-enabled", kind: "bool" },
     { key: "vlm.model", id: "setting-vlm-model", kind: "text" },
     { key: "vlm.workers", id: "setting-vlm-workers", kind: "int" },
-    { key: "vlm.max_edge", id: "setting-vlm-max-edge", kind: "int" }
+    { key: "vlm.max_edge", id: "setting-vlm-max-edge", kind: "int" },
+    { key: "imaging.preview_cache_max_gb", id: "setting-imaging-preview-cache-max-gb", kind: "int" }
   ];
   var settingsValues = {};
 
@@ -7031,12 +7110,25 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     if (!data || !data.preview || !data.geo) return;
     cacheInfo.previewBytes = data.preview.bytes || 0;
     cacheInfo.previewFiles = data.preview.files || 0;
+    cacheInfo.previewMaxGb = data.preview.max_gb || 0;
     cacheInfo.geoEntries = data.geo.entries || 0;
     document.getElementById("cache-sizes").textContent = fmt(I18N.cache_sizes, {
       preview: formatSize(cacheInfo.previewBytes),
       files: cacheInfo.previewFiles,
       geo: cacheInfo.geoEntries,
     });
+    // F117: 0 is "no ceiling", a state — not a limit of zero, which would read as a
+    // cache that may hold nothing at all.
+    var limitEl = document.getElementById("cache-limit");
+    if (cacheInfo.previewMaxGb > 0) {
+      var used = cacheInfo.previewBytes / (cacheInfo.previewMaxGb * 1e9) * 100;
+      limitEl.textContent = fmt(I18N.cache_limit, {
+        limit: cacheInfo.previewMaxGb,
+        percent: Math.round(used),
+      });
+    } else {
+      limitEl.textContent = I18N.cache_no_limit;
+    }
   }
 
   var cacheSizesPending = false;

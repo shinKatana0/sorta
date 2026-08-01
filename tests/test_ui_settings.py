@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import threading
 import unittest
 import urllib.error
@@ -19,7 +20,7 @@ from unittest import mock
 
 import yaml
 
-from sorta import ui
+from sorta import imaging, ui
 from sorta.config import load_config
 
 from tests.test_ui_process import ProcessTestBase, _poll_until
@@ -40,6 +41,14 @@ class SettingsTestBase(ProcessTestBase):
 
     def setUp(self):
         super().setUp()
+        # F117: saving an `imaging:` key APPLIES it by setting an environment variable,
+        # and a variable set by one test is still set for the next one — the preview
+        # cache would then run with a ceiling nobody in that test asked for. Snapshot
+        # and restore around every case in this file, not just the ones that write it:
+        # the leak is invisible where it is caused and only shows up somewhere else.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
         self.config_path = self.root / "config.yaml"
         self.config_path.write_text(
             "# a note of my own\n"
@@ -98,6 +107,9 @@ class TestReadSettings(SettingsTestBase):
             "vlm.model": "some/other-vlm",
             "vlm.workers": 3,
             "vlm.max_edge": 640,
+            # F117: read from the environment rather than from cfg — the ceiling has no
+            # dataclass field, and 0 (no ceiling) is its default.
+            "imaging.preview_cache_max_gb": 0,
         })
 
     def test_get_reports_a_usable_value_for_every_knob(self):
@@ -147,6 +159,44 @@ class TestWriteSettings(SettingsTestBase):
         self.assertEqual(self.cfg.vlm.model, "some/other-vlm")
         self.assertEqual(self.saved()["vlm"]["workers"], 4)
         self.assertEqual(self.saved()["vlm"]["model"], "some/other-vlm")
+
+    def test_the_preview_ceiling_applies_to_the_environment_and_the_file(self):
+        """F117: the one key with no dataclass field behind it.
+
+        `imaging:` is applied to the environment (imaging.py is a leaf module that pool
+        workers call with a path and nothing else), so "applied" means the variable is
+        set — and a saved setting that only reached the file would be a ceiling nothing
+        enforces until the next restart.
+        """
+        self.start_server()
+        status, resp = self.post_raw(
+            "/api/settings", {"imaging.preview_cache_max_gb": 40})
+        self.assertEqual(status, 200)
+        self.assertEqual(resp["settings"]["imaging.preview_cache_max_gb"], 40)
+        self.assertEqual(imaging.preview_cache_max_gb(), 40.0)
+        self.assertEqual(self.saved()["imaging"]["preview_cache_max_gb"], 40)
+
+    def test_the_preview_ceiling_travels_with_the_vlm_keys(self):
+        """One body, two sections: the imaging key is taken out before the vlm fields
+        reach dataclasses.replace, and must still be written to the file."""
+        self.start_server()
+        status, _resp = self.post_raw(
+            "/api/settings", {"vlm.workers": 4, "imaging.preview_cache_max_gb": 25})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.cfg.vlm.workers, 4)
+        self.assertEqual(imaging.preview_cache_max_gb(), 25.0)
+        self.assertEqual(self.saved()["vlm"]["workers"], 4)
+        self.assertEqual(self.saved()["imaging"]["preview_cache_max_gb"], 25)
+
+    def test_zero_is_a_legal_ceiling_meaning_none(self):
+        """0 is the default and a value a person can choose — the minimum of the spec
+        cannot be 1, or "no ceiling" would be unreachable from the form."""
+        self.start_server()
+        status, resp = self.post_raw(
+            "/api/settings", {"imaging.preview_cache_max_gb": 0})
+        self.assertEqual(status, 200)
+        self.assertEqual(resp["settings"]["imaging.preview_cache_max_gb"], 0)
+        self.assertEqual(imaging.preview_cache_max_gb(), 0.0)
 
     def test_the_new_value_is_what_a_reload_of_the_config_would_give(self):
         """"Saved" has to mean the next `sorta index` sees it too, not just this tab."""
@@ -288,7 +338,8 @@ class TestSettingsMarkup(SettingsTestBase):
 
     def test_the_column_holds_a_control_per_knob(self):
         for control in ("setting-vlm-enabled", "setting-vlm-model",
-                        "setting-vlm-workers", "setting-vlm-max-edge"):
+                        "setting-vlm-workers", "setting-vlm-max-edge",
+                        "setting-imaging-preview-cache-max-gb"):
             self.assertIn(f'id="{control}"', self.html)
         self.assertIn('class="city-side"', self.html)
         self.assertIn("/api/settings", self.html)
@@ -296,9 +347,16 @@ class TestSettingsMarkup(SettingsTestBase):
     def test_every_function_has_its_own_toggle(self):
         """Explicitly asked for: no single "smart mode" switch that means four things
         at once — the deep tier is one checkbox, the model, the threads and the frame
-        size are their own fields."""
-        self.assertEqual(len(ui._SETTINGS_SPEC), 4)
-        self.assertEqual(self.html.count('id="setting-vlm-enabled"'), 1)
+        size are their own fields.
+
+        Stated against the spec rather than against a count: the number was 4 and is now
+        5 (F117 added the preview-cache ceiling), and a magic number only ever says that
+        somebody added a knob — not that the knob got a control of its own.
+        """
+        for key in ui._SETTINGS_SPEC:
+            control = "setting-" + key.replace(".", "-").replace("_", "-")
+            with self.subTest(key=key):
+                self.assertEqual(self.html.count(f'id="{control}"'), 1, control)
 
     def test_the_folder_language_moved_into_the_column(self):
         """It was the odd one out in the action row: a setting standing next to the

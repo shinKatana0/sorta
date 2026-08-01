@@ -469,6 +469,18 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  files: {files}, size: {size_gb:.2f} GB",
         "ja": "  ファイル: {files}、サイズ: {size_gb:.2f} GB",
     },
+    # F117: printed right after the size, so the number above has something to be
+    # measured against. Two texts, because "no ceiling" is a state, not a limit of 0.
+    "cli.cache.preview_limit": {
+        "ru": "  потолок: {limit_gb:.2f} ГБ (занято {percent:.0f}%)",
+        "en": "  ceiling: {limit_gb:.2f} GB ({percent:.0f}% used)",
+        "ja": "  上限: {limit_gb:.2f} GB（{percent:.0f}% 使用）",
+    },
+    "cli.cache.preview_no_limit": {
+        "ru": "  потолок: не задан (imaging.preview_cache_max_gb)",
+        "en": "  ceiling: none set (imaging.preview_cache_max_gb)",
+        "ja": "  上限: 未設定 (imaging.preview_cache_max_gb)",
+    },
     "cli.cache.preview_cleared": {
         "ru": "Кэш превью удалён: {path}",
         "en": "Preview cache removed: {path}",

@@ -565,6 +565,10 @@ _IMAGING_ENV = {
     "preview_dir": "SORTA_PREVIEW_DIR",
     "preview_max_edge": "SORTA_PREVIEW_MAX_EDGE",
     "preview_quality": "SORTA_PREVIEW_QUALITY",
+    # F117: a ceiling in GB, 0 = unbounded (the behaviour since F67). The cache stays on
+    # by default — the answer to a full disk is a bound, not switching off a cache that
+    # pays for itself on every full run.
+    "preview_cache_max_gb": "SORTA_PREVIEW_MAX_GB",
     # F74/F80: video tiles and the lightbox filmstrip sit in the same leaf module and
     # were env-only until now, so config.example.yaml documented keys that nothing
     # read. They seed their vars exactly like the preview ones — env still wins.

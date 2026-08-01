@@ -310,8 +310,11 @@ class TestFirstTabLayout(unittest.TestCase):
         for box in ("process-deep-checkbox", "process-geo-online-checkbox",
                     "process-faces-checkbox", "process-events-checkbox"):
             self.assertIn(box, options_block)
-        # F81 explicitly does not add a preview-cache toggle here
-        self.assertNotIn("preview_cache", self.html)
+        # F81 explicitly does not add a preview-cache toggle here. Scoped to the options
+        # block, which is the claim: F117 put the preview-cache CEILING in the settings
+        # column of the "Cities" tab, so the key now appears on the page — just not as a
+        # switch among the run options, which is what this case is about.
+        self.assertNotIn("preview_cache", options_block)
 
     def test_do_not_scan_is_worded_apart_from_do_not_sort(self):
         # F82 put the two side by side in one tree, so the difference now lives in the

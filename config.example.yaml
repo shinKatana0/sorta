@@ -305,6 +305,19 @@ imaging:
   # preview_dir: D:/sorta-previews   # default: %LOCALAPPDATA%\sorta\previews
   preview_max_edge: 1536
   preview_quality: 88
+  # F117: a ceiling for the preview cache, in GB. 0 (the default) means no ceiling —
+  # what the cache did from F67 until now: it grew until the disk did, and the only
+  # cleanup was `sorta cache --clear`, which empties it whole.
+  # Measured ~150 KB per photo (12 GB for 38 485 files), so a 300 000-file collection
+  # extrapolates to ~45 GB and half a million to ~75 GB. Set a number when that starts
+  # to matter; do NOT switch the cache off instead — it pays for itself on every full
+  # run (a frame is touched 3-5 times), and a cold cache costs 336 ms per frame against
+  # 73 ms warm.
+  # Over the ceiling the least recently USED previews are deleted until the total fits
+  # — atime, so a preview later stages keep reading survives, and a run never gets its
+  # cache wiped just for being a run. Checked every 512 writes, not on each one: the
+  # check walks the directory.
+  # preview_cache_max_gb: 40
   # F74: a video gets a tile too — one frame, extracted with PyAV into the same
   # cache. 68% of a real collection turned out to be HEVC, which browsers do not
   # play, so a frame is what works everywhere. Only the UI ever asks for these: no

@@ -392,6 +392,10 @@ class TestRussianOutputIsUnchanged(_EnvCase):
             got["cache_show"],
             f"Кэш превью: {self.env.previews}\n"
             "  файлов: 0, размер: 0.00 ГБ\n"
+            # F117: a size means little without the bound it is measured against, and
+            # "not set" is a state rather than a limit of zero — the default prints the
+            # config key that would set one.
+            "  потолок: не задан (imaging.preview_cache_max_gb)\n"
             "Кэш геоданных (geo_cache): записей 42\n")
         self.assertEqual(got["cache_clear_geo"],
                          "Кэш геоданных очищен: удалено записей 17\n")
@@ -511,6 +515,12 @@ class TestNumbersSubstituteInEveryLanguage(unittest.TestCase):
         for lang in _LANGS:
             self.assertIn("12.64", i18n.cli_text("cli.cache.preview_stats", lang,
                                                  files=3, size_gb=12.6431))
+            # F117: same formatting contract for the ceiling line — two placeholders,
+            # one of them rounded to whole percent.
+            limit = i18n.cli_text("cli.cache.preview_limit", lang,
+                                  limit_gb=40.0, percent=31.6)
+            self.assertIn("40.00", limit)
+            self.assertIn("32", limit)
 
 
 class TestUnknownLanguageFallsBack(unittest.TestCase):

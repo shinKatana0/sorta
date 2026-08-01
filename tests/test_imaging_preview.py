@@ -308,6 +308,90 @@ class TestPreviewCache(PreviewCacheTestCase):
         imaging.preview_cache_clear()  # a missing dir is not an error
 
 
+class TestPreviewCacheCeiling(PreviewCacheTestCase):
+    """F117: `imaging.preview_cache_max_gb` — a bound on the cache, not a policy.
+
+    The default is 0 and the default deletes nothing: the cache is worth keeping on
+    (a full run touches a frame 3-5 times), so the answer to a full disk is a ceiling,
+    not switching the cache off.
+    """
+
+    def write_entry(self, name: str, size: int, used: float) -> Path:
+        """One cache file of a known size and a known last-use time."""
+        entry = self.cache / name[:2] / f"{name}.jpg"
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_bytes(b"x" * size)
+        os.utime(entry, (used, used))
+        return entry
+
+    def test_no_ceiling_by_default_and_nothing_is_deleted(self):
+        self.assertEqual(imaging.preview_cache_max_gb(), 0.0)
+        entry = self.write_entry("aa" + "0" * 38, 1000, used=1.0)
+        self.assertEqual(imaging.preview_cache_evict(), (0, 0))
+        self.assertTrue(entry.exists())
+
+    def test_a_cache_that_fits_is_left_alone(self):
+        self.write_entry("aa" + "0" * 38, 1000, used=1.0)
+        self.write_entry("bb" + "0" * 38, 1000, used=2.0)
+        self.assertEqual(imaging.preview_cache_evict(max_bytes=10_000), (0, 0))
+        self.assertEqual(len(self.previews()), 2)
+
+    def test_the_least_recently_used_go_first(self):
+        """Least recently USED, not oldest written: a preview every later stage keeps
+        reading is cheaper to keep than to decode again."""
+        old = self.write_entry("aa" + "0" * 38, 1000, used=1.0)
+        middle = self.write_entry("bb" + "0" * 38, 1000, used=100.0)
+        fresh = self.write_entry("cc" + "0" * 38, 1000, used=200.0)
+        files, freed = imaging.preview_cache_evict(max_bytes=2000)
+        self.assertEqual((files, freed), (1, 1000))
+        self.assertFalse(old.exists())
+        self.assertTrue(middle.exists())
+        self.assertTrue(fresh.exists())
+
+    def test_it_stops_as_soon_as_the_cache_fits(self):
+        """Not "purge by age": the only reason to delete is that the total does not fit,
+        so eviction stops at the ceiling instead of emptying the directory."""
+        for i in range(5):
+            self.write_entry(f"{i}{i}" + "0" * 38, 1000, used=float(i))
+        files, freed = imaging.preview_cache_evict(max_bytes=3000)
+        self.assertEqual((files, freed), (2, 2000))
+        self.assertEqual(len(self.previews()), 3)
+
+    def test_size_reports_files_and_bytes(self):
+        self.assertEqual(imaging.preview_cache_size(), (0, 0))  # never written yet
+        self.write_entry("aa" + "0" * 38, 1500, used=1.0)
+        self.write_entry("bb" + "0" * 38, 2500, used=2.0)
+        self.assertEqual(imaging.preview_cache_size(), (2, 4000))
+
+    def test_garbage_and_negatives_fall_back_to_no_ceiling(self):
+        """Read on a write path: a typo in config.yaml must not take a run down."""
+        for raw in ("", "  ", "lots", "-5", "0"):
+            with unittest.mock.patch.dict(
+                    os.environ, {imaging.ENV_PREVIEW_MAX_GB: raw}):
+                with self.subTest(raw=raw):
+                    self.assertEqual(imaging.preview_cache_max_gb(), 0.0)
+
+    def test_a_ceiling_is_read_from_the_environment(self):
+        with unittest.mock.patch.dict(os.environ, {imaging.ENV_PREVIEW_MAX_GB: "1.5"}):
+            self.assertEqual(imaging.preview_cache_max_gb(), 1.5)
+
+    def test_a_real_run_stays_under_the_ceiling(self):
+        """End to end through the write path: previews of real frames, a ceiling low
+        enough that they cannot all fit, and the check firing on its own."""
+        src = self.root / "a.jpg"
+        make_photo(src)
+        mtime, size = stat_key(src)
+        imaging.decode_rgb_preview(src, mtime, size, max_edge=96)
+        one = imaging.preview_cache_size()[1]
+        self.assertGreater(one, 0)
+        for i in range(6):
+            self.write_entry(f"{i}{i}" + "0" * 38, one, used=float(i))
+        with unittest.mock.patch.dict(
+                os.environ, {imaging.ENV_PREVIEW_MAX_GB: str(one * 3 / 1e9)}):
+            imaging.preview_cache_evict()
+        self.assertLessEqual(imaging.preview_cache_size()[1], one * 3)
+
+
 class TestPreviewResilience(PreviewCacheTestCase):
     def test_corrupt_cache_entry_is_dropped_and_regenerated(self):
         src = self.root / "a.jpg"

@@ -622,10 +622,16 @@ def _cmd_cache(config_path: str, *, clear: bool = False,
         print(_t("cli.cache.preview_cleared", lang, path=directory))
     if clear or clear_geo:
         return
-    files = sum(1 for _ in directory.rglob("*.jpg")) if directory.exists() else 0
-    size = sum(f.stat().st_size for f in directory.rglob("*.jpg")) if files else 0
+    files, size = imaging.preview_cache_size()
     print(_t("cli.cache.preview_dir", lang, path=directory))
     print(_t("cli.cache.preview_stats", lang, files=files, size_gb=size / 1e9))
+    # F117: a size means little without the bound it is measured against.
+    limit_gb = imaging.preview_cache_max_gb()
+    if limit_gb > 0:
+        print(_t("cli.cache.preview_limit", lang, limit_gb=limit_gb,
+                 percent=100.0 * size / (limit_gb * 1e9)))
+    else:
+        print(_t("cli.cache.preview_no_limit", lang))
     conn = connect(cfg.database)
     try:
         print(_t("cli.cache.geo_size", lang, n=geo_cache_size(conn)))
