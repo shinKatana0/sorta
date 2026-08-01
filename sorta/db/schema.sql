@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 15;
+PRAGMA user_version = 16;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -135,6 +135,42 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     source TEXT NOT NULL,                 -- classic | clip | vlm — WHICH TIER processed the
     --                                       row, and with it the incrementality marker (the
     --                                       F68 lesson, one column that means the tier)
+    updated_at TEXT NOT NULL
+);
+
+-- v16 (F128): the CLIP vector of a canonical photograph, kept instead of thrown away.
+-- The junk stage computes one for every frame it looks at, reads three scores off it and
+-- used to discard it — so every feature of that class (search by words, an album from a
+-- query, scene clustering, "frames like this one") began with a full CLIP pass over the
+-- collection. This table is that pass, already paid for.
+--
+-- A table of its own and not a column on `files`: the data is bulky and optional, and
+-- `files` is read by everything.
+--
+-- `model` IS THE FEATURE, not decoration. Vectors from different models are not
+-- comparable, and a vector without a record of what produced it is rubbish that looks
+-- like data — a search over it returns plausible nonsense and nobody can tell why. So the
+-- row carries what computed it, and a mismatch with the current config means RECOMPUTE,
+-- never use (the same rule the F120 prompt fingerprint follows).
+--
+-- `vec` is L2-NORMALIZED FLOAT32, little-endian (`dim` numbers, 4 bytes each) — the same
+-- wire format `faces.embedding` uses. Normalized so cosine similarity is a dot product and
+-- no consumer has to renormalize per query. Half precision would halve the table (~30 MB
+-- instead of ~60 for 19 757 photos, ~460 MB instead of ~920 for 300 000) and was rejected
+-- by measurement, not by taste: over 256 unit vectors of the real width, 18 of 20 queries
+-- rank differently in float16 (tests/test_clip_embeddings.py). The reordered pairs are
+-- always within 3e-5 of a cosine of each other, but the ranking is what every consumer of
+-- this table reads, so it is stored at the precision the encoder produced.
+--
+-- Population: canonical photographs, the same as `frame_quality` and for the F120 reason
+-- — the embedding of a screenshot is noise in a search over personal photos. A frame CLIP
+-- was never run on (a heuristics-only run) has no row: NULL does not happen here, the row
+-- simply is not there.
+CREATE TABLE IF NOT EXISTS clip_embeddings (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),
+    model TEXT NOT NULL,                  -- "<open_clip model>/<weights>" — see above
+    dim INTEGER NOT NULL,                 -- numbers in `vec` (768 for ViT-L-14)
+    vec BLOB NOT NULL,                    -- dim x float32, little-endian, L2-normalized
     updated_at TEXT NOT NULL
 );
 

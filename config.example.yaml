@@ -326,6 +326,16 @@ features:
   # < 160: 1215 — on a 19 757-photo collection). So the list opens here and continues on
   # demand, and nothing is ever deleted by this number.
   blur_review_max: 90.0
+  # F128: keep the CLIP vector of every canonical photograph (table `clip_embeddings`)
+  # instead of throwing it away once its three scores have been read off. Nothing is shown
+  # for it — it is what lets a later feature (search by words, an album from a query,
+  # "frames like this one") work without a fresh CLIP pass over the whole collection.
+  # ON by default: ~60 MB per 20 000 photos, written inside a pass that runs anyway.
+  # Turn it off on very large collections — 300 000 photos are ~920 MB. Vectors are stored
+  # L2-normalized in float32 together with the model that produced them; change
+  # naming.clip.model or naming.clip.pretrained and the stored rows are recomputed rather
+  # than used, because vectors of different models are not comparable.
+  store_embeddings: true
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

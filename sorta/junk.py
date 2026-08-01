@@ -188,6 +188,31 @@ The quality half keeps its OWN incrementality marker (`frame_quality.source`), b
 two halves go stale independently: switching `features.pets` on does not change a single
 junk verdict, and a collection classified before this feature existed has no quality rows
 at all.
+
+F128: the CLIP vector this stage computes for every frame it looks at is now KEPT
+(`clip_embeddings`), where it used to be read for three scores and dropped. Nothing is
+shown for it — the value is that the next feature of that class (search by words, an album
+from a query, scene clustering, "frames like this one") reads a table instead of paying
+for a full CLIP pass over the collection.
+
+It is deliberately not a fourth pass over anything: the vector comes out of the caching
+classifier that has just scored the chunk (`landmarks.CachingFeatureClassifier.features`),
+so the number of model calls a run makes is exactly what it was. Three properties of the
+row carry the reasoning, and the schema comment states them once more:
+
+* `model` is written always. Vectors of different models are not comparable, so a row
+  whose model differs from the current config is RECOMPUTED, never used — the same rule
+  the F120 prompt fingerprint applies to the quality answers.
+* the vector is stored L2-normalized in float32, little-endian. Normalized so cosine
+  similarity is a plain dot product for every consumer. float32 is a MEASURED decision and
+  not the obvious one: half precision would halve a table that reaches 920 MB at 300 000
+  photos, so the brief proposed it and made it conditional on the ranking surviving. It
+  does not — over 256 unit vectors of the real width, 18 of 20 queries come back in a
+  different order in float16 (tests/test_clip_embeddings.py keeps that measurement) — and
+  the pre-committed answer to that was float32 rather than a softer test.
+* the population is the one `frame_quality` has, by the F120 argument — the embedding of a
+  screenshot or a product shot is noise in a search over personal photographs — and this
+  half, like the other two, keeps its own incrementality marker (`clip_embeddings.model`).
 """
 from __future__ import annotations
 
@@ -217,6 +242,7 @@ from .landmarks import Classifier, batched, clip_classifier
 from .naming import (
     DEFAULT_VLM_MODEL,
     VLM_MAX_EDGE,
+    NamingSettings,
     SplitVlm,
     naming_settings,
     shared_vlm,
@@ -1610,6 +1636,186 @@ class _PhaseProgress:
             self._progress(done, self._total)
 
 
+# --- F128: the CLIP vector, kept ----------------------------------------------------
+
+# The stored element type, and it is part of the file format rather than a local choice:
+# a reader on another machine has to get back the numbers this machine wrote, so the byte
+# order is spelled out instead of left to the platform.
+#
+# float32 AND NOT float16, which is what the brief proposed for the size. The brief also
+# made the format conditional on a measurement — half precision "has to be checked, not
+# taken on trust" — and the measurement (tests/test_clip_embeddings.py) says it does not
+# hold: over 256 unit vectors of the real width, 18 of 20 queries come back in a different
+# order in float16, and at 2 000 vectors all 20 do. The reordering is small in score
+# (max |delta| 3e-5 of a cosine) and it is always a pair the format cannot tell apart, but
+# the rule was pre-committed for exactly this outcome, so it is followed rather than argued
+# with: float32 stores the encoder's own numbers and reproduces its ranking exactly.
+# The price is the table, doubled — ~60 MB per 20 000 photos instead of ~30, ~920 MB at
+# 300 000 instead of ~460. Same wire format as `faces.embedding`, which is little-endian
+# float32 for the same reason.
+_EMBEDDING_DTYPE = np.dtype("<f4")
+
+# paths -> the image feature of each path, in the same order; None where the frame did not
+# encode. The real source is `landmarks.CachingFeatureClassifier.features` — the cache the
+# scoring call has just filled, NOT a second encode, which is the whole economy of this
+# feature. A classifier without such a method (a plain function in a test) simply hands
+# back nothing and no vector is stored.
+FeatureSource = Callable[[list[str]], list[np.ndarray | None]]
+
+_EMBEDDING_UPSERT = """INSERT INTO clip_embeddings (file_id, model, dim, vec, updated_at)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(file_id) DO UPDATE SET
+                           model = excluded.model, dim = excluded.dim,
+                           vec = excluded.vec, updated_at = excluded.updated_at"""
+
+
+def embedding_model(s: NamingSettings) -> str:
+    """What produced a vector: the open_clip model AND its weights, as one name.
+
+    The weights belong in the name as much as the architecture does — the same
+    `ViT-L-14-quickgelu` loaded with `openai` and with a laion checkpoint produces two
+    incomparable spaces, and a row that recorded only the architecture would let them mix
+    silently. A mismatch means recompute; see `read_clip_embeddings` for the reading side.
+    """
+    return f"{s.clip_model}/{s.clip_pretrained}"
+
+
+def pack_embedding(vec: np.ndarray) -> bytes:
+    """A CLIP feature -> the stored blob: L2-normalized, float32, little-endian.
+
+    Normalizing HERE and not in every consumer is the point of doing it at all: with unit
+    vectors cosine similarity is a dot product, so a search does one matmul and no
+    per-query normalization. The encoder already returns unit vectors, and this does it
+    again anyway — the cost is a norm over 768 numbers and the guarantee is worth more than
+    the trust. A zero vector (no direction to preserve) is stored as it is rather than
+    divided by zero; it can only come from a caller that made one up.
+    """
+    v = np.asarray(vec, dtype=np.float32).ravel()
+    norm = float(np.linalg.norm(v))
+    if norm > 0:
+        v = v / norm
+    return v.astype(_EMBEDDING_DTYPE).tobytes()
+
+
+def unpack_embedding(blob: bytes) -> np.ndarray:
+    """The stored blob -> a float32 vector, ready to be dotted with another one.
+
+    A copy rather than the buffer itself: `np.frombuffer` gives a read-only view over
+    memory that belongs to the sqlite row, and a consumer that stacks a few thousand of
+    those has no reason to care which of them may be written to.
+    """
+    return np.frombuffer(blob, dtype=_EMBEDDING_DTYPE).astype(np.float32)
+
+
+def read_clip_embeddings(conn: sqlite3.Connection, model: str,
+                         file_ids: Sequence[int] | None = None,
+                         ) -> dict[int, np.ndarray]:
+    """Stored vectors OF THIS MODEL by file_id — the model filter is not optional.
+
+    A consumer that read every row regardless of `model` would mix two incomparable
+    spaces and return plausible nonsense that nothing in the output marks as wrong, so the
+    filter lives here, in the one function that reads the table, rather than in each
+    caller. Rows of another model are absent from the result exactly like frames that were
+    never encoded — and the stage recomputes them on its next run.
+
+    Chunked over `file_ids` for the reason `read_frame_quality` gives: asking about a whole
+    collection is the expected case and SQLite has a ceiling on bound parameters.
+    """
+    sql = "SELECT file_id, vec FROM clip_embeddings WHERE model = ?"
+
+    def rows(cursor: sqlite3.Cursor) -> dict[int, np.ndarray]:
+        return {int(r["file_id"]): unpack_embedding(r["vec"]) for r in cursor}
+
+    if file_ids is None:
+        return rows(conn.execute(sql, (model,)))
+    out: dict[int, np.ndarray] = {}
+    for part in batched(list(file_ids), 500):
+        out.update(rows(conn.execute(
+            f"{sql} AND file_id IN ({','.join('?' * len(part))})",
+            (model, *part))))
+    return out
+
+
+class _EmbeddingPass:
+    """The F128 half of `classify`: keep the vector the stage has already paid for.
+
+    Owns the same three things the quality half owns and nothing more: which frames want a
+    vector this run (its own incrementality, on `clip_embeddings.model`), where the vector
+    comes from (the classifier's cache, never a new encode), and the rule that only a
+    personal photograph gets a row. It writes on the caller's thread inside the caller's
+    transaction — SQLite stays single-writer, as everywhere in this stage.
+
+    Staleness is the MODEL and only the model. That is what makes a stored vector unusable
+    rather than merely old, and it is the one thing a row can be checked against without a
+    column that repeats what `files` already knows; a frame whose content changed is
+    revisited by the same rule that has it reclassified, and re-encoding it then costs the
+    one CLIP call the stage was making anyway.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, model: str, ids: set[int],
+                 source: FeatureSource | None, now: str, stats: JunkStats,
+                 enabled: bool) -> None:
+        self._conn = conn
+        self._model = model
+        self._ids = ids
+        self._source = source
+        self._now = now
+        self._stats = stats
+        self._enabled = enabled
+
+    def wanted(self, file_id: int) -> bool:
+        """Does this frame want a vector in this run? (its own incrementality)"""
+        return file_id in self._ids
+
+    def needs_clip(self) -> bool:
+        """Does this half need the CLIP row of a frame at all? — only if it has work."""
+        return bool(self._ids)
+
+    def vectors(self, paths: list[str]) -> list[np.ndarray | None]:
+        """The features of the paths just scored, from the classifier's cache."""
+        if self._source is None:
+            return [None] * len(paths)
+        return self._source(paths)
+
+    def store(self, file_id: int, vec: np.ndarray | None, verdict: str | None) -> None:
+        """Write the vector of one frame — or drop the row this frame must not have.
+
+        Two things leave a frame without a row, and neither is a NULL: a verdict that is
+        not a personal photograph (F120 — the embedding of a screenshot is noise in a
+        search over personal photos, and a row a previous run left is removed), and a frame
+        that did not encode at all.
+
+        A frame that did not encode is therefore selected again by every later run. That is
+        the accepted price of "no row rather than a NULL row": the alternative is a marker
+        row saying "this one is hopeless", which is a claim about a file that may simply
+        have been on a disconnected drive. The retry costs one decode attempt on a file the
+        stage is already walking, and only for files that are actually broken.
+        """
+        if verdict is not None and verdict != QUALITY_VERDICT:
+            self._conn.execute(
+                "DELETE FROM clip_embeddings WHERE file_id = ?", (file_id,))
+            return
+        if vec is None:
+            return
+        self._conn.execute(_EMBEDDING_UPSERT, (file_id, self._model, int(np.size(vec)),
+                                               pack_embedding(vec), self._now))
+        self._stats.embeddings_stored += 1
+
+    def purge(self) -> None:
+        """Drop the rows of everything this run decided is not a personal photograph.
+
+        The same statement, and for the same reason, as the `frame_quality` purge below
+        it: incrementality skips a frame whose row already looks current, so a collection
+        embedded before this rule would keep its screenshots PRECISELY because they are up
+        to date, and the deep tier reclassifies frames after the fast pass wrote them.
+        """
+        if not self._enabled:
+            return  # `features.store_embeddings` off: the table is not this run's business
+        self._conn.execute(
+            "DELETE FROM clip_embeddings WHERE file_id IN"
+            " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
+
+
 @dataclass
 class JunkStats:
     total: int = 0        # canonical photos in total
@@ -1630,6 +1836,9 @@ class JunkStats:
     pets_found: int = 0
     quality_candidates: int = 0
     quality_answered: int = 0
+    # F128: vectors written into `clip_embeddings` in this run. On a repeated run it is 0
+    # and the table is unchanged — the observable sign that this half is incremental too.
+    embeddings_stored: int = 0
 
 
 class _QualityPass:
@@ -1810,6 +2019,13 @@ def classify(
     factory that raises leaves the cheap tiers running. All three are injectable for the
     same reason `classifier`/`text_detector` are: the suite must not load a model.
 
+    F128: the CLIP vector of every canonical photograph is stored in `clip_embeddings`
+    (`features.store_embeddings`, on by default). No parameter of its own: the vector is
+    taken from the classifier that has just scored the chunk — a `features(paths)` method
+    over its cache, which the real one (landmarks.CachingFeatureClassifier) has — so a
+    classifier injected as a plain function stores nothing, logs why once, and changes no
+    other behaviour of the stage.
+
     progress (F100): the usual `(done, total)` callback; if it also carries a
     `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
     which of its phases it is in — CLASSIFY_PHASE_*. A plain function without that
@@ -1823,9 +2039,11 @@ def classify(
                          WHERE fa.file_id = f.id AND fa.bbox != '[]') AS has_faces,
                   mc.source AS mc_source, mc.tier AS mc_tier,
                   mc.verdict AS mc_verdict,
-                  fq.source AS fq_source
+                  fq.source AS fq_source,
+                  ce.model AS ce_model
            FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
                         LEFT JOIN frame_quality fq ON fq.file_id = f.id
+                        LEFT JOIN clip_embeddings ce ON ce.file_id = f.id
            WHERE f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'
            ORDER BY f.id"""
     ).fetchall()
@@ -1893,7 +2111,30 @@ def classify(
                     if r["fq_source"] != quality_source
                     and r["mc_verdict"] in (None, QUALITY_VERDICT)}
                    if use_clip else set())
-    work = [r for r in rows if r["id"] in junk_ids or r["id"] in quality_ids]
+    # F128: and the third half, with a marker of its own again — `clip_embeddings.model`.
+    # A vector is stale when it was computed by another model, which is the only way a
+    # stored vector becomes unusable rather than merely old. The population is the quality
+    # half's, selected the same way and for the same F120 reason, with the same one-run lag
+    # on a frame whose class changes. A heuristics-only run asks CLIP nothing, so there is
+    # no vector to keep and no row is touched.
+    store_embeddings = bool(getattr(
+        getattr(cfg, "features", None) or FeaturesConfig(), "store_embeddings", True))
+    embed_model = embedding_model(s)
+    # Whether this run can produce a vector at all, decided BEFORE any frame is selected
+    # for one. The real classifier hands its cache back (`features`, see
+    # landmarks.CachingFeatureClassifier) and so does one built below; an injected plain
+    # function — every mock in the suite, a caller with a scorer of its own — cannot, and
+    # then this half is simply off. Selecting frames it could never write would send them
+    # to CLIP for nothing and leave them selected again on the next run.
+    features_of = getattr(classifier, "features", None) if classifier is not None else None
+    feature_source: FeatureSource | None = features_of if callable(features_of) else None
+    can_embed = classifier is None or feature_source is not None
+    embed_ids = ({r["id"] for r in rows
+                  if r["ce_model"] != embed_model
+                  and r["mc_verdict"] in (None, QUALITY_VERDICT)}
+                 if use_clip and store_embeddings and can_embed else set())
+    work = [r for r in rows
+            if r["id"] in junk_ids or r["id"] in quality_ids or r["id"] in embed_ids]
     # `processed`/`skipped_incremental` keep counting CLASSIFICATION, not the walk: they
     # are printed by the CLI and the web app as "how much of the collection was
     # reclassified", and a frame that was only measured for sharpness was not. What the
@@ -1948,12 +2189,26 @@ def classify(
     # junk classification is already current, on its first run after the frame_quality
     # table appeared, with both toggles off: only laplacians are missing. Loading a CLIP
     # model to compute those would be the whole cost of the stage for no question asked.
-    needs_model = bool(junk_ids) or quality.needs_clip()
+    needs_model = bool(junk_ids) or quality.needs_clip() or bool(embed_ids)
     if classifier is None:
         if needs_model:
             classifier = clip_classifier(s)  # pragma: no cover — ML, smoke test
         else:
             classifier = _unused_classifier
+    # F128: the vectors come out of the classifier that has just been resolved — the cache
+    # of `landmarks.CachingFeatureClassifier`, which is what makes this half free. A
+    # classifier BUILT here without that method could only be a future regression of
+    # clip_classifier, so it is logged rather than passed over: the table would otherwise
+    # stay empty for a reason nobody could see.
+    if embed_ids and feature_source is None:
+        features_of = getattr(classifier, "features", None)
+        feature_source = features_of if callable(features_of) else None
+        if feature_source is None:
+            _log.warning(
+                "junk: классификатор не отдаёт CLIP-векторы — features.store_embeddings "
+                "включён, но таблица clip_embeddings не наполняется")
+    embeddings = _EmbeddingPass(conn, embed_model, embed_ids, feature_source, now, stats,
+                                store_embeddings)
     # F73: the OCR pool — K worker threads, one own detector each, built lazily on
     # first use and reused for the whole run (see _OcrPool). The detector itself is no
     # longer built here: a run where the gate opens for nothing loads no model at all.
@@ -1994,11 +2249,22 @@ def classify(
                 junk_idx = [i for i, r in enumerate(chunk) if r["id"] in junk_ids]
                 clip_idx = sorted(set(junk_idx) | (
                     {i for i, r in enumerate(chunk) if quality.wanted(r["id"])}
-                    if quality.needs_clip() else set()))
+                    if quality.needs_clip() else set()) | (
+                    # F128: a frame whose vector is missing or was computed by another
+                    # model needs the same one call — not one of its own.
+                    {i for i, r in enumerate(chunk) if embeddings.wanted(r["id"])}
+                    if embeddings.needs_clip() else set()))
                 probs: dict[int, np.ndarray] = {}
+                vecs: dict[int, np.ndarray | None] = {}
                 if clip_idx:
-                    rows_probs = classifier([paths[i] for i in clip_idx], prompts)
+                    clip_paths = [paths[i] for i in clip_idx]
+                    rows_probs = classifier(clip_paths, prompts)
                     probs = {i: rows_probs[k] for k, i in enumerate(clip_idx)}
+                    if embeddings.needs_clip():
+                        # F128: the vectors of the very call above, out of its cache —
+                        # asked for right after it, while the chunk is still there.
+                        vecs = {i: v for i, v in
+                                zip(clip_idx, embeddings.vectors(clip_paths))}
                 # F15: document-CLIP only for files without detected faces —
                 # faces are an unconditional veto, a second pass for them is unneeded.
                 noface_idx = [i for i in junk_idx if not chunk[i]["has_faces"]]
@@ -2084,6 +2350,10 @@ def classify(
                     if quality.wanted(r["id"]):
                         quality.measure(r["id"], r["path"], probs.get(i), verdict,
                                         bool(r["has_faces"]))
+                    # F128: and the vector of the same frame, kept instead of dropped —
+                    # under the same verdict, so a screenshot gets no row here either.
+                    if embeddings.wanted(r["id"]):
+                        embeddings.store(r["id"], vecs.get(i), verdict)
                 done += len(chunk)
                 report.step(done)
     finally:
@@ -2156,4 +2426,8 @@ def classify(
         conn.execute(
             "DELETE FROM frame_quality WHERE file_id IN"
             " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
+        # F128: the same rule over the same population, for the same reason (see
+        # _EmbeddingPass.purge) — and after the deep tier, whose reclassifications it has
+        # to see.
+        embeddings.purge()
     return stats

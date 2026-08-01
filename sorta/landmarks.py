@@ -203,6 +203,17 @@ class CachingFeatureClassifier:
     score: FeatureScorer
     _cache: dict[str, np.ndarray] = field(default_factory=dict, init=False)
 
+    def features(self, paths: list[str]) -> list[np.ndarray | None]:
+        """The features ALREADY computed for `paths` — the cache, never a new encode.
+
+        F128: the junk stage stores the vector it has just paid for, and the whole point
+        of storing it is that no extra pass is run for it — so this hands back what the
+        preceding `__call__` put in the cache and nothing else. A path that is not there
+        (it did not decode, or nobody has scored it yet) is None, the same "no signal" a
+        zero row means on the scoring side.
+        """
+        return [self._cache.get(p) for p in paths]
+
     def __call__(self, paths: list[str], prompts: list[str]) -> np.ndarray:
         missing = [p for p in paths if p not in self._cache]
         if missing:
