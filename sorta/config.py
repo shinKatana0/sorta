@@ -185,7 +185,13 @@ def default_vlm_workers() -> int:
 # F113: the scopes `vlm.quality_scope` accepts — which frames the quality VLM may be
 # asked about at all, on top of the uncertainty band. `all` is the expensive one and says
 # so in config.example.yaml (0.78 s per frame is 4.3 hours on a 20k collection).
-VLM_QUALITY_SCOPES = ("groups", "events", "all")
+#
+# F125: `faces` — the frames a face was actually FOUND on. Measured on the live
+# collection: 7 341 photographs against 19 757 for `all`, so ~95 minutes instead of 4.3
+# hours, and the frames it drops are the ones where "are the eyes open" has no meaning
+# anyway. It is a HARD dependency and not a filter: without a `faces` run the population
+# is empty and the quality VLM does not run at all (see junk.quality_scope_ready).
+VLM_QUALITY_SCOPES = ("groups", "events", "faces", "all")
 
 # F120: the media classes a frame can be excluded by before any VLM sees it. These are
 # the `media_class.verdict` values; `photo` is deliberately absent — excluding personal
@@ -227,7 +233,10 @@ class VlmConfig:
     quality: bool = False
     # Which frames the quality VLM may be asked about (the uncertainty band narrows this
     # further). groups — frames of pHash near-duplicate groups (the default: that is
-    # where "which of these five is the good one" is actually asked), events, all.
+    # where "which of these five is the good one" is actually asked), events, faces
+    # (F125: the frames with a detected face), all. The default does NOT move with F125:
+    # which population a collection wants is the user's call, not a side effect of a new
+    # value appearing in the list.
     quality_scope: str = "groups"
     # F120: privacy — media classes no VLM is ever shown, by verdict of the fast tier.
     # Empty tuple = send everything, which is what happened before this key existed.
