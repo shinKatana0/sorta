@@ -274,6 +274,58 @@ class TestTheArgparseFallbackIsLocalizedToo(_HelpCase):
         built.assert_called_once_with()
 
 
+class TestTheFlagsOfTheParityFeatureAreDocumented(_HelpCase):
+    """F127: the new flags are help texts like any other, so the F114 watchdog widens
+    to the commands that grew them — a key missing a language would otherwise reach the
+    terminal as the key itself (`cli_text` falls back to it) and nothing would fail."""
+
+    CHANGED = ("junk", "run", "cache", "album")
+
+    def help_in(self, command: str, lang: str) -> str:
+        result = self.help_for([command, "--config", str(self.config(lang)), "--help"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        return flat(result.output)
+
+    def test_every_changed_command_renders_in_three_languages(self):
+        for command in self.CHANGED:
+            printed = {lang: self.help_in(command, lang) for lang in _LANGS}
+            for lang, text in printed.items():
+                with self.subTest(command=command, lang=lang):
+                    self.assertNotIn("cli.help.", text)  # no key came through raw
+            with self.subTest(command=command):
+                self.assertEqual(len(set(printed.values())), 3)
+
+    def test_the_new_flags_are_listed_by_the_commands_that_take_them(self):
+        expected = {
+            "junk": ("--pets", "--no-pets", "--quality", "--no-quality",
+                     "--quality-scope"),
+            "run": ("--pets", "--no-pets", "--quality", "--no-quality",
+                    "--quality-scope"),
+            "cache": ("--preview-max-gb",),
+        }
+        for command, flags in expected.items():
+            for lang in _LANGS:
+                text = self.help_in(command, lang)
+                for flag in flags:
+                    with self.subTest(command=command, lang=lang, flag=flag):
+                        self.assertIn(flag, text)
+
+    def test_the_scope_help_names_the_price_in_every_language(self):
+        """Requirement 2.3: whoever picks a scope sees the bill in the help, instead of
+        finding it out from a four-hour run."""
+        for lang, hours in (("ru", "4,3"), ("en", "4.3"), ("ja", "4.3")):
+            text = self.help_in("junk", lang)
+            with self.subTest(lang=lang):
+                for needle in ("groups", "events", "faces", "all", hours, "95",
+                               "7 341"):
+                    self.assertIn(needle, text)
+
+    def test_the_album_help_mentions_the_animal_kind(self):
+        for lang in _LANGS:
+            with self.subTest(lang=lang):
+                self.assertIn("animal", self.help_in("album", lang))
+
+
 class TestRussianHelpIsUnchanged(unittest.TestCase):
     """Golden, as in test_cli_i18n.py: the `ru` variants ARE the texts cli.py carried
     before F114. A run with `language: ru` has to print the help it printed yesterday,
