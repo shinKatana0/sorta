@@ -392,6 +392,15 @@ no need to restart `sorta ui`** — the next run reads the new one. What lives t
   into the config for good.
 - **Model**, **Preparation threads**, **Frame resolution, px** — `vlm.model`,
   `vlm.workers`, `vlm.max_edge`.
+- **Frame quality** — the whole F113 set, off by default: **Ask the model about
+  quality** (`vlm.quality`) and **Which frames to ask about** (`vlm.quality_scope` — a
+  dropdown, because “Every frame” costs about 4 hours over a 20 000-frame collection
+  and landing on it through a typo is expensive); **Look for animals**
+  (`features.pets`) with its `features.pet_threshold`; the **“There is a subject”
+  threshold** (`features.subject_score_min`); and the bounds of the sharpness
+  uncertainty band (`features.sharpness_band_min` / `features.sharpness_band_max`)
+  with the frame size it is measured on (`features.sharpness_max_edge`).
+- **Preview cache ceiling, GB** — `imaging.preview_cache_max_gb` (§18).
 - **Folders → folder‑name language** — `language`. The plan below is recomputed
   immediately, with no restart.
 

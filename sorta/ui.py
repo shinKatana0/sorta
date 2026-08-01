@@ -272,7 +272,7 @@ from urllib.parse import parse_qs, urlsplit
 from send2trash import send2trash as send_to_trash
 
 from . import db, faces, i18n, imaging
-from .config import Config, save_language, save_setting
+from .config import VLM_QUALITY_SCOPES, Config, save_language, save_setting
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
@@ -2794,10 +2794,16 @@ def _validate_language_payload(payload: object) -> str | None:
 
 @dataclasses.dataclass(frozen=True)
 class _SettingSpec:
-    """What a settings key accepts. `minimum`/`maximum` apply to `kind="int"` only."""
-    kind: str  # bool | str | int
-    minimum: int = 0
-    maximum: int = 0
+    """What a settings key accepts.
+
+    `minimum`/`maximum` apply to `kind` of "int" and "float"; `choices` to "choice",
+    which is a string restricted to a fixed set (a select in the form, not a text box —
+    a scope the server would refuse is not worth offering).
+    """
+    kind: str  # bool | str | int | float | choice
+    minimum: float = 0
+    maximum: float = 0
+    choices: tuple[str, ...] = ()
 
 
 # The bounds are sanity rails, not tuning advice: 0 threads or a 4-pixel frame is a
@@ -2810,15 +2816,28 @@ _SETTINGS_SPEC: dict[str, _SettingSpec] = {
     "vlm.model": _SettingSpec("str"),
     "vlm.workers": _SettingSpec("int", 1, 32),
     "vlm.max_edge": _SettingSpec("int", 128, 4096),
+    # F119: the F113 frame-quality cascade. It landed in the config and never reached
+    # this column, so the only way to switch it on was editing config.yaml — the very
+    # thing the column exists to avoid.
+    "vlm.quality": _SettingSpec("bool"),
+    "vlm.quality_scope": _SettingSpec("choice", choices=VLM_QUALITY_SCOPES),
+    "features.pets": _SettingSpec("bool"),
+    "features.pet_threshold": _SettingSpec("float", 0.0, 1.0),
+    "features.sharpness_max_edge": _SettingSpec("int", 64, 4096),
+    "features.sharpness_band_min": _SettingSpec("float", 0.0, 10000.0),
+    "features.sharpness_band_max": _SettingSpec("float", 0.0, 10000.0),
+    "features.subject_score_min": _SettingSpec("float", 0.0, 1.0),
     # F117: the preview-cache ceiling in GB. 0 is a legal value and the default — it
     # means "no ceiling", the behaviour since F67, so the minimum cannot be 1. The
     # upper rail is a typo guard: nobody caps a preview cache at four terabytes.
     "imaging.preview_cache_max_gb": _SettingSpec("int", 0, 4096),
 }
 
-# The one settings key that is not a field of a config dataclass: `imaging:` is applied
-# to the environment (see config._IMAGING_ENV — imaging.py is a leaf module that pool
-# workers call with a path and nothing else), so applying it means setting the variable.
+# Which config object each section's keys live on. `imaging:` is the exception and maps
+# to the environment instead (config._IMAGING_ENV — imaging.py is a leaf module that
+# pool workers call with a path and nothing else), so applying it means setting the
+# variable rather than replacing a dataclass field.
+_SETTING_SECTIONS = ("vlm", "features")
 _IMAGING_SETTING_ENV = {
     "imaging.preview_cache_max_gb": imaging.ENV_PREVIEW_MAX_GB,
 }
@@ -2826,11 +2845,12 @@ _IMAGING_SETTING_ENV = {
 
 def _settings_payload(cfg: Config) -> dict:
     """`GET /api/settings` — the current values, straight out of the RUNNING config."""
+    values = {
+        key: getattr(getattr(cfg, key.split(".", 1)[0]), key.split(".", 1)[1])
+        for key in _SETTINGS_SPEC if key.split(".", 1)[0] in _SETTING_SECTIONS
+    }
     return {
-        "vlm.enabled": cfg.vlm.enabled,
-        "vlm.model": cfg.vlm.model,
-        "vlm.workers": cfg.vlm.workers,
-        "vlm.max_edge": cfg.vlm.max_edge,
+        **values,
         # Read through imaging, not off cfg: the environment is the source of truth for
         # this one, and a shell export legitimately overrides the file.
         "imaging.preview_cache_max_gb": int(imaging.preview_cache_max_gb()),
@@ -2860,6 +2880,21 @@ def _validate_settings_payload(payload: object) -> dict[str, object] | None:
             if not isinstance(raw, str) or not raw.strip():
                 return None
             values[key] = raw.strip()
+        elif spec.kind == "choice":
+            # F119: a fixed set, so a misspelling is a 400 rather than a silent
+            # fallback. `vlm.quality_scope` is the one where that matters: `all` is the
+            # 4.3-hour option, and drifting into it by accident is expensive.
+            if not isinstance(raw, str) or raw not in spec.choices:
+                return None
+            values[key] = raw
+        elif spec.kind == "float":
+            # bool is an int is not a float here either; ints are accepted and widened,
+            # because a form posting `1` for a threshold of 1.0 is not an error.
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                return None
+            if not spec.minimum <= float(raw) <= spec.maximum:
+                return None
+            values[key] = float(raw)
         else:
             # bool is an int in Python — `workers: true` is garbage, not 1.
             if isinstance(raw, bool) or not isinstance(raw, int):
@@ -2889,25 +2924,34 @@ def _apply_settings(cfg: Config, values: dict[str, object]) -> None:
             section = {}
             cfg.raw["imaging"] = section
         section[fields[key]] = values[key]
-    vlm_values = {k: v for k, v in values.items() if k not in _IMAGING_SETTING_ENV}
-    if not vlm_values:
-        return
-    # The values were type-checked one by one against _SETTINGS_SPEC, which mypy cannot
-    # follow through a dict[str, object] — the cast says so rather than widening the
-    # spec into something the validator would have to trust the caller about.
-    changed: Any = {fields[key]: value for key, value in vlm_values.items()}
-    cfg.vlm = dataclasses.replace(cfg.vlm, **changed)
-    # F102: `naming.vlm_enabled`/`classify_vlm_model` are the effective per-run toggle
-    # the junk stage reads, and load_config holds them equal to the `vlm:` section. A
-    # write that skipped this would be a setting that saved and did not apply.
-    cfg.naming = dataclasses.replace(cfg.naming, vlm_enabled=cfg.vlm.enabled,
-                                     classify_vlm_model=cfg.vlm.model)
-    section = cfg.raw.get("vlm")
-    if not isinstance(section, dict):  # `vlm:` absent, or present and left empty
-        section = {}
-        cfg.raw["vlm"] = section
-    for key, value in vlm_values.items():
-        section[fields[key]] = value
+    # F119: one loop per section instead of a hard-coded `cfg.vlm`. `features:` (the
+    # F113 quality cascade) is a second dataclass section and behaves identically —
+    # replace the fields on the running config, then mirror them into cfg.raw so a later
+    # save writes the same values the form is showing.
+    touched_vlm = False
+    for name in _SETTING_SECTIONS:
+        picked = {k: v for k, v in values.items() if k.startswith(f"{name}.")}
+        if not picked:
+            continue
+        touched_vlm = touched_vlm or name == "vlm"
+        # The values were type-checked one by one against _SETTINGS_SPEC, which mypy
+        # cannot follow through a dict[str, object] — the cast says so rather than
+        # widening the spec into something the validator would have to trust.
+        changed: Any = {fields[key]: value for key, value in picked.items()}
+        setattr(cfg, name, dataclasses.replace(getattr(cfg, name), **changed))
+        section = cfg.raw.get(name)
+        if not isinstance(section, dict):  # absent, or present and left empty
+            section = {}
+            cfg.raw[name] = section
+        for key, value in picked.items():
+            section[fields[key]] = value
+    if touched_vlm:
+        # F102: `naming.vlm_enabled`/`classify_vlm_model` are the effective per-run
+        # toggle the junk stage reads, and load_config holds them equal to the `vlm:`
+        # section. A write that skipped this would be a setting that saved and did not
+        # apply.
+        cfg.naming = dataclasses.replace(cfg.naming, vlm_enabled=cfg.vlm.enabled,
+                                         classify_vlm_model=cfg.vlm.model)
 
 
 def _summary_dest(cfg: Config, dest: str | None) -> Path | None:
@@ -3865,6 +3909,110 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "on VRAM, but fine text in a shot becomes harder to make out.",
         "ja": "モデルが見るフレームの長辺。小さいほど高速で VRAM も節約できますが、"
               "写真内の細かい文字は読み取りにくくなります。",
+    },
+    # F119: the F113 quality cascade. Each signal is taken by the cheapest instrument
+    # that answers it, and the hints say which — a person deciding whether to switch
+    # something on needs to know what it will cost, not only what it does.
+    "settings_quality_title": {
+        "ru": "Качество кадра", "en": "Frame quality", "ja": "コマの品質",
+    },
+    "settings_quality_hint": {
+        "ru": "Необязательные признаки: помогают выбрать лучший кадр из серии и найти "
+              "случайные снимки. Всё выключено по умолчанию и считается только на "
+              "прогоне.",
+        "en": "Optional signals: they help pick the best frame of a burst and spot the "
+              "shots nobody meant to take. All off by default and computed during a "
+              "run.",
+        "ja": "任意のシグナル: 連写から最良のコマを選び、意図しない撮影を見つけるのに"
+              "役立ちます。既定はすべて無効で、実行中にのみ計算されます。",
+    },
+    "settings_vlm_quality_label": {
+        "ru": "Спрашивать модель о качестве",
+        "en": "Ask the model about quality",
+        "ja": "品質をモデルに尋ねる",
+    },
+    "settings_vlm_quality_hint": {
+        "ru": "Открыты ли глаза, есть ли осмысленный сюжет, не случаен ли кадр — то, "
+              "чего не определить дешёвыми средствами. Требует включённого VLM выше.",
+        "en": "Whether the eyes are open, whether there is a subject at all, whether "
+              "the shot was an accident — what no cheap tool can answer. Needs the VLM "
+              "switched on above.",
+        "ja": "目が開いているか、被写体があるか、意図しない撮影ではないか — 安価な手段"
+              "では答えられないものです。上の VLM を有効にする必要があります。",
+    },
+    "settings_vlm_quality_scope_label": {
+        "ru": "У каких кадров спрашивать",
+        "en": "Which frames to ask about",
+        "ja": "どのコマについて尋ねるか",
+    },
+    "settings_scope_groups": {
+        "ru": "Группы похожих", "en": "Near-duplicate groups", "ja": "類似のグループ",
+    },
+    "settings_scope_events": {"ru": "События", "en": "Events", "ja": "イベント"},
+    "settings_scope_all": {"ru": "Все кадры", "en": "Every frame", "ja": "すべてのコマ"},
+    "settings_vlm_quality_scope_hint": {
+        "ru": "«Группы похожих» — дёшево и по делу: выбор лучшего из серии. «Все кадры» "
+              "дороже всего: 0,78 с на кадр, то есть около 4 часов на коллекцию в 20 "
+              "тысяч.",
+        "en": "“Near-duplicate groups” is cheap and to the point: the choice of the best "
+              "of a burst. “Every frame” is the expensive one: 0.78 s a frame, about 4 "
+              "hours over a 20 000-frame collection.",
+        "ja": "「類似のグループ」は安価で的を射ています（連写から最良の 1 枚を選ぶ）。"
+              "「すべてのコマ」は最も高価で、1 コマ 0.78 秒 — 2 万枚なら約 4 時間です。",
+    },
+    "settings_features_pets_label": {
+        "ru": "Искать животных", "en": "Look for animals", "ja": "動物を探す",
+    },
+    "settings_features_pets_hint": {
+        "ru": "Это вопрос про ОБЪЕКТ в кадре, поэтому его задают CLIP, а не VLM: через "
+              "модель он стоил бы 4,3 часа, через уже идущий CLIP-проход — минуты.",
+        "en": "This is a question about an OBJECT in the frame, so it goes to CLIP "
+              "rather than the VLM: through the model it would cost 4.3 hours, through "
+              "the CLIP pass that already runs it costs minutes.",
+        "ja": "これはコマの中の**物体**についての問いなので、VLM ではなく CLIP に尋ね"
+              "ます。モデル経由なら 4.3 時間、すでに走っている CLIP パス経由なら数分です。",
+    },
+    "settings_features_pet_threshold_label": {
+        "ru": "Порог уверенности для животных",
+        "en": "Animal confidence threshold",
+        "ja": "動物の信頼度しきい値",
+    },
+    "settings_features_subject_score_min_label": {
+        "ru": "Порог «есть сюжет»",
+        "en": "“There is a subject” threshold",
+        "ja": "「被写体あり」のしきい値",
+    },
+    "settings_features_subject_score_min_hint": {
+        "ru": "Отделяет осознанный снимок от случайного — снятого из кармана или в "
+              "движении.",
+        "en": "What separates a deliberate shot from an accidental one — taken from a "
+              "pocket or on the move.",
+        "ja": "意図した 1 枚と、ポケットの中や移動中の偶発的な撮影とを分けます。",
+    },
+    "settings_features_sharpness_band_min_label": {
+        "ru": "Резкость: нижняя граница",
+        "en": "Sharpness: lower bound",
+        "ja": "鮮鋭度: 下限",
+    },
+    "settings_features_sharpness_band_max_label": {
+        "ru": "Резкость: верхняя граница",
+        "en": "Sharpness: upper bound",
+        "ja": "鮮鋭度: 上限",
+    },
+    "settings_features_sharpness_band_hint": {
+        "ru": "Ниже нижней кадр однозначно смазан, выше верхней — однозначно резкий; "
+              "спрашивать модель незачем ни там, ни там. К модели уходит только полоса "
+              "между ними.",
+        "en": "Below the lower bound a frame is plainly blurred, above the upper one it "
+              "is plainly sharp, and neither is worth asking a model about. Only the "
+              "band between them reaches the model.",
+        "ja": "下限より下は明らかにぶれており、上限より上は明らかに鮮明で、どちらもモデル"
+              "に尋ねる価値はありません。モデルに届くのは、その間の帯だけです。",
+    },
+    "settings_features_sharpness_max_edge_label": {
+        "ru": "Размер кадра для оценки резкости, px",
+        "en": "Frame size for the sharpness measure, px",
+        "ja": "鮮鋭度を測るコマのサイズ (px)",
     },
     # F117: the ceiling belongs in the settings column rather than next to the cache
     # sizes, because it is a stored preference and the numbers next to the buttons are
@@ -5030,6 +5178,31 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <label class="settings-field" for="setting-vlm-max-edge">{{settings_vlm_max_edge_label}}
 <input type="number" id="setting-vlm-max-edge" min="128" max="4096" step="1"></label>
 <span class="process-toggle-hint">{{settings_vlm_max_edge_hint}}</span>
+<div class="settings-head">{{settings_quality_title}}</div>
+<span class="process-toggle-hint">{{settings_quality_hint}}</span>
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="setting-vlm-quality"> {{settings_vlm_quality_label}}</label>
+<span class="process-toggle-hint">{{settings_vlm_quality_hint}}</span>
+</div>
+<label class="settings-field" for="setting-vlm-quality-scope">{{settings_vlm_quality_scope_label}}
+<select id="setting-vlm-quality-scope"><option value="groups">{{settings_scope_groups}}</option><option value="events">{{settings_scope_events}}</option><option value="all">{{settings_scope_all}}</option></select></label>
+<span class="process-toggle-hint">{{settings_vlm_quality_scope_hint}}</span>
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="setting-features-pets"> {{settings_features_pets_label}}</label>
+<span class="process-toggle-hint">{{settings_features_pets_hint}}</span>
+</div>
+<label class="settings-field" for="setting-features-pet-threshold">{{settings_features_pet_threshold_label}}
+<input type="number" id="setting-features-pet-threshold" min="0" max="1" step="0.05"></label>
+<label class="settings-field" for="setting-features-subject-score-min">{{settings_features_subject_score_min_label}}
+<input type="number" id="setting-features-subject-score-min" min="0" max="1" step="0.05"></label>
+<span class="process-toggle-hint">{{settings_features_subject_score_min_hint}}</span>
+<label class="settings-field" for="setting-features-sharpness-band-min">{{settings_features_sharpness_band_min_label}}
+<input type="number" id="setting-features-sharpness-band-min" min="0" max="10000" step="1"></label>
+<label class="settings-field" for="setting-features-sharpness-band-max">{{settings_features_sharpness_band_max_label}}
+<input type="number" id="setting-features-sharpness-band-max" min="0" max="10000" step="1"></label>
+<span class="process-toggle-hint">{{settings_features_sharpness_band_hint}}</span>
+<label class="settings-field" for="setting-features-sharpness-max-edge">{{settings_features_sharpness_max_edge_label}}
+<input type="number" id="setting-features-sharpness-max-edge" min="64" max="4096" step="1"></label>
 <label class="settings-field" for="setting-imaging-preview-cache-max-gb">{{settings_preview_max_gb_label}}
 <input type="number" id="setting-imaging-preview-cache-max-gb" min="0" max="4096" step="1"></label>
 <span class="process-toggle-hint">{{settings_preview_max_gb_hint}}</span>
@@ -5331,6 +5504,16 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     { key: "vlm.model", id: "setting-vlm-model", kind: "text" },
     { key: "vlm.workers", id: "setting-vlm-workers", kind: "int" },
     { key: "vlm.max_edge", id: "setting-vlm-max-edge", kind: "int" },
+    // F119: the F113 quality cascade. `quality_scope` is a select rather than a text
+    // box — `all` is the 4.3-hour option and drifting into it by a typo is expensive.
+    { key: "vlm.quality", id: "setting-vlm-quality", kind: "bool" },
+    { key: "vlm.quality_scope", id: "setting-vlm-quality-scope", kind: "text" },
+    { key: "features.pets", id: "setting-features-pets", kind: "bool" },
+    { key: "features.pet_threshold", id: "setting-features-pet-threshold", kind: "float" },
+    { key: "features.sharpness_max_edge", id: "setting-features-sharpness-max-edge", kind: "int" },
+    { key: "features.sharpness_band_min", id: "setting-features-sharpness-band-min", kind: "float" },
+    { key: "features.sharpness_band_max", id: "setting-features-sharpness-band-max", kind: "float" },
+    { key: "features.subject_score_min", id: "setting-features-subject-score-min", kind: "float" },
     { key: "imaging.preview_cache_max_gb", id: "setting-imaging-preview-cache-max-gb", kind: "int" }
   ];
   var settingsValues = {};
@@ -5359,6 +5542,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       // An empty or non-numeric field is sent AS IS: the server owns the range and
       // answers 400, and one refusal in one place beats two copies of the rule.
       return isNaN(n) ? el.value : n;
+    }
+    if (control.kind === "float") {
+      var f = parseFloat(el.value);
+      return isNaN(f) ? el.value : f;
     }
     return el.value.trim();
   }

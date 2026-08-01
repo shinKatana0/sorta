@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import threading
 import unittest
 import urllib.error
@@ -107,6 +108,16 @@ class TestReadSettings(SettingsTestBase):
             "vlm.model": "some/other-vlm",
             "vlm.workers": 3,
             "vlm.max_edge": 640,
+            # F119: the F113 quality cascade reached the column too. Defaults, because
+            # this case only replaces the four fields above.
+            "vlm.quality": False,
+            "vlm.quality_scope": "groups",
+            "features.pets": False,
+            "features.pet_threshold": 0.6,
+            "features.sharpness_max_edge": 512,
+            "features.sharpness_band_min": 30.0,
+            "features.sharpness_band_max": 300.0,
+            "features.subject_score_min": 0.9,
             # F117: read from the environment rather than from cfg — the ceiling has no
             # dataclass field, and 0 (no ceiling) is its default.
             "imaging.preview_cache_max_gb": 0,
@@ -198,6 +209,59 @@ class TestWriteSettings(SettingsTestBase):
         self.assertEqual(resp["settings"]["imaging.preview_cache_max_gb"], 0)
         self.assertEqual(imaging.preview_cache_max_gb(), 0.0)
 
+    def test_the_quality_cascade_applies_and_persists(self):
+        """F119: `features:` is a second dataclass section, and F113 shipped it without
+        an interface — the only way to switch the cascade on was editing the file."""
+        self.start_server()
+        status, resp = self.post_raw("/api/settings", {
+            "vlm.quality": True,
+            "vlm.quality_scope": "events",
+            "features.pets": True,
+            "features.pet_threshold": 0.75,
+        })
+        self.assertEqual(status, 200)
+        self.assertIs(self.cfg.vlm.quality, True)
+        self.assertEqual(self.cfg.vlm.quality_scope, "events")
+        self.assertIs(self.cfg.features.pets, True)
+        self.assertEqual(self.cfg.features.pet_threshold, 0.75)
+        self.assertIs(self.saved()["vlm"]["quality"], True)
+        self.assertEqual(self.saved()["features"]["pet_threshold"], 0.75)
+        self.assertEqual(resp["settings"]["features.pets"], True)
+
+    def test_a_float_setting_takes_a_whole_number_too(self):
+        """A form posting `1` for a threshold of 1.0 is not an error."""
+        self.start_server()
+        status, _resp = self.post_raw(
+            "/api/settings", {"features.subject_score_min": 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.cfg.features.subject_score_min, 1.0)
+
+    def test_an_unknown_scope_is_refused_rather_than_defaulted(self):
+        """`all` is the 4.3-hour option — drifting into it (or past it) on a typo is
+        expensive, so the set is closed and a miss is a 400."""
+        self.start_server()
+        status, _resp = self.post_raw(
+            "/api/settings", {"vlm.quality_scope": "everything"})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.cfg.vlm.quality_scope, "groups")
+        self.assertNotIn("quality_scope", self.saved().get("vlm", {}))
+
+    def test_a_float_out_of_range_is_refused(self):
+        self.start_server()
+        for value in (-0.1, 1.5):
+            with self.subTest(value=value):
+                status, _resp = self.post_raw(
+                    "/api/settings", {"features.pet_threshold": value})
+                self.assertEqual(status, 400)
+        self.assertEqual(self.cfg.features.pet_threshold, 0.6)
+
+    def test_a_bool_is_not_accepted_as_a_float(self):
+        """`pet_threshold: true` is garbage, not 1.0 — the same rule the int kind has."""
+        self.start_server()
+        status, _resp = self.post_raw(
+            "/api/settings", {"features.pet_threshold": True})
+        self.assertEqual(status, 400)
+
     def test_the_new_value_is_what_a_reload_of_the_config_would_give(self):
         """"Saved" has to mean the next `sorta index` sees it too, not just this tab."""
         self.start_server()
@@ -268,11 +332,29 @@ class TestRejectedValues(SettingsTestBase):
         """The number inputs carry min/max attributes; if they drifted from the
         server's range the user would be refused by a form that offered the value."""
         html = ui._render_index_html("en")
-        spec = ui._SETTINGS_SPEC
-        self.assertIn(f'id="setting-vlm-workers" min="{spec["vlm.workers"].minimum}" '
-                      f'max="{spec["vlm.workers"].maximum}"', html)
-        self.assertIn(f'id="setting-vlm-max-edge" min="{spec["vlm.max_edge"].minimum}" '
-                      f'max="{spec["vlm.max_edge"].maximum}"', html)
+        # Derived from the spec rather than listed: F119 added five more numeric
+        # controls, and a case that names two of them only ever proves that somebody
+        # remembered to extend it. Values are compared as numbers — the form writes
+        # min="0" where the spec holds 0.0, and that is not a drift.
+        for key, spec in ui._SETTINGS_SPEC.items():
+            if spec.kind not in ("int", "float"):
+                continue
+            control = "setting-" + key.replace(".", "-").replace("_", "-")
+            found = re.search(rf'id="{control}" min="([^"]+)" max="([^"]+)"', html)
+            with self.subTest(key=key):
+                self.assertIsNotNone(found, f"{control}: no min/max in the form")
+                assert found is not None  # for mypy; assertIsNotNone already checked
+                self.assertEqual(float(found.group(1)), float(spec.minimum))
+                self.assertEqual(float(found.group(2)), float(spec.maximum))
+
+    def test_the_scope_select_offers_exactly_the_accepted_values(self):
+        """A select that offers a scope the server refuses is worse than no select."""
+        html = ui._render_index_html("en")
+        offered = re.findall(
+            r'<select id="setting-vlm-quality-scope">(.*?)</select>', html, re.S)
+        self.assertEqual(len(offered), 1)
+        self.assertEqual(re.findall(r'value="([^"]+)"', offered[0]),
+                         list(ui._SETTINGS_SPEC["vlm.quality_scope"].choices))
 
 
 class TestRefusedWhileBusy(SettingsTestBase):

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The frame-quality cascade is reachable from the web app** (F119): `vlm.quality`,
+  `vlm.quality_scope` and all six `features.*` keys now have controls in the settings
+  column, applied without a restart like the rest of it. F113 shipped them into the
+  config and F104's column never grew to match, so the only way to switch on the
+  feature was editing `config.yaml` — the exact thing the column exists to avoid. The
+  scope is a **dropdown rather than a text box**: `all` costs about 4 hours over a
+  20 000-frame collection, and landing on it through a typo is expensive. The settings
+  machinery gained two value kinds on the way — `float` (four of these keys are
+  thresholds, and the spec knew only bool/str/int) and `choice`, a string closed to a
+  fixed set so a misspelling is a 400 instead of a silent fallback. `_apply_settings`
+  now loops over sections instead of hard-coding `cfg.vlm`, which is what let
+  `features:` join at all.
 - **A ceiling for the preview cache** (F117): `imaging.preview_cache_max_gb`, reachable
   from `config.yaml`, from `sorta cache` and from the settings column of the web app.
   The cache has had no bound since F67 — it grew until the disk did, and the only

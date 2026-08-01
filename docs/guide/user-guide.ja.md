@@ -390,6 +390,15 @@ sorta ui                       # http://127.0.0.1:8756 でローカルサーバ�
   ます。
 - **モデル**、**前処理スレッド数**、**フレーム解像度 (px)** — `vlm.model`、
   `vlm.workers`、`vlm.max_edge`。
+- **コマの品質** — F113 の一式（既定はすべて無効）: **品質をモデルに尋ねる**
+  (`vlm.quality`) と **どのコマについて尋ねるか** (`vlm.quality_scope` — ドロップ
+  ダウンです。「すべてのコマ」は 2 万枚のコレクションで約 4 時間かかり、打ち間違いで
+  そこへ入ってしまうと高くつくためです); **動物を探す** (`features.pets`) と
+  そのしきい値 `features.pet_threshold`; **「被写体あり」のしきい値**
+  (`features.subject_score_min`); 鮮鋭度の不確かな帯の境界
+  (`features.sharpness_band_min` / `features.sharpness_band_max`) と、それを測る
+  コマのサイズ (`features.sharpness_max_edge`)。
+- **プレビューキャッシュ上限 (GB)** — `imaging.preview_cache_max_gb`（§18）。
 - **フォルダ → フォルダ名の言語** — `language`。下のプランは再起動なしで即座に再計算
   されます。
 
