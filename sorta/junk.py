@@ -306,7 +306,12 @@ _DEFAULT_PRODUCT_CANDIDATE_MIN = 0.4
 _PET_POS_CLASSES: tuple[tuple[str, str], ...] = (
     ("cat", "a photo of a cat"),
     ("dog", "a photo of a dog"),
-    ("pet", "a photo of a pet animal at home"),
+    # F121: was "a photo of a pet animal at home", and it was the worst class of the
+    # three — a review of all 649 of its frames found people and children in it. "At
+    # home" describes a SCENE, so the prompt attracted domestic scenes with a living
+    # being in them rather than animals. Naming the animals instead keeps the class for
+    # what it is for: the pets that are neither a cat nor a dog.
+    ("pet", "a photo of a rabbit, a hamster, a bird, a horse or another animal"),
 )
 # Anti-classes for the pet group — the same device the document and product groups use.
 # Without somewhere for the probability mass of a pet-less frame to go, every photo comes
@@ -321,12 +326,22 @@ _PET_POS_CLASSES: tuple[tuple[str, str], ...] = (
 # than a higher threshold on purpose: a drawn cat is a CONFIDENT cat to CLIP, so no
 # threshold separates it — the probability has to have somewhere else to go.
 _PET_ANTI_CLASSES: tuple[tuple[str, str], ...] = (
-    ("people", "a photo of people, with no animal in it"),
+    # F121: a review of the whole population after the first pass found people and
+    # CHILDREN in the general class, so the people prompt names them.
+    ("people", "a photo of a person, a child or a group of people, with no animal"),
     ("scene", "a photo of a place, a building or an object, with no animal in it"),
     # drawn cats in `cat`
     ("drawing", "a drawing, painting, cartoon or illustration of an animal"),
-    # a plush toy in `dog`, toys in `pet`
-    ("toy", "a photo of a toy animal, a plush animal or a figurine"),
+    # F121: the drawing prompt does not catch these, and it should not — a wallpaper of
+    # a cat IS a photograph of a cat, and CLIP is right about that. The distinction the
+    # collection needs is not "drawn or photographed" but "mine or somebody else's".
+    ("stock", "a wallpaper, a stock photograph, a poster or a magazine picture"),
+    # F121: the "puppies" frame. CLIP reads lettering and believes it over the picture —
+    # the typographic weakness it has been known for since the original paper.
+    ("text", "a picture with large text, a caption or lettering written on it"),
+    # F121: two plush dogs still got through the previous wording; naming the toy as the
+    # SUBJECT of the shot rather than as an adjective is what separates it from an animal.
+    ("toy", "a photo of a stuffed plush toy, a soft toy or a figurine of an animal"),
     # the hotdog in `dog`
     ("food", "a photo of food or a dish on a plate"),
     # game pictures and product shots near the threshold
@@ -1545,7 +1560,7 @@ class _QualityPass:
     def __init__(self, conn: sqlite3.Connection, q: QualitySettings,
                  sharpness: SharpnessFn, ask: QualityAskFn | None,
                  scope_ids: set[int] | None, source: str, ids: set[int],
-                 now: str, stats: JunkStats) -> None:
+                 now: str, stats: JunkStats, faces_known: bool = False) -> None:
         self._conn = conn
         self._q = q
         self._sharpness = sharpness
@@ -1555,10 +1570,17 @@ class _QualityPass:
         self._ids = ids
         self._now = now
         self._stats = stats
-        self._candidates: list[tuple[int, str]] = []
+        # F121: whether the faces stage has EVER run on this index. Without that, "no
+        # face on this frame" and "nobody has looked for one" are the same row, and
+        # dropping the eyes answer on both would silently switch the signal off for
+        # everyone who has not run `faces`.
+        self._faces_known = faces_known
+        # (file_id, path, has_face) — the third field decides whether the eyes answer is
+        # believed for that frame.
+        self._candidates: list[tuple[int, str, bool]] = []
 
     @property
-    def candidates(self) -> list[tuple[int, str]]:
+    def candidates(self) -> list[tuple[int, str, bool]]:
         """Frames of the uncertain band, in file order — the model's whole population."""
         return self._candidates
 
@@ -1576,7 +1598,7 @@ class _QualityPass:
         return self._q.pets or self._ask is not None
 
     def measure(self, file_id: int, path: str, probs_row: np.ndarray | None,
-                verdict: str | None = None) -> None:
+                verdict: str | None = None, has_face: bool = False) -> None:
         """The cheap tiers for one frame: measure, write the row, note the band.
 
         F120: a frame this run decided is NOT a personal photograph is dropped here
@@ -1604,7 +1626,7 @@ class _QualityPass:
         subject = (float(_group_probs(probs_row, _JUNK_GROUP)[0])
                    if probs_row is not None else 0.0)
         if uncertain_band(sharpness, subject, self._q):
-            self._candidates.append((file_id, path))
+            self._candidates.append((file_id, path, has_face))
 
     def ask_model(self, report: _PhaseProgress) -> None:
         """The band, one frame per call — a failure on one frame costs only that frame."""
@@ -1613,7 +1635,7 @@ class _QualityPass:
         self._stats.quality_candidates = len(self._candidates)
         report.start(CLASSIFY_PHASE_VLM, len(self._candidates))
         with self._conn:
-            for i, (file_id, path) in enumerate(self._candidates):
+            for i, (file_id, path, has_face) in enumerate(self._candidates):
                 try:
                     flags = parse_quality_answer(self._ask(path))
                 except Exception as exc:  # noqa: BLE001 — the cheap tiers must survive it
@@ -1621,6 +1643,16 @@ class _QualityPass:
                         "junk: VLM-качество не ответило по file_id=%s (%s) — "
                         "оставляю NULL", file_id, exc)
                     flags = QualityFlags()
+                # F121: the prompt says "use neither word if there are no people" and the
+                # model does not obey it — the first review found cats answered as
+                # eyes_open and people in glasses answered as eyes_closed. The detector
+                # already knows where a face is, so the answer is believed only there:
+                # asking is free (one prompt, three questions, one call), believing is
+                # not. Only when `faces` has actually run — otherwise "no face here" is
+                # indistinguishable from "nobody looked".
+                if self._faces_known and not has_face:
+                    flags = QualityFlags(has_subject=flags.has_subject,
+                                         is_accidental=flags.is_accidental)
                 if flags.known:
                     self._conn.execute(_QUALITY_ANSWER_UPDATE, (
                         _as_int(flags.eyes_open), _as_int(flags.has_subject),
@@ -1783,11 +1815,15 @@ def classify(
     if not work:
         return stats
     now = utcnow_iso()
+    # F121: has the faces stage ever run here? One row is enough to tell — after that,
+    # "this frame has no face" is a fact rather than an absence of evidence.
+    faces_known = bool(conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM faces WHERE bbox != '[]')").fetchone()[0])
     quality = _QualityPass(
         conn, q, sharpness_detector or preview_sharpness_detector(q.sharpness_max_edge),
         quality_ask,
         quality_scope_ids(cfg, conn, q.vlm_scope) if quality_ask is not None else None,
-        quality_source, quality_ids, now, stats)
+        quality_source, quality_ids, now, stats, faces_known)
     # F100: the phase channel of the callback, if it has one. The total is reported
     # right away, even if the stage is small/fast (#37); which phase the stage opens
     # with depends on the tier — a heuristics-only run classifies nothing, it only
@@ -1959,7 +1995,8 @@ def classify(
                     # group when the toggle is on, and the note of which frames the two of
                     # them failed to settle.
                     if quality.wanted(r["id"]):
-                        quality.measure(r["id"], r["path"], probs.get(i), verdict)
+                        quality.measure(r["id"], r["path"], probs.get(i), verdict,
+                                        bool(r["has_faces"]))
                 done += len(chunk)
                 report.step(done)
     finally:
