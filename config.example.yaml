@@ -248,6 +248,17 @@ vlm:
   # tool answers (are the eyes open, is there a subject at all, is this a pocket shot).
   # Its own toggle, separate from `enabled` above: the deep junk tier and the quality
   # band are different populations, and wanting one says nothing about the other.
+  # F120: privacy — media classes no VLM is ever shown, by the verdict of the fast tier.
+  # `[]` sends everything, which is what happened before this key existed.
+  # The default protects `document`: that bucket is passports, medical forms and bank
+  # papers, and the project already refuses to DECODE those for display. The model here
+  # is local and nothing leaves the machine, so this is a weaker act than showing them —
+  # but it is the user's call, and the safe default is the one that asks nothing.
+  # THE COST IS REAL: the deep tier is what CORRECTS a wrong `document` verdict (a beach
+  # photo scored 0.95 as a document on a live run), so an excluded class keeps whatever
+  # the fast tier decided about it. Accepted names: document, product, screenshot, meme.
+  # `photo` is not accepted — excluding it would leave the tier with nothing to do.
+  # exclude_classes: [document]
   quality: false
   # Which frames the quality VLM may be asked about at all — the uncertainty band
   # (features.sharpness_band_* / features.subject_score_min) narrows it further:

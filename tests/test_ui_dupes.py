@@ -61,8 +61,11 @@ class TestApiDupesGet(DupesTestBase):
         self.assertEqual(len(groups), 1)
         frames = groups[0]["frames"]
         self.assertEqual({f["file_id"] for f in frames}, {best, worse})
+        # F120: `sharpness` — the number that decides the recommendation when the whole
+        # group has it, and what the tab shows so the star is not asked to be trusted.
         expected_keys = {"file_id", "name", "thumb_url", "width", "height",
-                         "size", "recommended", "action", "src_dir", "src_path"}
+                         "size", "sharpness", "recommended", "action",
+                         "src_dir", "src_path"}
         for f in frames:
             self.assertEqual(expected_keys, set(f.keys()))
             self.assertEqual(f["thumb_url"], f"/thumb/{f['file_id']}")

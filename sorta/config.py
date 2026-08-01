@@ -187,6 +187,19 @@ def default_vlm_workers() -> int:
 # so in config.example.yaml (0.78 s per frame is 4.3 hours on a 20k collection).
 VLM_QUALITY_SCOPES = ("groups", "events", "all")
 
+# F120: the media classes a frame can be excluded by before any VLM sees it. These are
+# the `media_class.verdict` values; `photo` is deliberately absent — excluding personal
+# photographs would leave the tier with nothing to do.
+VLM_EXCLUDABLE_CLASSES = ("document", "product", "screenshot", "meme")
+# Documents by default: this bucket holds passports, medical forms and bank papers, and
+# the project already refuses to DECODE them for display. Sending them to a model is a
+# weaker act than showing them — the model here is local and nothing leaves the machine
+# — but it is the user's call, not ours, and the safe default is the one that asks
+# nothing. The cost is stated in config.example.yaml and in the guides: the deep tier is
+# what CORRECTS a wrong `document` verdict, so an excluded class keeps whatever the fast
+# tier decided about it.
+DEFAULT_VLM_EXCLUDE_CLASSES = ("document",)
+
 
 @dataclass(frozen=True)
 class VlmConfig:
@@ -216,6 +229,9 @@ class VlmConfig:
     # further). groups — frames of pHash near-duplicate groups (the default: that is
     # where "which of these five is the good one" is actually asked), events, all.
     quality_scope: str = "groups"
+    # F120: privacy — media classes no VLM is ever shown, by verdict of the fast tier.
+    # Empty tuple = send everything, which is what happened before this key existed.
+    exclude_classes: tuple[str, ...] = DEFAULT_VLM_EXCLUDE_CLASSES
 
 
 # F102: the pre-`vlm:` address of each knob. A live config.yaml holds
@@ -332,6 +348,38 @@ def resolve_vlm_workers(raw: dict | None) -> int:
     return _as_positive_int(value, default_vlm_workers())
 
 
+def _as_exclude_classes(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
+    """F120: `vlm.exclude_classes` — a list of media classes, or `[]` to send everything.
+
+    An EMPTY list is a real answer ("show the model everything") and must survive, so
+    absence and emptiness cannot be conflated: only `None`/a non-list falls back to the
+    default. An unknown class name is dropped with a warning rather than taken on faith —
+    a typo there silently sends the very bucket the user meant to protect.
+    """
+    if value is None or isinstance(value, (str, bytes)) or not isinstance(value, list):
+        if value is not None:
+            _log.warning("config: vlm.exclude_classes=%r — ожидался список, "
+                         "использую %r", value, list(default))
+        return default
+    out: list[str] = []
+    for item in value:
+        name = str(item).strip().lower()
+        if name in VLM_EXCLUDABLE_CLASSES:
+            out.append(name)
+        elif name:
+            _log.warning("config: vlm.exclude_classes — неизвестный класс %r, "
+                         "допустимы %s", name, "/".join(VLM_EXCLUDABLE_CLASSES))
+    if value and not out:
+        # Every name was a typo. Falling through to "nothing excluded" here would turn
+        # the protection OFF for someone who was writing it down — the opposite of what
+        # they asked for, and silently. An empty list stays empty; a list of typos does
+        # not become one.
+        _log.warning("config: vlm.exclude_classes — ни одно имя не распознано, "
+                     "использую %r", list(default))
+        return default
+    return tuple(dict.fromkeys(out))
+
+
 def _vlm_from(data: dict) -> VlmConfig:
     """The `vlm:` section of the whole YAML, with the legacy `naming.*` keys honoured."""
     new = _mapping(data.get("vlm"))
@@ -345,6 +393,8 @@ def _vlm_from(data: dict) -> VlmConfig:
         max_edge=_as_positive_int(new.get("max_edge"), d.max_edge),
         quality=_as_bool(new.get("quality"), d.quality),
         quality_scope=_as_scope(new.get("quality_scope"), d.quality_scope),
+        exclude_classes=_as_exclude_classes(new.get("exclude_classes"),
+                                            d.exclude_classes),
     )
 
 

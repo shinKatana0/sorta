@@ -392,14 +392,21 @@ no need to restart `sorta ui`** — the next run reads the new one. What lives t
   into the config for good.
 - **Model**, **Preparation threads**, **Frame resolution, px** — `vlm.model`,
   `vlm.workers`, `vlm.max_edge`.
-- **Frame quality** — the whole F113 set, off by default: **Ask the model about
-  quality** (`vlm.quality`) and **Which frames to ask about** (`vlm.quality_scope` — a
-  dropdown, because “Every frame” costs about 4 hours over a 20 000-frame collection
-  and landing on it through a typo is expensive); **Look for animals**
-  (`features.pets`) with its `features.pet_threshold`; the **“There is a subject”
-  threshold** (`features.subject_score_min`); and the bounds of the sharpness
-  uncertainty band (`features.sharpness_band_min` / `features.sharpness_band_max`)
-  with the frame size it is measured on (`features.sharpness_max_edge`).
+- **Frame quality** — the F113 set, off by default. Grouped by WHAT answers each
+  signal, because that is where the whole difference in cost is:
+  - **No VLM needed** — computed on a pass that runs anyway: **Look for animals**
+    (`features.pets`, threshold `features.pet_threshold`) is answered by **CLIP**, not
+    by the model, and works with deep analysis switched off; `features.sharpness_max_edge`
+    is the preview size for sharpness, and sharpness itself is the variance of a
+    Laplacian — no model at all.
+  - **Through the VLM** — **Ask the model about quality** (`vlm.quality`) and **Which
+    frames to ask about** (`vlm.quality_scope` — a dropdown, because “Every frame” costs
+    about 4 hours over a 20 000-frame collection). Needs `vlm.enabled` and the `vlm`
+    extra.
+  - **Who reaches the model** — the two ways into the expensive part: the sharpness
+    uncertainty band (`features.sharpness_band_min` / `features.sharpness_band_max`) and
+    `features.subject_score_min`, the CLIP probability below which CLIP is saying it does
+    not know what it is looking at.
 - **Preview cache ceiling, GB** — `imaging.preview_cache_max_gb` (§18).
 - **Folders → folder‑name language** — `language`. The plan below is recomputed
   immediately, with no restart.
@@ -1385,6 +1392,7 @@ copy per process, so the settings are shared.
 | `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |
 | `vlm.quality` | A toggle of its own for the questions about a frame's quality: are the eyes open, is there a subject worth keeping, is this an accidental shot. Default `false`. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
 | `vlm.quality_scope` | Who gets asked: `groups` (frames of near-duplicate groups, the default), `events` (plus a sample from every event), `all` (every live photo). On 20 000 frames `all` means hours of GPU, which is why the default is narrow. |
+| `vlm.exclude_classes` | **Privacy:** classes no VLM is ever shown. The default is `[document]` — that bucket holds passports, medical forms and bank papers, and the project already refuses to DECODE them for display. The model is local and nothing leaves the machine, but the call is yours. **The cost is real:** the deep tier is what *corrects* a wrong `document` verdict (a beach photo scored 0.95 as a document on a live run), so an excluded class keeps whatever the fast tier decided. Accepted: `document`, `product`, `screenshot`, `meme`; `[]` shows everything. `photo` cannot be excluded. |
 
 > **An old config needs no editing.** The previous addresses
 > `naming.vlm_enabled`, `naming.classify_vlm_model` and `naming.vlm_workers` are

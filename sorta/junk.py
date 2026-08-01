@@ -310,9 +310,28 @@ _PET_POS_CLASSES: tuple[tuple[str, str], ...] = (
 # Anti-classes for the pet group — the same device the document and product groups use.
 # Without somewhere for the probability mass of a pet-less frame to go, every photo comes
 # out as the most cat-like of the three cat prompts.
+# F120: the first live run said the two anti-classes below were not enough. CLIP does not
+# separate a thing from a PICTURE of a thing unless something else is offered to take that
+# probability, so `a photo of a cat` matched drawn cats, a plush toy landed in `dog`
+# alongside a hotdog, and people in fur coats came out as `pet`. Measured contamination
+# before these prompts: 45% of `dog` and 15% of `cat` were not photographs of an animal.
+#
+# Each anti-class below answers one observed failure, and they are anti-classes rather
+# than a higher threshold on purpose: a drawn cat is a CONFIDENT cat to CLIP, so no
+# threshold separates it — the probability has to have somewhere else to go.
 _PET_ANTI_CLASSES: tuple[tuple[str, str], ...] = (
     ("people", "a photo of people, with no animal in it"),
     ("scene", "a photo of a place, a building or an object, with no animal in it"),
+    # drawn cats in `cat`
+    ("drawing", "a drawing, painting, cartoon or illustration of an animal"),
+    # a plush toy in `dog`, toys in `pet`
+    ("toy", "a photo of a toy animal, a plush animal or a figurine"),
+    # the hotdog in `dog`
+    ("food", "a photo of food or a dish on a plate"),
+    # game pictures and product shots near the threshold
+    ("screen", "a screenshot, a user interface or a picture of a screen"),
+    # people in fur coats coming out as `pet`
+    ("clothing", "a photo of clothing, fur or a fabric texture"),
 )
 _PET_CLASSES: tuple[tuple[str, str], ...] = _PET_POS_CLASSES + _PET_ANTI_CLASSES
 _N_PET_POS = len(_PET_POS_CLASSES)
@@ -1227,10 +1246,12 @@ class QualitySettings:
     subject_score_min: float
     vlm_quality: bool
     vlm_scope: str
+    # F120: media classes no VLM is shown (`vlm.exclude_classes`).
+    exclude_classes: frozenset[str] = frozenset()
 
 
 def quality_settings(cfg: Config) -> QualitySettings:
-    """`features:` + the two `vlm:` quality keys of a config (or of a measurement)."""
+    """`features:` + the `vlm:` quality keys of a config (or of a measurement)."""
     f = getattr(cfg, "features", None) or FeaturesConfig()
     vlm = cfg.vlm
     return QualitySettings(
@@ -1241,7 +1262,18 @@ def quality_settings(cfg: Config) -> QualitySettings:
         subject_score_min=float(f.subject_score_min),
         vlm_quality=bool(getattr(vlm, "quality", False)),
         vlm_scope=str(getattr(vlm, "quality_scope", "groups")),
+        exclude_classes=frozenset(getattr(vlm, "exclude_classes", ()) or ()),
     )
+
+
+# F120: the quality questions — is there a pet, are the eyes open, was this shot an
+# accident — are questions about a PERSONAL PHOTOGRAPH. Asked of a screenshot or a
+# product shot they produce an answer that means nothing, and the first live run showed
+# what that costs: 45% of the `dog` class and 45% of the sharpest frames were not
+# photographs at all. Screenshots are also structurally "sharper" than any photo (hard
+# edges and text: mean laplacian 2854 against 1253), so a global sharpness ranking put
+# them on top by construction.
+QUALITY_VERDICT = "photo"
 
 
 def uncertain_band(sharpness: float | None, subject_score: float,
@@ -1506,8 +1538,18 @@ class _QualityPass:
         """
         return self._q.pets or self._ask is not None
 
-    def measure(self, file_id: int, path: str, probs_row: np.ndarray | None) -> None:
-        """The cheap tiers for one frame: measure, write the row, note the band."""
+    def measure(self, file_id: int, path: str, probs_row: np.ndarray | None,
+                verdict: str | None = None) -> None:
+        """The cheap tiers for one frame: measure, write the row, note the band.
+
+        F120: a frame this run decided is NOT a personal photograph is dropped here
+        instead of measured, and any row a previous run left for it is removed — the
+        first live run wrote 24 196 rows over the whole collection, and the answers on
+        screenshots, products and documents were the noise that made the signal unusable.
+        """
+        if verdict is not None and verdict != QUALITY_VERDICT:
+            self._conn.execute("DELETE FROM frame_quality WHERE file_id = ?", (file_id,))
+            return
         sharpness = self._sharpness(path)
         pet: str | None = None
         pet_score: float | None = None
@@ -1626,6 +1668,7 @@ def classify(
                   EXISTS(SELECT 1 FROM faces fa
                          WHERE fa.file_id = f.id AND fa.bbox != '[]') AS has_faces,
                   mc.source AS mc_source, mc.tier AS mc_tier,
+                  mc.verdict AS mc_verdict,
                   fq.source AS fq_source
            FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
                         LEFT JOIN frame_quality fq ON fq.file_id = f.id
@@ -1684,7 +1727,14 @@ def classify(
     # feature existed has no quality rows at all. A frame is walked when EITHER half wants
     # it, and each half then writes only its own table.
     quality_source = _quality_source(use_clip, q.pets, quality_ask)
-    quality_ids = ({r["id"] for r in rows if r["fq_source"] != quality_source}
+    # F120: only personal photographs are asked the quality questions. Selection uses the
+    # verdict ALREADY STORED, because this run's verdict is not known until the frame is
+    # walked; a frame with no verdict yet (a first run) is included and settled below, and
+    # a frame whose class changes is picked up on the next run. The lag is one run and it
+    # is on the cheap half of the cascade.
+    quality_ids = ({r["id"] for r in rows
+                    if r["fq_source"] != quality_source
+                    and r["mc_verdict"] in (None, QUALITY_VERDICT)}
                    if use_clip else set())
     work = [r for r in rows if r["id"] in junk_ids or r["id"] in quality_ids]
     # `processed`/`skipped_incremental` keep counting CLASSIFICATION, not the walk: they
@@ -1835,6 +1885,11 @@ def classify(
                 # and stats are exactly those of the serial version.
                 report.enter(CLASSIFY_PHASE_WRITE)
                 for i, r in enumerate(chunk):
+                    # F120: the quality half needs to know what this frame turned out to
+                    # be. A frame the fast tier did not settle (`i not in pre`) keeps
+                    # whatever media_class already says — hence the stored verdict as the
+                    # starting value rather than a name that may never be assigned.
+                    verdict = r["mc_verdict"]
                     if i in pre:
                         # missing / None both mean "no signal" — the verdict is left alone
                         verdict, score = pre[i]
@@ -1852,7 +1907,12 @@ def classify(
                         # document, OR the document-CLIP is in a suspicious zone, OR the
                         # product-CLIP is above the threshold. Clear personal photos (both scores
                         # low) are not touched by the VLM.
+                        # F120: `vlm.exclude_classes` — classes no VLM is shown at all.
+                        # The default holds `document`, and the cost is real and stated:
+                        # the deep tier is what CORRECTS a wrong document verdict, so an
+                        # excluded class keeps whatever the fast tier decided about it.
                         if (vlm_fn is not None and not r["has_faces"]
+                                and verdict not in q.exclude_classes
                                 and verdict not in ("screenshot", "meme")
                                 and (verdict == "document"
                                      or doc_score.get(i, 0.0) >= g.text_rescue_docscore_min
@@ -1862,7 +1922,7 @@ def classify(
                     # group when the toggle is on, and the note of which frames the two of
                     # them failed to settle.
                     if quality.wanted(r["id"]):
-                        quality.measure(r["id"], r["path"], probs.get(i))
+                        quality.measure(r["id"], r["path"], probs.get(i), verdict)
                 done += len(chunk)
                 report.step(done)
     finally:
@@ -1922,4 +1982,17 @@ def classify(
     # It runs after the deep tier for a plain reason: both want the same GPU, and the
     # verdict is what the rest of the pipeline depends on.
     quality.ask_model(report)
+    # F120: enforce "only a personal photograph has a quality row" DIRECTLY, and do it
+    # LAST, when every verdict of this run is written — the deep tier above reclassifies
+    # frames, so a purge any earlier would judge them by the fast tier's answer.
+    #
+    # This is not the same guard as the per-frame one in `_QualityPass.measure`, and both
+    # are needed: incrementality skips a frame whose `source` already matches, so a
+    # collection measured before this rule — 24 196 rows over everything, all
+    # `source='vlm'` — would keep its screenshots and documents precisely BECAUSE they
+    # look up to date. One statement on an indexed column settles it for good.
+    with conn:
+        conn.execute(
+            "DELETE FROM frame_quality WHERE file_id IN"
+            " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
     return stats

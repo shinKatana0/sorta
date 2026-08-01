@@ -858,6 +858,19 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
                 all_ids,
             ).fetchall()
         }
+        # F120: sharpness, where it is finally comparable. Across the collection it is
+        # not — a screenshot averages 2854 against a photograph's 1253, so a global
+        # ranking sorts by content type rather than by focus. Inside a near-duplicate
+        # group the frames ARE the same picture, which is the one place the number
+        # answers the question it was measured for: which of these five is in focus.
+        sharp = {
+            r["file_id"]: r["sharpness"]
+            for r in conn.execute(
+                f"SELECT file_id, sharpness FROM frame_quality "
+                f"WHERE file_id IN ({placeholders}) AND sharpness IS NOT NULL",
+                all_ids,
+            ).fetchall()
+        }
     finally:
         conn.close()
 
@@ -879,19 +892,29 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
                 "width": w,
                 "height": h,
                 "size": r["size"],
+                "sharpness": sharp.get(r["id"]),
                 "action": choices.get(r["id"]),
                 "recommended": False,
             })
+        # Sharpness leads only when EVERY frame of the group has it. A partial comparison
+        # would quietly prefer whichever frames happened to be measured — and after F120
+        # only personal photographs are measured at all, so a mixed group is a real case,
+        # not a corner one.
+        by_sharpness = all(f["sharpness"] is not None for f in frames)
         best = min(
             frames,
             key=lambda f: (
+                -(f["sharpness"] or 0.0) if by_sharpness else 0.0,
                 -((f["width"] or 0) * (f["height"] or 0)),
                 -(f["size"] or 0),
                 f["file_id"],
             ),
         )
         best["recommended"] = True
-        result.append({"group": idx, "frames": frames})
+        result.append({"group": idx, "frames": frames,
+                       # Why this one — so the tab can say it instead of asking the user
+                       # to trust a star.
+                       "recommended_by": "sharpness" if by_sharpness else "resolution"})
     return remember(result)
 
 
@@ -3919,12 +3942,53 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "settings_quality_hint": {
         "ru": "Необязательные признаки: помогают выбрать лучший кадр из серии и найти "
               "случайные снимки. Всё выключено по умолчанию и считается только на "
-              "прогоне.",
+              "прогоне. Сгруппировано по тому, ЧЕМ признак считается, — это и есть "
+              "разница в цене.",
         "en": "Optional signals: they help pick the best frame of a burst and spot the "
               "shots nobody meant to take. All off by default and computed during a "
-              "run.",
+              "run. Grouped by WHAT answers each one, because that is where the cost "
+              "difference is.",
         "ja": "任意のシグナル: 連写から最良のコマを選び、意図しない撮影を見つけるのに"
-              "役立ちます。既定はすべて無効で、実行中にのみ計算されます。",
+              "役立ちます。既定はすべて無効で、実行中にのみ計算されます。**何が**答える"
+              "かで分けてあります — 費用の差はそこにあるからです。",
+    },
+    "settings_quality_cheap_title": {
+        "ru": "Без VLM", "en": "No VLM needed", "ja": "VLM 不要",
+    },
+    "settings_quality_cheap_hint": {
+        "ru": "Считается на проходе, который и так идёт: CLIP и обычная арифметика по "
+              "превью. Включать можно, даже если глубокий анализ выключен.",
+        "en": "Computed on a pass that runs anyway: CLIP and plain arithmetic over the "
+              "preview. Safe to switch on even with deep analysis off.",
+        "ja": "どのみち走るパスで計算されます: CLIP と、プレビューに対する単純な演算。"
+              "詳細解析が無効でも有効にできます。",
+    },
+    "settings_quality_vlm_title": {
+        "ru": "Через VLM", "en": "Through the VLM", "ja": "VLM で判定",
+    },
+    "settings_quality_vlm_hint": {
+        "ru": "Только то, чего не решить дёшево. Нужен включённый «Глубокий анализ» "
+              "выше и экстра `vlm`; без них признак просто не считается.",
+        "en": "Only what nothing cheap can decide. Needs “Deep analysis” switched on "
+              "above and the `vlm` extra installed; without them the signal is simply "
+              "not computed.",
+        "ja": "安価な手段では決められないものだけです。上の「詳細解析」を有効にし、"
+              "extra `vlm` が必要です。無ければこのシグナルは計算されません。",
+    },
+    "settings_quality_gate_title": {
+        "ru": "Кого спрашивать у модели",
+        "en": "Who reaches the model",
+        "ja": "モデルに届くコマ",
+    },
+    "settings_quality_gate_hint": {
+        "ru": "Пороги, которые решают, у каких кадров вообще спрашивать. Считаются "
+              "дёшево, а экономят дорогое: чем уже полоса, тем меньше кадров уйдёт в "
+              "модель.",
+        "en": "The thresholds that decide which frames are worth asking about at all. "
+              "Cheap to compute and what saves the expensive part: the narrower the "
+              "band, the fewer frames reach the model.",
+        "ja": "そもそもどのコマについて尋ねるかを決めるしきい値です。計算は安価で、"
+              "高価な部分を節約します — 帯が狭いほど、モデルに届くコマは減ります。",
     },
     "settings_vlm_quality_label": {
         "ru": "Спрашивать модель о качестве",
@@ -3978,16 +4042,30 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "動物の信頼度しきい値",
     },
     "settings_features_subject_score_min_label": {
-        "ru": "Порог «есть сюжет»",
-        "en": "“There is a subject” threshold",
-        "ja": "「被写体あり」のしきい値",
+        "ru": "Порог «это вообще фотография»",
+        "en": "“This is a photograph at all” threshold",
+        "ja": "「そもそも写真か」のしきい値",
     },
     "settings_features_subject_score_min_hint": {
-        "ru": "Отделяет осознанный снимок от случайного — снятого из кармана или в "
-              "движении.",
-        "en": "What separates a deliberate shot from an accidental one — taken from a "
-              "pocket or on the move.",
-        "ja": "意図した 1 枚と、ポケットの中や移動中の偶発的な撮影とを分けます。",
+        "ru": "Второй вход в модель. Это вероятность от CLIP: если он оценивает кадр "
+              "как фотографию ниже этого порога — значит, сам не понял, на что смотрит, "
+              "и такой кадр стоит показать модели.",
+        "en": "The second way into the model. This is CLIP's own probability: scoring a "
+              "frame as “a photograph” below this threshold is CLIP saying it does not "
+              "know what it is looking at, and such a frame is worth showing to the "
+              "model.",
+        "ja": "モデルへの 2 つ目の入口です。これは CLIP 自身の確率で、「写真である」の"
+              "スコアがこのしきい値を下回るのは、CLIP が何を見ているか分からないという"
+              "ことであり、そのコマはモデルに見せる価値があります。",
+    },
+    "settings_features_sharpness_max_edge_hint": {
+        "ru": "Сама резкость считается всегда и бесплатно — это дисперсия лапласиана по "
+              "превью, которое другие стадии уже построили. Модель здесь ни при чём.",
+        "en": "Sharpness itself is always computed and costs nothing — the variance of "
+              "a Laplacian over the preview other stages have already built. No model "
+              "is involved.",
+        "ja": "鮮鋭度そのものは常に計算され、費用はかかりません — 他の段階がすでに作った"
+              "プレビューに対するラプラシアンの分散です。モデルは関係ありません。",
     },
     "settings_features_sharpness_band_min_label": {
         "ru": "Резкость: нижняя граница",
@@ -4865,6 +4943,11 @@ label { cursor: pointer; }
 .cache-block { margin-top: var(--space-md); max-width: 42rem; border: 1px solid var(--line);
       border-radius: var(--radius-md); background: var(--surface); padding: var(--space-md);
       display: flex; flex-direction: column; gap: var(--space-sm); }
+/* F119: a sub-heading inside the settings block. The frame-quality knobs are answered
+   by three different instruments (CLIP, nothing at all, the VLM) and grouping them
+   under one heading said they were all the VLM's — which is what a reader concluded. */
+.settings-subhead { margin-top: var(--space-sm); font-size: 0.82rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .cache-head { display: flex; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; }
 .cache-sizes { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
 .cache-status { font-size: 0.8rem; color: var(--muted); }
@@ -5180,6 +5263,19 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <span class="process-toggle-hint">{{settings_vlm_max_edge_hint}}</span>
 <div class="settings-head">{{settings_quality_title}}</div>
 <span class="process-toggle-hint">{{settings_quality_hint}}</span>
+<div class="settings-subhead">{{settings_quality_cheap_title}}</div>
+<span class="process-toggle-hint">{{settings_quality_cheap_hint}}</span>
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="setting-features-pets"> {{settings_features_pets_label}}</label>
+<span class="process-toggle-hint">{{settings_features_pets_hint}}</span>
+</div>
+<label class="settings-field" for="setting-features-pet-threshold">{{settings_features_pet_threshold_label}}
+<input type="number" id="setting-features-pet-threshold" min="0" max="1" step="0.05"></label>
+<label class="settings-field" for="setting-features-sharpness-max-edge">{{settings_features_sharpness_max_edge_label}}
+<input type="number" id="setting-features-sharpness-max-edge" min="64" max="4096" step="1"></label>
+<span class="process-toggle-hint">{{settings_features_sharpness_max_edge_hint}}</span>
+<div class="settings-subhead">{{settings_quality_vlm_title}}</div>
+<span class="process-toggle-hint">{{settings_quality_vlm_hint}}</span>
 <div class="process-option">
 <label class="process-toggle-label"><input type="checkbox" id="setting-vlm-quality"> {{settings_vlm_quality_label}}</label>
 <span class="process-toggle-hint">{{settings_vlm_quality_hint}}</span>
@@ -5187,22 +5283,16 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <label class="settings-field" for="setting-vlm-quality-scope">{{settings_vlm_quality_scope_label}}
 <select id="setting-vlm-quality-scope"><option value="groups">{{settings_scope_groups}}</option><option value="events">{{settings_scope_events}}</option><option value="all">{{settings_scope_all}}</option></select></label>
 <span class="process-toggle-hint">{{settings_vlm_quality_scope_hint}}</span>
-<div class="process-option">
-<label class="process-toggle-label"><input type="checkbox" id="setting-features-pets"> {{settings_features_pets_label}}</label>
-<span class="process-toggle-hint">{{settings_features_pets_hint}}</span>
-</div>
-<label class="settings-field" for="setting-features-pet-threshold">{{settings_features_pet_threshold_label}}
-<input type="number" id="setting-features-pet-threshold" min="0" max="1" step="0.05"></label>
-<label class="settings-field" for="setting-features-subject-score-min">{{settings_features_subject_score_min_label}}
-<input type="number" id="setting-features-subject-score-min" min="0" max="1" step="0.05"></label>
-<span class="process-toggle-hint">{{settings_features_subject_score_min_hint}}</span>
+<div class="settings-subhead">{{settings_quality_gate_title}}</div>
+<span class="process-toggle-hint">{{settings_quality_gate_hint}}</span>
 <label class="settings-field" for="setting-features-sharpness-band-min">{{settings_features_sharpness_band_min_label}}
 <input type="number" id="setting-features-sharpness-band-min" min="0" max="10000" step="1"></label>
 <label class="settings-field" for="setting-features-sharpness-band-max">{{settings_features_sharpness_band_max_label}}
 <input type="number" id="setting-features-sharpness-band-max" min="0" max="10000" step="1"></label>
 <span class="process-toggle-hint">{{settings_features_sharpness_band_hint}}</span>
-<label class="settings-field" for="setting-features-sharpness-max-edge">{{settings_features_sharpness_max_edge_label}}
-<input type="number" id="setting-features-sharpness-max-edge" min="64" max="4096" step="1"></label>
+<label class="settings-field" for="setting-features-subject-score-min">{{settings_features_subject_score_min_label}}
+<input type="number" id="setting-features-subject-score-min" min="0" max="1" step="0.05"></label>
+<span class="process-toggle-hint">{{settings_features_subject_score_min_hint}}</span>
 <label class="settings-field" for="setting-imaging-preview-cache-max-gb">{{settings_preview_max_gb_label}}
 <input type="number" id="setting-imaging-preview-cache-max-gb" min="0" max="4096" step="1"></label>
 <span class="process-toggle-hint">{{settings_preview_max_gb_hint}}</span>

@@ -786,12 +786,45 @@ class TestQualitySettings(unittest.TestCase):
 class TestFrameQualityWithTheOldJunkMock(FrameQualityCase):
     """The rest of the junk suite keeps working: the F113 columns ride alongside it."""
 
-    def test_the_plain_junk_mock_still_classifies_and_now_also_measures(self):
+    def test_a_screenshot_is_classified_and_deliberately_not_measured(self):
+        """F120 changed this case, and the change is the point of F120.
+
+        It used to assert that a screenshot gets a sharpness too. The first live run
+        showed what that costs: screenshots average a laplacian of 2854 against a
+        photograph's 1253 — hard edges and text are what the measure responds to — so a
+        ranking over the whole collection put screenshots on top by construction, and
+        45% of the sharpest frames were not photographs. "Are the eyes open", "is there
+        a pet" and "how sharp is this" are questions about a personal photograph; asked
+        of a screenshot they return a number that means nothing and outvotes the ones
+        that do.
+        """
         fid = self.add_file("Screenshot_1.png", camera_make=None, camera_model=None)
         classify(self.cfg, self.conn, classifier=FakeClassifier({}),
                  text_detector=NO_OCR, sharpness_detector=flat_sharpness(77.0))
         self.assertEqual(self.media_class(fid)["verdict"], "screenshot")
+        self.assertIsNone(self.quality(fid))
+
+    def test_a_photograph_is_still_measured(self):
+        """The other half of the same rule — the population narrowed, it did not empty."""
+        fid = self.add_file("IMG_0002.jpg")
+        classify(self.cfg, self.conn, classifier=QualityClassifier(),
+                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(77.0))
+        self.assertEqual(self.media_class(fid)["verdict"], "photo")
         self.assertAlmostEqual(self.quality(fid)["sharpness"], 77.0)
+
+    def test_a_stale_row_of_a_reclassified_frame_is_removed(self):
+        """A collection measured before F120 carries rows for screenshots and documents.
+        They are not left to rot: the frame is walked, found not to be a photograph, and
+        its row goes — otherwise today's contamination would outlive the fix."""
+        fid = self.add_file("Screenshot_2.png", camera_make=None, camera_model=None)
+        self.conn.execute(
+            "INSERT INTO frame_quality (file_id, sharpness, source, updated_at)"
+            " VALUES (?, 4242.0, 'classic', '2026-07-31T00:00:00')", (fid,))
+        self.conn.commit()
+        self.assertIsNotNone(self.quality(fid))
+        classify(self.cfg, self.conn, classifier=FakeClassifier({}),
+                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(77.0))
+        self.assertIsNone(self.quality(fid))
 
     def test_the_foreign_key_points_at_files(self):
         fid = self.add_file("IMG_0001.jpg")
