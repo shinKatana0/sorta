@@ -452,6 +452,13 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "--geo must be offline or online",
         "ja": "--geo は offline か online でなければなりません",
     },
+    # F127: a closed list, and the message names every value of it — the scope decides
+    # how many frames a 20 GB model is shown, so a typo must not fall back to a default.
+    "cli.quality.scope_choice": {
+        "ru": "--quality-scope должен быть одним из: {values}",
+        "en": "--quality-scope must be one of: {values}",
+        "ja": "--quality-scope は次のいずれかでなければなりません: {values}",
+    },
     # doctor
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
@@ -620,6 +627,17 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "--copy and --move are mutually exclusive",
         "ja": "--copy と --move は同時に指定できません",
     },
+    # F127: only `animal` has nothing to select inside it. For a person and an event the
+    # selector IS the subject, so its absence is an error and never "the whole slice".
+    "cli.album.selector_required": {
+        "ru": "альбому person/event нужен селектор: имя человека либо имя или id "
+              "события. Без селектора собирается только `sorta album animal`",
+        "en": "a person/event album needs a selector: a person's name, or an event's "
+              "name or id. Only `sorta album animal` is gathered without one",
+        "ja": "person/event のアルバムにはセレクタが必要です: 人物の名前、または"
+              "イベントの名前か id。セレクタなしで作成できるのは "
+              "`sorta album animal` だけです",
+    },
     # reset
     "cli.reset.confirm": {
         "ru": "Стереть весь индекс? Имена людей/событий и решения по дублям "
@@ -748,6 +766,45 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Path to config.yaml",
         "ja": "config.yaml へのパス",
     },
+    # F127: the frame-quality flags, offered by `junk` and by `run` — one override, one
+    # text. Each says which config key it replaces: a flag that only overrides for one
+    # run is worth nothing if the reader cannot find the permanent setting behind it.
+    "cli.help.opt.pets": {
+        "ru": "Искать животных на этот прогон (features.pets): три дополнительных "
+              "запроса внутри CLIP-вызова стадии junk, отдельной стадии не "
+              "появляется; без флага — как в config.yaml",
+        "en": "Look for animals on this run (features.pets): three extra prompts "
+              "inside the CLIP call the junk stage makes anyway, not a stage of its "
+              "own; without the flag — as in config.yaml",
+        "ja": "この実行で動物を検出します (features.pets): junk ステージが行う "
+              "CLIP 呼び出しに 3 つのプロンプトを追加するだけで、独立したステージには"
+              "なりません。フラグなしの場合は config.yaml のとおり",
+    },
+    "cli.help.opt.quality": {
+        "ru": "Вопросы VLM о качестве кадра на этот прогон (vlm.quality): открыты ли "
+              "глаза, есть ли сюжет; нужен `uv sync --extra vlm`; без флага — как в "
+              "config.yaml",
+        "en": "The VLM frame-quality questions on this run (vlm.quality): are the eyes "
+              "open, is there a subject at all; needs `uv sync --extra vlm`; without "
+              "the flag — as in config.yaml",
+        "ja": "この実行で VLM にフレームの品質を問い合わせます (vlm.quality): "
+              "目が開いているか、被写体があるか。`uv sync --extra vlm` が必要です。"
+              "フラグなしの場合は config.yaml のとおり",
+    },
+    "cli.help.opt.quality_scope": {
+        "ru": "groups|events|faces|all — какие кадры попадают в вопросы о качестве "
+              "(vlm.quality_scope). Цена: all ≈ 4,3 часа на 20 тысяч кадров, "
+              "faces ≈ 95 минут на 7 341 (faces требует прогона стадии faces); "
+              "без флага — как в config.yaml",
+        "en": "groups|events|faces|all — which frames reach the quality questions "
+              "(vlm.quality_scope). The price: all ≈ 4.3 hours on 20 thousand frames, "
+              "faces ≈ 95 minutes on 7 341 (faces needs a faces run first); without "
+              "the flag — as in config.yaml",
+        "ja": "groups|events|faces|all — 品質の質問の対象になるフレーム "
+              "(vlm.quality_scope)。コスト: all は 2 万フレームで約 4.3 時間、"
+              "faces は 7 341 フレームで約 95 分（faces は先に faces ステージの実行が"
+              "必要）。フラグなしの場合は config.yaml のとおり",
+    },
     # index
     "cli.help.index": {
         "ru": "Сканировать источники, извлечь метаданные, пометить дубликаты.",
@@ -870,6 +927,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "`sorta geo` with provider: online goes to the network again",
         "ja": "オンラインジオコーダの応答キャッシュ (F93) を削除します。"
               "provider: online の場合、次の `sorta geo` は再びネットワークに接続します",
+    },
+    "cli.help.cache.preview_max_gb": {
+        "ru": "Потолок кэша превью в ГБ на этот прогон "
+              "(imaging.preview_cache_max_gb); 0 — без потолка, как и в конфиге",
+        "en": "Ceiling of the preview cache in GB for this run "
+              "(imaging.preview_cache_max_gb); 0 means no ceiling, as in the config",
+        "ja": "この実行でのプレビューキャッシュの上限 (GB) "
+              "(imaging.preview_cache_max_gb)。0 は上限なしで、config と同じです",
     },
     # ui
     "cli.help.ui": {
@@ -1010,22 +1075,25 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # album
     "cli.help.album": {
-        "ru": "Выгрузить срез (человека/события) в отдельную папку. По умолчанию — "
-              "hardlink, dry-run.",
-        "en": "Export a slice (a person/an event) into a separate folder. By default — "
-              "hardlink, dry run.",
-        "ja": "スライス（人物・イベント）を別のフォルダに書き出します。"
+        "ru": "Выгрузить срез (человека/события/животных) в отдельную папку. "
+              "По умолчанию — hardlink, dry-run.",
+        "en": "Export a slice (a person/an event/the animals) into a separate folder. "
+              "By default — hardlink, dry run.",
+        "ja": "スライス（人物・イベント・動物）を別のフォルダに書き出します。"
               "デフォルトはハードリンクの dry-run です。",
     },
     "cli.help.album.kind": {
-        "ru": "person | event",
-        "en": "person | event",
-        "ja": "person | event",
+        "ru": "person | event | animal",
+        "en": "person | event | animal",
+        "ja": "person | event | animal",
     },
     "cli.help.album.selector": {
-        "ru": "имя человека / имя или id события",
-        "en": "a person's name / an event's name or id",
-        "ja": "人物の名前 / イベントの名前または id",
+        "ru": "имя человека / имя или id события; для animal не нужен — "
+              "срез животных в коллекции один",
+        "en": "a person's name / an event's name or id; not needed for animal — "
+              "the collection has a single animal slice",
+        "ja": "人物の名前 / イベントの名前または id。animal では不要です — "
+              "コレクションの動物のスライスは 1 つだけです",
     },
     "cli.help.album.dest": {
         "ru": "Куда выгрузить альбом",

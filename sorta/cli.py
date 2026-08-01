@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import sys
 from pathlib import Path
 from typing import Callable
@@ -16,7 +17,7 @@ else:
     _TYPER_AVAILABLE = True
 
 from . import __version__, imaging
-from .config import configure_logging, load_config
+from .config import VLM_QUALITY_SCOPES, configure_logging, load_config
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import (
@@ -343,8 +344,38 @@ def _cmd_phash(config_path: str) -> None:
     print(_t("cli.phash.done", lang, n=n))
 
 
-def _cmd_junk(config_path: str) -> None:
-    cfg = load_config(config_path)
+def _quality_overrides(cfg, *, pets: bool | None = None, quality: bool | None = None,
+                       quality_scope: str | None = None):
+    """F127: the frame-quality knobs of ONE run, from flags instead of config.yaml.
+
+    The same principle `--deep`/`--geo` have followed since F50: a copy of the config
+    for this run (`dataclasses.replace`), never a write to the file. `None` means the
+    flag was not passed and the value stays as the config has it — which is what makes
+    `--no-pets` able to switch OFF what `features.pets: true` switched on, instead of
+    the flag only ever being able to add.
+
+    The three live in one helper because they are one cascade and two commands
+    (`junk` and `run`) offer all three: `features.pets` is computed inside the junk
+    stage's CLIP call, and `vlm.quality`/`vlm.quality_scope` decide which of those
+    frames the quality VLM is then asked about.
+    """
+    if pets is not None:
+        cfg = dataclasses.replace(
+            cfg, features=dataclasses.replace(cfg.features, pets=pets))
+    changed: dict[str, object] = {}
+    if quality is not None:
+        changed["quality"] = quality
+    if quality_scope is not None:
+        changed["quality_scope"] = quality_scope
+    if changed:
+        cfg = dataclasses.replace(cfg, vlm=dataclasses.replace(cfg.vlm, **changed))
+    return cfg
+
+
+def _cmd_junk(config_path: str, *, pets: bool | None = None,
+              quality: bool | None = None, quality_scope: str | None = None) -> None:
+    cfg = _quality_overrides(load_config(config_path), pets=pets, quality=quality,
+                             quality_scope=quality_scope)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
     conn = connect(cfg.database)
@@ -449,7 +480,8 @@ def _pipeline_steps() -> list[tuple[str, object]]:
 def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
              deep: bool | None = None, geo: str | None = None,
              faces: bool = False, events: bool = False,
-             src: str | None = None) -> None:
+             src: str | None = None, pets: bool | None = None,
+             quality: bool | None = None, quality_scope: str | None = None) -> None:
     """`deep`/`geo` (F50/#34) — an opt-in override for THIS run, not written to
     config.yaml: `deep` -> `naming.vlm_enabled`, `geo` ("offline"|"online") ->
     `geo.provider`. None (flag not passed) -> the value stays from config.
@@ -459,7 +491,11 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
 
     `faces`/`events` (F53/#39) — opt-in steps, default off: the basic run builds only
     `index/geo/landmarks/junk`, the heaviest/longest steps are skipped. Independent
-    of each other and of `deep`/`geo`."""
+    of each other and of `deep`/`geo`.
+
+    `pets`/`quality`/`quality_scope` (F127) — the same kind of per-run override as
+    `deep`, on the frame-quality cascade (see `_quality_overrides`). NOT stages: they
+    change what the `junk` stage computes and leave the list of steps as it was."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
@@ -474,6 +510,8 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
         cfg = dataclasses.replace(cfg, naming=dataclasses.replace(cfg.naming, vlm_enabled=deep))
     if geo is not None:
         cfg = dataclasses.replace(cfg, geo=dataclasses.replace(cfg.geo, provider=geo))
+    cfg = _quality_overrides(cfg, pets=pets, quality=quality,
+                             quality_scope=quality_scope)
     conn = connect(cfg.database)
     try:
         enabled_optional = {"faces": faces, "events": events}
@@ -605,8 +643,17 @@ def _cmd_doctor(config_path: str) -> None:
              else _t("cli.cache.preview_disabled", lang)))
 
 
-def _cmd_cache(config_path: str, *, clear: bool = False,
-               clear_geo: bool = False) -> None:
+def _cmd_cache(config_path: str, *, clear: bool = False, clear_geo: bool = False,
+               preview_max_gb: float | None = None) -> None:
+    # F127: the ceiling for this run, without editing `imaging.preview_cache_max_gb`.
+    # The env variable IS the override: imaging.py is a leaf module the pool workers
+    # call with a path and nothing else, so the config file seeds these variables and
+    # only when they are not already set (config._apply_imaging_config) — an exported
+    # variable wins over config.yaml, and so does the flag. `0` = no ceiling, as in the
+    # config, and it has to be set rather than skipped: it is the value that switches a
+    # configured ceiling OFF for this run.
+    if preview_max_gb is not None:
+        os.environ[imaging.ENV_PREVIEW_MAX_GB] = str(preview_max_gb)
     cfg = load_config(config_path)  # applies the imaging: section onto the env
     lang = _lang(cfg)
     directory = imaging.preview_dir()
@@ -780,6 +827,27 @@ def build_app(lang: Lang) -> typer.Typer:
     app = typer.Typer(help=h("cli.help.app", version=__version__))
     cfg_opt = typer.Option(_DEFAULT_CONFIG, "--config", "-c",
                            help=h("cli.help.opt.config"))
+    # F127: the frame-quality flags are offered by two commands (`junk` and `run`) and
+    # are one and the same override, so they are declared once. `None` by default —
+    # "as in config.yaml" — which is what lets `--no-pets` turn OFF what the file
+    # turned on (an option that defaulted to False could only ever add).
+    pets_opt = typer.Option(None, "--pets/--no-pets", help=h("cli.help.opt.pets"))
+    quality_opt = typer.Option(None, "--quality/--no-quality",
+                               help=h("cli.help.opt.quality"))
+    quality_scope_opt = typer.Option(None, "--quality-scope",
+                                     help=h("cli.help.opt.quality_scope"))
+
+    def check_quality_scope(value: str | None, config: str) -> None:
+        """A closed list, and a typo has to say so.
+
+        A silent fallback to the default is the failure this guards against: the scope
+        decides how many frames a 20 GB model is shown, and a misspelt one would run
+        the wrong population for hours without ever printing why.
+        """
+        if value is not None and value not in VLM_QUALITY_SCOPES:
+            raise typer.BadParameter(
+                _t("cli.quality.scope_choice", _lang_of(config),
+                   values=", ".join(VLM_QUALITY_SCOPES)))
 
     @app.command(help=h("cli.help.index"))
     def index(
@@ -821,8 +889,14 @@ def build_app(lang: Lang) -> typer.Typer:
         _cmd_phash(config)
 
     @app.command(help=h("cli.help.junk"))
-    def junk(config: str = cfg_opt):
-        _cmd_junk(config)
+    def junk(
+        pets: bool = pets_opt,
+        quality: bool = quality_opt,
+        quality_scope: str = quality_scope_opt,
+        config: str = cfg_opt,
+    ):
+        check_quality_scope(quality_scope, config)
+        _cmd_junk(config, pets=pets, quality=quality, quality_scope=quality_scope)
 
     @app.command(help=h("cli.help.doctor"))
     def doctor(config: str = cfg_opt):
@@ -833,9 +907,13 @@ def build_app(lang: Lang) -> typer.Typer:
         clear: bool = typer.Option(False, "--clear", help=h("cli.help.cache.clear")),
         clear_geo: bool = typer.Option(
             False, "--clear-geo", help=h("cli.help.cache.clear_geo")),
+        preview_max_gb: float = typer.Option(
+            None, "--preview-max-gb", min=0,
+            help=h("cli.help.cache.preview_max_gb")),
         config: str = cfg_opt,
     ):
-        _cmd_cache(config, clear=clear, clear_geo=clear_geo)
+        _cmd_cache(config, clear=clear, clear_geo=clear_geo,
+                   preview_max_gb=preview_max_gb)
 
     @app.command(help=h("cli.help.ui"))
     def ui(port: int = typer.Option(8756, "--port", help=h("cli.help.ui.port")),
@@ -915,7 +993,7 @@ def build_app(lang: Lang) -> typer.Typer:
     @app.command(help=h("cli.help.album"))
     def album(
         kind: str = typer.Argument(..., help=h("cli.help.album.kind")),
-        selector: str = typer.Argument(..., help=h("cli.help.album.selector")),
+        selector: str = typer.Argument(None, help=h("cli.help.album.selector")),
         dest: Path = typer.Option(..., "--dest", help=h("cli.help.album.dest")),
         copy: bool = typer.Option(False, "--copy", help=h("cli.help.album.copy")),
         move: bool = typer.Option(False, "--move", help=h("cli.help.album.move")),
@@ -928,8 +1006,16 @@ def build_app(lang: Lang) -> typer.Typer:
         if copy and move:
             raise typer.BadParameter(
                 _t("cli.album.copy_move_exclusive", _lang_of(config)))
-        _cmd_album(config, kind, selector, dest, copy=copy, move=move, where=where,
-                   name=name, apply=apply)
+        # F127: `animal` is the one slice with nothing to select INSIDE it — the
+        # collection has a single animal view — so there the selector is optional and
+        # `sorta album animal --dest ...` is the whole command. For a person and an
+        # event it is the subject itself: a missing one has to be an error here, said
+        # out loud, rather than an album quietly gathered from something else.
+        if kind != "animal" and not (selector or "").strip():
+            raise typer.BadParameter(
+                _t("cli.album.selector_required", _lang_of(config)))
+        _cmd_album(config, kind, selector or "", dest, copy=copy, move=move,
+                   where=where, name=name, apply=apply)
 
     @app.command(help=h("cli.help.reset"))
     def reset(
@@ -962,12 +1048,17 @@ def build_app(lang: Lang) -> typer.Typer:
         events: bool = typer.Option(
             False, "--events/--no-events", help=h("cli.help.run.events")),
         src: str = typer.Option(None, "--src", help=h("cli.help.run.src")),
+        pets: bool = pets_opt,
+        quality: bool = quality_opt,
+        quality_scope: str = quality_scope_opt,
         config: str = cfg_opt,
     ):
         if geo is not None and geo not in ("offline", "online"):
             raise typer.BadParameter(_t("cli.run.geo_choice", _lang_of(config)))
+        check_quality_scope(quality_scope, config)
         _cmd_run(config, by=by, dest=str(dest) if dest else None, deep=deep, geo=geo,
-                 faces=faces, events=events, src=src)
+                 faces=faces, events=events, src=src, pets=pets, quality=quality,
+                 quality_scope=quality_scope)
 
     return app
 

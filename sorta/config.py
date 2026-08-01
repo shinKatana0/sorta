@@ -463,6 +463,14 @@ class FeaturesConfig:
     # number: "almost everything is blurred and I would delete it, except a couple I keep
     # for the memory" — a frame this cannot know about is exactly why the human marks.
     blur_review_max: float = 90.0
+    # F128: keep the CLIP vector the junk stage already computes instead of discarding it
+    # (table `clip_embeddings`). ON by default, which is the deliberate half of this
+    # setting: the price is small — ~60 MB per 20 000 photos, written inside a pass that
+    # is already running — while the off state is today's, where every feature of that
+    # class (search by words, an album from a query, "frames like this one") starts with a
+    # full CLIP pass over the collection. The switch is for very large collections, where
+    # 300 000 photos mean ~920 MB.
+    store_embeddings: bool = True
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -477,6 +485,7 @@ def _features_from(raw: dict) -> FeaturesConfig:
         sharpness_band_max=_as_float(raw.get("sharpness_band_max"), d.sharpness_band_max),
         subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
+        store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
     )
 
 

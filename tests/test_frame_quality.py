@@ -166,7 +166,7 @@ class TestMigration(unittest.TestCase):
         self.assertEqual(cols, {"file_id", "sharpness", "pet", "pet_score",
                                 "eyes_open", "has_subject", "is_accidental",
                                 "source", "updated_at"})
-        self.assertEqual(version, 15)
+        self.assertEqual(version, 16)
 
     def test_v14_db_gains_the_table_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,7 +187,7 @@ class TestMigration(unittest.TestCase):
             files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             conn.close()
         self.assertIn("frame_quality", tables)
-        self.assertEqual(version, 15)
+        self.assertEqual(version, 16)
         self.assertEqual(files, 1)
 
     def test_reopening_is_idempotent_and_keeps_the_rows(self):
@@ -208,7 +208,7 @@ class TestMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertAlmostEqual(row["sharpness"], 12.5)
-        self.assertEqual(version, 15)
+        self.assertEqual(version, 16)
 
 
 class TestLaplacian(unittest.TestCase):
@@ -389,7 +389,12 @@ class TestSharpnessAlwaysWritten(FrameQualityCase):
         Loading CLIP for that would be the entire cost of the run, for a question nobody
         asked — so no model is built, and none is called either (the stand-in classifier
         raises if it ever is).
+
+        F128 is switched off here because with it on there IS a question for CLIP: the
+        vectors of this collection are missing, and filling them is what that feature is.
+        The property under test is unchanged — a run with nothing to ask builds nothing.
         """
+        self.features(store_embeddings=False)
         fid = self.add_file("IMG_0001.jpg")
         classify(self.cfg, self.conn, classifier=QualityClassifier(),
                  text_detector=NO_OCR, sharpness_detector=flat_sharpness(1.0))
