@@ -265,6 +265,16 @@ vlm:
   #   groups — frames of pHash near-duplicate groups (default). That is where the
   #            question is actually asked: five frames of one moment, which is the keeper.
   #   events — every frame that belongs to an event.
+  #   faces  — the frames a face was actually FOUND on (F125). This is the population the
+  #            eyes question really has: on a live 24 196-file collection that is 7 341
+  #            photographs, ~95 minutes of GPU, against 19 757 frames and 4.3 hours for
+  #            `all` — and the frames it leaves out are the ones where "are the eyes open"
+  #            means nothing anyway. The numbers above are measured on that collection, so
+  #            read them as a ratio rather than a promise about yours.
+  #            IT NEEDS THE FACES STAGE: without one there are no faces to ask about, and
+  #            the quality VLM then does not run at all (it says so in the log; sharpness
+  #            and animals are still measured). The trade is deliberate — `has_subject` is
+  #            not collected on frames without people, because the model never sees them.
   #   all    — no restriction. READ THE PRICE FIRST: ~0.78 s per frame, so a 20 000-frame
   #            collection is about 4.3 hours of GPU. It is a weekend job, not a default.
   quality_scope: groups

@@ -6,7 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sorta.config import FeaturesConfig, configure_logging, load_config
+from sorta.config import (
+    VLM_QUALITY_SCOPES,
+    FeaturesConfig,
+    VlmConfig,
+    configure_logging,
+    load_config,
+)
 
 
 class TestLogLevelConfig(unittest.TestCase):
@@ -152,16 +158,37 @@ class TestVlmQualityKeys(unittest.TestCase):
         self.assertFalse(cfg.vlm.enabled)  # the deep junk tier stays off
 
     def test_every_scope_is_accepted(self):
-        for scope in ("groups", "events", "all"):
+        # F125: `faces` joins the three that existed, and the list is what the UI select
+        # is built from — a value the config refuses must never be offered there.
+        self.assertEqual(VLM_QUALITY_SCOPES, ("groups", "events", "faces", "all"))
+        for scope in VLM_QUALITY_SCOPES:
             with self.subTest(scope=scope):
                 self.assertEqual(
                     self._load(f"vlm:\n  quality_scope: {scope}\n").vlm.quality_scope,
                     scope)
 
+    def test_the_new_scope_does_not_move_the_default(self):
+        """F125 adds a value, not a policy: which population a collection wants stays the
+        user's decision."""
+        self.assertEqual(VlmConfig().quality_scope, "groups")
+        self.assertEqual(self._load("vlm:\n  quality: true\n").vlm.quality_scope, "groups")
+
     def test_a_misspelled_scope_does_not_become_the_expensive_one(self):
         with self.assertLogs("sorta.config", level=logging.WARNING):
             cfg = self._load("vlm:\n  quality_scope: everything\n")
         self.assertEqual(cfg.vlm.quality_scope, "groups")
+
+    def test_a_near_miss_of_the_new_scope_is_refused_too(self):
+        """`face`, `faces_only`, `Faces ` — the plural and the spelling are the contract,
+        and a typo must not quietly select a different population."""
+        for typo in ("face", "faces_only"):
+            with self.subTest(typo=typo):
+                with self.assertLogs("sorta.config", level=logging.WARNING):
+                    cfg = self._load(f"vlm:\n  quality_scope: {typo}\n")
+                self.assertEqual(cfg.vlm.quality_scope, "groups")
+        # case and surrounding space are normalized, as they always were
+        self.assertEqual(
+            self._load("vlm:\n  quality_scope: ' Faces '\n").vlm.quality_scope, "faces")
 
 
 class TestConfigureLogging(unittest.TestCase):

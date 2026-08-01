@@ -177,7 +177,9 @@ only paid for where the cheap one is not sure:
 * eyes open / a subject at all / an accidental shot — the local VLM, behind `vlm.quality`,
   over the UNCERTAIN BAND only (sharpness in the zone where it decides nothing, or a CLIP
   junk-group score too low to mean anything) inside `vlm.quality_scope` (pHash groups by
-  default). The answer is one line of keywords read leniently (the F96 lesson: asked for a
+  default; F125 adds `faces` — the frames a face was actually found on, which is the only
+  population the eyes question has, and without a faces run that scope asks nothing at
+  all). The answer is one line of keywords read leniently (the F96 lesson: asked for a
   composite format the model ignores it), and an answer that does not parse leaves NULL —
   never False. NULL means "not asked"; a consumer that reads it as "no" would decide that
   a frame nobody ever looked at has its eyes shut.
@@ -1310,6 +1312,12 @@ def quality_settings(cfg: Config) -> QualitySettings:
 # them on top by construction.
 QUALITY_VERDICT = "photo"
 
+# The `faces` row that means "this file was processed and no face was found in it" (see
+# the faces module docstring) — a bookkeeping marker, not a face. Every question about
+# REAL faces has to exclude it: on the live collection 24 195 files out of 24 196 carry
+# one, so a predicate that forgets it answers "all of them".
+NO_FACES_BBOX = "[]"
+
 
 def uncertain_band(sharpness: float | None, subject_score: float,
                    q: QualitySettings) -> bool:
@@ -1327,6 +1335,41 @@ def uncertain_band(sharpness: float | None, subject_score: float,
     return subject_score < q.subject_score_min
 
 
+def faces_stage_ran(conn: sqlite3.Connection) -> bool:
+    """Has the faces stage ever found a face in this index? One real row is enough.
+
+    `bbox = '[]'` is not a face but the marker "this file was processed and had none"
+    (faces module docstring), so it says nothing about the stage having run usefully and
+    everything about it having run at all — which is why every question about REAL faces
+    has to exclude it. On the live collection 24 195 files out of 24 196 carry such a row.
+    """
+    return bool(conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM faces WHERE bbox != ?)", (NO_FACES_BBOX,)
+    ).fetchone()[0])
+
+
+def quality_scope_ready(conn: sqlite3.Connection, scope: str) -> bool:
+    """May the quality VLM run under this scope at all? (F125, `faces` only)
+
+    `scope: faces` is a HARD dependency and not a filter that happens to come out empty:
+    the user's rule is "ask about the face markup only — no faces pass, no feature". So
+    the model half is not even built, the reason is logged, and the cheap tiers carry on
+    measuring: an optional add-on must not take the stage down with it.
+
+    Note this is NOT the F121 ambiguity and does not repeat its logic. There "no face on
+    this frame" and "nobody looked" are the same empty row and the answer is KEPT so the
+    signal does not switch off silently; here the scope itself is the face markup, so a
+    missing faces run leaves nothing to ask about in the first place.
+    """
+    if scope != "faces" or faces_stage_ran(conn):
+        return True
+    _log.warning(
+        "junk: vlm.quality_scope='faces', но найденных лиц в базе нет — сначала "
+        "нужен прогон стадии faces; VLM-вопросы о качестве пропущены, резкость и "
+        "животные считаются как обычно")
+    return False
+
+
 def quality_scope_ids(cfg: Config, conn: sqlite3.Connection,
                       scope: str) -> set[int] | None:
     """File ids the quality VLM may be asked about; None — no restriction (`all`).
@@ -1335,12 +1378,29 @@ def quality_scope_ids(cfg: Config, conn: sqlite3.Connection,
     frames of the same moment, which one is the keeper. `events` widens it to everything
     inside an event, `all` gives up the restriction entirely — and on a 20k collection
     that is the 4.3-hour option, which is why it is neither the default nor undocumented.
+
+    F125: `faces` is the population the eyes question actually has — photographs a face
+    was FOUND on, 7 341 of them on the live collection against 19 757 for `all`. The
+    `bbox != '[]'` half of the predicate is the whole feature: that marker means "processed,
+    no faces here" and stands on nearly every file, so a predicate without it turns "by
+    faces" into "by everything". A frame with no verdict yet is kept for the same reason
+    the quality half keeps it (a first run has not classified anything); a frame that is
+    not a photograph is dropped by the F120 gate anyway, on the fresh verdict rather than
+    the stored one.
     """
     if scope == "all":
         return None
     if scope == "events":
         return {int(r["file_id"]) for r in conn.execute(
             "SELECT DISTINCT file_id FROM event_files")}
+    if scope == "faces":
+        return {int(r["id"]) for r in conn.execute(
+            """SELECT f.id FROM files f
+               LEFT JOIN media_class mc ON mc.file_id = f.id
+               WHERE (mc.verdict IS NULL OR mc.verdict = ?)
+                 AND EXISTS(SELECT 1 FROM faces fa WHERE fa.file_id = f.id
+                            AND fa.bbox != ?)""",
+            (QUALITY_VERDICT, NO_FACES_BBOX))}
     from . import dedup  # local: dedup imports imaging/hashing, junk is not its consumer
 
     groups = dedup.near_duplicate_groups(conn, cfg.index.phash_max_distance)
@@ -1794,9 +1854,12 @@ def classify(
     # graceful fallback — a model that will not build must cost the cheap tiers nothing.
     # Its own toggle: a user may want the deep junk tier without the quality band or the
     # other way round, and the two populations have nothing to do with each other.
+    # F125: `vlm.quality_scope: faces` also has to be SATISFIABLE before a model is built
+    # — without a faces run its population is empty by construction, and loading 20 GB of
+    # weights to ask nothing is the one outcome worth a check up front.
     q = quality_settings(cfg)
     quality_ask: QualityAskFn | None = None
-    if use_clip and q.vlm_quality:
+    if use_clip and q.vlm_quality and quality_scope_ready(conn, q.vlm_scope):
         if quality_vlm is not None:
             quality_ask = quality_vlm
         else:
@@ -1842,8 +1905,7 @@ def classify(
     now = utcnow_iso()
     # F121: has the faces stage ever run here? One row is enough to tell — after that,
     # "this frame has no face" is a fact rather than an absence of evidence.
-    faces_known = bool(conn.execute(
-        "SELECT EXISTS(SELECT 1 FROM faces WHERE bbox != '[]')").fetchone()[0])
+    faces_known = faces_stage_ran(conn)
     quality = _QualityPass(
         conn, q, sharpness_detector or preview_sharpness_detector(q.sharpness_max_edge),
         quality_ask,
