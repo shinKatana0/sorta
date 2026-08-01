@@ -47,6 +47,7 @@ FOLDER_KEYS: tuple[str, ...] = (
     "document",
     "products",
     "to_delete",
+    "animals",
 )
 
 _FOLDERS: dict[str, dict[Lang, str]] = {
@@ -66,6 +67,10 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     "document": {"ru": "документ", "en": "document", "ja": "書類"},
     "products": {"ru": "_Товары", "en": "_Products", "ja": "_商品"},
     "to_delete": {"ru": "_удалить", "en": "_delete", "ja": "_削除"},
+    # F123: the default folder of the animal album. The slice has no selector to name
+    # itself after (unlike a person or an event), so the name is a folder name like any
+    # other the layout creates — and follows `language:` for the same reason.
+    "animals": {"ru": "_Животные", "en": "_Animals", "ja": "_動物"},
 }
 
 

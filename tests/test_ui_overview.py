@@ -118,7 +118,8 @@ class TestEmptyIndex(OverviewTestBase):
         data = self.overview()
         self.assertTrue(data["empty"])
         self.assertEqual(data["collection"], {"files": 0, "photos": 0, "videos": 0,
-                                              "duplicates": 0, "errors": 0, "events": 0})
+                                              "duplicates": 0, "errors": 0, "events": 0,
+                                              "animals": 0})
         self.assertEqual(data["place"]["total"], 0)
         self.assertEqual(data["place"]["confidence"], [])
         self.assertEqual(data["place"]["no_place"], 0)
@@ -160,7 +161,8 @@ class TestCollectionCounts(OverviewTestBase):
             "SELECT COUNT(*) FROM files WHERE error IS NOT NULL"))
         self.assertEqual(collection["events"], self.scalar("SELECT COUNT(*) FROM events"))
         self.assertEqual(collection, {"files": 7, "photos": 6, "videos": 1,
-                                      "duplicates": 1, "errors": 1, "events": 1})
+                                      "duplicates": 1, "errors": 1, "events": 1,
+                                      "animals": 0})
 
     def test_photos_and_videos_add_up_to_the_whole_index(self):
         self.add_file("a.jpg")

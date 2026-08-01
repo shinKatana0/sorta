@@ -1725,7 +1725,11 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 # removal from the pool (move). Journal/undo — the shared move_batches/moves
 # mechanism, operation='link'|'copy'|'move' (undo for 'link' — see _transfer/undo above).
 
-ALBUM_KINDS = ("person", "event")
+# F123: `animal` joins the pair. It is a slice like the other two — canonical files the
+# frame-quality stage marked as holding an animal — and the only thing that makes it
+# different is that there is nothing to select INSIDE it: the whole collection has one
+# animal view, so the selector is accepted and ignored.
+ALBUM_KINDS = ("person", "event", "animal")
 ALBUM_MODES = ("link", "copy", "move")
 
 
@@ -1735,14 +1739,18 @@ class AlbumPlanItem:
     src: Path
     dst: Path
     persons: list[str]     # labels of all named people on the file (for the move check)
+    # (kept for every kind: the multi-person block on `move` is about who is in the
+    # frame, not about what selected it — an animal photo with two named people in it
+    # is exactly as ambiguous to carry off as a person album's.)
     multi_person: bool     # len(persons) >= 2 — with mode='move' such a file is blocked
     already_copied: bool = False   # F97: the album already holds this exact file
 
 
 @dataclass
 class AlbumReport:
-    kind: str               # person | event
-    selector: str            # as passed by the caller (person name / event name|id)
+    kind: str               # person | event | animal
+    selector: str            # as passed by the caller (person name / event name|id;
+    #                          empty and ignored for animal)
     album_name: str          # the final folder name (before _sanitize)
     dest: Path               # dest/<album_name> (already resolved)
     mode: str                # link | copy | move
@@ -1788,6 +1796,9 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     NULL) that have a face in a cluster whose merged_into chain root (F31, via the
     shared _CTE/_person_files) has label==selector (casefold).
     kind='event': selector — an event name OR id; the slice = the event(s)' event_files.
+    kind='animal' (F123): the slice = files with a `frame_quality.pet` verdict. The
+    selector is not used — the collection has exactly one animal slice — and an empty
+    string is accepted for it; the default album name is the localized `animals` folder.
     where (opt.) reuses parse_where as an additional AND condition on top of the slice
     (person here is the subject, not a where field; --where can still carry its own
     city/country/event/year/person conditions). junk is NOT filtered (these are the
@@ -1824,6 +1835,14 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         subject_cond = ("f.id IN (SELECT file_id FROM _person_files "
                         "WHERE casefold(label) = casefold(?))")
         subject_params = [selector]
+    elif kind == "animal":
+        # F123: `pet IS NOT NULL` — the same "NULL means NOT ASKED" rule the whole
+        # frame_quality table lives by: a row exists for every frame the stage touched,
+        # and only the ones whose pet score cleared `features.pet_threshold` carry a
+        # verdict. dup_of/error are excluded below, with the other kinds.
+        resolved_name = i18n.folder("animals", lang)
+        subject_cond = "f.id IN (SELECT file_id FROM frame_quality WHERE pet IS NOT NULL)"
+        subject_params = []
     else:
         event_ids, resolved_name = _resolve_event_ids_and_name(conn, selector)
         if event_ids:
