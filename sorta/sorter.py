@@ -1334,8 +1334,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     drop_unlocalized_district = bool(
         getattr(cfg.sort, "drop_unlocalized_district", True))
     if delete_worse_dupes:
-        print("ВНИМАНИЕ: --delete-worse-dupes БЕЗВОЗВРАТНО удаляет худшие почти-дубликаты "
-              "(не подлежит откату через sorta undo)")
+        print(i18n.cli_text("cli.sort.warn_delete_dupes", lang))
     in_place_run = dest is None
     if dest is None:
         if len(cfg.sources) != 1:
@@ -1344,8 +1343,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                 "задайте --dest или оставьте один каталог в sources")
         dest = cfg.sources[0]
     if in_place_run and apply:
-        print(f"ВНИМАНИЕ: --dest не задан — реструктурируется ИСХОДНОЕ дерево "
-              f"в {Path(dest).resolve()} (in-place раскладка)")
+        print(i18n.cli_text("cli.sort.warn_in_place", lang,
+                            path=Path(dest).resolve()))
     conn.create_function("casefold", 1, _sql_casefold, deterministic=True)
     resolver = GeoResolver()  # G3: lazy loading of bundled data on first access
     cond, params = parse_where(where or [], lang, resolver)
@@ -1355,7 +1354,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
         have_phash = conn.execute(
             "SELECT COUNT(*) FROM files WHERE phash IS NOT NULL").fetchone()[0]
         if not have_phash:
-            print("pHash ещё не посчитан — запустите: sorta phash")
+            print(i18n.cli_text("cli.dupes.no_phash", lang))  # same sentence as `dupes`
             placeholder = _report_dir(cfg) / "sort_plan_no_phash"
             return SortReport(mode=mode, dest=dest,
                               csv_path=placeholder.with_suffix(".csv"),
@@ -1511,16 +1510,22 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                         excluded=excluded_count, in_place=in_place_run,
                         manual_excluded=manual_excluded_count,
                         manual_reassigned=manual_reassigned_count)
-    excluded_note = f"; исключено: {excluded_count}" if excludes else ""
-    # F77: manual corrections are reported on their own, not merged into `исключено`
+    excluded_note = (i18n.cli_text("cli.sort.plan_excluded", lang, n=excluded_count)
+                     if excludes else "")
+    # F77: manual corrections are reported on their own, not merged into the excluded
+    # count — they are a person's decision, not a rule from the config.
     manual_note = ""
     if manual_excluded_count or manual_reassigned_count:
-        manual_note = (f"; ручные правки: перенесено {manual_reassigned_count}, "
-                       f"не трогать {manual_excluded_count}")
-    where_note = (f"; план: {csv_path}, {html_path}" if write_reports else "")
+        manual_note = i18n.cli_text("cli.sort.plan_manual", lang,
+                                    reassigned=manual_reassigned_count,
+                                    excluded=manual_excluded_count)
+    where_note = (i18n.cli_text("cli.sort.plan_paths", lang,
+                                csv=csv_path, html=html_path) if write_reports else "")
+    # The command echo stays untranslated on purpose: it is what the reader would type.
     print(f"sort --by {mode}{' --apply' if apply else ' (dry-run)'}: "
-          f"{len(plan)} файлов -> {report.dirs} каталогов{where_note}"
-          f"{excluded_note}{manual_note}")
+          + i18n.cli_text("cli.sort.plan_counts", lang,
+                          files=len(plan), dirs=report.dirs)
+          + f"{where_note}{excluded_note}{manual_note}")
     if not apply:
         return report
 
@@ -1808,6 +1813,9 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         raise ValueError(f"неизвестный тип альбома {kind!r}; допустимы: {', '.join(ALBUM_KINDS)}")
     if mode not in ALBUM_MODES:
         raise ValueError(f"неизвестный режим альбома {mode!r}; допустимы: {', '.join(ALBUM_MODES)}")
+    # F118: this function printed Russian whatever `language:` said — plan_and_sort read
+    # the language and plan_album never did.
+    lang = i18n.normalize_lang(cfg.raw.get("language"))
     conn.create_function("casefold", 1, _sql_casefold, deterministic=True)
 
     subject_params: list[str | int]
@@ -1841,13 +1849,13 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
                          dest=album_dir, mode=mode)
 
     if not rows:
-        print(f"album {kind} {selector!r}: срез пуст, ничего не выгружено")
+        print(f"album {kind} {selector!r}: "
+              + i18n.cli_text("cli.album.empty", lang))
         return report
 
     persons_by_file = _load_persons(conn)
     if mode == "move":
-        print("ВНИМАНИЕ: --move изымает файлы альбома из общего пула сортировки "
-             "(канон города/другие альбомы больше не увидят эти файлы)")
+        print(i18n.cli_text("cli.album.warn_move", lang))
 
     claimed: set[str] = set()
     for r in rows:
@@ -1864,12 +1872,13 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         if blocked:
             names = ", ".join(str(it.src) for it in blocked[:5])
             more = " …" if len(blocked) > 5 else ""
-            print(f"ВНИМАНИЕ: {len(blocked)} файл(ов) с 2+ названными людьми на кадре — "
-                 f"move для них заблокирован (неясно, чей это альбом), используйте "
-                 f"--link/--copy: {names}{more}")
+            print(i18n.cli_text("cli.album.warn_blocked_multi", lang,
+                                n=len(blocked), names=names, more=more))
 
     print(f"album {kind} {selector!r}{' --apply' if apply else ' (dry-run)'} "
-         f"[{mode}]: {len(report.plan)} файлов -> {album_dir}")
+          f"[{mode}]: "
+          + i18n.cli_text("cli.album.plan_counts", lang,
+                          files=len(report.plan), dest=album_dir))
 
     if not apply:
         return report

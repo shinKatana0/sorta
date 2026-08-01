@@ -1095,7 +1095,10 @@ def resolve_places(
                 if progress:
                     progress(i, len(rows))
                 else:
-                    print(f"geo: {i}/{len(rows)} файлов")
+                    print(i18n.cli_text(
+                        "cli.geo.progress",
+                        i18n.normalize_lang(cfg.raw.get("language")),
+                        done=i, total=len(rows)))
         if progress and rows:
             progress(len(rows), len(rows))
     return stats

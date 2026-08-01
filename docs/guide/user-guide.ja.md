@@ -197,8 +197,8 @@ torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop
 onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
 mismatch: no
 geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
-Лог прогона: C:\Users\you\AppData\Local\sorta\logs\sorta.log
-Кэш превью: C:\Users\you\AppData\Local\sorta\previews
+実行ログ: C:\Users\you\AppData\Local\sorta\logs\sorta.log
+プレビューキャッシュ: C:\Users\you\AppData\Local\sorta\previews
 ```
 
 各行の読み方:
@@ -215,9 +215,9 @@ geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
   が座標を解決する相手です。存在し、かつ空でない必要があります。行頭に `⚠` が付き
   FILE NOT FOUND / FILE IS EMPTY と出る場合、すべての座標が空の場所に解決されます。
   対処は再インストール（チェックアウトなら `python scripts/build_geodata.py`）です。
-- **`Лог прогона:`**（実行ログ）— 実行ログの出力先（§19）。
-- **`Кэш превью:`**（プレビューキャッシュ）— デコード済みプレビューの保存先（§18）。
-  末尾の ` (ОТКЛЮЧЁН)` はキャッシュが無効という意味です。
+- **`実行ログ:`** — 実行ログの出力先（§19）。
+- **`プレビューキャッシュ:`** — デコード済みプレビューの保存先（§18）。
+  末尾の `（無効）` はキャッシュが無効という意味です。
 
 上の出力は `language: ru` で取得したものなので、最後の 2 行がロシア語になっています。
 既定の `en` なら "Run log:"、"Preview cache:" と表示されます。その上の 2 つの診断
@@ -439,32 +439,32 @@ sorta undo
 
 ```
 $ sorta index -c config.yaml
-Готово: +13 новых, ~0 обновлено, 0 пропущено, 0 ошибок, 1 дубликатов помечено
+完了: 新規 +13、更新 ~0、スキップ 0、エラー 0、重複マーク 1
 
 $ sorta geo -c config.yaml
-Готово: 12 файлов — exact_gps 10, session_inferred 1, trip_inferred 0, unknown 1
+完了: 12 ファイル — exact_gps 10、session_inferred 1、trip_inferred 0、path_inferred 0、unknown 1
 
 $ sorta faces -c config.yaml
-Детекция: 12 файлов, 0 лиц, 12 без лиц, 0 ошибок
-Кластеры: 0 (лиц в кластерах: 0, шум: 0, имён сохранено: 0)
+検出: 12 ファイル、0 個の顔、顔なし 12、エラー 0
+クラスタ: 0（クラスタ内の顔: 0、ノイズ: 0、保持した名前: 0）
 
 $ sorta events -c config.yaml
-События: 1 авто (7 файлов, имён сохранено: 0), 0 ручных (0 файлов)
+イベント: 自動 1（7 ファイル、保持した名前: 0）、手動 0（0 ファイル）
 
 $ sorta junk -c config.yaml
-Классификация: 12/12 обработано (photo: 11, screenshot: 1)
+分類: 12/12 処理済み（photo: 11, screenshot: 1）
 
 $ sorta phash -c config.yaml
-pHash посчитан для 13 фото. Отчёт: sorta dupes --near
+13 枚の写真の pHash を計算しました。レポート: sorta dupes --near
 
 $ sorta stats -c config.yaml
-Файлов в индексе: 13 (+0 с ошибками)
-  с GPS:            11 (84%)
-  дата из exif     : 13 (100%)
-  дата из filename : 0 (0%)
-  дата из mtime    : 0 (0%)
-  дубликатов:       1
-Гео (places): 12
+インデックス内のファイル: 13（エラー +0）
+  GPS あり:           11 (84%)
+  日付ソース exif     : 13 (100%)
+  日付ソース filename : 0 (0%)
+  日付ソース mtime    : 0 (0%)
+  重複:                1
+位置情報 (places): 12
   exact_gps       : 10 (83%)
   unknown         : 1 (8%)
   session_inferred: 1 (8%)
@@ -472,11 +472,6 @@ $ sorta stats -c config.yaml
 
 ここで注目してほしい点（実際の出力どおりで、演出のために書き換えてはいません）:
 
-- **メッセージがロシア語なのは、設定が `language: ru` だったからです** — §4 の注記
-  参照。自分で実行せずこの出力を読む場合のために、大まかな訳: *「Готово: +13
-  новых」*=「完了: 新規 +13」、*「дубликатов」*= 重複、*「с GPS」*= GPS あり、
-  *「Детекция」*= 検出、*「Кластеры」*= クラスタ、*「События」*= イベント、
-  *「Классификация」*= 分類。
 - `index` は **13** ファイルを見つけ、後の `stats` も 13 と報告しています —
   完全重複ファイルは（`dup_of` が設定された状態で）**インデックスされます**が、
   独自の場所/イベント/junk 行を持たないため、`geo`/`junk` は **12** と報告します。
@@ -589,7 +584,7 @@ sorta sort --by event  --dest <dir> [--apply] …
 
 ```
 $ sorta sort --by city --dest sorted -c config.yaml
-sort --by city (dry-run): 12 файлов -> 4 каталогов; план: …\report_output\sort_plan_city_20260721_113247.csv, …\report_output\sort_plan_city_20260721_113247.html
+sort --by city (dry-run): 12 ファイル -> 4 フォルダ; プラン: …\report_output\sort_plan_city_20260721_113247.csv, …\report_output\sort_plan_city_20260721_113247.html
 ```
 
 CSV プラン（1 行 1 ファイル、`target` は `--dest` からの相対パス）— ここで重要な
@@ -613,8 +608,8 @@ CSV プラン（1 行 1 ファイル、`target` は `--dest` からの相対パ�
 
 ```
 $ sorta sort --by city --dest sorted_apply --copy --apply -c config.yaml
-sort --by city --apply: 12 файлов -> 4 каталогов; план: …
-Скопировано 12, на месте 0, ошибок 0. Откат: sorta undo
+sort --by city --apply: 12 ファイル -> 4 フォルダ; プラン: …
+コピー 12、そのまま 0、エラー 0。取り消し: sorta undo
 
 $ find sorted_apply -type f
 sorted_apply/フランス/パリ/2023/paris_01.jpg
@@ -631,7 +626,7 @@ sorted_apply/日本/東京都/2023/歌舞伎町/tokyo_02.jpg
 sorted_apply/_未分類/ゴミ/screenshot/shot_01.jpg
 
 $ sorta undo -c config.yaml
-Откат батча 2: возвращено 12, отсутствовало 0, ошибок 0
+バッチ 2 の取り消し: 復元 12、欠落 0、エラー 0
 
 $ find sorted_apply -type f
 （何も出ない — undo が全コピーを削除）
@@ -648,7 +643,7 @@ $ find sorted_apply -type f
 
 ```
 $ sorta sort --by city --dest sorted_fr --where "country=FR" -c config.yaml
-sort --by city (dry-run): 7 файлов -> 1 каталогов; план: …
+sort --by city (dry-run): 7 ファイル -> 1 フォルダ; プラン: …
 ```
 
 フランスに解決された 7 ファイルだけがプランに含まれます。それ以外は
@@ -658,7 +653,7 @@ sort --by city (dry-run): 7 файлов -> 1 каталогов; план: …
 
 ```
 $ sorta sort --by event --dest sorted_event -c config.yaml
-sort --by event (dry-run): 12 файлов -> 3 каталогов; план: …
+sort --by event (dry-run): 12 ファイル -> 3 フォルダ; プラン: …
 ```
 
 | path | event | target |
@@ -708,19 +703,19 @@ UI の **重複** タブ: 各グループにおすすめの残す 1 枚（★）
 ```
 $ sorta dupes -c config.yaml
 paris_01_copy.jpg
-  -> дубликат paris_01.jpg
+  -> paris_01.jpg の重複
 
-Всего: 1
+合計: 1
 
 $ sorta dupes --near -c config.yaml
-Группа из 2 похожих:
-  paris_02.jpg  (7424 байт)
-  paris_02_edited.jpg  (5908 байт)
-Группа из 2 похожих:
-  person_a_1.jpg  (14742 байт)
-  person_a_2.jpg  (14742 байт)
+類似 2 件のグループ:
+  paris_02.jpg  (7424 バイト)
+  paris_02_edited.jpg  (5908 バイト)
+類似 2 件のグループ:
+  person_a_1.jpg  (14742 バイト)
+  person_a_2.jpg  (14742 バイト)
 
-Групп: 2 (порог Хэмминга: 5)
+グループ: 2（ハミング距離のしきい値: 5）
 ```
 
 `paris_02_edited.jpg` は `paris_02.jpg` を実際に再圧縮・縮小したコピーで、
@@ -751,17 +746,17 @@ $ sorta dupes --near -c config.yaml
 
 ```
 $ sorta faces -c config.yaml
-Детекция: 12 файлов, 0 лиц, 12 без лиц, 0 ошибок
-Кластеры: 0 (лиц в кластерах: 0, шум: 0, имён сохранено: 0)
+検出: 12 ファイル、0 個の顔、顔なし 12、エラー 0
+クラスタ: 0（クラスタ内の顔: 0、ノイズ: 0、保持した名前: 0）
 ```
 
 本当にゼロです — buffalo_l は実在の写真で訓練されており、私たちの合成プレース
 ホルダー画像（フラットなベクター図形で、実際の顔のテクスチャではない）には正しく
 反応しません。これは想定どおりであり、Sorta やこのガイドのバグではありません。
 実際の写真コレクションに `sorta faces` を向ければ、実在の顔を検出します。検出でき
-れば（この合成実行ではなく実際の実行なら、たとえば `Детекция: 340 файлов, 512
-лиц, 8 без лиц, 0 ошибок` / `Кластеры: 6 (лиц в кластерах: 480, шум: 32, имён
-сохранено: 0)` のような出力になります）、命名と振り分けは上と全く同じコマンドです
+れば（この合成実行ではなく実際の実行なら、たとえば `検出: 340 ファイル、512 個の顔、
+顔なし 8、エラー 0` / `クラスタ: 6（クラスタ内の顔: 480、ノイズ: 32、
+保持した名前: 0）` のような出力になります）、命名と振り分けは上と全く同じコマンドです
 — `sorta faces label 3 "母"` はクラスタ `3` に名前を付け、続けて
 `sorta sort --by person --dest … --apply` がその人物の写真を `<dest>/母/` に
 振り分けます。
@@ -788,7 +783,7 @@ $ sorta faces -c config.yaml
 
 ```
 $ sorta events -c config.yaml
-События: 1 авто (7 файлов, имён сохранено: 0), 0 ручных (0 файлов)
+イベント: 自動 1（7 ファイル、保持した名前: 0）、手動 0（0 ファイル）
 ```
 
 ---
@@ -822,8 +817,8 @@ sorta album event "2025-05-21..05-23 Tokyo" --dest /path/to/albums \
 
 ```
 $ sorta album event "2023-06-10..06-11 Paris" --dest albums --copy --apply -c config.yaml
-album event '2023-06-10..06-11 Paris' --apply [copy]: 7 файлов -> …\albums\2023-06-10..06-11 Paris
-Альбом «2023-06-10..06-11 Paris»: выгружено 7, ошибок 0. Откат: sorta undo
+album event '2023-06-10..06-11 Paris' --apply [copy]: 7 ファイル -> …\albums\2023-06-10..06-11 Paris
+アルバム「2023-06-10..06-11 Paris」: 出力 7、エラー 0。取り消し: sorta undo
 
 $ find albums -type f
 albums/2023-06-10..06-11 Paris/paris_01.jpg
@@ -872,7 +867,7 @@ albums/2023-06-10..06-11 Paris/person_a_1.jpg
 
 ```
 $ sorta junk -c config.yaml
-Классификация: 12/12 обработано (photo: 11, screenshot: 1)
+分類: 12/12 処理済み（photo: 11, screenshot: 1）
 ```
 
 ---
@@ -975,8 +970,8 @@ sorta cache [--clear] [--clear-geo]
 
 ```
 $ sorta index --refresh-exif -c config.yaml
-Перечитано: <N> файлов, обновлено <N>; вернулось координат: <N>, дат съёмки: <N>; без EXIF: <N>, ошибок: <N>
-Появились новые координаты — перезапустите: sorta geo (и sorta events)
+再読み込み: <N> ファイル、更新 <N>。復元した座標: <N>、撮影日: <N>。EXIF なし: <N>、エラー: <N>
+新しい座標が見つかりました — 再実行してください: sorta geo（および sorta events）
 ```
 
 - **なぜ必要か。** 通常の `sorta index` はこれらのファイルを意図的にスキップします:

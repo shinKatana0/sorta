@@ -193,8 +193,8 @@ torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop
 onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
 mismatch: no
 geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
-Лог прогона: C:\Users\you\AppData\Local\sorta\logs\sorta.log
-Кэш превью: C:\Users\you\AppData\Local\sorta\previews
+Run log: C:\Users\you\AppData\Local\sorta\logs\sorta.log
+Preview cache: C:\Users\you\AppData\Local\sorta\previews
 ```
 
 How to read it, line by line:
@@ -213,9 +213,9 @@ How to read it, line by line:
   prefixed with `⚠` and says FILE NOT FOUND / FILE IS EMPTY, every coordinate resolves
   to an empty place and the fix is a reinstall (or `python scripts/build_geodata.py`
   in a checkout).
-- **`Лог прогона:`** ("run log") — where the run log is written (§19).
-- **`Кэш превью:`** ("preview cache") — where decoded previews are cached (§18); a
-  ` (ОТКЛЮЧЁН)` suffix means the cache is switched off.
+- **`Run log:`** — where the run log is written (§19).
+- **`Preview cache:`** — where decoded previews are cached (§18); a
+  ` (DISABLED)` suffix means the cache is switched off.
 
 The capture above was taken with `language: ru`, which is why those last two labels are
 Russian; with the default `en` they read "Run log:" and "Preview cache:". The two health
@@ -437,50 +437,44 @@ collection (13 generated JPEGs with embedded EXIF/GPS: a 2‑day "Paris" trip, a
 "Tokyo" day that's too small to become an event, an exact duplicate, a near‑duplicate,
 a screenshot, and two placeholder "face" images used only to exercise the pipeline —
 not real photographs of anyone). It's here so you know exactly what to expect; the
-full walkthrough of every mode continues in §9–§13. It was captured with
-`language: ru` in the config — on the default `en` the same commands print the same
-thing in English (§4).
+full walkthrough of every mode continues in §9–§13. The output below is what the
+default `language: en` prints; set `language: ru` or `ja` and the same commands say the
+same thing in that language (§4).
 
 ```
 $ sorta index -c config.yaml
-Готово: +13 новых, ~0 обновлено, 0 пропущено, 0 ошибок, 1 дубликатов помечено
+Done: +13 new, ~0 updated, 0 skipped, 0 errors, 1 duplicates marked
 
 $ sorta geo -c config.yaml
-Готово: 12 файлов — exact_gps 10, session_inferred 1, trip_inferred 0, unknown 1
+Done: 12 files — exact_gps 10, session_inferred 1, trip_inferred 0, path_inferred 0, unknown 1
 
 $ sorta faces -c config.yaml
-Детекция: 12 файлов, 0 лиц, 12 без лиц, 0 ошибок
-Кластеры: 0 (лиц в кластерах: 0, шум: 0, имён сохранено: 0)
+Detection: 12 files, 0 faces, 12 without faces, 0 errors
+Clusters: 0 (faces in clusters: 0, noise: 0, names kept: 0)
 
 $ sorta events -c config.yaml
-События: 1 авто (7 файлов, имён сохранено: 0), 0 ручных (0 файлов)
+Events: 1 automatic (7 files, names kept: 0), 0 manual (0 files)
 
 $ sorta junk -c config.yaml
-Классификация: 12/12 обработано (photo: 11, screenshot: 1)
+Classification: 12/12 processed (photo: 11, screenshot: 1)
 
 $ sorta phash -c config.yaml
-pHash посчитан для 13 фото. Отчёт: sorta dupes --near
+pHash computed for 13 photos. Report: sorta dupes --near
 
 $ sorta stats -c config.yaml
-Файлов в индексе: 13 (+0 с ошибками)
-  с GPS:            11 (84%)
-  дата из exif     : 13 (100%)
-  дата из filename : 0 (0%)
-  дата из mtime    : 0 (0%)
-  дубликатов:       1
-Гео (places): 12
+Files in the index: 13 (+0 with errors)
+  with GPS:           11 (84%)
+  date from exif     : 13 (100%)
+  date from filename : 0 (0%)
+  date from mtime    : 0 (0%)
+  duplicates:         1
+Geo (places): 12
   exact_gps       : 10 (83%)
   unknown         : 1 (8%)
   session_inferred: 1 (8%)
 ```
 
 A few things worth noticing here (real, not edited for effect):
-
-- **The messages are Russian because the config said `language: ru`** — see the note
-  in §4. A rough gloss, in case you read the capture rather than run it yourself:
-  *"Готово: +13 новых"* = "Done: +13 new", *"дубликатов"* = duplicates, *"с GPS"* =
-  with GPS, *"Детекция"* = Detection, *"Кластеры"* = Clusters, *"События"* = Events,
-  *"Классификация"* = Classification.
 - `index` found **13** files but `stats` later also says 13 — the exact‑duplicate
   file *is* indexed (with `dup_of` set), it just doesn't get its own place/event/junk
   row, which is why `geo`/`junk` report **12**.
@@ -592,7 +586,7 @@ Continuing the synthetic collection from §7 (index/geo/junk already ran):
 
 ```
 $ sorta sort --by city --dest sorted -c config.yaml
-sort --by city (dry-run): 12 файлов -> 4 каталогов; план: …\report_output\sort_plan_city_20260721_113247.csv, …\report_output\sort_plan_city_20260721_113247.html
+sort --by city (dry-run): 12 files -> 4 folders; plan: …\report_output\sort_plan_city_20260721_113247.csv, …\report_output\sort_plan_city_20260721_113247.html
 ```
 
 The CSV plan (one row per file — `target` is relative to `--dest`) — trimmed to the
@@ -616,8 +610,8 @@ resulting tree:
 
 ```
 $ sorta sort --by city --dest sorted_apply --copy --apply -c config.yaml
-sort --by city --apply: 12 файлов -> 4 каталогов; план: …
-Скопировано 12, на месте 0, ошибок 0. Откат: sorta undo
+sort --by city --apply: 12 files -> 4 folders; plan: …
+Copied 12, in place 0, errors 0. Undo: sorta undo
 
 $ find sorted_apply -type f
 sorted_apply/France/Paris/2023/paris_01.jpg
@@ -634,7 +628,7 @@ sorted_apply/Japan/Tokyo/2023/tokyo_02.jpg
 sorted_apply/_Unsorted/junk/screenshot/shot_01.jpg
 
 $ sorta undo -c config.yaml
-Откат батча 2: возвращено 12, отсутствовало 0, ошибок 0
+Undo of batch 2: 12 restored, 0 missing, 0 errors
 
 $ find sorted_apply -type f
 (nothing — undo removed every copy)
@@ -653,7 +647,7 @@ transliterated code.
 
 ```
 $ sorta sort --by city --dest sorted_fr --where "country=FR" -c config.yaml
-sort --by city (dry-run): 7 файлов -> 1 каталогов; план: …
+sort --by city (dry-run): 7 files -> 1 folders; plan: …
 ```
 
 Only the 7 French‑resolved files are planned; everything else is left out of the plan
@@ -663,7 +657,7 @@ entirely (not routed to `_Unsorted`).
 
 ```
 $ sorta sort --by event --dest sorted_event -c config.yaml
-sort --by event (dry-run): 12 файлов -> 3 каталогов; план: …
+sort --by event (dry-run): 12 files -> 3 folders; plan: …
 ```
 
 | path | event | target |
@@ -715,19 +709,19 @@ Real output on the synthetic collection from §7 (after `sorta phash`):
 ```
 $ sorta dupes -c config.yaml
 paris_01_copy.jpg
-  -> дубликат paris_01.jpg
+  -> duplicate of paris_01.jpg
 
-Всего: 1
+Total: 1
 
 $ sorta dupes --near -c config.yaml
-Группа из 2 похожих:
-  paris_02.jpg  (7424 байт)
-  paris_02_edited.jpg  (5908 байт)
-Группа из 2 похожих:
-  person_a_1.jpg  (14742 байт)
-  person_a_2.jpg  (14742 байт)
+A group of 2 similar:
+  paris_02.jpg  (7424 bytes)
+  paris_02_edited.jpg  (5908 bytes)
+A group of 2 similar:
+  person_a_1.jpg  (14742 bytes)
+  person_a_2.jpg  (14742 bytes)
 
-Групп: 2 (порог Хэмминга: 5)
+Groups: 2 (Hamming threshold: 5)
 ```
 
 `paris_02_edited.jpg` is a genuinely recompressed/resized copy of `paris_02.jpg` —
@@ -758,16 +752,16 @@ it doesn't run on a base pipeline. Real output from §7's synthetic collection:
 
 ```
 $ sorta faces -c config.yaml
-Детекция: 12 файлов, 0 лиц, 12 без лиц, 0 ошибок
-Кластеры: 0 (лиц в кластерах: 0, шум: 0, имён сохранено: 0)
+Detection: 12 files, 0 faces, 12 without faces, 0 errors
+Clusters: 0 (faces in clusters: 0, noise: 0, names kept: 0)
 ```
 
 Genuinely zero — buffalo_l is trained on real photographs and correctly does not fire
 on our synthetic placeholder images (flat vector shapes, not real facial texture).
 That's expected, not a bug in Sorta or in this guide: point `sorta faces` at an
 actual photo collection and it detects real faces. Once it has (a real run, not this
-synthetic one, would print something like `Детекция: 340 файлов, 512 лиц, 8 без лиц,
-0 ошибок` / `Кластеры: 6 (лиц в кластерах: 480, шум: 32, имён сохранено: 0)`), naming
+synthetic one, would print something like `Detection: 340 files, 512 faces, 8 without
+faces, 0 errors` / `Clusters: 6 (faces in clusters: 480, noise: 32, names kept: 0)`), naming
 and sorting are exactly the commands above — `sorta faces label 3 "Mom"` names cluster
 `3`, then `sorta sort --by person --dest … --apply` files that person's photos under
 `<dest>/Mom/`.
@@ -793,7 +787,7 @@ Manual control:
 
 ```
 $ sorta events -c config.yaml
-События: 1 авто (7 файлов, имён сохранено: 0), 0 ручных (0 файлов)
+Events: 1 automatic (7 files, names kept: 0), 0 manual (0 files)
 ```
 
 ---
@@ -827,8 +821,8 @@ Real output — collecting the Paris event from §12 into an album, as copies:
 
 ```
 $ sorta album event "2023-06-10..06-11 Paris" --dest albums --copy --apply -c config.yaml
-album event '2023-06-10..06-11 Paris' --apply [copy]: 7 файлов -> …\albums\2023-06-10..06-11 Paris
-Альбом «2023-06-10..06-11 Paris»: выгружено 7, ошибок 0. Откат: sorta undo
+album event '2023-06-10..06-11 Paris' --apply [copy]: 7 files -> …\albums\2023-06-10..06-11 Paris
+Album 2023-06-10..06-11 Paris: 7 exported, 0 errors. Undo: sorta undo
 
 $ find albums -type f
 albums/2023-06-10..06-11 Paris/paris_01.jpg
@@ -878,7 +872,7 @@ is picked up by the folder‑name heuristic, the rest classify as ordinary photo
 
 ```
 $ sorta junk -c config.yaml
-Классификация: 12/12 обработано (photo: 11, screenshot: 1)
+Classification: 12/12 processed (photo: 11, screenshot: 1)
 ```
 
 ---
@@ -984,8 +978,8 @@ them. The summary line has this shape (`<…>` are the counters of your run):
 
 ```
 $ sorta index --refresh-exif -c config.yaml
-Перечитано: <N> файлов, обновлено <N>; вернулось координат: <N>, дат съёмки: <N>; без EXIF: <N>, ошибок: <N>
-Появились новые координаты — перезапустите: sorta geo (и sorta events)
+Re-read: <N> files, <N> updated; coordinates recovered: <N>, capture dates: <N>; without EXIF: <N>, errors: <N>
+New coordinates appeared — re-run: sorta geo (and sorta events)
 ```
 
 (*"Re‑read: N files, N updated; coordinates recovered: N, capture dates: N; no EXIF:

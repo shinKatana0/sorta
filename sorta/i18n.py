@@ -496,6 +496,84 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Geo cache (geo_cache): {n} entries",
         "ja": "位置情報キャッシュ (geo_cache): {n} 件",
     },
+    # F118: the plan summary and the warnings around it are printed by sorter.py, which
+    # F112 never reached — it localized cli.py and left this file writing Russian
+    # whatever `language:` said. The command echo itself (`sort --by city --apply`) is
+    # deliberately NOT translated: it is the command the reader would type.
+    "cli.sort.plan_counts": {
+        "ru": "{files} файлов -> {dirs} каталогов",
+        "en": "{files} files -> {dirs} folders",
+        "ja": "{files} ファイル -> {dirs} フォルダ",
+    },
+    "cli.sort.plan_paths": {
+        "ru": "; план: {csv}, {html}",
+        "en": "; plan: {csv}, {html}",
+        "ja": "; プラン: {csv}、{html}",
+    },
+    "cli.sort.plan_excluded": {
+        "ru": "; исключено: {n}",
+        "en": "; excluded: {n}",
+        "ja": "; 除外: {n}",
+    },
+    "cli.sort.plan_manual": {
+        "ru": "; ручные правки: перенесено {reassigned}, не трогать {excluded}",
+        "en": "; manual edits: {reassigned} reassigned, {excluded} left alone",
+        "ja": "; 手動修正: 移動 {reassigned}、そのまま {excluded}",
+    },
+    "cli.sort.warn_delete_dupes": {
+        "ru": "ВНИМАНИЕ: --delete-worse-dupes БЕЗВОЗВРАТНО удаляет худшие "
+              "почти-дубликаты (не подлежит откату через sorta undo)",
+        "en": "WARNING: --delete-worse-dupes deletes the worse near-duplicates "
+              "IRREVERSIBLY (sorta undo cannot bring them back)",
+        "ja": "警告: --delete-worse-dupes は劣るほうの類似写真を**元に戻せない形で**"
+              "削除します（sorta undo では復元できません）",
+    },
+    "cli.sort.warn_in_place": {
+        "ru": "ВНИМАНИЕ: --dest не задан — реструктурируется ИСХОДНОЕ дерево "
+              "в {path} (in-place раскладка)",
+        "en": "WARNING: no --dest given — the SOURCE tree at {path} is the one being "
+              "restructured (an in-place layout)",
+        "ja": "警告: --dest が未指定です — {path} の**元のツリー**を組み替えます"
+              "（その場での振り分け）",
+    },
+    "cli.geo.progress": {
+        "ru": "geo: {done}/{total} файлов",
+        "en": "geo: {done}/{total} files",
+        "ja": "geo: {done}/{total} ファイル",
+    },
+    "cli.ui.serving": {
+        "ru": "sorta ui: {url} (Ctrl+C для остановки)",
+        "en": "sorta ui: {url} (Ctrl+C to stop)",
+        "ja": "sorta ui: {url}（停止は Ctrl+C）",
+    },
+    "cli.album.empty": {
+        "ru": "срез пуст, ничего не выгружено",
+        "en": "the slice is empty, nothing exported",
+        "ja": "対象が空のため、何も出力していません",
+    },
+    "cli.album.plan_counts": {
+        "ru": "{files} файлов -> {dest}",
+        "en": "{files} files -> {dest}",
+        "ja": "{files} ファイル -> {dest}",
+    },
+    "cli.album.warn_move": {
+        "ru": "ВНИМАНИЕ: --move изымает файлы альбома из общего пула сортировки "
+              "(канон города/другие альбомы больше не увидят эти файлы)",
+        "en": "WARNING: --move takes the album's files OUT of the shared pool (the city "
+              "canon and any other album will no longer see them)",
+        "ja": "警告: --move はアルバムのファイルを共有プールから**取り出します**"
+              "（都市の正規構成や他のアルバムからは見えなくなります）",
+    },
+    "cli.album.warn_blocked_multi": {
+        "ru": "ВНИМАНИЕ: {n} файл(ов) с 2+ названными людьми на кадре — move для них "
+              "заблокирован (неясно, чей это альбом), используйте --link/--copy: "
+              "{names}{more}",
+        "en": "WARNING: {n} file(s) hold 2+ named people, so move is blocked for them "
+              "(whose album would they go to?) — use --link/--copy: {names}{more}",
+        "ja": "警告: 名前の付いた人物が 2 人以上写るファイルが {n} 件あり、move は"
+              "ブロックされます（どちらのアルバムか決められません）。--link/--copy を"
+              "使ってください: {names}{more}",
+    },
     # sort — moved/copied are separate templates, not a verb pasted into a sentence
     "cli.sort.moved": {
         "ru": "Перемещено {moved}, на месте {in_place}, ошибок {failed}{extra}. "

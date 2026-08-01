@@ -13,6 +13,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from sorta import i18n
 from sorta.config import Config, SortConfig
 from sorta.db import connect
 from sorta.geodata import GeoResolver
@@ -27,6 +28,17 @@ from sorta.sorter import (
     plan_and_sort,
     undo,
 )
+
+
+def _warn_prefix(key: str) -> str:
+    """The part of a warning template that precedes its first placeholder.
+
+    F118 moved sorter.py's warnings into the i18n catalog, so a case that pins the
+    Russian literal now pins the language the suite happens to run in rather than the
+    behaviour. Matching the stable head of the template says "this warning was printed"
+    without hard-coding a translation or the interpolated path.
+    """
+    return i18n.cli_text(key, "en", path="\0", n="\0", names="\0", more="\0").split("\0")[0]
 
 
 # F46: a tiny bundled geo fixture for a localized --where. 200/250 —
@@ -1528,14 +1540,17 @@ class TestInPlaceSort(SorterTestBase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             plan_and_sort(self.cfg, self.conn, "city", None, apply=True)
-        self.assertIn("ИСХОДНОЕ дерево", buf.getvalue())
+        # F118: against the catalog, not a Russian literal — the warning follows
+        # `language:` now, and what this case is about is that it appears at all. The
+        # text up to the {path} placeholder is the stable part to match on.
+        self.assertIn(_warn_prefix("cli.sort.warn_in_place"), buf.getvalue())
 
     def test_dry_run_does_not_print_in_place_warning(self):
         self.add_file("img1.jpg", country="France", city="Paris")
         buf = io.StringIO()
         with redirect_stdout(buf):
             plan_and_sort(self.cfg, self.conn, "city", None, apply=False)
-        self.assertNotIn("ИСХОДНОЕ дерево", buf.getvalue())
+        self.assertNotIn(_warn_prefix("cli.sort.warn_in_place"), buf.getvalue())
 
     def test_second_apply_is_idempotent_moves_nothing(self):
         ids = [self.add_file(f"img{i}.jpg", content=f"data{i}".encode(),
@@ -1745,7 +1760,10 @@ class TestPlanAlbumApply(SorterTestBase):
         with redirect_stdout(buf):
             plan_album(self.cfg, self.conn, "person", "Мама", self.dest,
                       mode="move", apply=False)
-        self.assertIn("ВНИМАНИЕ", buf.getvalue())
+        # F118: sorter.py used to print this warning in Russian whatever `language:`
+        # said. Asserted against the catalog rather than a literal, so the case checks
+        # that the warning is PRINTED, not which language the suite happens to run in.
+        self.assertIn(i18n.cli_text("cli.album.warn_move", "en"), buf.getvalue())
 
     def test_move_transfers_single_owner_file_and_updates_path(self):
         fid = self.add_file("a.jpg", content=b"hello")

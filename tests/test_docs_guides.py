@@ -266,6 +266,32 @@ class TestGuidesAgreeWithTheCode(unittest.TestCase):
                 with self.subTest(lang=lang, verdict=verdict):
                     self.assertIn(f"`{verdict}`", read(path))
 
+    def test_no_russian_output_is_quoted_in_the_other_guides(self):
+        """F118: a sample of CLI output in the en/ja guides must be in that language.
+
+        Until F112 the CLI spoke only Russian, so quoting Russian output was accurate
+        and both guides did it — around thirty samples each, plus a glossary translating
+        the words. F112 made the output follow `language:` and defaulted it to `en`,
+        which turned every one of those samples into a statement about behaviour that no
+        longer exists. This is the F115 failure mode exactly: not a gap, a false
+        statement, and a reader has no way to tell.
+
+        Fenced blocks only. Cyrillic in prose is legitimate — the links to the Russian
+        translation, and the layout folder names (`Россия/…`), which are data produced by
+        `language: ru` rather than chrome.
+        """
+        for lang, path in (("en", GUIDES["en"]), ("ja", GUIDES["ja"])):
+            offenders = []
+            in_fence = False
+            for number, line in enumerate(read(path).splitlines(), 1):
+                if line.startswith("```"):
+                    in_fence = not in_fence
+                    continue
+                if in_fence and _CYRILLIC.search(line):
+                    offenders.append(f"{number}: {line.strip()}")
+            with self.subTest(lang=lang):
+                self.assertEqual(offenders, [], f"{path.name}: {offenders}")
+
     def test_every_configuration_key_is_documented(self):
         """Every key of every section, read off the class that owns it.
 

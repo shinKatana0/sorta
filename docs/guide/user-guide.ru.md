@@ -441,7 +441,7 @@ $ sorta index -c config.yaml
 Готово: +13 новых, ~0 обновлено, 0 пропущено, 0 ошибок, 1 дубликатов помечено
 
 $ sorta geo -c config.yaml
-Готово: 12 файлов — exact_gps 10, session_inferred 1, trip_inferred 0, unknown 1
+Готово: 12 файлов — exact_gps 10, session_inferred 1, trip_inferred 0, path_inferred 0, unknown 1
 
 $ sorta faces -c config.yaml
 Детекция: 12 файлов, 0 лиц, 12 без лиц, 0 ошибок

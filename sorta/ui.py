@@ -9241,7 +9241,7 @@ def serve(cfg: Config, conn: sqlite3.Connection, *,
     except OSError as exc:
         raise RuntimeError(f"sorta ui: порт {port} занят или недоступен: {exc}") from exc
     url = f"http://127.0.0.1:{httpd.server_port}/"
-    print(f"sorta ui: {url} (Ctrl+C для остановки)")
+    print(i18n.cli_text("cli.ui.serving", i18n.normalize_lang(cfg.language), url=url))
     if open_browser:
         webbrowser.open(url)
     try:

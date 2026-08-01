@@ -13,6 +13,7 @@ from pathlib import Path
 
 from tests.test_sorter import SorterTestBase
 
+from sorta import i18n
 from sorta.sorter import plan_and_sort
 
 
@@ -239,7 +240,9 @@ class TestDeleteWorseDupes(DedupeTestBase):
         with redirect_stdout(buf):
             report = plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=False,
                                    dedupe=True, delete_worse_dupes=True)
-        self.assertIn("БЕЗВОЗВРАТНО", buf.getvalue())
+        # F118: the warning follows `language:` now — assert it was printed, not which
+        # language the suite happens to run in.
+        self.assertIn(i18n.cli_text("cli.sort.warn_delete_dupes", "en"), buf.getvalue())
         self.assertTrue(small_path.exists())
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) FROM moves").fetchone()[0], 0)

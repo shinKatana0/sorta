@@ -13,6 +13,7 @@ from contextlib import redirect_stdout
 
 from tests.test_sorter import SorterTestBase
 
+from sorta import i18n
 from sorta.sorter import _manual_target_parts, plan_and_sort
 
 
@@ -321,14 +322,21 @@ class TestNoOverridesRegression(OverridesTestBase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=False)
-        self.assertIn("ручные правки: перенесено 1, не трогать 1", buf.getvalue())
+        # F118: the note follows `language:` now. Both numbers still matter — that is
+        # the point of the case (F77 reports corrections apart from the exclude count).
+        self.assertIn(
+            i18n.cli_text("cli.sort.plan_manual", "en", reassigned=1, excluded=1),
+            buf.getvalue())
 
     def test_summary_line_stays_silent_without_corrections(self):
         self.add_file("a.jpg", country="FR", city="Paris")
         buf = io.StringIO()
         with redirect_stdout(buf):
             plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=False)
-        self.assertNotIn("ручные правки", buf.getvalue())
+        self.assertNotIn(
+            i18n.cli_text("cli.sort.plan_manual", "en", reassigned=0, excluded=0)
+            .split("{")[0].split(":")[0],
+            buf.getvalue())
 
 
 class TestClearedOverride(OverridesTestBase):

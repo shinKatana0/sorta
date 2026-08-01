@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and names the key that would set one.
 
 ### Changed
+- **`sort`, `album`, `geo` and `ui` speak the configured language** (F118). F112 moved
+  the CLI's output into the i18n catalog and reached `cli.py` only: `sorter.py` printed
+  its plan summary, its in-place and `--move` warnings and its blocked-multi notice in
+  **Russian whatever `language:` said**, and so did the `geo` progress fallback and the
+  line `sorta ui` prints on start. Found while correcting the guides, which quoted that
+  Russian output as if it were what an English reader sees. Eleven strings moved into
+  the catalog in all three languages; the command echo itself (`sort --by city --apply`)
+  stays untranslated on purpose — it is what the reader would type. The developer smoke
+  tool behind `python -m sorta.faces` is deliberately left as it is: it is not a command
+  a user runs.
 - **The cloud naming provider defaults to Claude Opus 5** instead of Claude Opus 4.8.
   Not a fix — 4.8 is a live model — simply the current recommendation at the same price,
   and the provider stays opt-in behind `naming.provider: claude`, off by default.
@@ -52,6 +62,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coordinates rather than by city id). The check requires the dotted form on purpose: a
   bare `preview_quality` inside a YAML block is easy to write and impossible to search
   for.
+- **The English and Japanese guides no longer quote Russian output.** Both carried some
+  thirty samples of CLI output in Russian, plus a glossary translating the words — all
+  accurate until F112 made the output follow `language:` and defaulted it to `en`.
+  Every sample is now rendered from the i18n catalog for its own guide rather than
+  transcribed, and a test refuses Cyrillic inside a fenced block of either file.
+  (Cyrillic in prose stays: the link to the Russian translation, and layout folder names
+  like `Россия/…`, which are data rather than chrome.) The Russian guide had a stale
+  sample of its own — `sorta geo` gained `path_inferred` with F85c and the example never
+  did.
 
 ## [0.3.1] - 2026-07-31
 
