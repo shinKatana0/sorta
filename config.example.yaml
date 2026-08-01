@@ -291,7 +291,11 @@ features:
   # collection, so this number is a starting point, not a result. Measure before trusting
   # it — `python scripts/measure_frame_quality.py --features pets` prints the score
   # distribution and what each threshold would fire on, over >= 200 of your own frames.
-  pet_threshold: 0.6
+  # F122: measured on 320 hand-labelled frames, stratified by score and weighted back to
+  # the collection. 0.70 marks 805 frames at 92% precision / 54% recall; 0.60 marked 895
+  # at 89% / 58%. Raising it further buys nothing — 0.85 has the same precision for nine
+  # points less recall. Scores are stored, so a different threshold needs no new pass.
+  pet_threshold: 0.7
   # The longer side the frame is scaled to before the laplacian. Fixed on purpose: the
   # variance of the laplacian is scale-dependent, so frames measured at different
   # resolutions are not comparable and every threshold below is tied to this number.

@@ -51,8 +51,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The cloud naming provider defaults to Claude Opus 5** instead of Claude Opus 4.8.
   Not a fix — 4.8 is a live model — simply the current recommendation at the same price,
   and the provider stays opt-in behind `naming.provider: claude`, off by default.
+- **Animals are reported as `animal` rather than as a species, and the threshold is
+  0.7** (F122). Both changes come from the same measurement: 320 frames labelled by
+  hand, sampled by score band and weighted back to the collection. The binary question
+  — is there an animal here — was **92% right**; the species assignment on top of it was
+  not, and the review that prompted this found drawn cats, plush toys, a hotdog and
+  people in fur coats all filed as `cat` or `dog`. So the class is now the one call the
+  numbers support. The three CLIP prompts still run: they are the ensemble the threshold
+  was calibrated on, and collapsing them into one would move every score and void the
+  calibration — only *which* of them won is no longer recorded. On the threshold, 0.70
+  marks 805 frames at 92% precision / 54% recall against 895 at 89% / 58% for the old
+  0.60, and it dominates 0.85 outright (same precision, nine more points of recall).
+  With ~40 frames a band the interval is about ±8 points, so this is a justified
+  preference rather than a proven optimum — and since `pet_score` is stored, re-choosing
+  the threshold never needs another pass.
+- **The VLM is no longer asked whether a shot was accidental** (F122). On the labelled
+  sample the question was right **5% of the time**, and 10% of the frames it called
+  deliberate were not — noise dressed as a signal, and one of the two categories a
+  reviewer could not interpret at all. One of three questions in the prompt is gone;
+  `frame_quality.is_accidental` stays in the schema and stays NULL, because NULL already
+  means "not asked" and dropping a column in SQLite costs a table rebuild.
 
 ### Fixed
+- **Frame quality is measured over photos only** (F120). Sharpness, the pet score and
+  the VLM answers were computed over the whole collection — screenshots, documents,
+  product shots and memes included. That is not a slow path, it is a wrong population:
+  a screenshot scores 2854 on the laplacian against 1253 for a photograph, so "sharp"
+  measured across both means nothing, and the frames that most often carried a pet class
+  were stock wallpapers. The stage now selects photos, refuses to write a row for
+  anything else, and purges rows left by earlier runs at the end of `classify` (the
+  purge has to be last: verdicts are not written yet when the stage begins). Sharpness
+  also joins the near-duplicate keeper recommendation, where it is finally a fair
+  comparison — the same scene at the same scale.
+- **The eyes answer is believed only where a face was detected** (F121). The prompt says
+  to use neither word when there are no people; the model does not obey it, and the
+  first live run answered `eyes_open` on cats and `eyes_closed` on people in glasses.
+  Asking stays free — one prompt, one call — but the answer is now dropped where the
+  detector found no face. Deliberately not dropped when `faces` has never run: there,
+  "no face here" and "nobody looked" are the same empty table, and treating them alike
+  would switch the signal off for everyone who skipped the stage, silently.
+- **Editing a prompt invalidates the rows it produced** (F120/F121). `frame_quality.source`
+  now carries a short fingerprint of the prompts that filled the row (`clip#abc12345`),
+  so changing a prompt makes the stage recompute instead of skipping rows that look
+  processed. Without it, every semantic change to a prompt needed a hand-written DELETE
+  that nobody would remember to run — and the F122 class change is exactly that kind of
+  change, invisible to a marker that only records the tier.
 - **A release bump no longer fails the suite, and neither does a restarted exiftool
   session.** Four rounds of one bug: `test_exif_parallel` asserted exact process counts
   while `_ensure` transparently restarts a session that dies, so any exact count was a

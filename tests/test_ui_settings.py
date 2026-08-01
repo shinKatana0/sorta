@@ -113,7 +113,7 @@ class TestReadSettings(SettingsTestBase):
             "vlm.quality": False,
             "vlm.quality_scope": "groups",
             "features.pets": False,
-            "features.pet_threshold": 0.6,
+            "features.pet_threshold": 0.7,
             "features.sharpness_max_edge": 512,
             "features.sharpness_band_min": 30.0,
             "features.sharpness_band_max": 300.0,
@@ -248,12 +248,13 @@ class TestWriteSettings(SettingsTestBase):
 
     def test_a_float_out_of_range_is_refused(self):
         self.start_server()
+        before = self.cfg.features.pet_threshold  # not a literal: the default is tuned
         for value in (-0.1, 1.5):
             with self.subTest(value=value):
                 status, _resp = self.post_raw(
                     "/api/settings", {"features.pet_threshold": value})
                 self.assertEqual(status, 400)
-        self.assertEqual(self.cfg.features.pet_threshold, 0.6)
+        self.assertEqual(self.cfg.features.pet_threshold, before)
 
     def test_a_bool_is_not_accepted_as_a_float(self):
         """`pet_threshold: true` is garbage, not 1.0 — the same rule the int kind has."""

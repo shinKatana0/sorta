@@ -265,7 +265,7 @@ class TestPetGroup(unittest.TestCase):
         row[-1] = 0.1
         pet, score = pet_verdict(row, 0.5)
         # within its own group the cat holds 0.3 / 0.4 = 0.75 — above the threshold
-        self.assertEqual(pet, "cat")
+        self.assertEqual(pet, junk.PET_CLASS)
         self.assertAlmostEqual(score, 0.75, places=5)
 
     def test_below_the_threshold_there_is_no_class_but_there_is_a_score(self):
@@ -292,12 +292,15 @@ class TestQualityAnswerParsing(unittest.TestCase):
     """Brief test 7: what the model says, read leniently — and NULL when it says nothing."""
 
     def test_the_expected_answer(self):
+        # F122: `accidental`/`deliberate` is no longer asked, so the word is no longer
+        # read — 5% precision on a labelled sample, against 10% in the frames the model
+        # called deliberate. The keyword may still appear; it must be ignored.
         flags = parse_quality_answer("eyes_open subject deliberate")
-        self.assertEqual(flags, QualityFlags(True, True, False))
+        self.assertEqual(flags, QualityFlags(True, True, None))
 
     def test_spaces_punctuation_and_case_are_not_a_format(self):
         flags = parse_quality_answer("Eyes-Open, No Subject. Accidental!")
-        self.assertEqual(flags, QualityFlags(True, False, True))
+        self.assertEqual(flags, QualityFlags(True, False, None))
 
     def test_prose_around_the_keywords_still_parses(self):
         flags = parse_quality_answer(
@@ -309,8 +312,11 @@ class TestQualityAnswerParsing(unittest.TestCase):
     def test_no_subject_is_not_read_as_subject(self):
         self.assertEqual(parse_quality_answer("no_subject").has_subject, False)
 
-    def test_not_accidental_is_not_read_as_accidental(self):
-        self.assertEqual(parse_quality_answer("not accidental").is_accidental, False)
+    def test_the_retired_accidental_keyword_is_ignored(self):
+        """F122: the question is gone, so a model that still volunteers the word gets no
+        column for it. NULL is the honest value — nobody asked."""
+        self.assertIsNone(parse_quality_answer("not accidental").is_accidental)
+        self.assertIsNone(parse_quality_answer("accidental").is_accidental)
 
     def test_an_unparsable_answer_is_all_none(self):
         for answer in ("", "I cannot help with that", "42", "да"):
@@ -429,7 +435,7 @@ class TestPetsToggle(FrameQualityCase):
         stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
                          sharpness_detector=flat_sharpness(500.0))
         row = self.quality(fid)
-        self.assertEqual(row["pet"], "cat")
+        self.assertEqual(row["pet"], junk.PET_CLASS)
         self.assertGreater(row["pet_score"], 0.5)
         self.assertEqual(junk.quality_tier(row["source"]), junk.QUALITY_SOURCE_CLIP)
         self.assertEqual(stats.pets_found, 1)
@@ -525,7 +531,7 @@ class TestPetsToggle(FrameQualityCase):
         self.features(pets=True, pet_threshold=0.5)
         stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
                          sharpness_detector=flat_sharpness(500.0))
-        self.assertEqual(self.quality(fid)["pet"], "cat")
+        self.assertEqual(self.quality(fid)["pet"], junk.PET_CLASS)
         # junk classification did not have to be redone for it
         self.assertEqual(stats.processed, 0)
 
@@ -662,7 +668,9 @@ class TestQualityVlm(FrameQualityCase):
         rows = read_frame_quality(self.conn)
         self.assertIs(rows[answered].eyes_open, False)
         self.assertIs(rows[answered].has_subject, False)
-        self.assertIs(rows[answered].is_accidental, True)
+        # F122: retired question, and the point of the case is that False and None stay
+        # distinguishable — `is_accidental` now demonstrates the None half of it.
+        self.assertIsNone(rows[answered].is_accidental)
         self.assertIsNone(rows[unasked].eyes_open)
         self.assertIsNone(rows[unasked].has_subject)
         # and the same distinction survives a filtered read
@@ -697,7 +705,7 @@ class TestQualityVlm(FrameQualityCase):
                          sharpness_detector=flat_sharpness(100.0), quality_vlm=ask)
         failed = self.quality(boom)
         self.assertAlmostEqual(failed["sharpness"], 100.0)   # the classic tier survived
-        self.assertEqual(failed["pet"], "cat")               # the CLIP tier survived
+        self.assertEqual(failed["pet"], junk.PET_CLASS)      # the CLIP tier survived
         self.assertIsNone(failed["eyes_open"])               # only the answers are missing
         self.assertEqual(self.quality(fine)["eyes_open"], 1)  # the neighbour is unaffected
         self.assertEqual(stats.quality_candidates, 2)
@@ -748,7 +756,7 @@ class TestVlmQualityAsker(unittest.TestCase):
             path = Path(tmp) / "x.jpg"
             Image.new("RGB", (256, 192), (30, 60, 90)).save(path, "JPEG")
             answer = ask(str(path))
-        self.assertEqual(parse_quality_answer(answer), QualityFlags(True, True, False))
+        self.assertEqual(parse_quality_answer(answer), QualityFlags(True, True, None))
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], 1)
         self.assertIn("eyes_open", seen[0][1])

@@ -352,6 +352,10 @@ _PET_ANTI_CLASSES: tuple[tuple[str, str], ...] = (
 _PET_CLASSES: tuple[tuple[str, str], ...] = _PET_POS_CLASSES + _PET_ANTI_CLASSES
 _N_PET_POS = len(_PET_POS_CLASSES)
 
+# F122: what `frame_quality.pet` holds when the group fires. One value, because the
+# measurement says the binary question is worth publishing and the three-way one is not.
+PET_CLASS = "animal"
+
 # Where each group sits in the prompt list of the single call (start, stop).
 _JUNK_GROUP = (0, len(_CLIP_CLASSES))
 _PET_GROUP = (len(_CLIP_CLASSES), len(_CLIP_CLASSES) + len(_PET_CLASSES))
@@ -392,14 +396,25 @@ def pet_verdict(probs_row: np.ndarray, threshold: float) -> tuple[str | None, fl
     The score is returned either way and stored either way: a threshold that was chosen
     from a distribution has to be re-choosable from the stored scores, without a new pass
     over the collection.
+
+    F122: ONE class is stored, whichever positive prompt won. A labelled sample of 320
+    frames said the two halves of this signal are of very different quality — "is there
+    an animal here" is right 92% of the time at 0.70, while WHICH animal was the part the
+    review kept finding wrong (people landing in `dog`, a concert photo in the general
+    class). So the ensemble of three prompts stays — it is what the 92% was measured on —
+    and only its unreliable half stops being published.
+
+    The three prompts are deliberately NOT collapsed into one. The score is the max over
+    the positives of a softmax across the whole group; merging them would move the
+    probability mass into a single class, raise every score, and invalidate the threshold
+    the measurement chose.
     """
     group = _group_probs(probs_row, _PET_GROUP)
     if not len(group):
         return None, 0.0  # pets are off — this call had no pet prompts in it
     positives = group[:_N_PET_POS]
-    best = int(np.argmax(positives))
-    score = float(positives[best])
-    return (_PET_POS_CLASSES[best][0] if score >= threshold else None), score
+    score = float(positives[int(np.argmax(positives))])
+    return (PET_CLASS if score >= threshold else None), score
 
 # F37 (Phase A): defaults for naming.text_frac_min/text_frac_document, while the
 # fields are not typed in NamingConfig (getattr pattern).
@@ -1154,13 +1169,16 @@ def preview_sharpness_detector(max_edge: int) -> SharpnessFn:
 # One short line of keywords. F96's lesson is the reason it is not three fields of JSON:
 # asked for a composite format the model ignores the format and answers in prose, and a
 # parser that then finds nothing writes False where it should write "not asked".
+# F122: the "accidental" question is gone, and it was measured out rather than dropped
+# on a hunch. On a labelled sample the model called 76% of what it was shown accidental;
+# of those, 5% actually were — and the frames it called DELIBERATE held twice that rate
+# (10%). A signal that is slightly anti-correlated with the thing it names is not
+# something a threshold repairs, and every token it occupied was paid for on every frame.
 _QUALITY_PROMPT = (
     "Look at this photo and answer with keywords from this list only:\n"
     "eyes_open or eyes_closed — whether the people in the photo have their eyes open "
     "(use neither word if there are no people);\n"
-    "subject or no_subject — whether the photo has a clear subject;\n"
-    "accidental or deliberate — whether it looks like an accidental shot (a pocket, a "
-    "ceiling, a finger over the lens).\n"
+    "subject or no_subject — whether the photo has a clear subject.\n"
     "Answer with those keywords separated by spaces, nothing else."
 )
 _QUALITY_MAX_NEW_TOKENS = 16
@@ -1168,11 +1186,12 @@ _QUALITY_MAX_NEW_TOKENS = 16
 # Keyword -> value, per field, IN PRIORITY ORDER. The negatives come first on purpose:
 # "no_subject" contains "subject", and a scan that met the positive first would read
 # every refusal as agreement.
+# F122: `is_accidental` is no longer asked, so it is no longer parsed. The COLUMN stays
+# and stays NULL — "not asked" is exactly what NULL means here, dropping it would need a
+# table rebuild, and a retired question is cheaper to leave documented than to excise.
 _QUALITY_KEYWORDS: tuple[tuple[str, tuple[tuple[str, bool], ...]], ...] = (
     ("eyes_open", (("eyes_closed", False), ("eyes_open", True))),
     ("has_subject", (("no_subject", False), ("subject", True))),
-    ("is_accidental", (("not_accidental", False), ("deliberate", False),
-                       ("accidental", True))),
 )
 _NON_WORD_RE = re.compile(r"[^a-z]+")
 
@@ -1435,6 +1454,12 @@ def quality_prompt_fingerprint(pets: bool, *, with_vlm: bool) -> str:
     fingerprint and a sharpness-only collection is not invalidated by prompt work.
     """
     parts = list(clip_prompts(pets))
+    if pets:
+        # F122: what the stored value MEANS is part of what makes a row stale, not only
+        # the text that produced it. Collapsing three class names into one changed the
+        # meaning of `frame_quality.pet` without touching a prompt, and a marker blind to
+        # that would have left every row saying `cat` and looking fresh.
+        parts.append(PET_CLASS)
     if with_vlm:
         parts.append(_QUALITY_PROMPT)
     raw = "\x00".join(parts)

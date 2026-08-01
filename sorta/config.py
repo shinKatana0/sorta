@@ -413,9 +413,21 @@ class FeaturesConfig:
     from, on the collection they will be applied to.
     """
     pets: bool = False
-    # The pet-group CLIP score at or above which the class is written. Provisional until
-    # measured — CLIP's accuracy on this question has never been measured here.
-    pet_threshold: float = 0.6
+    # F122: MEASURED, on 320 hand-labelled frames stratified by score and weighted back
+    # to the collection:
+    #
+    #     cutoff   marked   correct   precision   recall
+    #      0.85       665       615         92%      45%
+    #      0.70       805       738         92%      54%
+    #      0.60       895       801         89%      58%   (the old default)
+    #      0.50       993       842         85%      61%
+    #      0.30      1331       905         68%      66%
+    #
+    # 0.70 dominates 0.85 outright — the same precision for nine more points of recall —
+    # and buys three points of precision over 0.60 for four of recall. With ~40 frames a
+    # band the interval is about ±8 points, so this is a justified preference rather than
+    # a proven optimum; the scores are stored, so re-choosing needs no new pass.
+    pet_threshold: float = 0.7
     # The longer side the frame is scaled to before the laplacian. FIXED on purpose: the
     # variance of the laplacian is scale-dependent, so two frames measured at different
     # resolutions are not comparable and no threshold over them means anything.

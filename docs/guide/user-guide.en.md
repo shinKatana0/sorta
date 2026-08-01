@@ -1371,7 +1371,7 @@ entirely.
 | Key | Default | What it does |
 |---|---|---|
 | `features.pets` | `false` | Whether to look for animals. That is a question about an OBJECT in the frame, so it is asked of CLIP rather than the VLM: through the model it would have cost 4.3 hours over the collection, through the CLIP pass that already runs it costs minutes. |
-| `features.pet_threshold` | `0.6` | The confidence threshold for the key above. |
+| `features.pet_threshold` | `0.7` | The confidence threshold. **Measured** on 320 hand-labelled frames, sampled by score band and weighted back to the collection: at `0.7` it marks 805 frames at 92% precision and 54% recall; `0.6` marked 895 at 89% and 58%. Raising it further buys nothing — `0.85` has the same precision for nine points less recall. The scores are stored, so a different threshold needs no new pass. |
 | `features.sharpness_max_edge` | `512` | The size a preview is reduced to before sharpness is measured (the variance of a Laplacian). |
 | `features.sharpness_band_min` | `30` | Below this a frame is plainly blurred and there is nothing to ask a model about. |
 | `features.sharpness_band_max` | `300` | Above this it is plainly sharp. Between the two lies the band of uncertainty, and only that band reaches the VLM. |
@@ -1390,7 +1390,7 @@ copy per process, so the settings are shared.
 | `vlm.model` | The model id. Default `Qwen/Qwen2.5-VL-3B-Instruct`. |
 | `vlm.workers` | Threads preparing frames (decode + preprocessing) while the GPU classifies the previous one. Default `min(4, cores)`. It does not affect verdicts — labels are applied in candidate order whatever it is set to. |
 | `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |
-| `vlm.quality` | A toggle of its own for the questions about a frame's quality: are the eyes open, is there a subject worth keeping, is this an accidental shot. Default `false`. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
+| `vlm.quality` | A toggle of its own for the questions about a frame's quality: are the eyes open, is there a subject worth keeping. Default `false`. A third question — is this an accidental shot — was asked until F122 and has been retired: on a labelled sample it was right 5% of the time, which is noise. The eyes answer is believed only where the face detector found a face. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
 | `vlm.quality_scope` | Who gets asked: `groups` (frames of near-duplicate groups, the default), `events` (plus a sample from every event), `all` (every live photo). On 20 000 frames `all` means hours of GPU, which is why the default is narrow. |
 | `vlm.exclude_classes` | **Privacy:** classes no VLM is ever shown. The default is `[document]` — that bucket holds passports, medical forms and bank papers, and the project already refuses to DECODE them for display. The model is local and nothing leaves the machine, but the call is yours. **The cost is real:** the deep tier is what *corrects* a wrong `document` verdict (a beach photo scored 0.95 as a document on a live run), so an excluded class keeps whatever the fast tier decided. Accepted: `document`, `product`, `screenshot`, `meme`; `[]` shows everything. `photo` cannot be excluded. |
 

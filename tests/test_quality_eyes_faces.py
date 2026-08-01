@@ -63,8 +63,10 @@ class TestEyesAreBelievedOnlyWhereAFaceIs(FrameQualityCase):
         self.run_junk()
         row = self.quality(no_face)
         self.assertIsNone(row["eyes_open"])
+        # `has_subject` is the other question that survives. `is_accidental` is not
+        # checked here any more: F122 retired that question outright (5% precision on a
+        # labelled sample), so it is NULL on every frame regardless of faces.
         self.assertEqual(row["has_subject"], 1)
-        self.assertEqual(row["is_accidental"], 0)
         self.assertIsNotNone(self.quality(with_face))
 
     def test_without_a_faces_run_the_answer_is_kept(self):

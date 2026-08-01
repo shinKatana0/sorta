@@ -110,15 +110,28 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     --                                       preview, at a FIXED resolution (the number is
     --                                       scale-dependent — see features.sharpness_max_edge).
     --                                       NULL = the frame did not decode.
-    pet TEXT,                             -- cat | dog | pet — the CLIP class above
+    pet TEXT,                             -- 'animal' when pet_score reached
     --                                       features.pet_threshold; NULL = below it, or
-    --                                       features.pets is off (then pet_score is NULL too)
+    --                                       features.pets is off (then pet_score is NULL too).
+    --                                       F122: it used to be cat | dog | pet. The three
+    --                                       prompts still run — they are the ensemble the
+    --                                       threshold was calibrated on — but WHICH of them
+    --                                       won is not recorded, because on a labelled sample
+    --                                       the binary call was 92% right and the class
+    --                                       assignment was not (drawn cats, plush toys and
+    --                                       fur coats all landed as a species).
     pet_score REAL,                       -- the pet-group CLIP score, written whether or not
     --                                       it reached the threshold (so a threshold can be
     --                                       re-measured without a new pass)
-    eyes_open INTEGER,                    -- the three VLM answers: 1 | 0 | NULL (not asked,
-    has_subject INTEGER,                  -- or the answer did not parse — never guessed as 0)
-    is_accidental INTEGER,
+    eyes_open INTEGER,                    -- the VLM answers: 1 | 0 | NULL (not asked, or the
+    has_subject INTEGER,                  -- answer did not parse — never guessed as 0).
+    --                                       eyes_open is kept only where a face was detected
+    --                                       (F121): the model answers it on cats otherwise.
+    is_accidental INTEGER,                -- RETIRED by F122, always NULL. The question was
+    --                                       right 5% of the time on a labelled sample. The
+    --                                       column stays because NULL already means "not
+    --                                       asked", which is the truth, and dropping a column
+    --                                       in SQLite costs a table rebuild.
     source TEXT NOT NULL,                 -- classic | clip | vlm — WHICH TIER processed the
     --                                       row, and with it the incrementality marker (the
     --                                       F68 lesson, one column that means the tier)
