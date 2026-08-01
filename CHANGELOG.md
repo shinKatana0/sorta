@@ -39,11 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in full: every launch count is bounded on both sides against what the pool was asked
   for, and the only exact equalities left are `launches() == 0`, where nothing was
   started and there is nothing to restart.
-- **The guides describe the preview cache as it is.** `imaging.video_previews`,
-  `imaging.video_workers` and `imaging.video_frames` were documented in
-  `config.example.yaml` and in none of the three guides. The docs watchdog now covers
-  the whole `imaging:` section the way it already covered `vlm:` — it stayed green while
-  the ceiling went undocumented, which is the failure it exists to prevent.
+- **Every configuration key is documented, and the watchdog now says so.** The guides
+  carried a `config.yaml` sample and a page on the `vlm:` section; everything else was
+  reachable only by reading the source or `config.example.yaml`. Widening the F115
+  watchdog from one section to all ten turned that into a number: **51 keys across nine
+  sections** had never been written up, `features:` (F113) among them in full, along
+  with every threshold of `naming:`, the whole of `faces:` and `dedup:`, and the video
+  keys of `imaging:`. §21 of all three guides now carries a per-section table — key,
+  default, and what it actually does, with the measured reasoning where there is any
+  (why `naming.clip_batch_size` is a weak lever and `naming.clip_decode_workers` is the
+  real one; why the landmark threshold is not to be lowered; why trips merge by
+  coordinates rather than by city id). The check requires the dotted form on purpose: a
+  bare `preview_quality` inside a YAML block is easy to write and impossible to search
+  for.
 
 ## [0.3.1] - 2026-07-31
 

@@ -1251,6 +1251,105 @@ imaging:                       # プレビューキャッシュ — §18 参照
 log_level: WARNING             # コンソールのみ; 実行ログは INFO のまま（§19）
 ```
 
+### キー一覧
+
+上は変更頻度の高いものです。以下はそれ以外のすべてをセクション別にまとめたものです。
+既定値は、`config.yaml` にそのキーがまったく無いときに適用される値です。
+
+**`index:` — 何をインデックスに入れるか**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `index.extensions` | `photo`、`raw`、`video` の 3 リスト | どの拡張子を写真・RAW・動画として扱うか。どのリストにも無い拡張子のファイルはインデックス化されません。 |
+| `index.min_file_size_kb` | `5` | これより小さいファイルは除外します。写真ではなくアイコンや生成物だからです。 |
+| `index.compute_phash` | `true` | `index` の実行中に pHash も計算するか。`false` の場合、類似写真は別途 `sorta phash` を実行するまで現れません。 |
+| `index.phash_max_distance` | `5` | 2 つのコマを類似写真とみなすハミング距離の上限（§10）。 |
+| `index.skip_dirs` | `.thumbnails`、`@eaDir`、`$RECYCLE.BIN`、`System Volume Information` | 走査が立ち入らないシステムフォルダ。**自分の**フォルダを除外する方法は §21a。 |
+
+**`dedup:` — 重複グループのどれを本体とするか**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `dedup.canonical_strategy` | `prefer_exif_then_largest` | 完全重複のうち、EXIF を持つファイルを本体とし、同条件なら大きいほうを選びます。残りは重複として印が付き、振り分けには入りません。 |
+
+**`geo:` — 場所の決め方**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `geo.session_gap_hours` | `6` | 撮影セッションを分ける時間の空き。同じセッション内なら、GPS の無いコマは時間的に隣接するコマから場所を受け継ぎます。 |
+| `geo.nominatim_url` | `https://nominatim.openstreetmap.org` | オンライン地理コーダーのアドレス。自前のサーバーにすれば速度制限もプライバシーの問題も無くなります。 |
+| `geo.nominatim_user_agent` | `sorta-photo-organizer` | OSM のポリシー上必須です。公開サービスは意味のある User-Agent の無い要求を拒否します。 |
+| `geo.nominatim_timeout` | `10` | 地理コーダーへの 1 回の要求のタイムアウト（秒）。 |
+| `geo.cache_coord_digits` | `3` | キャッシュキーで座標を丸める桁数。3 桁はおよそ 110 m で、同じ場所の隣接コマはプロバイダーに 1 回だけ問い合わせます。 |
+| `geo.cache_max_age_days` | `180` | 保存したプロバイダーの応答の有効期間。`0` は無期限。キャッシュはデータベース内にあり、「最初からやり直す」でも消えません（§18）。 |
+
+**`events:` — コマがイベントになる条件**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `events.gap_hours` | `6` | 新しい撮影セッションを始める時間の空き。 |
+| `events.merge_gap_hours` | `18` | これより近い隣接セッションは 1 つのイベントに統合されます。同じ旅行の夜と翌朝が離ればなれになりません。 |
+| `events.trip_merge_gap_hours` | `48` | この期間と `trip_merge_max_km` の範囲に収まるセッションは 1 つの旅行と見なします。 |
+| `events.trip_merge_max_km` | `120` | 2 つのセッションが同じ旅行であり続けられる、ファイル座標間の最大距離。都市 ID ではなく座標で統合します。ID だと村を巡る旅行がばらばらに分かれてしまうからです。 |
+| `events.min_event_size` | `5` | これより小さいグループはイベントになりません。 |
+
+**`faces:` — 顔とクラスタ**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `faces.min_face_px` | `40` | これより小さい顔は埋め込みを作りません。安定したベクトルにならず、クラスタのノイズにしかならないためです。 |
+| `faces.det_threshold` | `0.7` | 検出器の信頼度のしきい値。 |
+| `faces.min_cluster_size` | `5` | クラスタに必要な最小の顔数（HDBSCAN）。これ未満はノイズのままです。 |
+| `faces.max_distance` | `0.5` | クラスタ内の埋め込み間のコサイン距離のしきい値。 |
+
+**`sort:` — 振り分けの組み立て方**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `sort.multi_person` | `primary` | 複数の人物が写ったコマは、最も大きく写っている人のほうへ入ります。 |
+| `sort.exclude_dirs` | `[]` | 振り分けないサブフォルダ（ファイルはその場に残ります）。 |
+| `sort.thumbnail_workers` | `0`（自動） | HTML プランのサムネイルを作るスレッド数。 |
+| `sort.album_dir` | `null` | アルバムの置き場所。既定はデータベースの隣の `_Albums`。 |
+| `sort.report_dir` | `null` | `sort` のプラン（CSV/HTML）の出力先。既定はデータベースの隣の `report_output/`。 |
+| `sort.drop_unlocalized_district` | `true` | 地区名が振り分け言語に訳せない場合、その階層を付けません。`498817` という名前のフォルダは何も説明しないからです。 |
+
+**`naming:` — 分類のしきい値と命名プロバイダー**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `naming.landmark_threshold` | `0.85` | ランドマークから場所を決める CLIP のしきい値。下げるのは危険です。誤った都市は、都市不明よりも悪いからです。 |
+| `naming.landmark_group_min` | `5` | 1 つのランドマークを信用するために、連続して何コマ一致する必要があるか（裏取り、F75）。 |
+| `naming.landmark_group_dominance` | `0.6` | 裏取り済みと見なすために、1 つのランドマークがグループ内で占めるべき割合。 |
+| `naming.junk_threshold` | `0.85` | `screenshot`／`meme` の CLIP しきい値。 |
+| `naming.document_threshold` | `0.9` | 書類の CLIP しきい値。 |
+| `naming.text_frac_min` | `0.08` | CLIP が書類と判定しても、文字が占める面積がこの割合未満なら風景に戻します — 誤検出のゲート。 |
+| `naming.text_frac_document` | `0.15` | 文字の割合がこれを超えるコマは、CLIP が迷っていても書類とします — 見落とした書類の救済。 |
+| `naming.text_rescue_docscore_min` | `0.3` | doc-score がこの値以上のコマにだけ OCR を走らせます。文字検出は高価で、明らかな風景を調べる意味はありません。 |
+| `naming.text_frac_downscale_px` | `1280` | 文字検出の前にコマを縮小するサイズ。 |
+| `naming.product_candidate_min` | `0.4` | product-CLIP のスコアがこれを超えるコマが深い VLM ティアへ進みます。しきい値は実測済みで、0.4 から 0.7 まで曲線は平坦、上げても失う発見と引き換えに時間が 10% 減るだけです。 |
+| `naming.clip_model` | `ViT-L-14-quickgelu` | open_clip のモデル。`openai` の重みには `quickgelu` 版が必須で、そうでないと噛み合いません。 |
+| `naming.clip_pretrained` | `openai` | そのモデルに読み込む重み。 |
+| `naming.clip_batch_size` | `16` | GPU 上の CLIP のバッチサイズ。効き目は薄く、この経路はフォワードではなくデコード律速です（実測: 16 → 64 で +2%）。 |
+| `naming.clip_decode_workers` | `0`（自動 `min(コア数, 16)`） | CLIP のデコードスレッド数 — こちらが本当の効き目です。8 スレッドで 61 コマ/秒、20 で 113。 |
+| `naming.max_samples` | `4` | 命名するモデルに見せるイベントのコマ数。 |
+| `naming.vlm_base_url` | `http://localhost:11434` | ollama のアドレス。`naming.provider: local_vlm` のときだけ使われます。 |
+| `naming.vlm_model` | `llava` | 同じプロバイダー用の ollama のモデル。 |
+| `naming.vlm_timeout` | `120` | ollama への要求のタイムアウト（秒）。 |
+| `naming.claude_model` | `claude-opus-5` | クラウドプロバイダーのモデル。`naming.provider: claude` のときだけ使われます。 |
+| `naming.claude_api_key_env` | `ANTHROPIC_API_KEY` | キーを保持する環境変数の名前。キー自体は設定ファイルに書きません。 |
+| `naming.claude_timeout` | `60` | クラウドへの要求のタイムアウト（秒）。 |
+
+**`features:` — コマ単位の品質シグナル（F113、既定はすべて無効）**
+
+| キー | 既定値 | 内容 |
+|---|---|---|
+| `features.pets` | `false` | 動物を探すかどうか。これはコマの中の**物体**についての問いなので、VLM ではなく CLIP に尋ねます。モデル経由ならコレクション全体で 4.3 時間かかるところ、すでに走っている CLIP パス経由なら数分です。 |
+| `features.pet_threshold` | `0.6` | 上のキーの信頼度しきい値。 |
+| `features.sharpness_max_edge` | `512` | 鮮鋭度（ラプラシアンの分散）を測る前にプレビューを縮小するサイズ。 |
+| `features.sharpness_band_min` | `30` | これ未満は明らかにぶれており、モデルに尋ねることは何もありません。 |
+| `features.sharpness_band_max` | `300` | これを超えれば明らかに鮮明です。2 つの境界の間が不確かな帯で、そこだけが VLM に届きます。 |
+| `features.subject_score_min` | `0.9` | 「そもそもこのコマに被写体があるか」のしきい値 — 意図した 1 枚とポケットの中の誤操作を分けます。 |
+
 ### `vlm:` セクション
 
 **ローカルモデルのランタイムそのもの**を表す設定は `vlm:` セクションにまとまっており、

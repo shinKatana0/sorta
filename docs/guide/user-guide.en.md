@@ -1267,6 +1267,106 @@ imaging:                       # the preview cache — see §18
 log_level: WARNING             # console verbosity only; the run log stays at INFO (§19)
 ```
 
+### The complete list of keys
+
+Above are the ones people change most often. Below is everything else, by section. The
+default given is the one that applies when the key is absent from `config.yaml`
+entirely.
+
+**`index:` — what gets indexed**
+
+| Key | Default | What it does |
+|---|---|---|
+| `index.extensions` | three lists: `photo`, `raw`, `video` | Which extensions count as a photo, a RAW file and a video. A file whose extension is in none of the lists is not indexed at all. |
+| `index.min_file_size_kb` | `5` | Smaller files are skipped — those are icons and artefacts, not shots. |
+| `index.compute_phash` | `true` | Whether `index` computes pHash as it goes. With `false`, near-duplicates appear only after a separate `sorta phash`. |
+| `index.phash_max_distance` | `5` | The Hamming distance below which two frames count as near-duplicates (§10). |
+| `index.skip_dirs` | `.thumbnails`, `@eaDir`, `$RECYCLE.BIN`, `System Volume Information` | Service directories the walk never enters. To exclude **your own** folders, see §21a. |
+
+**`dedup:` — which file of a duplicate group is the real one**
+
+| Key | Default | What it does |
+|---|---|---|
+| `dedup.canonical_strategy` | `prefer_exif_then_largest` | Among exact duplicates the canonical file is the one that has EXIF, and the larger one when that ties. The rest are marked duplicates and stay out of the layout. |
+
+**`geo:` — how a place is decided**
+
+| Key | Default | What it does |
+|---|---|---|
+| `geo.session_gap_hours` | `6` | The time gap that separates shooting sessions. Within a session, a frame with no GPS takes its place from its neighbours in time. |
+| `geo.nominatim_url` | `https://nominatim.openstreetmap.org` | The online geocoder's address. Your own server removes both the rate limit and the privacy question. |
+| `geo.nominatim_user_agent` | `sorta-photo-organizer` | Required by OSM policy: the public service rejects requests without a meaningful User-Agent. |
+| `geo.nominatim_timeout` | `10` | Timeout of a single geocoder request, in seconds. |
+| `geo.cache_coord_digits` | `3` | How far coordinates are rounded for the cache key. Three digits is about 110 m, so neighbouring frames of one place ask the provider once. |
+| `geo.cache_max_age_days` | `180` | How long a stored provider answer stays fresh; `0` never expires. The cache lives in the database and survives "Start over" (§18). |
+
+**`events:` — how frames become events**
+
+| Key | Default | What it does |
+|---|---|---|
+| `events.gap_hours` | `6` | The gap that starts a new shooting session. |
+| `events.merge_gap_hours` | `18` | Adjacent sessions closer than this merge into one event, so an evening and the next morning of one trip do not drift apart. |
+| `events.trip_merge_gap_hours` | `48` | Sessions within this span and `trip_merge_max_km` count as one trip. |
+| `events.trip_merge_max_km` | `120` | The furthest the files' coordinates may lie apart for two sessions to still be one trip. Merging goes by coordinates rather than by city id: otherwise a trip through villages falls into pieces. |
+| `events.min_event_size` | `5` | Smaller groups do not become events. |
+
+**`faces:` — faces and clusters**
+
+| Key | Default | What it does |
+|---|---|---|
+| `faces.min_face_px` | `40` | Faces smaller than this are not embedded: they yield no stable vector and only add noise to the clusters. |
+| `faces.det_threshold` | `0.7` | The detector's confidence threshold. |
+| `faces.min_cluster_size` | `5` | The minimum number of faces in a cluster (HDBSCAN); anything smaller stays noise. |
+| `faces.max_distance` | `0.5` | The cosine distance threshold between embeddings inside a cluster. |
+
+**`sort:` — how the layout is built**
+
+| Key | Default | What it does |
+|---|---|---|
+| `sort.multi_person` | `primary` | A frame with several people goes to the person with the largest face. |
+| `sort.exclude_dirs` | `[]` | Subfolders that are not laid out (their files stay where they are). |
+| `sort.thumbnail_workers` | `0` (auto) | Threads building the thumbnails of the HTML plan. |
+| `sort.album_dir` | `null` | The album root; by default `_Albums` next to the database. |
+| `sort.report_dir` | `null` | Where `sort` writes its plans (CSV/HTML); by default `report_output/` next to the database. |
+| `sort.drop_unlocalized_district` | `true` | Do not add the district segment when its name does not translate into the layout language — a folder called `498817` explains nothing. |
+
+**`naming:` — classification thresholds and the naming providers**
+
+| Key | Default | What it does |
+|---|---|---|
+| `naming.landmark_threshold` | `0.85` | The CLIP threshold for placing a frame by a landmark. Lowering it is dangerous: a wrong city is worse than no city. |
+| `naming.landmark_group_min` | `5` | How many frames in a row must agree on one landmark before it is believed (corroboration, F75). |
+| `naming.landmark_group_dominance` | `0.6` | The share of the group one landmark must hold to count as corroborated. |
+| `naming.junk_threshold` | `0.85` | The CLIP threshold for `screenshot`/`meme`. |
+| `naming.document_threshold` | `0.9` | The CLIP threshold for documents. |
+| `naming.text_frac_min` | `0.08` | A frame CLIP called a document, but with less than this share of its area under text, goes back to being a scene — the false-positive gate. |
+| `naming.text_frac_document` | `0.15` | A frame with more text than this counts as a document even where CLIP hesitated — the rescue for missed documents. |
+| `naming.text_rescue_docscore_min` | `0.3` | OCR runs only on frames whose doc-score is at least this: text detection is expensive and clear scenes are not worth checking. |
+| `naming.text_frac_downscale_px` | `1280` | The size a frame is reduced to before text detection. |
+| `naming.product_candidate_min` | `0.4` | A frame whose product-CLIP score is above this goes to the deep VLM tier. The threshold is measured: from 0.4 to 0.7 the curve is flat, and raising it costs 10% of the time for lost findings. |
+| `naming.clip_model` | `ViT-L-14-quickgelu` | The open_clip model. The `quickgelu` variant is required for the `openai` weights, otherwise the two mismatch. |
+| `naming.clip_pretrained` | `openai` | Which weights to load for that model. |
+| `naming.clip_batch_size` | `16` | The CLIP forward batch on the GPU. A weak lever: the path is bound by decoding, not by the forward pass (measured: 16 → 64 gained 2%). |
+| `naming.clip_decode_workers` | `0` (auto `min(cores, 16)`) | CLIP decode threads — this is the real lever: 8 threads gave 61 frames/s, 20 gave 113. |
+| `naming.max_samples` | `4` | How many frames of an event the naming model is shown. |
+| `naming.vlm_base_url` | `http://localhost:11434` | The ollama address — used only with `naming.provider: local_vlm`. |
+| `naming.vlm_model` | `llava` | The ollama model for that same provider. |
+| `naming.vlm_timeout` | `120` | Timeout of an ollama request, in seconds. |
+| `naming.claude_model` | `claude-opus-5` | The cloud provider's model — used only with `naming.provider: claude`. |
+| `naming.claude_api_key_env` | `ANTHROPIC_API_KEY` | The name of the environment variable holding the key. The key itself is never written into the config. |
+| `naming.claude_timeout` | `60` | Timeout of a cloud request, in seconds. |
+
+**`features:` — per-frame quality signals (F113, all off by default)**
+
+| Key | Default | What it does |
+|---|---|---|
+| `features.pets` | `false` | Whether to look for animals. That is a question about an OBJECT in the frame, so it is asked of CLIP rather than the VLM: through the model it would have cost 4.3 hours over the collection, through the CLIP pass that already runs it costs minutes. |
+| `features.pet_threshold` | `0.6` | The confidence threshold for the key above. |
+| `features.sharpness_max_edge` | `512` | The size a preview is reduced to before sharpness is measured (the variance of a Laplacian). |
+| `features.sharpness_band_min` | `30` | Below this a frame is plainly blurred and there is nothing to ask a model about. |
+| `features.sharpness_band_max` | `300` | Above this it is plainly sharp. Between the two lies the band of uncertainty, and only that band reaches the VLM. |
+| `features.subject_score_min` | `0.9` | The "there is a subject in this frame at all" threshold — what separates a shot from a pocket accident. |
+
 ### The `vlm:` section
 
 Everything that describes the **runtime of the local model itself** lives in the

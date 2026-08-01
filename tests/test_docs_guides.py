@@ -43,6 +43,22 @@ READMES = {
     "ja": _ROOT / "README.ja.md",
 }
 
+# Every section of config.yaml and the object that owns its keys. `imaging:` is the odd
+# one out and maps to a plain dict of env names: imaging.py is a leaf module that pool
+# workers call with a path and nothing else, so that section has no config dataclass.
+_CONFIG_SECTIONS: dict[str, object] = {
+    "index": config.IndexConfig,
+    "dedup": config.DedupConfig,
+    "geo": config.GeoConfig,
+    "events": config.EventsConfig,
+    "faces": config.FacesConfig,
+    "sort": config.SortConfig,
+    "naming": config.NamingConfig,
+    "features": config.FeaturesConfig,
+    "vlm": config.VlmConfig,
+    "imaging": config._IMAGING_ENV,
+}
+
 _FENCE = re.compile(r"(?ms)^```.*?^```")
 _INLINE_CODE = re.compile(r"(?s)`[^`]*`")
 _HEADING = re.compile(r"(?m)^(#{1,6})\s+(.*)$")
@@ -250,27 +266,28 @@ class TestGuidesAgreeWithTheCode(unittest.TestCase):
                 with self.subTest(lang=lang, verdict=verdict):
                     self.assertIn(f"`{verdict}`", read(path))
 
-    def test_every_key_of_the_vlm_section_is_documented(self):
-        """Read off `VlmConfig`, so a key added there fails here until it is written up."""
-        for field in dataclasses.fields(config.VlmConfig):
-            for lang, path in GUIDES.items():
-                with self.subTest(lang=lang, key=field.name):
-                    self.assertIn(f"vlm.{field.name}", read(path))
+    def test_every_configuration_key_is_documented(self):
+        """Every key of every section, read off the class that owns it.
 
-    def test_every_key_of_the_imaging_section_is_documented(self):
-        """F117: the same watchdog over `imaging:`, and for the same reason.
+        This began as a watchdog over `vlm:` alone, written after an audit found not
+        gaps but false statements. Watching one section turned out to be the weakness
+        rather than the design: `imaging.preview_cache_max_gb` was added and all three
+        guides stayed silent, so the suite was green while the documentation described a
+        cache with no ceiling. Widening it then showed the real backlog — 51 keys across
+        nine sections had never been written up at all, `features:` (F113) among them,
+        in full.
 
-        The vlm case above was written after an audit found not gaps but false
-        statements, and it only ever watched one section. `imaging.preview_cache_max_gb`
-        was then added and all three guides stayed silent — the suite was green while
-        the documentation described a cache with no ceiling. Read off `_IMAGING_ENV`
-        rather than a dataclass: this section has no config object, because imaging.py
-        is a leaf module configured through the environment.
+        The check is the dotted form on purpose. A bare `preview_quality` inside a YAML
+        block is easy to write and impossible to search for; `imaging.preview_quality`
+        is what a reader greps and what the rest of the guide cites.
         """
-        for key in config._IMAGING_ENV:
-            for lang, path in GUIDES.items():
-                with self.subTest(lang=lang, key=key):
-                    self.assertIn(f"imaging.{key}", read(path))
+        for section, owner in _CONFIG_SECTIONS.items():
+            keys = ([f.name for f in dataclasses.fields(owner)]
+                    if dataclasses.is_dataclass(owner) else list(owner))
+            for key in keys:
+                for lang, path in GUIDES.items():
+                    with self.subTest(lang=lang, key=f"{section}.{key}"):
+                        self.assertIn(f"{section}.{key}", read(path))
 
     def test_the_legacy_naming_aliases_are_documented(self):
         """A live config.yaml still holds the old keys — the guides have to say so."""
