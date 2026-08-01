@@ -1376,6 +1376,7 @@ entirely.
 | `features.sharpness_band_min` | `30` | Below this a frame is plainly blurred and there is nothing to ask a model about. |
 | `features.sharpness_band_max` | `300` | Above this it is plainly sharp. Between the two lies the band of uncertainty, and only that band reaches the VLM. |
 | `features.subject_score_min` | `0.9` | The "there is a subject in this frame at all" threshold — what separates a shot from a pocket accident. |
+| `features.blur_review_max` | `90.0` | How far down the blur review list opens by default. **Not a "blurred" verdict** — the measurement says the opposite. Reviewed by eye in bands, blurred frames turned up in **every** band up to 400: sharpness ranks, it does not classify, and no cutoff separates junk from a soft but wanted photograph. What the bands did show is where the yield falls off, around 90–120 (below 70: 378 frames, below 90: 530, below 120: 785, below 160: 1215, on a 19 757-photo collection). The list opens here and continues on demand. **Nothing is ever deleted by this number.** |
 
 ### The `vlm:` section
 

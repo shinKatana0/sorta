@@ -319,6 +319,13 @@ features:
   # The other way in: a junk-group CLIP probability of "a photograph" below this means
   # CLIP does not know what it is looking at.
   subject_score_min: 0.9
+  # F126: how far down the blur review list opens by default. NOT a verdict — the
+  # measurement says the opposite. Reviewed by eye in bands, blurred frames turned up in
+  # EVERY band up to 400: sharpness ranks, it does not classify. What the bands did show
+  # is where the yield falls off, around 90-120 (< 70: 378 frames, < 90: 530, < 120: 785,
+  # < 160: 1215 — on a 19 757-photo collection). So the list opens here and continues on
+  # demand, and nothing is ever deleted by this number.
+  blur_review_max: 90.0
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

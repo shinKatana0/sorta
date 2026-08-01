@@ -448,6 +448,21 @@ class FeaturesConfig:
     # The other way in: the junk-group CLIP probability of "a photograph" below this is
     # CLIP saying it does not know what it is looking at.
     subject_score_min: float = 0.9
+    # F126: how far down the blur review list opens by default. NOT a verdict — the
+    # measurement that produced it says the opposite. Reviewing frames by eye in bands,
+    # the user found blurred frames in EVERY band up to 400: sharpness ranks, it does not
+    # classify, and no cutoff separates junk from a soft but wanted photograph. What the
+    # bands did show is where the yield falls off — around 90-120:
+    #
+    #     < 70    378 frames  1.9% of the collection
+    #     < 90    530         2.7%
+    #     < 120   785         4.0%
+    #     < 160  1215         6.1%
+    #
+    # So the list opens at 90 and continues on demand. Nothing is ever deleted by this
+    # number: "almost everything is blurred and I would delete it, except a couple I keep
+    # for the memory" — a frame this cannot know about is exactly why the human marks.
+    blur_review_max: float = 90.0
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -461,6 +476,7 @@ def _features_from(raw: dict) -> FeaturesConfig:
         sharpness_band_min=_as_float(raw.get("sharpness_band_min"), d.sharpness_band_min),
         sharpness_band_max=_as_float(raw.get("sharpness_band_max"), d.sharpness_band_max),
         subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
+        blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
     )
 
 
