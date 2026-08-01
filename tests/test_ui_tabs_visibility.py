@@ -53,28 +53,32 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         status, body, ctype = self.get("/api/tabs/visibility")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        self.assertEqual(json.loads(body), {"person": False, "event": False, "indexed": False})
+        self.assertEqual(json.loads(body), {"person": False, "event": False,
+                          "animal": False, "indexed": False})
 
     def test_clustered_faces_show_person_only(self):
         fid, _p, _c = self.add_photo_file("a.jpg")
         self.add_clustered_face(fid)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": True, "event": False, "indexed": True})
+        self.assertEqual(json.loads(body), {"person": True, "event": False,
+                                            "animal": False, "indexed": True})
 
     def test_noise_only_faces_do_not_show_person(self):
         fid, _p, _c = self.add_photo_file("noise.jpg")
         self.add_noise_face(fid)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": False, "event": False, "indexed": True})
+        self.assertEqual(json.loads(body), {"person": False, "event": False,
+                                            "animal": False, "indexed": True})
 
     def test_events_show_event_only(self):
         fid, _p, _c = self.add_photo_file("b.jpg")
         self.add_event(fid)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": False, "event": True, "indexed": True})
+        self.assertEqual(json.loads(body), {"person": False, "event": True,
+                                            "animal": False, "indexed": True})
 
     def test_both_independent_when_both_present(self):
         fid1, _p1, _c1 = self.add_photo_file("a.jpg")
@@ -83,7 +87,8 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         self.add_event(fid2)
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": True, "event": True, "indexed": True})
+        self.assertEqual(json.loads(body), {"person": True, "event": True,
+                                            "animal": False, "indexed": True})
 
 
 class TestIndexedFlag(TabsVisibilityTestBase):

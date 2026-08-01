@@ -694,9 +694,11 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
         data = json.loads(body)
-        self.assertEqual(set(data.keys()), {"deep", "geo_online", "vlm_available"})
+        self.assertEqual(set(data.keys()),
+                         {"deep", "geo_online", "pets", "vlm_available"})
         self.assertFalse(data["deep"])
         self.assertFalse(data["geo_online"])
+        self.assertFalse(data["pets"])
 
     def test_vlm_enabled_and_online_provider_in_cfg_reflected(self):
         self.cfg.naming = dataclasses.replace(self.cfg.naming, vlm_enabled=True)
