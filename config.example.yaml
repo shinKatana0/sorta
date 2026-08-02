@@ -452,6 +452,22 @@ features:
   # well; and the population is personal photographs only (screenshots and documents have
   # no vector at all).
   search_limit: 200
+  # F152: the two numbers the FACE SLICES need — "photographs with people", "group
+  # photographs", "portraits" in the Slices tab, and `sorta album people|group|portrait`.
+  # Nothing here is a confidence threshold: those slices are read off the `faces` table,
+  # so a frame is in one because the detector found a box on it, not because a score
+  # cleared a line. Both numbers below are GEOMETRY.
+  #
+  # How many faces make a photograph a group photograph. Three: two people in a frame are
+  # a couple or a passer-by, and the slice exists to find the gatherings.
+  group_photo_faces: 3
+  # A portrait is exactly one face covering at least this share of the frame — the bbox
+  # area over width x height. 0.08 is a starting point stated as geometry (a box over 8%
+  # of the area is ~28% of each side, i.e. head-and-shoulders rather than a person in a
+  # landscape), NOT a measurement on a real collection. The boxes are stored, so
+  # re-choosing it costs a query and no new pass over any image. A frame whose dimensions
+  # the index never learned is not in this slice: the share cannot be computed for it.
+  portrait_face_share: 0.08
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

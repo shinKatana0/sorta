@@ -303,6 +303,23 @@ a search cannot become the way around a protection the slices already apply. The
 action the results offer is the existing `POST /api/album` with `kind='query'` and the
 words as the selector; both routes share one lazily loaded text encoder.
 
+(23) `GET /api/face-slices` (F152, the three face pins of the "Slices" tab) — one bounded
+page of "photographs with people" / "group photographs" / "portraits", plus the counters
+of all three. What makes them different from the slices beside them is not the shape of
+the route but the nature of the answer: membership is a FACT of the `faces` table (a
+detector either found a box on the frame or it did not) rather than a place in a ranking,
+so no card carries a score and none is invented. The rules live once, in
+`sorter.face_slice_ids_sql`, which the albums and the "Overview" counters read too — and
+the one thing all three exclude is the marker row `bbox = '[]'` ("processed, no faces"),
+which 24 195 of 24 196 live files carry and which turns "with people" into "everything"
+the moment it is forgotten. Two of the rules take a number out of `features:` and both
+are geometric: `group_photo_faces` (3) is a count of boxes, `portrait_face_share` (0.08)
+is the share of the frame one box covers, out of the bbox and `files.width/height`.
+Without a faces run the answer is `reason='no_faces_run'` and counters of `null` — the
+F125 rule, since a zero would read as a claim about the person's photographs. Sensitive
+classes follow the F133 rule unchanged (listed, but no `thumb_url`). The one action these
+slices offer is the existing `POST /api/album` with `kind='people'|'group'|'portrait'`.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -380,12 +397,14 @@ from .sorter import (
     ALBUM_KINDS,
     ALBUM_MODES,
     CLASS_ALBUM_KINDS,
+    FACE_SLICES,
     QUALITY_FROM,
     SELECTORLESS_ALBUM_KINDS,
     AlbumReport,
     PlanItem,
     animal_auto_sql,
     animal_ids_sql,
+    face_slice_ids_sql,
     plan_album,
     plan_and_sort,
     quality_slice_where,
@@ -1673,6 +1692,136 @@ def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
     }
 
 
+# --- F152: the face slices — with people / group photos / portraits ----------------
+# The three largest populations of the archive (people are 27.5% of a hand-labelled
+# sample of 200 frames) had no slice at all, while the signal for them has been on disk
+# since the faces stage: 12 952 real faces over 7 341 photographs. The rules themselves
+# live in `sorter.face_slice_ids_sql`, exactly one copy of them, for the reason
+# `ANIMAL_IDS_SQL` lives there — the album, this panel and the "Overview" counters must
+# be talking about one collection.
+#
+# What is different from the slices around it is the CAPTION rather than the query:
+# membership here is a fact of a detector's output, not a place in a ranking, so the
+# panel says so and says nothing about confidence — there is no score to show.
+#
+# The one state that is not a number: without a faces run the honest answer is WHY there
+# is nothing (`reason='no_faces_run'`, the F125 rule) and the counters travel as `null`
+# rather than as zeros. A zero here reads as "no photograph of yours has a person on
+# it" — a conclusion about somebody's own archive, drawn from a table nobody filled.
+
+# Canonical and readable, the population every other counter in this file is built on.
+# `media_type` is not filtered: the faces stage only ever writes rows for photographs,
+# so a video cannot be in these slices anyway.
+_FACE_LIVE = "f.dup_of IS NULL AND f.error IS NULL"
+
+# `media_class` rides along for the F133 privacy rule alone — a frame of a sensitive
+# class is listed but never given a `thumb_url`, so no preview of a document with a face
+# on it is ever decoded.
+_FACE_FROM = "FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id"
+
+# How many real faces this frame carries — the one number a card of these slices shows,
+# and the same `bbox != '[]'` rule the slices themselves are built on.
+_FACE_COUNT_SQL = ("(SELECT COUNT(*) FROM faces fa WHERE fa.file_id = f.id "
+                   "AND fa.bbox != '[]')")
+
+
+def _face_slice_where(cfg: Config, slice_: str) -> tuple[str, list[object]]:
+    """The WHERE of one face slice + its parameters, over the canonical population."""
+    ids_sql, params = face_slice_ids_sql(cfg, slice_)
+    return f"{_FACE_LIVE} AND f.id IN ({ids_sql})", params
+
+
+def _face_slice_count(conn: sqlite3.Connection, cfg: Config, slice_: str) -> int:
+    """How many frames one face slice holds, under the WHERE its page uses."""
+    where, params = _face_slice_where(cfg, slice_)
+    return int(conn.execute(
+        f"SELECT COUNT(*) FROM files f WHERE {where}", params).fetchone()[0])
+
+
+def _face_item_to_json(row: sqlite3.Row, sensitive: frozenset[str]) -> dict:
+    """One card: a thumbnail, a name, a date and how many faces the frame holds.
+
+    No score, because there is none to invent: the frame is in the slice because a box
+    was found on it. The face count is on the card all the same — it is what makes the
+    group slice checkable by eye, and on a portrait it says "one" out loud.
+    """
+    path = Path(row["path"])
+    payload = {
+        "file_id": int(row["id"]),
+        "name": path.name,
+        "date": row["taken_at"],
+        "faces": int(row["faces"]),
+    }
+    verdict = row["verdict"]
+    if verdict is None or str(verdict) not in sensitive:
+        payload["thumb_url"] = f"/thumb/{int(row['id'])}"
+        payload["video"] = imaging.is_video_path(path)
+    return payload
+
+
+def _face_slices_payload(cfg: Config, db_path: Path, slice_: str, offset: int,
+                         limit: int, sensitive: frozenset[str]) -> dict:
+    """`GET /api/face-slices` — the three counters + one bounded page of the current one.
+
+    `counts` is always the full set (it is what the pins draw), and every entry is `null`
+    when the faces stage has not run: the counters are then not zero, they are unmeasured,
+    and `reason` says which. Once the stage has run a zero IS the answer — "no group
+    photographs were found" is a fact about the collection — and it is shown as one.
+
+    `ORDER BY f.id`: these slices have no ranking of their own (there is no confidence in
+    them to rank by), and index order is stable, which is what paging needs.
+    """
+    conn = _connect(db_path)
+    try:
+        ran = faces_stage_ran(conn)
+        counts: dict[str, int | None] = {name: None for name in FACE_SLICES}
+        items: list[dict] = []
+        total = 0
+        if ran:
+            for name in FACE_SLICES:
+                counts[name] = _face_slice_count(conn, cfg, name)
+            where, params = _face_slice_where(cfg, slice_)
+            total = int(counts[slice_] or 0)
+            rows = conn.execute(
+                f"""SELECT f.id, f.path, f.taken_at, mc.verdict AS verdict,
+                           {_FACE_COUNT_SQL} AS faces
+                    {_FACE_FROM} WHERE {where}
+                    ORDER BY f.id LIMIT ? OFFSET ?""",
+                [*params, limit, offset]).fetchall()
+            items = [_face_item_to_json(r, sensitive) for r in rows]
+    finally:
+        conn.close()
+    return {
+        "slice": slice_,
+        "counts": [{"slice": name, "count": counts[name]} for name in FACE_SLICES],
+        "reason": None if ran else "no_faces_run",
+        # The thresholds travel with the answer so the hint above the grid can state the
+        # rule the numbers were produced by instead of repeating a default in JS.
+        "group_min": int(cfg.features.group_photo_faces),
+        "portrait_share": float(cfg.features.portrait_face_share),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": items,
+    }
+
+
+def _parse_face_slice_query(query: dict[str, list[str]]) -> tuple[str, int, int] | None:
+    """(slice, offset, limit) for `GET /api/face-slices`, or None -> 400.
+
+    An unknown slice is refused rather than answered with an empty page, the
+    `_parse_review_query` rule: there are exactly three, so anything else is a client
+    that has lost track of what it is asking for.
+    """
+    window = _parse_page_window(query)
+    if window is None:
+        return None
+    slice_ = ((query.get("slice") or [FACE_SLICES[0]])[0].strip() or FACE_SLICES[0])
+    if slice_ not in FACE_SLICES:
+        return None
+    return slice_, window[0], window[1]
+
+
 # --- F126: the "Review" workspace — duplicates, blur, closed eyes, no subject -------
 # Four signals, one job: look at a frame and decide whether it stays. Duplicates have had
 # a tab with the whole viewing-and-deleting machinery since U3; the other three have been
@@ -2409,6 +2558,13 @@ def _tabs_visibility_payload(db_path: Path, features: FeaturesConfig) -> dict[st
     force have withdrawn, and a tab shown for an empty page is exactly the drift this
     feature is about.
 
+    F152: `face` is the one that is NOT asked of its own data, and that is the whole
+    point. The three face slices appear as soon as the index holds a photograph the faces
+    stage could have looked at — because without a run they have to be able to SAY there
+    was no run (`no_faces_run`), and a pin that hides itself says nothing at all. It is
+    the same question phase 3 asks of a collection (`faces._CANONICAL`), minus the join
+    to the faces table.
+
     `indexed` rides along for the same cost: "re-run the selected stage" only makes
     sense over files that exist. Right after "Start over" the index is empty and
     ticking "faces" used to light the button up — offering to catch up a stage on
@@ -2426,12 +2582,17 @@ def _tabs_visibility_payload(db_path: Path, features: FeaturesConfig) -> dict[st
             f"SELECT EXISTS(SELECT 1 {_ANIMALS_JOIN} "
             f"WHERE {_animals_population(features)})"
         ).fetchone()[0])
+        face = bool(conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM files WHERE dup_of IS NULL AND error IS NULL "
+            "AND media_type = 'photo')"
+        ).fetchone()[0])
         indexed = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files)"
         ).fetchone()[0])
     finally:
         conn.close()
-    return {"person": person, "event": event, "animal": animal, "indexed": indexed}
+    return {"person": person, "event": event, "animal": animal, "face": face,
+            "indexed": indexed}
 
 
 # --- F108: the "Overview" tab — the state of the collection in one screen -----------
@@ -2552,11 +2713,17 @@ def _overview_layout(conn: sqlite3.Connection) -> dict:
     return payload
 
 
-def _overview_payload(db_path: Path, features: FeaturesConfig) -> dict:
+def _overview_payload(db_path: Path, cfg: Config) -> dict:
     """`GET /api/overview` — the four groups of numbers the tab draws.
 
     `empty` is the whole answer for a fresh index: the view then invites the user to pick
     a folder instead of drawing a table of zeros.
+
+    F152: the three face slices are counted here by the same `sorter.face_slice_ids_sql`
+    the panel and the albums use, and they are the one group of rows that can answer
+    `null` — without a faces run they are unmeasured, not empty, and `faces_reason` says
+    so. `cfg` (rather than the single `blur_max` this used to take) is what carries the
+    thresholds those three rules read.
 
     F126: the three flat review slices are counted here too, by the SAME queries the
     workspace itself uses (`_review_flat_counts`) — a counter that disagrees with the
@@ -2566,6 +2733,9 @@ def _overview_payload(db_path: Path, features: FeaturesConfig) -> dict:
     phash groups of the workspace, which cost seconds to build and have no place on a
     tab made of plain aggregates.
     """
+    # F137 needs the thresholds and F152 needs them too, so the whole config comes in and
+    # the features are unpacked once here rather than threaded as a second argument.
+    features = cfg.features
     conn = _connect(db_path)
     try:
         files = conn.execute(
@@ -2582,6 +2752,11 @@ def _overview_payload(db_path: Path, features: FeaturesConfig) -> dict:
         # leaves this number exactly as it leaves the album. F137: and a threshold the
         # user edited moves it here, in the tab and in the album together.
         animals = conn.execute(_animals_count_sql(features)).fetchone()[0]
+        faces_ran = faces_stage_ran(conn)
+        faces_counts: dict[str, int | None] = {
+            name: (_face_slice_count(conn, cfg, name) if faces_ran else None)
+            for name in FACE_SLICES
+        }
         review = _review_flat_counts(conn, features.blur_review_max)
         place = _overview_place(conn)
         classes_total = conn.execute(
@@ -2616,6 +2791,12 @@ def _overview_payload(db_path: Path, features: FeaturesConfig) -> dict:
             "errors": int(files["errors"]),
             "events": int(events),
             "animals": int(animals),
+            # F152: `null` where the faces stage never ran — the F125 rule, and the same
+            # distinction `/api/face-slices` draws between "none" and "not asked".
+            "with_people": faces_counts["people"],
+            "group_photos": faces_counts["group"],
+            "portraits": faces_counts["portrait"],
+            "faces_reason": None if faces_ran else "no_faces_run",
             "blurred": review["blurred"],
             "eyes_closed": review["eyes"],
             "no_subject": review["subject"],
@@ -2641,8 +2822,8 @@ def _validate_album_payload(
     single animal slice — so an empty selector is accepted there (and only there: for a
     person or an event an empty selector is a client that lost its subject, and
     gathering "everything" would be the wrong answer to it).
-    F139: the class and quality slices join it, by the same rule and through the same
-    shared list (`SELECTORLESS_ALBUM_KINDS`).
+    F139: the class and quality slices join it, and F152 the three face slices, by the
+    same rule and through the same shared list (`SELECTORLESS_ALBUM_KINDS`).
 
     Whether a KIND may be gathered at all is not decided here: that answer depends on
     `vlm.exclude_classes` and is given by the route, which has the config (F133).
@@ -5870,6 +6051,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "overview_errors": {"ru": "Ошибок чтения", "en": "Read errors", "ja": "読み込みエラー"},
     "overview_events": {"ru": "Событий", "en": "Events", "ja": "イベント"},
     "overview_animals": {"ru": "С животными", "en": "With animals", "ja": "動物あり"},
+    # F152: the three face slices. They are the only rows of this card that can show a
+    # dash instead of a number — without a faces run they are unmeasured, not empty.
+    "overview_with_people": {"ru": "С людьми", "en": "With people", "ja": "人物あり"},
+    "overview_group_photos": {"ru": "Групповых", "en": "Group photos", "ja": "集合写真"},
+    "overview_portraits": {"ru": "Портретов", "en": "Portraits", "ja": "ポートレート"},
     # F126: the three review slices that have a number of their own. Blurred is counted
     # inside the window the list opens to, so the row and the list agree.
     "overview_blurred": {"ru": "Размытых", "en": "Blurred", "ja": "ぼやけ"},
@@ -5971,15 +6157,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # --- F133: the "Slices" tab, the layout warning and the settings drawer -----------
     "slices_intro": {
-        "ru": "Срез — это подборка поверх канона: люди, события, животные, товары, "
-              "скриншоты, документы. Альбом среза — жёсткие ссылки, их можно собрать "
-              "и удалить сколько угодно раз.",
-        "en": "A slice is a selection on top of the canon: people, events, animals, "
-              "products, screenshots, documents. An album of a slice is hardlinks — "
-              "gather it and drop it as often as you like.",
-        "ja": "スライスは正本の上に重ねる抽出です（人物・イベント・動物・商品・"
-              "スクリーンショット・書類）。スライスのアルバムはハードリンクなので、"
-              "何度でも作成・削除できます。",
+        "ru": "Срез — это подборка поверх канона: кадры с людьми, групповые, портреты, "
+              "имена, события, животные, товары, скриншоты, документы. Альбом среза — "
+              "жёсткие ссылки, их можно собрать и удалить сколько угодно раз.",
+        "en": "A slice is a selection on top of the canon: frames with people, group "
+              "photos, portraits, names, events, animals, products, screenshots, "
+              "documents. An album of a slice is hardlinks — gather it and drop it as "
+              "often as you like.",
+        "ja": "スライスは正本の上に重ねる抽出です（人物あり・集合写真・ポートレート・"
+              "名前・イベント・動物・商品・スクリーンショット・書類）。スライスの"
+              "アルバムはハードリンクなので、何度でも作成・削除できます。",
     },
     # --- F134: the search line itself. The place F133 reserved is wired now, so the
     # placeholder names what actually goes in it — words, not the name of a slice.
@@ -6076,6 +6263,77 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "error_loading_search": {
         "ru": "Не удалось выполнить поиск: ", "en": "Could not run the search: ",
         "ja": "検索を実行できません: ",
+    },
+    # --- F152: the three face slices ---------------------------------------------------
+    # The labels are deliberately not the label of the cluster slice next to them: "Люди"
+    # there answers "who is this", these answer "is anybody in the frame".
+    "face_slice_people": {"ru": "С людьми", "en": "With people", "ja": "人物あり"},
+    "face_slice_group": {"ru": "Групповые", "en": "Group photos", "ja": "集合写真"},
+    "face_slice_portrait": {"ru": "Портреты", "en": "Portraits", "ja": "ポートレート"},
+    # THE line that has to differ from the caption of an approximate slice. A query slice
+    # is a ranking and says so; this one is a fact of the detector, and the sentence says
+    # what the fact is and where its errors come from, without a percentage nobody
+    # measured.
+    "face_slices_intro": {
+        "ru": "Эти срезы — не оценка: кадр в них потому, что детектор нашёл на нём лицо. "
+              "Порога «похоже на человека» здесь нет, ошибки бывают только у самого "
+              "детектора. Служебная отметка «файл обработан, лиц нет» исключена везде.",
+        "en": "These slices are not an estimate: a frame is here because the detector "
+              "found a face on it. There is no “looks like a person” threshold — the only "
+              "errors are the detector's own. The “processed, no faces” marker row is "
+              "excluded everywhere.",
+        "ja": "これらのスライスは推定ではありません。検出器がその写真で顔を見つけたから"
+              "入っています。「人物らしさ」のしきい値はなく、誤りは検出器そのものの誤り"
+              "だけです。「処理済み・顔なし」の内部記録はすべて除外されます。",
+    },
+    "face_hint_people": {
+        "ru": "Хотя бы одно лицо в кадре.",
+        "en": "At least one face in the frame.",
+        "ja": "写真に顔が 1 つ以上あります。",
+    },
+    "face_hint_group": {
+        "ru": "Лиц в кадре — {n} и больше (features.group_photo_faces).",
+        "en": "{n} faces or more in the frame (features.group_photo_faces).",
+        "ja": "顔が {n} 個以上（features.group_photo_faces）。",
+    },
+    "face_hint_portrait": {
+        "ru": "Ровно одно лицо, и оно занимает не меньше {share}% кадра "
+              "(features.portrait_face_share).",
+        "en": "Exactly one face, covering at least {share}% of the frame "
+              "(features.portrait_face_share).",
+        "ja": "顔がちょうど 1 つで、写真の {share}% 以上を占めます"
+              "（features.portrait_face_share）。",
+    },
+    # F125's rule: the reason, never a zero. Without a faces run nothing was measured, and
+    # "0 photographs with people" is a statement about somebody's archive that no table
+    # in this index supports.
+    "face_no_faces_run": {
+        "ru": "Стадия «лица» не запускалась — считать нечего. Запустите обработку с "
+              "галочкой «Разбор по лицам», и срезы наполнятся сами.",
+        "en": "The faces stage has not run — there is nothing to count yet. Process the "
+              "collection with “Detect faces” ticked and these slices fill in by "
+              "themselves.",
+        "ja": "顔の処理がまだ実行されていないため、集計できません。「顔の検出」を"
+              "有効にして処理すると、これらのスライスが表示されます。",
+    },
+    "face_empty": {
+        "ru": "В этом срезе пусто: таких кадров не нашлось.",
+        "en": "This slice is empty — no such frames were found.",
+        "ja": "このスライスは空です。該当するコマは見つかりませんでした。",
+    },
+    "face_count_label": {
+        "ru": "лиц: {n}", "en": "{n} faces", "ja": "顔 {n}",
+    },
+    "face_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
+    "face_shown_label": {
+        "ru": "Показано {shown} из {total}",
+        "en": "Showing {shown} of {total}",
+        "ja": "{total} 件中 {shown} 件を表示",
+    },
+    "error_loading_face_slices": {
+        "ru": "Не удалось загрузить срезы по лицам: ",
+        "en": "Could not load the face slices: ",
+        "ja": "顔のスライスを読み込めません: ",
     },
     "slices_pinned_label": {
         "ru": "Закреплённые срезы", "en": "Pinned slices", "ja": "固定スライス",
@@ -6510,6 +6768,18 @@ label { cursor: pointer; }
 .animal-card-actions { display: flex; gap: var(--space-xs); flex-wrap: wrap;
       align-items: center; }
 
+/* --- F152: the face slices -------------------------------------------------
+   The same tile as the animal grid; no score line, because these slices have no
+   confidence to print — a frame is in one because a face was detected on it. */
+#face-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.face-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.face-card img { width: 100%; height: 110px; margin: 0; }
+.face-card-name { font-size: 0.8rem; word-break: break-all; }
+.face-card-meta { font-size: 0.75rem; color: var(--muted); }
+
 /* --- F126: the "Review" workspace ---------------------------------------- */
 /* The switcher looks like the junk bucket chips, for the same reason: a row of
    named counters is how a person picks which pile to go through next. Every slice
@@ -6792,7 +7062,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 @media (max-width: 640px) {
   body { padding: var(--space-md); }
   #clusters-grid, #events-list { grid-template-columns: 1fr; }
-  #junk-grid, #animals-grid, #search-grid {
+  #junk-grid, #animals-grid, #search-grid, #face-grid {
       grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .process-path-row { flex-direction: column; align-items: stretch; }
   .process-path-row input[type="text"] { min-width: 100%; }
@@ -7159,6 +7429,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
 <div id="tab-event" class="slice-panel">
 <div id="events-list"><div class="state-msg state-loading">{{loading}}</div></div>
+</div>
+
+<div id="tab-face" class="slice-panel">
+<p class="process-intro">{{face_slices_intro}}</p>
+<p id="face-hint" class="override-hint"></p>
+<div id="face-album" class="album-controls"></div>
+<div id="face-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="face-more-btn" class="btn btn-ghost" style="display:none">{{face_load_more}}</button>
+<span id="face-shown" class="override-hint"></span>
+</div>
 </div>
 
 <div id="tab-animal" class="slice-panel">
@@ -8335,19 +8616,35 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var slicePins = [];
   var sliceCurrent = null;
   var slicePending = null;
-  var sliceVisibility = { person: false, event: false, animal: false };
+  var sliceVisibility = { person: false, event: false, animal: false, face: false };
   var junkBucketCounts = [];
+  // F152: the counters of the three face pins, `null` for each of them until the faces
+  // stage has run — the pin then carries no number at all, because "0 photographs with
+  // people" is a claim and "nobody has looked yet" is the truth.
+  var faceSliceCounts = {};
 
   function sliceKeyId(key) {
     return "slice-pin-" + key.replace(/[^a-z0-9]+/g, "-");
   }
 
   function slicePanelId(key) {
-    return key.indexOf("junk") === 0 ? "tab-junk" : "tab-" + key;
+    if (key.indexOf("junk") === 0) return "tab-junk";
+    if (key.indexOf("face:") === 0) return "tab-face";
+    return "tab-" + key;
   }
 
   function buildSlicePins() {
     var pins = [];
+    // F152: first in the row, and deliberately: on the live collection these are the
+    // largest slices there are, and until now the row opened with the smallest.
+    if (sliceVisibility.face) {
+      FACE_SLICES.forEach(function (name) {
+        var count = faceSliceCounts[name];
+        pins.push({ key: "face:" + name, label: I18N["face_slice_" + name],
+                    count: (count === null || count === undefined) ? undefined : count,
+                    faceSlice: name });
+      });
+    }
     if (sliceVisibility.person) pins.push({ key: "person", label: I18N.tab_person });
     if (sliceVisibility.event) pins.push({ key: "event", label: I18N.tab_event });
     if (sliceVisibility.animal) pins.push({ key: "animal", label: I18N.tab_animal });
@@ -8395,7 +8692,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // puts them away — one panel is visible at a time, whichever one it is.
     searchActive = false;
     var panelId = slicePanelId(key);
-    ["tab-person", "tab-event", "tab-animal", "tab-junk",
+    ["tab-person", "tab-event", "tab-animal", "tab-junk", "tab-face",
      "tab-search"].forEach(function (id) {
       document.getElementById(id).classList.toggle("active", id === panelId);
     });
@@ -8403,6 +8700,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       var btn = document.getElementById(sliceKeyId(p.key));
       if (btn) btn.classList.toggle("active", p.key === key);
     });
+    // F152: three pins, one panel — the junk-bucket arrangement. The page is refetched
+    // whenever the slice changes, because the panel holds one slice at a time.
+    if (pin.faceSlice !== undefined && (faceSlice !== pin.faceSlice || !faceLoaded)) {
+      faceLoaded = true;
+      faceSlice = pin.faceSlice;
+      loadFaceSlice();
+    }
     if (key === "person" && !clustersLoaded) {
       clustersLoaded = true;
       loadClusters();
@@ -8428,11 +8732,18 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // line that stays disabled after the run that enabled it is the worst of both states.
     fetchSearchState();
     // The counters of the class pins come from the route that already serves them, asked
-    // for zero items: the counts are the whole answer here.
-    return fetch("/api/junk?offset=0&limit=0")
-      .then(function (r) { return r.json(); })
-      .then(function (data) { junkBucketCounts = data.buckets || []; })
-      .catch(function () {})
+    // for zero items: the counts are the whole answer here. F152 asks its own route the
+    // same way — a page of zero cards, three numbers back.
+    return Promise.all([
+      fetch("/api/junk?offset=0&limit=0")
+        .then(function (r) { return r.json(); })
+        .then(function (data) { junkBucketCounts = data.buckets || []; })
+        .catch(function () {}),
+      fetch("/api/face-slices?offset=0&limit=0")
+        .then(function (r) { return r.json(); })
+        .then(function (data) { applyFaceCounts(data); })
+        .catch(function () {}),
+    ])
       .then(function () {
         renderSlicePins();
         if (!slicePins.length || searchActive) return;
@@ -8634,6 +8945,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           // F123: "Animals" follows the same rule — the slice exists exactly when there
           // is something to show (features.pets off => no verdicts at all).
           animal: !!data.animal,
+          // F152: and the face slices deliberately do NOT follow it. They appear as soon
+          // as the index holds a photograph, before any faces run, because their empty
+          // state is a SENTENCE ("the faces stage has not run") and a pin that hides
+          // itself never gets to say it.
+          face: !!data.face,
         };
         renderSlicePins();
         // A slice that has just disappeared must not stay selected — but the person is
@@ -8763,6 +9079,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return btn;
   }
 
+  // F152: a face-slice number, or a dash when the faces stage never ran. `overviewStat`
+  // cannot answer this one — it dashes on an empty INDEX, and here the index is full
+  // while this particular question has not been asked of it.
+  function overviewFaceCount(count, slice) {
+    if (count === null || count === undefined) return overviewValue("\\u2014");
+    return overviewCount(count, "slices", slice);
+  }
+
   function overviewRow(label, valueEl, main) {
     var row = document.createElement("div");
     row.className = "overview-row" + (main ? " overview-row-main" : "");
@@ -8826,6 +9150,18 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                                  overviewCount(c.events, "slices", "event")));
     card.appendChild(overviewRow(I18N.overview_animals,
                                  overviewCount(c.animals, "slices", "animal")));
+    // F152: the three face slices, each leading to its own pin. They are the only rows
+    // here that can be a dash: without a faces run there is no measurement, and a zero
+    // would read as "no photograph of yours has a person on it".
+    card.appendChild(overviewRow(I18N.overview_with_people,
+                                 overviewFaceCount(c.with_people, "face:people")));
+    card.appendChild(overviewRow(I18N.overview_group_photos,
+                                 overviewFaceCount(c.group_photos, "face:group")));
+    card.appendChild(overviewRow(I18N.overview_portraits,
+                                 overviewFaceCount(c.portraits, "face:portrait")));
+    if (c.faces_reason === "no_faces_run") {
+      card.appendChild(overviewNote(I18N.face_no_faces_run));
+    }
     // F126: the three slices of the review workspace that have a number of their own.
     card.appendChild(overviewRow(I18N.overview_blurred,
                                  overviewCount(c.blurred, "review", "blurred")));
@@ -9246,6 +9582,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     movesLoaded = false;
     junkLoaded = false;  // F103: прогон junk-яруса меняет состав корзин
     animalsLoaded = false;  // F123: the same run recomputes the animal verdicts
+    faceLoaded = false;     // F152: a faces run is what turns the reason into numbers
     renderPlanTab("city", "tree-city");
     applyTabVisibility();
     loadCacheSizes();  // F94: a run is what makes the preview cache grow
@@ -11197,6 +11534,144 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     fetchAnimals(animalsOffset, true);
   });
 
+  // --- F152: the face slices -----------------------------------------------
+  // Three pins over one panel — the junk-bucket arrangement, because these are three
+  // questions of one kind and a panel each would be three copies of the same grid. What
+  // is NOT shared with the slices around it is the caption: there is no score on a card
+  // and no ranking hint above the grid, because a frame is here by a fact of the
+  // detector and not by a position in a list. The one line that changes with the slice
+  // is the rule it was selected by, thresholds and all.
+  //
+  // The empty state is a sentence, not a zero. Without a faces run the server answers
+  // `reason='no_faces_run'` and `null` counters, and both the pins and this panel say
+  // that instead of showing a number nobody measured (F125).
+
+  var FACE_SLICES = ["people", "group", "portrait"];
+  var FACE_PAGE_SIZE = 200;
+  var faceSlice = "people";
+  var faceOffset = 0;
+  var faceLoaded = false;
+  var faceReason = null;
+
+  function applyFaceCounts(data) {
+    faceReason = (data && data.reason) || null;
+    faceSliceCounts = {};
+    ((data && data.counts) || []).forEach(function (row) {
+      faceSliceCounts[row.slice] = row.count;
+    });
+  }
+
+  // Why this slice holds what it holds, in one line above the grid — with the numbers
+  // the server actually selected by, so the rule on screen is the rule that ran.
+  function faceHintText(data) {
+    if (faceReason === "no_faces_run") return I18N.face_no_faces_run;
+    if (faceSlice === "group") {
+      return fmt(I18N.face_hint_group, { n: data.group_min });
+    }
+    if (faceSlice === "portrait") {
+      return fmt(I18N.face_hint_portrait,
+                 { share: (Number(data.portrait_share) * 100).toFixed(1) });
+    }
+    return I18N.face_hint_people;
+  }
+
+  function renderFaceCard(item) {
+    var card = document.createElement("div");
+    card.className = "face-card";
+    if (item.thumb_url) {
+      card.appendChild(
+          clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
+    } else {
+      // F133's rule, unchanged: a sensitive class is listed but never decoded for
+      // display. A document with a face on it is exactly the frame that rule is for.
+      var stub = document.createElement("div");
+      stub.className = "junk-doc-box";
+      stub.textContent = I18N.junk_document_no_preview;
+      card.appendChild(stub);
+    }
+    var name = document.createElement("span");
+    name.className = "face-card-name";
+    name.textContent = item.name;
+    card.appendChild(name);
+    var meta = document.createElement("span");
+    meta.className = "face-card-meta";
+    meta.textContent = [item.date || "", fmt(I18N.face_count_label, { n: item.faces })]
+        .filter(Boolean).join(" \\u00b7 ");
+    card.appendChild(meta);
+    return card;
+  }
+
+  function renderFacePage(data, append) {
+    var grid = document.getElementById("face-grid");
+    if (!append) grid.textContent = "";
+    (data.items || []).forEach(function (it) { grid.appendChild(renderFaceCard(it)); });
+    var shown = grid.querySelectorAll(".face-card").length;
+    if (!shown) {
+      grid.appendChild(stateEl("empty",
+          faceReason === "no_faces_run" ? I18N.face_no_faces_run : I18N.face_empty));
+    }
+    document.getElementById("face-shown").textContent =
+        shown ? fmt(I18N.face_shown_label, { shown: shown, total: data.total }) : "";
+    document.getElementById("face-more-btn").style.display =
+        shown && shown < data.total ? "" : "none";
+    faceOffset = shown;
+  }
+
+  function fetchFaceSlice(offset, append) {
+    var grid = document.getElementById("face-grid");
+    if (!append) {
+      grid.textContent = "";
+      grid.appendChild(stateEl("loading", I18N.loading));
+    }
+    return fetch("/api/face-slices?slice=" + faceSlice + "&offset=" + offset +
+                 "&limit=" + FACE_PAGE_SIZE)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        applyFaceCounts(data);
+        renderSlicePins();
+        document.getElementById("face-hint").textContent = faceHintText(data);
+        renderFacePage(data, append);
+      })
+      .catch(function (err) {
+        grid.textContent = "";
+        grid.appendChild(stateEl("error", I18N.error_loading_face_slices + err));
+      });
+  }
+
+  // One album per slice, the animal arrangement: the selector goes out empty and the
+  // server ignores it (the collection holds a single slice of each kind), and the album
+  // name is left to the server — it is a folder name and follows `language:`. Rebuilt on
+  // every open because the KIND changes with the pin.
+  function renderFaceAlbumControls() {
+    var box = document.getElementById("face-album");
+    box.textContent = "";
+    if (faceReason === "no_faces_run") return;   // nothing to gather, and no button for it
+    var modeSelect = albumModeSelect();
+    box.appendChild(modeSelect);
+    var destInput = appendAlbumDestControls(box);
+    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
+                           "btn-sm album-gather-btn");
+    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
+    var albumStatus = document.createElement("span");
+    albumStatus.className = "album-status";
+    var kind = faceSlice;
+    albumBtn.addEventListener("click", function () {
+      gatherAlbum(kind, "", modeSelect.value, null, null,
+          destInput.value.trim() || null, albumStatus);
+    });
+    box.appendChild(albumBtn);
+    box.appendChild(albumStatus);
+    appendAlbumBusyHint(box);
+  }
+
+  function loadFaceSlice() {
+    return fetchFaceSlice(0, false).then(function () { renderFaceAlbumControls(); });
+  }
+
+  document.getElementById("face-more-btn").addEventListener("click", function () {
+    fetchFaceSlice(faceOffset, true);
+  });
+
   // --- F126: the "Review" workspace ----------------------------------------
   // One tab, four slices, one job: look and decide. The switcher keeps every slice in
   // place at zero, because "you have no closed eyes" is an answer and a vanished entry
@@ -11715,6 +12190,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_junk(parse_qs(parts.query))
             elif path == "/api/animals":
                 self._serve_animals(parse_qs(parts.query))
+            elif path == "/api/face-slices":
+                self._serve_face_slices(parse_qs(parts.query))
             elif path == "/api/review":
                 self._serve_review(parse_qs(parts.query))
             elif path == "/api/search":
@@ -11746,7 +12223,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             elif path == "/api/overview":
                 # F108: plain aggregates, computed per request. The plan cache is not
                 # touched on purpose — building a layout here would cost minutes.
-                self._send_json(_overview_payload(db_path, cfg.features))
+                self._send_json(_overview_payload(db_path, cfg))
             elif path == "/api/cache":
                 self._send_json(_cache_payload(db_path))
             elif path == "/api/source-tree":
@@ -11915,6 +12392,21 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # its sensitive classes off it — the settings panel edits `pet_threshold`
             # without a restart, and a threshold that needs one is not a threshold.
             self._send_json(_animals_payload(db_path, cfg.features, offset, limit))
+
+        def _serve_face_slices(self, query: dict[str, list[str]]) -> None:
+            # F152: read-only. Nothing about these slices is decided here — the rules are
+            # `sorter.face_slice_ids_sql`, and the one action they offer is the existing
+            # POST /api/album with kind='people'|'group'|'portrait'. The sensitive classes
+            # come off the LIVE config for the reason /api/junk reads them that way.
+            parsed = _parse_face_slice_query(query)
+            if parsed is None:
+                self._send_json({"error": "invalid slice/offset/limit"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            slice_, offset, limit = parsed
+            self._send_json(_face_slices_payload(
+                cfg, db_path, slice_, offset, limit,
+                frozenset(cfg.vlm.exclude_classes)))
 
         def _serve_review(self, query: dict[str, list[str]]) -> None:
             # F126: read-only. The only write of this workspace is the decision itself

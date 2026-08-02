@@ -1,5 +1,10 @@
 """F54: conditional visibility of the "People"/"Events" tabs — by data presence in
-the DB (variant B, stateless, without a meta table) — GET /api/tabs/visibility + markup."""
+the DB (variant B, stateless, without a meta table) — GET /api/tabs/visibility + markup.
+
+F152 adds `face` to the same payload and deliberately NOT to the same rule: the three
+face slices appear as soon as the index holds a canonical photograph, before any faces
+run, because their empty state is a sentence ("the faces stage has not run") and a pin
+that hides itself never gets to say it. Their own cases live in test_ui_face_slices."""
 from __future__ import annotations
 
 import json
@@ -54,7 +59,7 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
         self.assertEqual(json.loads(body), {"person": False, "event": False,
-                          "animal": False, "indexed": False})
+                          "animal": False, "face": False, "indexed": False})
 
     def test_clustered_faces_show_person_only(self):
         fid, _p, _c = self.add_photo_file("a.jpg")
@@ -62,7 +67,8 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
         self.assertEqual(json.loads(body), {"person": True, "event": False,
-                                            "animal": False, "indexed": True})
+                                            "animal": False, "face": True,
+                                            "indexed": True})
 
     def test_noise_only_faces_do_not_show_person(self):
         fid, _p, _c = self.add_photo_file("noise.jpg")
@@ -70,7 +76,8 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
         self.assertEqual(json.loads(body), {"person": False, "event": False,
-                                            "animal": False, "indexed": True})
+                                            "animal": False, "face": True,
+                                            "indexed": True})
 
     def test_events_show_event_only(self):
         fid, _p, _c = self.add_photo_file("b.jpg")
@@ -78,7 +85,8 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
         self.assertEqual(json.loads(body), {"person": False, "event": True,
-                                            "animal": False, "indexed": True})
+                                            "animal": False, "face": True,
+                                            "indexed": True})
 
     def test_both_independent_when_both_present(self):
         fid1, _p1, _c1 = self.add_photo_file("a.jpg")
@@ -88,7 +96,8 @@ class TestApiTabsVisibility(TabsVisibilityTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/api/tabs/visibility")
         self.assertEqual(json.loads(body), {"person": True, "event": True,
-                                            "animal": False, "indexed": True})
+                                            "animal": False, "face": True,
+                                            "indexed": True})
 
 
 class TestIndexedFlag(TabsVisibilityTestBase):

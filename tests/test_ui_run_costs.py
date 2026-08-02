@@ -400,6 +400,9 @@ class TestEstimateEndpoint(RunCostsTestBase):
         The pair is deliberate and so is the pinned `keeper_min_group_size`: this case is
         about the ARITHMETIC over a group, and it must not move when the product default
         moves (F144 raised it to 3 and pinned the mechanism tests the same way).
+
+        Three branches rewrote this fixture independently on 2026-08-02, each chasing the
+        default instead of pinning it. Pinning is why it stops.
         """
         for i in range(2):
             self.add_photo(f"dup{i}.jpg", phash="f" * 16)

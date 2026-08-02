@@ -1083,6 +1083,8 @@ def build_app(lang: Lang) -> typer.Typer:
         # whole command. For a person and an event the selector is the subject itself —
         # and for a query (F129) it is the words — so a missing one has to be an error
         # here, said out loud, rather than an album quietly gathered from something else.
+        # F152: the face slices join that list too, hence the shared constant — the rule
+        # is a property of the kinds and belongs where they are declared.
         if kind not in SELECTORLESS_ALBUM_KINDS and not (selector or "").strip():
             raise typer.BadParameter(
                 _t("cli.album.selector_required", _lang_of(config)))

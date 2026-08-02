@@ -134,6 +134,31 @@ class TestFeaturesSection(unittest.TestCase):
     def test_an_empty_section_is_not_a_crash(self):
         self.assertEqual(self._load("features:\n").features, FeaturesConfig())
 
+    def test_the_face_slice_numbers_have_the_documented_defaults(self):
+        # F152: geometry, not confidence — a count of face boxes and a share of the frame.
+        d = FeaturesConfig()
+        self.assertEqual(d.group_photo_faces, 3)
+        self.assertAlmostEqual(d.portrait_face_share, 0.08)
+
+    def test_the_face_slice_numbers_are_read(self):
+        cfg = self._load(
+            "features:\n"
+            "  group_photo_faces: 5\n"
+            "  portrait_face_share: 0.2\n")
+        self.assertEqual(cfg.features.group_photo_faces, 5)
+        self.assertAlmostEqual(cfg.features.portrait_face_share, 0.2)
+
+    def test_garbage_face_slice_numbers_fall_back_to_the_defaults(self):
+        # A zero group size would put every photograph into the group slice, and a
+        # non-number share would be read as a 0 that makes every single face a portrait.
+        cfg = self._load(
+            "features:\n"
+            "  group_photo_faces: 0\n"
+            "  portrait_face_share: wide\n")
+        d = FeaturesConfig()
+        self.assertEqual(cfg.features.group_photo_faces, d.group_photo_faces)
+        self.assertAlmostEqual(cfg.features.portrait_face_share, d.portrait_face_share)
+
 
 class TestVlmQualityKeys(unittest.TestCase):
     """F113: `vlm.quality` / `vlm.quality_scope` — the band's own toggle and population."""

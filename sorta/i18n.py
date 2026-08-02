@@ -53,6 +53,9 @@ FOLDER_KEYS: tuple[str, ...] = (
     "blurred",
     "eyes_closed",
     "no_subject",
+    "people",
+    "group_photos",
+    "portraits",
 )
 
 _FOLDERS: dict[str, dict[Lang, str]] = {
@@ -85,6 +88,13 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     "blurred": {"ru": "_Размытые", "en": "_Blurred", "ja": "_ぼやけ"},
     "eyes_closed": {"ru": "_Закрытые_глаза", "en": "_Closed_eyes", "ja": "_目を閉じた"},
     "no_subject": {"ru": "_Без_сюжета", "en": "_No_subject", "ja": "_被写体なし"},
+    # F152: the three face slices have no selector either — the collection holds exactly
+    # one of each — so their album folders are named the same way the animal one is.
+    # "People" here is the question "is there a face in this frame", not "who is it":
+    # a named person's album is still called after the person.
+    "people": {"ru": "_С людьми", "en": "_With people", "ja": "_人物あり"},
+    "group_photos": {"ru": "_Групповые", "en": "_Group photos", "ja": "_集合写真"},
+    "portraits": {"ru": "_Портреты", "en": "_Portraits", "ja": "_ポートレート"},
 }
 
 
@@ -1167,29 +1177,31 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # album
     "cli.help.album": {
-        "ru": "Выгрузить срез (человека/события/животных/запроса/класса/качества) "
+        "ru": "Выгрузить срез (человека/события/животных/запроса/класса/качества/лиц) "
               "в отдельную папку. По умолчанию — hardlink, dry-run.",
         "en": "Export a slice (a person/an event/the animals/a query/a class/a quality "
-              "slice) into a separate folder. By default — hardlink, dry run.",
-        "ja": "スライス（人物・イベント・動物・問い合わせ・分類・画質）を別のフォルダに"
+              "slice/the faces) into a separate folder. By default — hardlink, dry run.",
+        "ja": "スライス（人物・イベント・動物・問い合わせ・分類・画質・顔）を別のフォルダに"
               "書き出します。デフォルトはハードリンクの dry-run です。",
     },
     "cli.help.album.kind": {
         "ru": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject",
+              "blurred | eyes_closed | no_subject | people | group | portrait",
         "en": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject",
+              "blurred | eyes_closed | no_subject | people | group | portrait",
         "ja": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject",
+              "blurred | eyes_closed | no_subject | people | group | portrait",
     },
     "cli.help.album.selector": {
-        "ru": "имя человека / имя или id события / слова запроса; для animal и срезов "
-              "класса и качества не нужен — такой срез в коллекции один",
+        "ru": "имя человека / имя или id события / слова запроса; для animal, срезов "
+              "класса и качества, people, group и portrait не нужен — такой срез в "
+              "коллекции один",
         "en": "a person's name / an event's name or id / the words to search for; not "
-              "needed for animal or for a class/quality slice — the collection has a "
-              "single such slice",
-        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal と分類・画質の"
-              "スライスでは不要です — そのスライスはコレクションに 1 つだけです",
+              "needed for animal, a class/quality slice, people, group or portrait — "
+              "the collection has a single slice of each",
+        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal・分類・画質・"
+              "people・group・portrait では不要です — そのスライスはコレクションに"
+              " 1 つだけです",
     },
     "cli.help.album.dest": {
         "ru": "Куда выгрузить альбом",

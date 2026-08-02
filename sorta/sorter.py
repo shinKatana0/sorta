@@ -1759,15 +1759,24 @@ CLASS_ALBUM_KINDS = ("product", "screenshot", "meme")
 # `quality_slice_where`.
 QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed", "no_subject")
 
+# F152: `people`, `group` and `portrait` are read straight off the `faces` table, which a
+# detector filled — so membership is a FACT about boxes, not an estimate. What that fact
+# is worth was measured afterwards on 500 labelled frames: 77% of the frames a person
+# calls "people" and 64% of "children". The ceiling is the detector, not a threshold, and
+# the wording in the interface says "a face was found" rather than "your photos of
+# people". See FACE_SLICES below for the three rules.
+FACE_ALBUM_KINDS = ("people", "group", "portrait")
+
 ALBUM_KINDS = (("person", "event", "animal", "query")
-               + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS)
+               + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS + FACE_ALBUM_KINDS)
 ALBUM_MODES = ("link", "copy", "move")
 
 # The kinds with nothing to select INSIDE them: the collection has exactly one animal
 # view, one products bucket, one blurred list. An empty selector is accepted for these
 # (and only for these — for a person, an event or a query it is the subject itself, and
 # gathering "everything" would be the wrong answer to a client that lost it).
-SELECTORLESS_ALBUM_KINDS = ("animal",) + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS
+SELECTORLESS_ALBUM_KINDS = (("animal",) + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS
+                            + FACE_ALBUM_KINDS)
 
 # The default album name of a slice that cannot name itself after a selector: a folder
 # name like any other the layout creates, so it comes from the catalog and follows
@@ -1899,6 +1908,84 @@ def quality_slice_where(kind: str, blur_max: float | None) -> tuple[str, list[ob
         params.append(float(blur_max))
     return where, params
 
+# --- F152: the face slices — three questions the `faces` table already answers ------
+#
+# On a hand-labelled sample of 200 frames of the live collection, 27.5% held people and
+# 22% held children: the largest populations of the archive, larger than animals,
+# products and screenshots together, and until now not one slice pointed at them. The
+# signal for them has been on disk since phase 3 — 12 952 real faces over 7 341
+# photographs — and it is precise BY CONSTRUCTION: a detector either found a box on this
+# frame or it did not. That is what separates these three from a query album, where the
+# membership of a frame is a position in a ranking.
+#
+# THE TRAP, and the reason `_REAL_FACE` exists at all: a `faces` row with `bbox = '[]'`
+# is not a face, it is the marker "this file was processed and had none" (see the faces
+# module docstring). On the live collection 24 195 files out of 24 196 carry one, so a
+# predicate that forgets to exclude it turns "photographs with people" into "every
+# photograph". This is F125's trap, spelled out again because it is the one way to get
+# this feature wrong.
+# One tuple, two names: the album machinery needs the kinds before this section (they are
+# part of ALBUM_KINDS), and the slice rules need them here. An alias rather than a second
+# literal — two tuples of the same three strings drift the moment a fourth appears.
+FACE_SLICES = FACE_ALBUM_KINDS
+
+_REAL_FACE = "fa.bbox != '[]'"
+
+# The area of a face box, in the pixels of the stored bbox — `[x1, y1, x2, y2]`, written
+# by json.dumps, so json_extract is the tool for it. abs() rather than a subtraction that
+# trusts the order of the corners: the share is the whole answer here, and a negative one
+# would silently drop a frame instead of failing.
+_FACE_AREA = ("abs(json_extract(fa.bbox, '$[2]') - json_extract(fa.bbox, '$[0]')) * "
+              "abs(json_extract(fa.bbox, '$[3]') - json_extract(fa.bbox, '$[1]'))")
+
+
+def face_slice_ids_sql(cfg: Config, slice_: str) -> tuple[str, list[object]]:
+    """The file ids of one face slice, as a SELECT plus its parameters.
+
+    The `ANIMAL_IDS_SQL` arrangement, with the one difference the thresholds force: two
+    of the three rules read a number out of `features:`, so this is a function returning
+    bound parameters rather than a constant string. Every consumer — the album kinds
+    below, the web app's slice panel and its "Overview" counters — goes through this one
+    function, because two spellings of "a photograph with a person on it" would be two
+    different collections the day one of them was edited.
+
+    Each SELECT returns ONE row per file (`GROUP BY fa.file_id`), so it composes both as
+    `f.id IN (…)` and as a subquery something counts.
+
+    people   — at least one real face. Nothing else: the question is "is there a person
+               in this frame", not "who is it" (that is the cluster slice, untouched).
+    group    — `features.group_photo_faces` faces or more, counted on the same rows.
+    portrait — exactly one face, and it covers at least `features.portrait_face_share` of
+               the frame. Pure geometry out of the box and `files.width/height`; a frame
+               whose dimensions the index never learned is not in the slice, because the
+               share cannot be computed for it and guessing it would be an invention.
+    """
+    if slice_ == "people":
+        return (f"SELECT fa.file_id FROM faces fa WHERE {_REAL_FACE} "
+                "GROUP BY fa.file_id", [])
+    if slice_ == "group":
+        return (f"""SELECT fa.file_id FROM faces fa WHERE {_REAL_FACE}
+                    GROUP BY fa.file_id HAVING COUNT(*) >= ?""",
+                [int(cfg.features.group_photo_faces)])
+    if slice_ == "portrait":
+        # MAX() over a group of one row is that row's value, and it is spelled that way
+        # on purpose: a bare `fa.bbox` in HAVING would mean the same thing here only
+        # because COUNT(*) = 1 holds, which is too much to ask a reader to notice.
+        return (f"""SELECT fa.file_id FROM faces fa
+                        JOIN files ff ON ff.id = fa.file_id
+                    WHERE {_REAL_FACE} AND ff.width > 0 AND ff.height > 0
+                    GROUP BY fa.file_id
+                    HAVING COUNT(*) = 1
+                       AND MAX({_FACE_AREA}) >= ? * ff.width * ff.height""",
+                [float(cfg.features.portrait_face_share)])
+    raise ValueError(f"unknown face slice {slice_!r}; allowed: {', '.join(FACE_SLICES)}")
+
+
+# The default album folder of each face slice — a folder name like the animal one, so it
+# follows `language:` (F118) rather than the language the code was written in.
+_FACE_ALBUM_FOLDER = {"people": "people", "group": "group_photos",
+                      "portrait": "portraits"}
+
 
 @dataclass
 class AlbumPlanItem:
@@ -1987,6 +2074,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     the "Review" workspace's flat list of that name (`quality_slice_where`, the shared
     rule), blurred inside the `features.blur_review_max` window. No selector; the default
     album name comes from the catalog.
+    kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
+    `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
+    fact that covers 77% of what a person would call a photo of people (measured). Like
+    `animal` they take no selector and their default name is a localized folder.
     where (opt.) reuses parse_where as an additional AND condition on top of the slice
     (person here is the subject, not a where field; --where can still carry its own
     city/country/event/year/person conditions). junk is NOT filtered (these are the
@@ -2050,6 +2141,13 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
             kind, cfg.features.blur_review_max)
         subject_cond = f"f.id IN (SELECT f.id {QUALITY_FROM} WHERE {quality_cond})"
         subject_params = list(quality_params)
+    elif kind in FACE_ALBUM_KINDS:
+        # F152: the marker row `bbox = '[]'` is excluded inside `face_slice_ids_sql` and
+        # nowhere else, so this album, the slice panel and the "Overview" counter cannot
+        # disagree about what a face is. dup_of/error are excluded below, as for every kind.
+        resolved_name = i18n.folder(_FACE_ALBUM_FOLDER[kind], lang)
+        ids_sql, subject_params = face_slice_ids_sql(cfg, kind)
+        subject_cond = f"f.id IN ({ids_sql})"
     elif kind == "query":
         # F129: the ranking runs FIRST and the ids it returns are the slice. The ids are
         # interpolated rather than bound because `features.search_limit` is a user-set
@@ -2073,7 +2171,7 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
 
     where_cond, where_params = parse_where(where or [])
     full_cond = f"({subject_cond}) AND ({where_cond})"
-    full_params = subject_params + where_params
+    full_params: list[object] = [*subject_params, *where_params]
 
     rows = conn.execute(
         _CTE + f"""SELECT f.id, f.path, f.hash, f.hash_algo FROM files f
