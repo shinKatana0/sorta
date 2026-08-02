@@ -88,16 +88,17 @@ class TestApiPlanPersonEvent(PersonEventTestBase):
 
 
 class TestIndexHtmlPersonEventTabs(PersonEventTestBase):
-    def test_person_and_event_tabs_present(self):
+    def test_person_and_event_panels_are_slices_of_one_tab(self):
+        # F133: both used to be tabs of their own; they are pinned slices of "Slices"
+        # now, and their panels moved into it unchanged.
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="tab-btn-person"', html)
-        self.assertIn('id="tab-btn-event"', html)
-        self.assertIn(">People<", html)
-        self.assertIn(">Events<", html)
-        self.assertIn('id="tab-person"', html)
-        self.assertIn('id="tab-event"', html)
+        slices = html.split('id="tab-slices"', 1)[1].split("</section", 1)[0]
+        self.assertIn('id="tab-person" class="slice-panel"', slices)
+        self.assertIn('id="tab-event" class="slice-panel"', slices)
+        self.assertIn('"tab_person": "People"', html)
+        self.assertIn('"tab_event": "Events"', html)
         self.assertIn("renderPlanTab", html)
         self.assertNotIn("http://", html)
         self.assertNotIn("https://", html)

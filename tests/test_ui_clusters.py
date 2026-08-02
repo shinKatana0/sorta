@@ -197,8 +197,10 @@ class TestIndexHtmlPeopleTab(ClustersTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="tab-btn-person"', html)
-        self.assertIn(">People<", html)
+        # F133: "People" is a pinned SLICE now, not a tab — the pin row is built from
+        # data, so what the markup carries is the panel and the label in the catalogue.
+        self.assertIn('id="tab-person"', html)
+        self.assertIn('"tab_person": "People"', html)
         self.assertIn('id="clusters-grid"', html)
         self.assertIn('id="clusters-merge-btn"', html)
         self.assertIn("loadClusters", html)

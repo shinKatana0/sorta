@@ -433,8 +433,26 @@ class TestSettingsMarkup(SettingsTestBase):
                         "setting-vlm-workers", "setting-vlm-max-edge",
                         "setting-imaging-preview-cache-max-gb"):
             self.assertIn(f'id="{control}"', self.html)
-        self.assertIn('class="city-side"', self.html)
+        # F133: the same column, now behind the gear in the header instead of holding a
+        # third of the "Layout" tab at all times. Only the place moved.
+        self.assertIn('class="settings-side"', self.html)
+        self.assertIn('id="settings-toggle-btn"', self.html)
+        self.assertIn('id="settings-panel" class="settings-panel" hidden', self.html)
         self.assertIn("/api/settings", self.html)
+
+    def test_the_column_is_no_longer_part_of_the_layout_tab(self):
+        """The point of the move: configuration people return to about once a month is
+        not a working surface and must not stand next to the plan."""
+        layout = self.html.split('id="tab-layout"', 1)[1].split("</section", 1)[0]
+        for key in ui._SETTINGS_SPEC:
+            control = "setting-" + key.replace(".", "-").replace("_", "-")
+            with self.subTest(key=key):
+                self.assertNotIn(control, layout)
+        panel = self.html.split('id="settings-panel"', 1)[1].split("</aside>", 1)[0]
+        for key in ui._SETTINGS_SPEC:
+            control = "setting-" + key.replace(".", "-").replace("_", "-")
+            with self.subTest(key=key):
+                self.assertIn(f'id="{control}"', panel)
 
     def test_every_function_has_its_own_toggle(self):
         """Explicitly asked for: no single "smart mode" switch that means four things
@@ -453,7 +471,7 @@ class TestSettingsMarkup(SettingsTestBase):
     def test_the_folder_language_moved_into_the_column(self):
         """It was the odd one out in the action row: a setting standing next to the
         button that moves the collection."""
-        side = self.html.split('class="city-side"', 1)[1].split("</aside>", 1)[0]
+        side = self.html.split('class="settings-side"', 1)[1].split("</aside>", 1)[0]
         self.assertIn('id="folder-lang-select"', side)
         row = self.html.split('class="sort-controls"', 1)[1].split("</div>", 1)[0]
         self.assertNotIn("folder-lang-select", row)
