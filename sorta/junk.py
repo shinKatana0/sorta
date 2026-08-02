@@ -307,6 +307,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -334,6 +335,7 @@ from .naming import (
     utcnow_iso,
 )
 from .progress import PhaseCB, ProgressCB
+from .runlog import log_phase
 
 if TYPE_CHECKING:  # F132: the group shape only, for the annotations of _KeeperPass —
     from .dedup import GroupFrame  # the module itself is imported where it is used
@@ -2181,6 +2183,26 @@ CLASSIFY_PHASE_OCR = "junk_ocr"
 CLASSIFY_PHASE_VLM = "junk_vlm"
 CLASSIFY_PHASE_WRITE = "junk_write"
 
+# F147: the name this stage is timed under in the run log — the same one the pipeline
+# calls it by (`cli._pipeline_steps`), because the phase lines are read next to the
+# `stage=junk elapsed=...` line they break down, and a second spelling would break
+# every grep that puts the two together.
+CLASSIFY_STAGE = "junk"
+
+
+@dataclass
+class _PhaseTiming:
+    """F147: how long one phase of `classify` ran, and over how many units.
+
+    Both halves are needed to price a phase. Seconds alone cannot tell an expensive
+    question asked rarely from a cheap one asked of every frame — eighteen minutes over
+    1 362 model calls and eighteen minutes over 22 096 frames look identical until the
+    denominator is written down next to them.
+    """
+
+    seconds: float = 0.0
+    processed: int = 0
+
 
 class _PhaseProgress:
     """Phase + `(done, total)` reporting for `classify` (F100).
@@ -2199,6 +2221,13 @@ class _PhaseProgress:
     where the denominator really does change (the VLM tier counts its own candidates),
     and it changes the caption at the same moment, which is what makes the new numbers
     readable instead of a bar that silently slid backwards.
+
+    F147 hangs the stopwatch on the very same object, and that is the whole design: the
+    phases are timed under the names they are ANNOUNCED under, so the breakdown in the
+    run log and the caption on the bar can never drift apart. It follows that timing
+    happens with no callback at all — every method here already works that way — and
+    that the deep passes, which re-`start` CLASSIFY_PHASE_VLM over three different
+    candidate lists, share one bucket instead of inventing three.
     """
 
     def __init__(self, progress: ProgressCB | None) -> None:
@@ -2207,9 +2236,56 @@ class _PhaseProgress:
         self._phase: PhaseCB | None = phase if callable(phase) else None
         self._current: str | None = None
         self._total: int | None = None
+        # F147. Insertion-ordered: the log lines come out in the order the stage first
+        # entered each phase, which is the order somebody reading them expects.
+        self._timings: dict[str, _PhaseTiming] = {}
+        self._timed: str | None = None
+        self._since = 0.0
+
+    def _switch(self, name: str) -> None:
+        """Stop the clock of the phase being timed and start `name`'s (F147).
+
+        Kept apart from the caption bookkeeping above because the two have different
+        rules: `start` deliberately forgets the current caption so the UI re-reads it,
+        while the clock must NOT be restarted for that — the same phase re-entered is
+        the same phase, and its seconds keep adding up.
+        """
+        if name == self._timed:
+            return
+        now = time.perf_counter()
+        if self._timed is not None:
+            self._timings[self._timed].seconds += now - self._since
+        self._timings.setdefault(name, _PhaseTiming())
+        self._timed, self._since = name, now
+
+    def count(self, name: str, units: int) -> None:
+        """Add `units` to what phase `name` has processed (F147).
+
+        Separate from `enter` because the number is rarely known when the phase opens:
+        the CLIP phase begins at the top of a chunk and only decides a few lines later
+        how many of its frames actually need encoding. Only ever called for a phase the
+        stage has entered — a counter alone must not conjure a line for work that did
+        not happen.
+        """
+        self._timings.setdefault(name, _PhaseTiming()).processed += units
+
+    def log_timings(self, stage: str = CLASSIFY_STAGE) -> None:
+        """Write one `stage=... phase=... elapsed=...` line per phase that ran (F147).
+
+        Closes the phase still on the clock first — the last one of the stage is never
+        followed by another `enter` — and then forgets everything, so a second call on
+        the same object (the stage has several exits) cannot double the report.
+        """
+        if self._timed is not None:
+            self._timings[self._timed].seconds += time.perf_counter() - self._since
+            self._timed = None
+        for name, timing in self._timings.items():
+            log_phase(stage, name, timing.seconds, timing.processed)
+        self._timings.clear()
 
     def enter(self, name: str) -> None:
         """Relabel to phase `name`, keeping the counter as it is."""
+        self._switch(name)
         if name == self._current:
             return
         self._current = name
@@ -2628,6 +2704,7 @@ class _QualityPass:
             return
         self._stats.pet_candidates = len(candidates)
         report.start(CLASSIFY_PHASE_VLM, len(candidates))
+        report.count(CLASSIFY_PHASE_VLM, len(candidates))
         with self._conn:
             for i, (file_id, path, before) in enumerate(candidates):
                 try:
@@ -2656,6 +2733,7 @@ class _QualityPass:
             return
         self._stats.quality_candidates = len(self._candidates)
         report.start(CLASSIFY_PHASE_VLM, len(self._candidates))
+        report.count(CLASSIFY_PHASE_VLM, len(self._candidates))
         with self._conn:
             for i, (file_id, path, has_face) in enumerate(self._candidates):
                 try:
@@ -2788,6 +2866,7 @@ class _JunkRescuePass:
         if self._ask is None:
             return
         report.start(CLASSIFY_PHASE_VLM, len(candidates))
+        report.count(CLASSIFY_PHASE_VLM, len(candidates))
         with self._conn:
             for i, (file_id, path) in enumerate(candidates):
                 try:
@@ -2894,6 +2973,7 @@ class _KeeperPass:
         askable = self._photo_groups(groups)
         max_frames = int(getattr(d, "keeper_max_frames", 5))
         report.start(CLASSIFY_PHASE_VLM, len(todo))
+        report.count(CLASSIFY_PHASE_VLM, len(todo))
         with self._conn:
             for step, index in enumerate(todo):
                 group = groups[index]
@@ -3035,6 +3115,13 @@ def classify(
     `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
     which of its phases it is in — CLASSIFY_PHASE_*. A plain function without that
     channel is not an error and gets the counter alone, as before.
+
+    F147: those same phases are TIMED, and each one that ran leaves a
+    `stage=junk phase=<name> elapsed=<sec> processed=<n>` line in the run log next to
+    the stage summary. Independent of `progress` — a run with no callback measures
+    itself just the same — and independent of the phases' own behaviour: this is the
+    instrument the stage is about to be optimized with, so it changes nothing it
+    measures.
     """
     s = naming_settings(cfg)
     rows = conn.execute(
@@ -3226,9 +3313,14 @@ def classify(
     # That is the ordinary case for it: the toggle is switched on for a collection whose
     # junk classification and quality rows are already current, and an early return here
     # would leave the feature silently doing nothing until something else went stale.
+    # F147: built here rather than next to the first `report.start` below, so the keeper
+    # — the one pass that can have work when every other half of the stage is up to date
+    # — is timed on that path too instead of running under a throwaway reporter.
+    report = _PhaseProgress(progress)
     keeper = _KeeperPass(conn, cfg, keeper_ask, now, stats)
     if not work:
-        keeper.run(_PhaseProgress(progress))
+        keeper.run(report)
+        report.log_timings()
         return stats
     # F121: has the faces stage ever run here? One row is enough to tell — after that,
     # "this frame has no face" is a fact rather than an absence of evidence.
@@ -3249,7 +3341,10 @@ def classify(
     # right away, even if the stage is small/fast (#37); which phase the stage opens
     # with depends on the tier — a heuristics-only run classifies nothing, it only
     # writes verdicts.
-    report = _PhaseProgress(progress)
+    #
+    # F147: this `start` is the only one that does NOT count units — its total is the
+    # denominator of the whole fast pass, not the size of one phase's own work list, and
+    # the phases below count what each of them actually touched.
     report.start(CLASSIFY_PHASE_CLIP if use_clip else CLASSIFY_PHASE_WRITE, len(work))
 
     heur_raw = {
@@ -3270,6 +3365,8 @@ def classify(
                 conn.execute(upsert, (r["id"], verdict, "heuristic", None, now, active_tier))
                 stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
         report.step(len(work))
+        report.count(CLASSIFY_PHASE_WRITE, len(work))
+        report.log_timings()
         return stats
 
     # F113: a run can now reach this point with nothing to ask CLIP — a collection whose
@@ -3341,6 +3438,12 @@ def classify(
                     # model needs the same one call — not one of its own.
                     {i for i, r in enumerate(chunk) if embeddings.wanted(r["id"])}
                     if embeddings.needs_clip() else set()))
+                # F147: the unit of this phase is a frame ENCODED, not a frame walked —
+                # incrementality can hand the loop a chunk whose CLIP rows are all
+                # current, and counting those would price the encoder by work it never
+                # did. The document/product passes below run over a subset of the same
+                # frames, so they add no units of their own.
+                report.count(CLASSIFY_PHASE_CLIP, len(clip_idx))
                 probs: dict[int, np.ndarray] = {}
                 vecs: dict[int, np.ndarray | None] = {}
                 if clip_idx:
@@ -3392,11 +3495,17 @@ def classify(
                 # that is not happening.
                 if ocr_jobs:
                     report.enter(CLASSIFY_PHASE_OCR)
+                    report.count(CLASSIFY_PHASE_OCR, len(ocr_jobs))
                 text_fracs = ocr.text_frac(ocr_jobs)
                 # F73, phase 3: apply the OCR signal, then write — on this thread only
                 # (single writer) and in the original per-chunk order, so the verdicts
                 # and stats are exactly those of the serial version.
                 report.enter(CLASSIFY_PHASE_WRITE)
+                # F147: every frame of the chunk passes through here, and this phase is
+                # where two of the six costs of the stage actually live — the laplacian
+                # (`quality.measure`) and the stored vector (`embeddings.store`) — next
+                # to the verdict writes themselves.
+                report.count(CLASSIFY_PHASE_WRITE, len(chunk))
                 for i, r in enumerate(chunk):
                     # F120: the quality half needs to know what this frame turned out to
                     # be. A frame the fast tier did not settle (`i not in pre`) keeps
@@ -3464,6 +3573,7 @@ def classify(
         # restarted and "2 201 of 7 896" is the difference between "probably hung" and
         # "about an hour left".
         report.start(CLASSIFY_PHASE_VLM, len(vlm_candidates))
+        report.count(CLASSIFY_PHASE_VLM, len(vlm_candidates))
         # F101: the labels arrive from _vlm_labels — in the candidate order, whether the
         # pass was pipelined or serial. A frame the model failed on comes back as its
         # exception instead of a label; everything below (the order of the writes, the
@@ -3536,4 +3646,9 @@ def classify(
     # and what the group falls back to). It writes `group_keeper` and nothing else; no
     # path of this stage touches `dedup_choice`.
     keeper.run(report)
+    # F147: the breakdown of the seconds the caller's `stage_timer` is about to report as
+    # a single number. Written at the exits rather than from a `finally`: a stage that
+    # raised or was cancelled has its own line from `stage_timer`, and half-measured
+    # phases would be read as a profile of a whole run that never happened.
+    report.log_timings()
     return stats

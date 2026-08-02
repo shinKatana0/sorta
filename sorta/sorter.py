@@ -95,11 +95,14 @@ from typing import Callable, Sequence
 from urllib.parse import quote
 
 from . import i18n, imaging
-from .config import Config
+from .config import Config, FeaturesConfig
 from .dedup import near_duplicate_groups
 from .geodata import GeoResolver
 from .hashing import file_hash
 from .indexer import excludes_path, load_excludes
+# F137: the one constant of the read rule that belongs to the stage that writes it —
+# spelling 'real' a second time here is how the two halves start meaning different things.
+from .junk import PET_VLM_REAL
 from .search import TextEncoder, search_text
 
 _log = logging.getLogger(__name__)
@@ -1741,14 +1744,26 @@ ALBUM_KINDS = ("person", "event", "animal", "query")
 ALBUM_MODES = ("link", "copy", "move")
 
 # F124: THE rule for "is there an animal in this frame", written down once. The user's
-# verdict (`manual_pet`, they looked at the frame) outranks the model's
-# (`frame_quality.pet`, it looked at the frame), and COALESCE keeps the automatic answer
-# wherever no manual row exists — a file nobody has touched behaves exactly as it did
-# before this feature.
+# verdict (`manual_pet`, they looked at the frame) outranks the model's (it looked at the
+# frame), and COALESCE keeps the automatic answer wherever no manual row exists — a file
+# nobody has touched behaves exactly as it did before this feature.
 #
 # The rule is applied WHEN READ, never when written: `junk` still recomputes
-# `frame_quality` from scratch on every run and knows nothing about this table, which is
+# `frame_quality` from scratch on every run and knows nothing about `manual_pet`, which is
 # precisely why a manual mark survives a change of model, of prompts or of the threshold.
+#
+# F137 takes the automatic half the same way. It used to read `frame_quality.pet`, the
+# label the last run happened to write — with the thresholds that run happened to have.
+# The thresholds are deliberately NOT part of `quality_prompt_fingerprint` (they are what
+# the stored scores exist to be re-chosen with, and hashing them would send sharpness,
+# CLIP and the VLM round again on every edit), so a threshold that moved left the database
+# behind without a word: the live archive kept 966 animals selected at a 0.30 candidate
+# gate long after the gate went back to 0.50, where the stored answers say 848.
+#
+# So the label is DERIVED here, out of what the stage stores — `pet_score` and `pet_vlm` —
+# and out of the thresholds the caller's config holds right now. `frame_quality.pet` is
+# still written and is still the column to grep a database by, but nothing reads it to
+# decide anything; a consumer that did would reopen the same gap somewhere else.
 #
 # Both joins are LEFT joins, and that is not decoration: a frame the user marked as an
 # animal need not have a `frame_quality` row at all (the stage never reached it), and it
@@ -1756,14 +1771,51 @@ ALBUM_MODES = ("link", "copy", "move")
 #
 # A SELECT of ids rather than a CTE, because it has to compose in two places — the album
 # query already opens with the recursive `_CTE`, and the tab needs the same rule inside a
-# SELECT list. It takes no parameters, so it can be interpolated into either. The one
-# consumer outside this module is ui.py (the "Animals" tab and the Overview counter):
-# two independent spellings of this expression would drift, and the day they did the
-# counter, the tab and the album would each report a different collection.
-ANIMAL_IDS_SQL = """SELECT af.id FROM files af
+# SELECT list. It binds no parameters (the thresholds are interpolated as the floats they
+# are, the way F129 interpolates its ids), so it drops into either without disturbing the
+# positional parameters around it. The one consumer outside this module is ui.py (the
+# "Animals" tab and the Overview counter): two independent spellings of this expression
+# would drift, and the day they did the counter, the tab and the album would each report
+# a different collection.
+
+
+def animal_auto_sql(features: FeaturesConfig, fq: str = "afq") -> str:
+    """The AUTOMATIC half of the animal rule — the F130 cascade as a SQL expression.
+
+    `junk.pet_label` is the same rule in Python and is what the stage writes with; this is
+    what every reader decides by. Two spellings of one rule, and they are kept side by side
+    on purpose: the stage labels one frame it has just scored, a reader answers "which
+    files" over a whole index, and a Python loop over 20 000 rows is not the shape of that
+    question.
+
+    The order is F130's and does not change: an answer from the model outranks the score
+    (0.95 and "a plush toy" is not an animal, 0.35 and "alive" is), and a frame it never
+    answered about falls back to `pet_score >= features.pet_threshold`.
+
+    What F137 adds is the gate the answer is read THROUGH: a stored answer counts only for
+    a frame the current `features.pet_candidate_threshold` would still show the model. It
+    is the same replay F130 chose that threshold with (the 0.30 → 0.50 rows of its table
+    are stored answers re-read at a higher gate, not a second pass), and without it the
+    candidate threshold would be the one setting that still needed a run to take effect —
+    the exact gap this feature closes. In a database whose answers came from the config now
+    in force the gate changes nothing: every frame that has an answer cleared it to get one.
+
+    `fq` is the alias of the `frame_quality` row in the caller's query. Every branch is
+    NULL-safe: a frame with no row at all (no score, no answer) is not an animal, which is
+    what the LEFT JOIN needs it to be rather than a NULL that COALESCE would swallow.
+    """
+    return (f"CASE WHEN {fq}.pet_vlm IS NOT NULL"
+            f" AND {fq}.pet_score >= {float(features.pet_candidate_threshold)!r}"
+            f" THEN {fq}.pet_vlm = '{PET_VLM_REAL}'"
+            f" ELSE COALESCE({fq}.pet_score >= {float(features.pet_threshold)!r}, 0) END")
+
+
+def animal_ids_sql(features: FeaturesConfig) -> str:
+    """The ids of the animal slice — the whole rule, manual verdict included."""
+    return f"""SELECT af.id FROM files af
     LEFT JOIN frame_quality afq ON afq.file_id = af.id
     LEFT JOIN manual_pet amp ON amp.file_id = af.id
-    WHERE COALESCE(amp.is_animal, afq.pet IS NOT NULL)"""
+    WHERE COALESCE(amp.is_animal, {animal_auto_sql(features)})"""
 
 
 @dataclass
@@ -1830,9 +1882,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     NULL) that have a face in a cluster whose merged_into chain root (F31, via the
     shared _CTE/_person_files) has label==selector (casefold).
     kind='event': selector — an event name OR id; the slice = the event(s)' event_files.
-    kind='animal' (F123): the slice = files with a `frame_quality.pet` verdict, corrected
-    by the user's own marks (F124, `ANIMAL_IDS_SQL` — the same expression the web app's
-    tab and counter read, never a second copy of it). The selector is not used — the
+    kind='animal' (F123): the slice = the files the frame-quality stage's stored scores
+    and answers make animals under the CURRENT thresholds (F137), corrected by the user's
+    own marks (F124, `animal_ids_sql` — the same expression the web app's tab and counter
+    read, never a second copy of it). The selector is not used — the
     collection has exactly one animal slice — and an empty string is accepted for it; the
     default album name is the localized `animals` folder.
     kind='query' (F129): selector — the words themselves; the slice = the top
@@ -1877,13 +1930,12 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
                         "WHERE casefold(label) = casefold(?))")
         subject_params = [selector]
     elif kind == "animal":
-        # F123: `pet IS NOT NULL` — the same "NULL means NOT ASKED" rule the whole
-        # frame_quality table lives by: a row exists for every frame the stage touched,
-        # and only the ones whose pet score cleared `features.pet_threshold` carry a
-        # verdict. F124: with the user's own verdict on top of it, once, via
-        # ANIMAL_IDS_SQL. dup_of/error are excluded below, with the other kinds.
+        # F123/F124/F137: the one shared rule, and the thresholds it needs come off the
+        # config THIS call was handed — so a gather right after a threshold edit gathers
+        # what the tab is showing, with nothing re-run in between. dup_of/error are
+        # excluded below, with the other kinds.
         resolved_name = i18n.folder("animals", lang)
-        subject_cond = f"f.id IN ({ANIMAL_IDS_SQL})"
+        subject_cond = f"f.id IN ({animal_ids_sql(cfg.features)})"
         subject_params = []
     elif kind == "query":
         # F129: the ranking runs FIRST and the ids it returns are the slice. The ids are
