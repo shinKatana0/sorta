@@ -38,7 +38,11 @@ mutated. The thread opens its own sqlite connection (not transferable between
 ThreadingHTTPServer threads). One run per server — a repeated `POST` while running ->
 409 (`_ProcessState.try_start` is atomic under a shared lock). `GET /api/process/status`
 — a thread-safe progress snapshot (polling); `POST /api/process/cancel` sets a flag
-checked BETWEEN stages (not mid-stage). The pipeline moves no files — it only reads
+checked BETWEEN stages (not mid-stage). F135: the snapshot also carries `stage_stats`
+— `{stage: {"processed", "skipped"}}` for the stages whose own counters separate new
+work from work they recognised as already done (`index`, `junk`) — and it keeps
+`source_dir` after the run ends, which is what refills an empty source field: with one
+run button the path has to come back by itself. The pipeline moves no files — it only reads
 source_dir and writes the index, so the layout FS invariants (the moves.jsonl journal,
 hash verification) do not apply here.
 
@@ -2874,6 +2878,32 @@ _PIPELINE_STAGE_NAMES = ("index", "geo", "landmarks", "faces", "events", "junk",
 # (`_run_pipeline`), with the same name list as `cli._OPTIONAL_STAGES`.
 _OPTIONAL_STAGES = ("faces", "events")
 
+# F135: with one button the run always walks the whole pipeline, and a stage that
+# skipped everything looks exactly like a stage that did nothing. A step may report
+# `{"processed": n, "skipped": m}` — the same two numbers the CLI prints ("skipped as
+# already processed") — and the status snapshot carries them to the client. `None`
+# means the stage cannot tell the two apart, and then nothing is claimed about it.
+_StageStats = dict[str, int] | None
+_StageFn = Callable[[Config, sqlite3.Connection, "_ProgressCB"], _StageStats]
+
+
+def _stage_stats(stats: object, processed: tuple[str, ...], skipped: str) -> _StageStats:
+    """Sum the `processed` counters of a stage's stats object and read `skipped` off it.
+
+    None when any of the names is missing or does not hold a number. Stages are
+    replaceable (tests swap the whole leaf function, a future one may stop returning
+    stats at all), and a caption at the bottom of the page is worth neither an
+    exception in the pipeline thread nor a fabricated zero — "skipped: 0" would claim
+    a stage skipped nothing where in truth it said nothing.
+    """
+    values: list[int] = []
+    for name in (*processed, skipped):
+        value = getattr(stats, name, None)
+        if not isinstance(value, int):
+            return None
+        values.append(value)
+    return {"processed": sum(values[:-1]), "skipped": values[-1]}
+
 
 class _LazyClassifierHolder:
     """Builds the CLIP classifier on the first call, reuses it between landmarks and
@@ -2893,11 +2923,16 @@ class _LazyClassifierHolder:
         return self._real(paths, prompts)
 
 
-def _pipeline_steps() -> list[tuple[str, Callable[[Config, sqlite3.Connection, _ProgressCB], None]]]:
+def _pipeline_steps() -> list[tuple[str, _StageFn]]:
     """Processing steps in dependency order — the same as `cli._pipeline_steps`, plus
     `phash` last (canonically from cli _pipeline_steps).
     A fresh holder per call — a separate run does not share the CLIP classifier with
     the previous/next run.
+
+    F135: a step returns `{"processed": n, "skipped": m}` where the stage's own stats
+    can separate new work from what it recognised as already done — `index` (unchanged
+    files) and `junk` (the F68 incremental skip). The rest return None: inventing a
+    zero for a stage that does not count skips would claim something untrue.
     """
     holder: dict[str, _LazyClassifierHolder] = {}
 
@@ -2908,30 +2943,39 @@ def _pipeline_steps() -> list[tuple[str, Callable[[Config, sqlite3.Connection, _
                 lambda: clip_classifier(naming_settings(cfg)))
         return clf
 
-    def _index(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
-        run_index(cfg, conn, progress=lambda s: cb(s.scanned, None))
+    def _index(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
+        stats = run_index(cfg, conn, progress=lambda s: cb(s.scanned, None))
         assign_duplicates(conn, cfg.dedup.canonical_strategy)
+        # `added + updated` is the work; `skipped` is what path+mtime+size recognised
+        # as unchanged — the same split `cli._summarize_index` prints.
+        return _stage_stats(stats, ("added", "updated"), "skipped")
 
-    def _geo(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _geo(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         resolve_places(cfg, conn, progress=cb)
+        return None
 
-    def _landmarks(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _landmarks(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         detect_landmarks(cfg, conn, classifier=_clip(cfg), progress=cb)
+        return None
 
-    def _faces(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _faces(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         detect_and_cluster(cfg, conn, progress=cb)
+        return None
 
-    def _events(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _events(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         build_events(cfg, conn, progress=cb)
         name_events(cfg, conn)
+        return None
 
-    def _junk(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
-        classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb)
+    def _junk(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
+        stats = classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb)
+        return _stage_stats(stats, ("processed",), "skipped_incremental")
 
-    def _phash(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _phash(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         compute_phashes(cfg, conn, progress=cb)
+        return None
 
-    steps: list[tuple[str, Callable[[Config, sqlite3.Connection, _ProgressCB], None]]] = [
+    steps: list[tuple[str, _StageFn]] = [
         ("index", _index), ("geo", _geo), ("landmarks", _landmarks),
         ("faces", _faces), ("events", _events), ("junk", _junk), ("phash", _phash),
     ]
@@ -2973,6 +3017,8 @@ class _ProcessState:
         self.phase: str | None = None
         self._phase_started = 0.0
         self._cancel_requested = False
+        # F135: per-stage {"processed", "skipped"} of THIS run — see `_stage_stats`.
+        self.stage_stats: dict[str, dict[str, int]] = {}
 
     def try_start(self, source_dir: str) -> bool:
         """True and switches to running if nothing is going now; otherwise False (409)."""
@@ -2996,6 +3042,11 @@ class _ProcessState:
             self.total = 0
             self.phase = None
             self._phase_started = 0.0
+
+    def set_stage_stats(self, name: str, stats: dict[str, int]) -> None:
+        """F135: what the finished stage `name` processed and what it skipped."""
+        with self._lock:
+            self.stage_stats[name] = dict(stats)
 
     def set_progress(self, done: int, total: int | None = None) -> None:
         """A signature superset of all stage ProgressCB variants (done, total|None).
@@ -3056,7 +3107,14 @@ class _ProcessState:
                 "error": self.error,
                 "finished": self.finished,
                 "cancel_requested": self._cancel_requested,
+                # F135: also what puts the source of the last run back into an empty
+                # field — with one button the path has to come back by itself, and the
+                # browser's own memory is not there in a fresh profile.
                 "source_dir": self.source_dir,
+                # F135: {stage: {"processed", "skipped"}} for the stages that can tell
+                # new work from work recognised as already done.
+                "stage_stats": {name: dict(values)
+                                for name, values in self.stage_stats.items()},
                 # F84: the sub-phase of the current stage and how long it has been
                 # running. phase=None -> the stage reports no phases (every stage but
                 # faces), and the client draws exactly what it drew before.
@@ -3456,6 +3514,10 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     run: they are two settings of one stage. The other base ones
     (index/geo/landmarks/phash) are not run at all.
 
+    F135: a step that returns `{"processed", "skipped"}` has it recorded into the
+    state, so the finished run can say what it did and what it recognised as already
+    done instead of showing the same "Done." for both.
+
     Cancellation is checked BETWEEN stages (not mid-stage — MVP). After a successful
     finish (without an error/cancel) the plan cache (the Cities tab) is recomputed
     with the same conn so the tabs show the new data right away; Duplicates/People/
@@ -3495,7 +3557,9 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                 # nobody watching the console — the per-stage timing has to reach the
                 # run log, or "which stage ate the time" stays a guess.
                 with stage_timer(name):
-                    fn(run_cfg, conn, _StageProgress(state))
+                    stats = fn(run_cfg, conn, _StageProgress(state))
+                if stats is not None:
+                    state.set_stage_stats(name, stats)
             except _PipelineCancelled:
                 completed = False  # mid-stage cancellation via the progress callback
                 break
@@ -4173,20 +4237,17 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "size_units": {
         "ru": "Б КБ МБ ГБ ТБ", "en": "B KB MB GB TB", "ja": "B KB MB GB TB",
     },
-    "process_rerun_optional_button": {
-        "ru": "Дозапустить выбранное",
-        "en": "Re-run selected",
-        "ja": "選択項目を再実行",
+    # F135: one button, so the run has to say what it skipped. "Nothing happened" and
+    # "everything was already done" look identical without these two lines.
+    "process_summary_title": {
+        "ru": "Что сделал прогон:",
+        "en": "What the run did:",
+        "ja": "この実行の内容:",
     },
-    "process_rerun_optional_hint": {
-        "ru": "по активному индексу, без переиндексации/гео: лица (при «Разбор по "
-              "лицам»), события (при «Разбор по событиям»), VLM-классификация "
-              "(при «Глубокий анализ»)",
-        "en": "on the current index, without re-indexing/geo: faces (if «Detect "
-              "faces»), events (if «Detect events»), VLM classification (if «Deep "
-              "analysis»)",
-        "ja": "既存のインデックスに対して（再インデックス・位置情報なし）: 顔（「顔の"
-              "検出」時）、イベント（「イベントの検出」時）、VLM 分類（「詳細分析」時）",
+    "process_summary_stage": {
+        "ru": "{stage} — обработано: {processed}, пропущено как уже обработанные: {skipped}",
+        "en": "{stage} — processed: {processed}, skipped as already processed: {skipped}",
+        "ja": "{stage} — 処理: {processed} 件、処理済みのためスキップ: {skipped} 件",
     },
     "env_cpu_warning": {
         "ru": "Установлен CPU-профиль: обработка идёт на процессоре — распознавание "
@@ -6159,8 +6220,6 @@ label { cursor: pointer; }
 .process-toggle-hint { font-size: 0.8rem; color: var(--muted); margin-left: 20px; }
 .process-toggle-warn { color: var(--danger); }
 .process-actions { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; }
-.process-rerun-block { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; margin-top: var(--space-sm); }
-.process-rerun-hint { font-size: 0.8rem; color: var(--muted); margin: 0; max-width: 40rem; }
 .process-progress { width: 100%; max-width: 40rem; display: block; margin: var(--space-sm) 0; height: 8px;
       appearance: none; border: none; border-radius: var(--radius-pill); overflow: hidden; background: var(--track); }
 .process-progress::-webkit-progress-bar { background: var(--track); border-radius: var(--radius-pill); }
@@ -6180,6 +6239,12 @@ label { cursor: pointer; }
 }
 @keyframes process-indeterminate { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 .process-status { margin: var(--space-sm) 0; color: var(--muted); }
+/* F135: what the finished run actually did — one line per stage that can tell
+   "processed" from "skipped as already done". Without it a run that skipped
+   everything is indistinguishable from a run that did nothing. */
+.process-summary { margin: var(--space-sm) 0; font-size: 0.85rem; color: var(--muted); }
+.process-summary-title { display: block; }
+.process-summary-line { display: block; margin-left: var(--space-sm); }
 /* F84: caption of the current sub-phase, right under the bar — on a phase without a
    percent (clustering) it is the only thing that says the run is alive. */
 .process-phase { margin: calc(-1 * var(--space-sm)) 0 var(--space-sm); font-size: 0.85rem;
@@ -6448,10 +6513,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" id="process-cancel-btn" class="btn btn-ghost process-cancel-btn" style="display:none">{{process_cancel_button}}</button>
 <button type="button" id="process-reset-btn" class="btn btn-danger">{{process_reset_button}}</button>
 </div>
-<div class="process-rerun-block">
-<button type="button" id="process-rerun-optional-btn" class="btn btn-ghost" disabled>{{process_rerun_optional_button}}</button>
-<span class="process-rerun-hint">{{process_rerun_optional_hint}}</span>
-</div>
 </div>
 </div>
 </div>
@@ -6459,6 +6520,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="process-phase" class="process-phase" style="display:none"></div>
 <div id="process-stages" class="stage-chips"></div>
 <div id="process-status" class="process-status"></div>
+<div id="process-summary" class="process-summary"></div>
 <div id="env-cpu-warning" class="env-warning" style="display:none">⚠ {{env_cpu_warning}}</div>
 <div class="cache-block" id="cache-block">
 <div class="cache-head">
@@ -8107,8 +8169,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     fetch("/api/tabs/visibility")
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        indexHasFiles = !!data.indexed;
-        updateRerunSelectedDisabled();
         sliceVisibility = {
           person: !!data.person,
           event: !!data.event,
@@ -8499,44 +8559,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   }
 
-  // F62/F63: «Дозапустить выбранное» — в отличие от filterProcessStages
-  // (базовые + включённые опциональные), здесь ТОЛЬКО выбранное: faces/events
-  // по флагам + junk при deep (переклассификация с VLM). Базовые index/geo/
-  // landmarks/phash сервер не запускает. Порядок из ALL_PROCESS_STAGES.
-  //
-  // F123: pets asks for junk as well, and `deep || pets` is what keeps the two of them
-  // ONE stage here — the same set the server builds. Animals are not a stage: nothing
-  // is added to ALL_PROCESS_STAGES, so no phantom chip can appear.
-  function filterRerunStages(faces, events, deep, pets) {
-    var enabled = { faces: faces, events: events, junk: deep || pets };
-    return ALL_PROCESS_STAGES.filter(function (name) { return enabled[name]; });
-  }
+  // F135: there is no "Re-run selected" any more — one run button, and the stages
+  // skip what is already done by themselves. The /api/process/rerun-optional ROUTE is
+  // still there (it is public, see the API documentation): the button went, not it.
 
-  // Индекс пуст ⇒ догонять этап не на чем. Обновляется там же, где видимость
-  // вкладок: при загрузке, после прогона и сразу после «Начать заново» — то есть
-  // ровно в тот момент, когда индекс и обнуляется. До первого ответа считаем, что
-  // файлы есть: осторожная сторона тут — не гасить кнопку у того, у кого всё в
-  // порядке, а пустой индекс подтвердится через долю секунды.
-  var indexHasFiles = true;
-
-  function rerunSelectedAllowed() {
-    return indexHasFiles && (
-        document.getElementById("process-faces-checkbox").checked ||
-        document.getElementById("process-events-checkbox").checked ||
-        document.getElementById("process-deep-checkbox").checked ||
-        document.getElementById("process-pets-checkbox").checked);
-  }
-
-  // Последнее известное состояние пайплайна. Обработчик галочек срабатывает
-  // мгновенно, а опрос статуса — раз в тик: без этого флага отметка «faces» во
-  // время прогона включала кнопку «догнать этап» до следующего тика, и её можно
-  // было нажать, пока идёт индексация.
+  // The last known state of the pipeline. The status poll runs once a tick while the
+  // handlers on this tab fire instantly — without this flag they used to re-enable
+  // what the tick had just disabled for the duration of a run.
   var processRunning = false;
-
-  function updateRerunSelectedDisabled() {
-    document.getElementById("process-rerun-optional-btn").disabled =
-        processRunning || !rerunSelectedAllowed();
-  }
 
   // Всё, что задаёт вход пайплайна, на время прогона недоступно: менять источник
   // у уже идущей обработки бессмысленно, а диалог выбора папки ещё и открывает
@@ -8553,13 +8583,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       if (el) { el.disabled = processRunning; }
     });
   }
-
-  ["process-faces-checkbox", "process-events-checkbox", "process-deep-checkbox",
-   "process-pets-checkbox"]
-      .forEach(function (id) {
-        document.getElementById(id).addEventListener("change", updateRerunSelectedDisabled);
-      });
-  updateRerunSelectedDisabled();
 
   function renderStageChips(data) {
     var container = document.getElementById("process-stages");
@@ -8622,23 +8645,64 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     }
   }
 
+  // F135: the source of the last run comes back into the field by itself. The
+  // browser's own memory (SOURCE_DIR_KEY) covers a page reload but not a fresh profile
+  // or a second browser — and "Start" in one click is half of what merging the two
+  // buttons is for. A field that already has something in it is left alone: putting a
+  // path over what someone is typing is worse than not restoring it at all.
+  function adoptRememberedSource(data) {
+    var input = document.getElementById("process-source-dir");
+    if (!data.source_dir || input.value.trim()) return;
+    input.value = data.source_dir;
+    rememberSourceDir();
+    loadExcludesInfo();
+    updateStepLayout();
+  }
+
+  // F135: with one button the run walks the whole pipeline every time, and without
+  // this summary "everything was already done" reads exactly like "nothing happened".
+  // It shows what the CLI prints: how much the stage processed and how much it skipped
+  // as already processed. Stages without such a counter are not sent by the server and
+  // do not appear here — an invented zero would be a lie, not a line of a report.
+  function renderProcessSummary(data) {
+    var box = document.getElementById("process-summary");
+    box.textContent = "";
+    var stats = data.stage_stats || {};
+    var names = ALL_PROCESS_STAGES.filter(function (name) { return stats[name]; });
+    if (!names.length) return;
+    var title = document.createElement("span");
+    title.className = "process-summary-title";
+    title.textContent = I18N.process_summary_title;
+    box.appendChild(title);
+    names.forEach(function (name) {
+      var line = document.createElement("span");
+      line.className = "process-summary-line";
+      line.textContent = fmt(I18N.process_summary_stage, {
+        stage: processStageLabel(name),
+        processed: stats[name].processed || 0,
+        skipped: stats[name].skipped || 0,
+      });
+      box.appendChild(line);
+    });
+  }
+
   function renderProcessStatus(data) {
     var startBtn = document.getElementById("process-start-btn");
     var cancelBtn = document.getElementById("process-cancel-btn");
-    var rerunBtn = document.getElementById("process-rerun-optional-btn");
     var bar = document.getElementById("process-progress");
     var statusEl = document.getElementById("process-status");
     processRunning = !!data.running;
     startBtn.disabled = processRunning;
-    rerunBtn.disabled = processRunning || !rerunSelectedAllowed();
     updateProcessInputsDisabled();
     updateBusyControlsDisabled();  // раскладка и «начать заново» — пока идёт прогон
+    adoptRememberedSource(data);
     cancelBtn.style.display = data.running ? "" : "none";
     cancelBtn.disabled = !!data.cancel_requested;
     bar.style.display = data.running ? "" : "none";
     if (!data.running) bar.classList.remove("indeterminate");
     renderStageChips(data);
     renderProcessPhase(data);
+    renderProcessSummary(data);
     if (data.running) {
       if (data.cancel_requested) {
         // отмена запрошена — показываем фидбэк, пока стадия прерывается/дорабатывает
@@ -8716,25 +8780,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       source_dir: path, deep: deep, geo_online: geoOnline, faces: faces, events: events,
       pets: pets,
     }).then(function (resp) {
-      if (resp && resp.error) {
-        document.getElementById("process-status").textContent =
-            I18N.process_start_error_prefix + resp.error;
-        return;
-      }
-      if (processPollTimer) clearTimeout(processPollTimer);
-      pollProcessStatus();
-    });
-  });
-
-  document.getElementById("process-rerun-optional-btn").addEventListener("click", function () {
-    var faces = document.getElementById("process-faces-checkbox").checked;
-    var events = document.getElementById("process-events-checkbox").checked;
-    var deep = document.getElementById("process-deep-checkbox").checked;
-    var pets = document.getElementById("process-pets-checkbox").checked;
-    currentProcessStages = filterRerunStages(faces, events, deep, pets);
-    postJson("/api/process/rerun-optional",
-             { faces: faces, events: events, deep: deep, pets: pets })
-        .then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
             I18N.process_start_error_prefix + resp.error;
@@ -9122,6 +9167,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         return;
       }
       statusEl.textContent = clearGeo ? I18N.process_reset_done_geo : I18N.process_reset_done;
+      // F135: the summary of the last run counted files of an index that is gone now.
+      renderProcessSummary({});
       refreshTabsAfterProcess();
     });
   });
@@ -11348,6 +11395,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # overridden (_run_pipeline(source_dir=None) leaves cfg.sources).
             # deep -> junk with the VLM (naming.vlm_enabled=deep); F123: pets -> the
             # same junk stage with features.pets, and both together are one run of it.
+            # F135: the web app no longer has a button for this — "Start" runs the
+            # whole pipeline and the stages skip what is done. The ROUTE stays: it is
+            # documented and callable from outside, and dropping a public endpoint is
+            # a decision of its own, not a side effect of tidying up the markup.
             parsed = _validate_rerun_optional_payload(self._read_json_body())
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
@@ -11355,9 +11406,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             faces, events, deep, pets = parsed
             # No "index is empty" guard here on purpose: re-running the optional
             # stages over nothing is a no-op, not a hazard — unlike a layout over a
-            # half-built index or a reset mid-run, which the server does refuse. The
-            # button is disabled for it (F54 payload carries `indexed`), and that is
-            # the right layer for "pointless", as opposed to "dangerous".
+            # half-built index or a reset mid-run, which the server does refuse.
+            # "Pointless" is not the same answer as "dangerous".
             with busy_lock:
                 if sort_state.snapshot()["running"]:
                     self._send_json({"error": "sort is running"}, status=HTTPStatus.CONFLICT)

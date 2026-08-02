@@ -368,6 +368,35 @@ features:
   # `python scripts/measure_junk_rescue.py` prints the distribution and what every
   # threshold would select, before anything is switched on.
   junk_rescue_threshold: 0.02
+  # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
+  # what place the frame shows, and only a proposal the model names itself goes on. The
+  # order does not bend: CLIP proposes → the model checks → the corroboration of
+  # `naming.landmark_threshold` decides. Agreement between the two models never overrules
+  # a country named in the path.
+  # It exists because CLIP's failure here is not one of perception but of knowledge: the
+  # wrong cities scored 0.980 against 0.991 for the right one, and no threshold splits
+  # them. That is also why it was measured before it was built — a 3B model could easily
+  # share the same weakness. It does not: on 104 frames with a known answer, 24 of them
+  # proposals CLIP believed and corroboration threw away, it confirmed a wrong city ZERO
+  # times, at 92% accuracy. Not because it knows every landmark but because it stays
+  # silent when it does not — 71 of the 104 answers named nothing at all.
+  # With it OFF the stage behaves exactly as before: `naming.landmark_threshold` alone
+  # decides, nothing is shown to a model. Needs the [vlm] extra; if the weights will not
+  # load, the run falls back to that same behaviour instead of failing.
+  landmarks_verify: false
+  # Who is shown to the model when `landmarks_verify` is on — the second, much lower
+  # threshold, exactly like the pair above. `naming.landmark_threshold` (0.85) is high
+  # because nothing was checking CLIP's proposal; once something is, the selection widens.
+  # Measured on the 7 619 place-less frames of a live collection — proposals, and what the
+  # corroboration would then do with them:
+  #   0.85 →  10 proposals (8 kept, 2 dropped)   ← the CLIP-only gate today
+  #   0.70 →  66 proposals (52 kept, 14 dropped)
+  #   0.50 → 151 proposals (127 kept, 24 dropped)
+  # 151 questions is a couple of minutes of VLM. Never set above
+  # `naming.landmark_threshold`: the check is there to widen the band, and a higher value
+  # would narrow it instead — a value above it is clamped back down. Ignored when the
+  # check is off.
+  landmark_candidate_threshold: 0.5
   # The longer side the frame is scaled to before the laplacian. Fixed on purpose: the
   # variance of the laplacian is scale-dependent, so frames measured at different
   # resolutions are not comparable and every threshold below is tied to this number.

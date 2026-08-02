@@ -531,6 +531,38 @@ class FeaturesConfig:
     # by it directly would throw ~150 living photographs out of the city layout, which is
     # the mistake F130 measured for animals. 955 frames is ~12 minutes of the deep tier.
     junk_rescue_threshold: float = 0.02
+    # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
+    # what place the frame shows, and only a proposal the model names itself goes on to
+    # F75 corroboration. Its own toggle, default off, and with it off the stage is
+    # byte-for-byte today's: `naming.landmark_threshold` alone selects, nothing is shown
+    # to a model, and `landmark_checks` stays empty.
+    #
+    # The cascade was NOT assumed to work here. F75 measured the landmark failure as one
+    # of DISCRIMINATING KNOWLEDGE (the wrong cities scored 0.980 against 0.991 — no
+    # threshold splits them), not of perception like the animal one, and a 3B model could
+    # easily share it. The phase-0 probe asked 104 frames with a known answer, 24 of them
+    # hard negatives — proposals above 0.50 that CLIP believed and corroboration threw
+    # away — and got ZERO false confirmations, at 92% accuracy. The mechanism is not
+    # knowledge but silence: 71 of the 104 answers named nothing at all, which is exactly
+    # the behaviour a gate needs.
+    landmarks_verify: bool = False
+    # Who is shown to the model when `landmarks_verify` is on. Like the pet gate above,
+    # this is the SECOND threshold and it sits far below `naming.landmark_threshold`
+    # (0.85): that one is high because nothing was checking CLIP's proposal.
+    #
+    # MEASURED by the same probe, on the live collection (proposals over the 7 619
+    # place-less frames, and what F75 corroboration would do with them):
+    #
+    #     threshold  proposals  F75 keeps  F75 drops
+    #       0.85            10          8          2   <- the CLIP-only gate today
+    #       0.70            66         52         14
+    #       0.50           151        127         24
+    #
+    # 151 questions is a couple of minutes of VLM — an order of magnitude cheaper than the
+    # animal cascade's 1 331 — so the band is taken whole. Never ABOVE
+    # `naming.landmark_threshold`: raising it there would narrow the population the stage
+    # already finds today, and the check exists to widen it.
+    landmark_candidate_threshold: float = 0.5
     # The longer side the frame is scaled to before the laplacian. FIXED on purpose: the
     # variance of the laplacian is scale-dependent, so two frames measured at different
     # resolutions are not comparable and no threshold over them means anything.
@@ -587,6 +619,9 @@ def _features_from(raw: dict) -> FeaturesConfig:
         junk_rescue=_as_bool(raw.get("junk_rescue"), d.junk_rescue),
         junk_rescue_threshold=_as_float(
             raw.get("junk_rescue_threshold"), d.junk_rescue_threshold),
+        landmarks_verify=_as_bool(raw.get("landmarks_verify"), d.landmarks_verify),
+        landmark_candidate_threshold=_as_float(
+            raw.get("landmark_candidate_threshold"), d.landmark_candidate_threshold),
         sharpness_max_edge=_as_positive_int(
             raw.get("sharpness_max_edge"), d.sharpness_max_edge),
         sharpness_band_min=_as_float(raw.get("sharpness_band_min"), d.sharpness_band_min),
