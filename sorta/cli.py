@@ -54,7 +54,7 @@ from .naming import name_events, naming_settings
 from .progress import progress_task
 from .runlog import default_log_path, log_environment, stage_timer
 from .search import REASON_OTHER_MODEL, EmbeddingsMissing, file_paths, search_text
-from .sorter import plan_album, plan_and_sort
+from .sorter import SELECTORLESS_ALBUM_KINDS, plan_album, plan_and_sort
 from .sorter import undo as undo_batch
 
 
@@ -1083,7 +1083,9 @@ def build_app(lang: Lang) -> typer.Typer:
         # event it is the subject itself — and for a query (F129) it is the words — so a
         # missing one has to be an error here, said out loud, rather than an album
         # quietly gathered from something else.
-        if kind != "animal" and not (selector or "").strip():
+        # F152: the face slices join `animal` in that list, hence the shared constant —
+        # the rule is a property of the kinds and belongs where they are declared.
+        if kind not in SELECTORLESS_ALBUM_KINDS and not (selector or "").strip():
             raise typer.BadParameter(
                 _t("cli.album.selector_required", _lang_of(config)))
         _cmd_album(config, kind, selector or "", dest, copy=copy, move=move,

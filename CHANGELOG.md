@@ -46,6 +46,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **Three slices over what the faces stage already found** (F152): **With people**, **Group
+  photos** and **Portraits** in the Slices tab, with counters on the Overview and albums of
+  their own (`sorta album people|group|portrait`, no selector — the collection holds exactly
+  one of each). A hand-labelled sample of 200 frames put people in 27.5% of the archive and
+  children in 22% — the largest populations there are, larger than animals, products and
+  screenshots together — and not one slice pointed at them, while the signal had been on
+  disk since phase 3: 12 952 detected faces over 7 341 photographs. Nothing here is a model,
+  a pass or a guess: membership is a **fact** of the `faces` table, so the caption over the
+  grid says exactly that and no card carries a confidence, because there is none to show.
+  The two numbers the rules do need are geometric and live in `features:` —
+  `group_photo_faces` (3, a count of face boxes) and `portrait_face_share` (0.08, the share
+  of the frame one box covers, out of the box and `files.width/height`; a starting value
+  stated as geometry rather than a measurement, and re-choosing it costs a query, not a
+  pass). The one trap this feature is built around: a `faces` row with `bbox = '[]'` is not
+  a face but the marker "processed, no faces here", and 24 195 of 24 196 live files carry
+  one — a predicate that keeps it turns "with people" into "every photograph". It is
+  excluded in exactly one place, `sorter.face_slice_ids_sql`, which the panel, the counters
+  and the albums all read. Without a faces run the slices say **why** they are empty
+  instead of showing a zero, on the pins, in the panel and on the Overview alike: nothing
+  was measured, and "you have no photographs with people in them" would be a claim about
+  somebody's own archive.
 - **The screenshots and receipts the classifier took for photographs** (F140):
   `features.junk_rescue`, off by default, with `features.junk_rescue_threshold` (0.02) next
   to it and a new column `frame_quality.junk_score` (schema v20). The search by words (F134)

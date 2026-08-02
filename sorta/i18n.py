@@ -48,6 +48,9 @@ FOLDER_KEYS: tuple[str, ...] = (
     "products",
     "to_delete",
     "animals",
+    "people",
+    "group_photos",
+    "portraits",
 )
 
 _FOLDERS: dict[str, dict[Lang, str]] = {
@@ -71,6 +74,13 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     # itself after (unlike a person or an event), so the name is a folder name like any
     # other the layout creates — and follows `language:` for the same reason.
     "animals": {"ru": "_Животные", "en": "_Animals", "ja": "_動物"},
+    # F152: the three face slices have no selector either — the collection holds exactly
+    # one of each — so their album folders are named the same way the animal one is.
+    # "People" here is the question "is there a person in this frame", not "who is it":
+    # a named person's album is still called after the person.
+    "people": {"ru": "_С людьми", "en": "_With people", "ja": "_人物あり"},
+    "group_photos": {"ru": "_Групповые", "en": "_Group photos", "ja": "_集合写真"},
+    "portraits": {"ru": "_Портреты", "en": "_Portraits", "ja": "_ポートレート"},
 }
 
 
@@ -1150,25 +1160,26 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # album
     "cli.help.album": {
-        "ru": "Выгрузить срез (человека/события/животных/запроса) в отдельную папку. "
+        "ru": "Выгрузить срез (человека/события/животных/запроса/лиц) в отдельную папку. "
               "По умолчанию — hardlink, dry-run.",
-        "en": "Export a slice (a person/an event/the animals/a query) into a separate "
-              "folder. By default — hardlink, dry run.",
-        "ja": "スライス（人物・イベント・動物・問い合わせ）を別のフォルダに書き出します。"
-              "デフォルトはハードリンクの dry-run です。",
+        "en": "Export a slice (a person/an event/the animals/a query/the faces) into a "
+              "separate folder. By default — hardlink, dry run.",
+        "ja": "スライス（人物・イベント・動物・問い合わせ・顔）を別のフォルダに"
+              "書き出します。デフォルトはハードリンクの dry-run です。",
     },
     "cli.help.album.kind": {
-        "ru": "person | event | animal | query",
-        "en": "person | event | animal | query",
-        "ja": "person | event | animal | query",
+        "ru": "person | event | animal | query | people | group | portrait",
+        "en": "person | event | animal | query | people | group | portrait",
+        "ja": "person | event | animal | query | people | group | portrait",
     },
     "cli.help.album.selector": {
-        "ru": "имя человека / имя или id события / слова запроса; для animal не нужен — "
-              "срез животных в коллекции один",
+        "ru": "имя человека / имя или id события / слова запроса; для animal, people, "
+              "group и portrait не нужен — такой срез в коллекции один",
         "en": "a person's name / an event's name or id / the words to search for; not "
-              "needed for animal — the collection has a single animal slice",
-        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal では不要です — "
-              "コレクションの動物のスライスは 1 つだけです",
+              "needed for animal, people, group and portrait — the collection has a "
+              "single slice of each",
+        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal・people・"
+              "group・portrait では不要です — コレクションにそれぞれ 1 つだけです",
     },
     "cli.help.album.dest": {
         "ru": "Куда выгрузить альбом",
