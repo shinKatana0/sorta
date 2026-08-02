@@ -52,6 +52,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # gets the column with the table from executescript below.
     if 15 <= version <= 16:  # v17: frame_quality.pet_vlm (F130 — the pet check's answer)
         conn.execute("ALTER TABLE frame_quality ADD COLUMN pet_vlm TEXT")
+    # v18 (group_keeper, F132) — a new table, created by executescript below
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

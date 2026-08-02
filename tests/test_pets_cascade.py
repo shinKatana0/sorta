@@ -528,7 +528,7 @@ class TestMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertIn("pet_vlm", cols)
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
         self.assertEqual(row["pet"], "animal")       # the label survived the migration
         self.assertIsNone(row["pet_vlm"])            # and means "never asked", not "no"
         self.assertAlmostEqual(row["pet_score"], 0.9)

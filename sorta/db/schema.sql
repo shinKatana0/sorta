@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 17;
+PRAGMA user_version = 18;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -181,6 +181,33 @@ CREATE TABLE IF NOT EXISTS clip_embeddings (
     model TEXT NOT NULL,                  -- "<open_clip model>/<weights>" — see above
     dim INTEGER NOT NULL,                 -- numbers in `vec` (768 for ViT-L-14)
     vec BLOB NOT NULL,                    -- dim x float32, little-endian, L2-normalized
+    updated_at TEXT NOT NULL
+);
+
+-- v18 (F132): which frame of a near-duplicate group is worth keeping — a RECOMMENDATION
+-- and nothing else. Nothing here deletes, moves or marks a file; the only table that
+-- records a DECISION about a duplicate is `dedup_choice` below, and it is written by the
+-- user's hand alone. The two tables are deliberately separate for exactly that reason.
+--
+-- `group_key` IS THE PRIMARY KEY BECAUSE GROUPS HAVE NO ID. They are not stored anywhere:
+-- `dedup.near_duplicate_groups` recomputes them on every call with a union-find over the
+-- pHashes, so there is no stable identifier to reference and no row that could own one.
+-- The key is a sha1 over the SORTED file ids of the group, which makes it self-invalidating:
+-- add a frame to the burst or delete one from it and the group hashes to something else, so
+-- the stored answer is not found and the question is asked again about the group that
+-- actually exists now. The same device as the F120 prompt fingerprint, and here it is the
+-- only way to tie an answer to a group at all.
+--
+-- `source` says WHO chose: `sharpness` — the ranking the interface has always used (the
+-- laplacian inside a group, where it is finally comparable, then resolution and size), or
+-- `vlm#<fingerprint>` — the model, with the fingerprint of the question it was asked.
+-- The fingerprint is what makes a prompt edit invalidate the answers it produced, and the
+-- distinction is what lets the interface say which of the two suggested this frame instead
+-- of asking the user to trust a star.
+CREATE TABLE IF NOT EXISTS group_keeper (
+    group_key TEXT PRIMARY KEY,           -- sha1 of the sorted file ids of the group
+    keeper_id INTEGER NOT NULL REFERENCES files(id),
+    source TEXT NOT NULL,                 -- sharpness | vlm#<prompt fingerprint>
     updated_at TEXT NOT NULL
 );
 

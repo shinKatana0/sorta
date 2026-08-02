@@ -2,12 +2,21 @@
 
 Files are not deleted: exact duplicates are marked with dup_of, near-duplicates
 are only grouped into a report (near_duplicate_groups) without writing to the DB.
+
+F132: the one thing this module now DOES write is the keeper RECOMMENDATION of a
+near-duplicate group (`group_keeper`) — which frame of a burst is worth keeping, and
+whether that was decided by sharpness or by the model. It is still not a decision about a
+file: `dedup_choice` (the table the sorter and the trash button read) is written by the
+user's hand alone, and nothing here touches it. See the schema comment on `group_keeper`
+for why a group is addressed by a hash of its members instead of by an id.
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
 from . import imaging
 from .hashing import resolve_workers
@@ -247,3 +256,151 @@ def near_duplicate_groups(
     result = [sorted(g, key=lambda r: (-(r["size"] or 0), r["path"]))
               for g in grouped.values() if len(g) > 1]
     return sorted(result, key=lambda g: g[0]["path"])
+
+
+# --- F132: the keeper of a group ------------------------------------------------------
+
+# Who chose the keeper. `sharpness` is the ranking the Duplicates tab has always used and
+# the answer a group falls back to whenever the model does not produce one; the other
+# value is `vlm#<prompt fingerprint>`, written by junk.py — the fingerprint lives with the
+# prompt it hashes, not here.
+KEEPER_SOURCE_SHARPNESS = "sharpness"
+
+_ID_CHUNK = 500  # SQLite has a ceiling on bound parameters; a photo library reaches it
+
+
+@dataclass(frozen=True)
+class GroupFrame:
+    """One frame of a near-duplicate group, with everything the keeper rule reads."""
+    file_id: int
+    path: str
+    sharpness: float | None = None
+    pixels: int = 0   # width * height, 0 when the index has no dimensions for the file
+    size: int = 0
+
+
+@dataclass(frozen=True)
+class GroupKeeper:
+    """One stored recommendation: which frame of this group, and who chose it."""
+    group_key: str
+    keeper_id: int
+    source: str
+
+
+def group_key(file_ids: Iterable[int]) -> str:
+    """The identity of a GROUP — sha1 over its sorted file ids.
+
+    Groups have no id of their own and cannot have one: they are recomputed by union-find
+    on every call, so nothing in the database owns a group. Hashing the membership gives
+    the missing identifier AND its invalidation in one stroke — a frame added to the burst
+    or deleted from it produces a different key, the stored answer is simply not found,
+    and the question is asked again about the group that exists now.
+
+    Sorted, so the key does not depend on the order the caller happened to have the frames
+    in; the ids are decimal and comma-separated, which is enough to keep "1,23" and
+    "12,3" apart.
+    """
+    return hashlib.sha1(
+        ",".join(str(int(i)) for i in sorted(file_ids)).encode("ascii")).hexdigest()
+
+
+def rank_frames(frames: Sequence[GroupFrame]) -> list[GroupFrame]:
+    """The group, best frame first — the ranking the recommendation has always used.
+
+    Sharpness leads only when EVERY frame of the group has it. A partial comparison would
+    quietly prefer whichever frames happened to be measured, and since F120 only personal
+    photographs are measured at all, a mixed group is a real case rather than a corner one.
+    Resolution, then file size, then id break the ties — id last so the order is total and
+    two runs over an unchanged group produce the same answer.
+
+    Inside a group is the one place the laplacian answers the question it was measured for:
+    the frames are the same picture at the same scale, so the number compares focus rather
+    than content (across a collection it does not — a screenshot averages 2854 against a
+    photograph's 1253).
+    """
+    by_sharpness = all(f.sharpness is not None for f in frames)
+    return sorted(frames, key=lambda f: (
+        -(f.sharpness or 0.0) if by_sharpness else 0.0,
+        -f.pixels, -f.size, f.file_id))
+
+
+def keeper_groups(conn: sqlite3.Connection, max_distance: int = 5,
+                  min_size: int = 2) -> list[list[GroupFrame]]:
+    """Near-duplicate groups of at least `min_size` frames, each ranked best-first.
+
+    The signals the ranking needs are read here, in one query per chunk of ids, instead of
+    being carried by `near_duplicate_groups` — that function is a report over pHashes and
+    has three other callers who want nothing of the sort.
+
+    `min_size` is `dedup.keeper_min_group_size`: a group smaller than it is not returned at
+    all, so it is never shown to a model and never gets a row. Its recommendation is the
+    interface's own sharpness ranking, which is exactly what it was before this feature.
+    """
+    groups = [g for g in near_duplicate_groups(conn, max_distance) if len(g) >= min_size]
+    if not groups:
+        return []
+    ids = [r["id"] for g in groups for r in g]
+    extra: dict[int, tuple[float | None, int]] = {}
+    for start in range(0, len(ids), _ID_CHUNK):
+        part = ids[start:start + _ID_CHUNK]
+        placeholders = ",".join("?" * len(part))
+        for row in conn.execute(
+            f"""SELECT f.id, f.width, f.height, fq.sharpness
+                FROM files f LEFT JOIN frame_quality fq ON fq.file_id = f.id
+                WHERE f.id IN ({placeholders})""", part):
+            extra[int(row["id"])] = (
+                None if row["sharpness"] is None else float(row["sharpness"]),
+                int((row["width"] or 0) * (row["height"] or 0)))
+    out = []
+    for group in groups:
+        frames = []
+        for r in group:
+            sharpness, pixels = extra.get(int(r["id"]), (None, 0))
+            frames.append(GroupFrame(file_id=int(r["id"]), path=str(r["path"]),
+                                     sharpness=sharpness, pixels=pixels,
+                                     size=int(r["size"] or 0)))
+        out.append(rank_frames(frames))
+    return out
+
+
+def read_group_keepers(conn: sqlite3.Connection,
+                       keys: Sequence[str] | None = None) -> dict[str, GroupKeeper]:
+    """Stored recommendations by group key; `keys=None` — the whole table.
+
+    A key that is not in the result means the group has no recommendation of its own —
+    either it has never been asked about, or its membership has changed since it was (see
+    `group_key`). Both readings lead to the same behaviour in every consumer: fall back to
+    the sharpness ranking, which is always available.
+    """
+    sql = "SELECT group_key, keeper_id, source FROM group_keeper"
+
+    def rows(cursor: sqlite3.Cursor) -> dict[str, GroupKeeper]:
+        return {str(r["group_key"]): GroupKeeper(str(r["group_key"]),
+                                                 int(r["keeper_id"]), str(r["source"]))
+                for r in cursor}
+
+    if keys is None:
+        return rows(conn.execute(sql))
+    out: dict[str, GroupKeeper] = {}
+    keys = list(keys)
+    for start in range(0, len(keys), _ID_CHUNK):
+        part = keys[start:start + _ID_CHUNK]
+        out.update(rows(conn.execute(
+            f"{sql} WHERE group_key IN ({','.join('?' * len(part))})", tuple(part))))
+    return out
+
+
+_KEEPER_UPSERT = """INSERT INTO group_keeper (group_key, keeper_id, source, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(group_key) DO UPDATE SET
+                        keeper_id = excluded.keeper_id, source = excluded.source,
+                        updated_at = excluded.updated_at"""
+
+
+def store_group_keeper(conn: sqlite3.Connection, key: str, keeper_id: int,
+                       source: str, updated_at: str) -> None:
+    """Write one recommendation. Writes NOTHING else — `dedup_choice` is not touched.
+
+    The caller owns the transaction, as everywhere in the stage this is called from.
+    """
+    conn.execute(_KEEPER_UPSERT, (key, int(keeper_id), source, updated_at))
