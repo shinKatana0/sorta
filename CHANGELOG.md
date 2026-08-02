@@ -242,6 +242,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **What costs time is on the run screen, and it says how much** (F138). Three knobs
+  worth between a quarter of an hour and four hours of a run — `vlm.quality` +
+  `vlm.quality_scope` (95 minutes by faces, 4.3 hours over everything),
+  `features.pets_verify` (~13 min) and `dedup.keeper_vlm` (~20 min) — sat in the
+  settings column next to the number of preparation threads, while the one knob of that
+  weight that was already a checkbox (the deep tier, ~29 min) sat on the run screen. The
+  line ran through history rather than through the idea, and the idea is: **the run
+  screen holds what costs THIS run time, the settings hold how the product is arranged**.
+  All four are now on the run screen and none of them is in the column any more — a
+  value with two homes acquires two truths and a question about which one is in force.
+  They behave exactly as `deep` and `pets` have since F123: the checkbox **starts from
+  config.yaml** (`/api/process/defaults`) and what a person changes decides **one run**,
+  the file is never rewritten. What keeps this from being the console of switches F133
+  removed is that the list now means something: **every line carries its price and the
+  sum stands under them**, right where the eye is already going to the button. The
+  numbers are computed, not written into the markup — the same checkbox is four hours on
+  one collection and four minutes on another — so the new `GET /api/process/estimate`
+  multiplies a **measured rate** (0.78 s a frame for a VLM question, F113; 1.32 s for the
+  comparative group question, F132) by a count taken out of **this index**: the frames
+  the deep tier answered on last time, the frames above `pet_candidate_threshold`, the
+  near-duplicate groups at or above `keeper_min_group_size`, the population of each of
+  the four quality scopes. All four scope prices travel at once, so switching the select
+  costs no request and the sum moves the instant a box is ticked. Where a count cannot be
+  taken — a fresh collection, a stage that has never run — the answer is a **dash, never
+  a zero**: a zero reads as "free", and the estimate says out loud that it is an
+  estimate, because a person promised twenty minutes who then waits two hours believes no
+  figure on that screen again. The block stays at **seven lines** including the
+  un-switchable first one, and the only nested control is the scope of the quality
+  question, shown when its parent is on and hidden when it is not.
 - **One run button instead of two** (F135). The "Process" tab offered "Start" and
   "Re-run selected" side by side, and the second one bought exactly three stages —
   `index` (34 s), `geo` (3 s) and `landmarks` (139 s) on the 380 GB validation run,

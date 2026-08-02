@@ -22,6 +22,7 @@ import urllib.request
 from unittest import mock
 
 from sorta import ui
+from sorta.config import VLM_QUALITY_SCOPES
 
 from tests.test_ui import UiServerTestBase
 
@@ -545,8 +546,11 @@ class TestReviewTabHtml(ReviewTestBase):
                 self.assertIn(expected, body.decode("utf-8"))
 
     def test_the_select_offers_nothing_the_server_would_refuse(self):
+        # F138 moved the select onto the run screen — the scope is what makes the
+        # quality question 95 minutes or 4.3 hours — so the accepted set is now the run
+        # route's, checked against the same closed list of scopes.
         offered = {"groups", "events", "faces", "all"}
-        self.assertTrue(offered <= set(ui._SETTINGS_SPEC["vlm.quality_scope"].choices))
+        self.assertTrue(offered <= set(VLM_QUALITY_SCOPES))
 
     def test_i18n_ru_en_ja(self):
         for lang, expected in (("ru", "Разбор"), ("en", "Review"), ("ja", "仕分け")):

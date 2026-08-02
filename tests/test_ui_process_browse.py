@@ -29,8 +29,10 @@ class TestProcessControlsLayout(UiServerTestBase):
         geo_hint = html.index("More accurate place names")
         start_btn = html.index('id="process-start-btn"')
 
+        # F138 reordered the rows — online geo stands apart from the budget block,
+        # because it is not a line of it — so what is pinned is the property, not the
+        # order: each hint follows ITS OWN checkbox, and both precede the buttons.
         self.assertLess(deep_checkbox, deep_hint)
-        self.assertLess(deep_hint, geo_checkbox)
         self.assertLess(geo_checkbox, geo_hint)
         # both hints come before the action buttons, not after them
         self.assertLess(deep_hint, start_btn)
