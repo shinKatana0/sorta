@@ -583,6 +583,23 @@ class TestScriptStillMeasuresTheThreshold(unittest.TestCase):
         self.assertIs(probe.landmark_prompts, stage.landmark_prompts)
         self.assertIs(probe._corroborate, stage._corroborate)
 
+    def test_the_naming_form_is_the_one_the_stage_really_asks(self):
+        """Phase 1 shipped this question, so a re-run has to price THAT question.
+
+        Including the asker: the decode, the frame size and the token budget are part of
+        what is being measured, and a second copy of them here would drift.
+        """
+        from sorta import landmarks as stage
+        self.assertIs(probe.NAMING_PROMPT, stage.LANDMARK_NAMING_PROMPT)
+        self.assertIs(probe.match_named_landmark, stage.match_named_landmark)
+        self.assertIs(probe.PROBE_MAX_NEW_TOKENS, stage.LANDMARK_MAX_NEW_TOKENS)
+
+    def test_the_verification_form_stays_here_and_only_here(self):
+        """It lost the measurement — the pipeline must not carry it."""
+        from sorta import landmarks as stage
+        self.assertIn("yes or no", probe.VERIFY_PROMPT)
+        self.assertFalse([name for name in dir(stage) if "VERIFY" in name])
+
 
 class TestClassifyHelper(unittest.TestCase):
     """The CLIP helper both halves of the script share."""
