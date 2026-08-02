@@ -79,6 +79,11 @@ class KeeperCase(FrameQualityCase):
         self.dedup(keeper_vlm=True)
 
     def dedup(self, **kwargs):
+        # The mechanism is exercised on PAIRS, so the group-size gate is pinned here
+        # rather than inherited from the default. The default moved 2 -> 3 once the
+        # pairs were looked at (they are indistinguishable, so the question has no
+        # answer) — a test of "does the asker get called" must not move with it.
+        kwargs.setdefault("keeper_min_group_size", 2)
         self.cfg.dedup = DedupConfig(**kwargs)
 
     def add_group(self, group: int, sharpness: list[float], prefix: str = "g",
@@ -493,7 +498,10 @@ class TestConfigKeys(unittest.TestCase):
         cfg = self.load("sources: []\n")
         self.assertFalse(cfg.dedup.keeper_vlm)
         self.assertEqual(cfg.dedup.keeper_max_frames, 5)
-        self.assertEqual(cfg.dedup.keeper_min_group_size, 2)
+        # 3, not 2: on a live collection 85% of groups are pairs, and looking at 73 of
+        # them showed the two frames are indistinguishable — 1.44 s of VLM to answer a
+        # question with no answer. The measurement is in config.py next to the value.
+        self.assertEqual(cfg.dedup.keeper_min_group_size, 3)
 
     def test_the_values_are_read(self):
         cfg = self.load("dedup:\n  keeper_vlm: true\n  keeper_max_frames: 3\n"
@@ -509,7 +517,7 @@ class TestConfigKeys(unittest.TestCase):
     def test_garbage_numbers_fall_back_to_the_defaults(self):
         cfg = self.load("dedup:\n  keeper_max_frames: 0\n  keeper_min_group_size: nope\n")
         self.assertEqual(cfg.dedup.keeper_max_frames, 5)
-        self.assertEqual(cfg.dedup.keeper_min_group_size, 2)
+        self.assertEqual(cfg.dedup.keeper_min_group_size, 3)
 
     def test_the_old_key_of_the_section_still_works(self):
         cfg = self.load("dedup:\n  canonical_strategy: largest\n")

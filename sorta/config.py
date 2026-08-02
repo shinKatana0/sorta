@@ -103,12 +103,21 @@ class DedupConfig:
     # usable and the context grows for no return. The frames sent are the best N by
     # sharpness, and the answer applies to the group as a whole.
     keeper_max_frames: int = 5
-    # The smallest group worth asking about. 2 — every group, which is the default
-    # because a recommendation for a pair is still a recommendation. 3 is the setting
-    # that matters on a real collection: 85% of the groups there are PAIRS, and on a pair
-    # sharpness already compares two frames of the same scene at the same scale honestly.
-    # Measured population: 791 groups in total, 115 of them with three frames or more.
-    keeper_min_group_size: int = 2
+    # The smallest group worth asking about. MEASURED 2026-08-02 and moved 2 -> 3.
+    #
+    # 85% of the groups on a live collection are PAIRS (676 of 791). The model was asked
+    # about 73 of them and picked a different frame from sharpness in 40 — 55%, against
+    # the 10% a 20-pair timing sample had suggested. That looked alarming until the pairs
+    # were looked at: the two frames are INDISTINGUISHABLE. The two signals disagree so
+    # often not because one of them is right but because there is nothing to choose
+    # between — both are pointing at whichever of two identical pictures they happened to
+    # score higher.
+    #
+    # So a pair costs 1.44 s of VLM to answer a question that has no answer. At 3 the
+    # model is asked about the 115 groups where the frames actually differ: 791 calls ->
+    # 115, ~17 minutes -> ~2.5. Pairs fall back to sharpness, which F120 established is a
+    # fair comparison inside a group — one scene, one scale.
+    keeper_min_group_size: int = 3
 
 
 def _dedup_from(raw: dict) -> DedupConfig:

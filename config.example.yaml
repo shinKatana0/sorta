@@ -67,7 +67,7 @@ dedup:
   # The smallest group worth asking the model about. 2 = every group. Set 3 to pay only
   # where the choice is genuinely unclear: on a PAIR of the same scene, sharpness already
   # compares the two frames honestly, and pairs are the overwhelming majority of groups.
-  keeper_min_group_size: 2
+  keeper_min_group_size: 3
 
 geo:
   # A gap between frames larger than this (in hours) starts a new time session;
