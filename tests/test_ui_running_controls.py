@@ -4,10 +4,14 @@ Reported from a live run: with a process in flight, ticking the "faces" checkbox
 re-enabled "re-run this stage" — the checkbox handler fired immediately and
 overwrote what the status poll had disabled, leaving a window in which a second
 pipeline could be started on top of the first.
+
+F135 removed that second button, so the window it opened is gone by construction —
+what stays here is the rest of the family: the source inputs, the option checkboxes,
+the layout controls and "Start over", all of which are still live buttons next to a
+running pipeline.
 """
 from __future__ import annotations
 
-import re
 import unittest
 
 from sorta import ui
@@ -30,16 +34,12 @@ class TestRunningStateGuards(unittest.TestCase):
                     return self.html[start:j + 1]
         raise AssertionError(f"не найдено тело {name}")
 
-    def test_checkbox_handler_respects_the_running_state(self):
-        """The actual regression: this handler used to ignore `processRunning`."""
-        body = self._body("updateRerunSelectedDisabled")
-        self.assertIn("processRunning", body)
-
     def test_status_poll_records_the_running_state(self):
         body = self._body("renderProcessStatus")
         self.assertIn("processRunning = !!data.running", body)
-        # and the rerun button is still gated on it, not only on the checkboxes
-        self.assertIn("rerunBtn.disabled = processRunning", body)
+        # F135: the second button is gone, so the flag now guards the start button and
+        # the inputs — the same flag, one consumer fewer.
+        self.assertIn("startBtn.disabled = processRunning", body)
 
     def test_source_inputs_are_disabled_while_running(self):
         body = self._body("updateProcessInputsDisabled")
@@ -94,21 +94,13 @@ class TestRunningStateGuards(unittest.TestCase):
         self.assertIn("updateBusyControlsDisabled();",
                       self._body("renderProcessStatus"))
 
-    def test_rerun_needs_a_non_empty_index(self):
-        """Reported from a live session: right after "Start over" the index is empty,
-        and ticking "faces" lit up "catch this stage up" — offering to re-run a stage
-        over no files at all. The flag is refreshed by the same fetch that shows/hides
-        the People and Events tabs, which already runs after a reset."""
-        body = self._body("rerunSelectedAllowed")
-        self.assertIn("indexHasFiles", body)
-        self.assertIn("indexHasFiles = !!data.indexed", self.html)
-        self.assertIn("updateRerunSelectedDisabled();", self._body("applyTabVisibility"))
-
-    def test_rerun_button_starts_disabled_in_markup(self):
-        """Before the first poll there is no state yet — the safe default is off."""
-        markup = re.search(r'<button[^>]*id="process-rerun-optional-btn"[^>]*>', self.html)
-        self.assertIsNotNone(markup)
-        self.assertIn("disabled", markup.group(0))
+    def test_the_second_run_button_is_gone_with_its_state(self):
+        """F135: one run button. The "re-run selected" button used to need its own
+        empty-index guard and its own checkbox handlers — both went with it, and
+        nothing may be left referring to a button that no longer exists."""
+        for name in ("process-rerun-optional-btn", "rerunSelectedAllowed",
+                     "updateRerunSelectedDisabled", "indexHasFiles"):
+            self.assertNotIn(name, self.html)
 
 
 if __name__ == "__main__":
