@@ -17,6 +17,13 @@ it (`features.landmarks_verify`, default off) — CLIP proposes widely, the mode
 what place it is looking at, corroboration still decides. The order matters and is the
 whole safety argument: the model is a filter placed BEFORE F75, never a way around it.
 
+F136: what CLIP found for a frame is remembered (see `_SCAN_KEY`), so a later run only
+looks at the frames whose answer could have changed — a new or edited file, a new
+landmark list, a moved threshold, a reworded prompt. Corroboration is NOT cached: it runs
+over the whole selection every time, with the proposals of the skipped files raised back
+out of the DB, because a group verdict is about the company a match keeps and would
+change under a thinned-out set (F75).
+
 The CLIP model (open_clip, the same as in junk.py) is mocked in tests via the
 classifier parameter; the real load happens only in clip_classifier(). The VLM is
 mocked the same way through the `asker` parameter — qwen_vlm_landmark() is the only
@@ -373,6 +380,12 @@ class LandmarkStats:
     # `confirmed_by_model` and `proposals` is what the check removed before corroboration
     # ever saw it. All zero when the toggle is off: nothing was asked.
     proposals: int = 0                   # matches above the gate, before any check
+    # F136: files of the selection the CLIP pass did not have to look at, because nothing
+    # that decides their answer had moved since the run that did look (see `_SCAN_KEY`).
+    # They stay part of `scanned` and their proposals still go through corroboration — the
+    # counter is here so that "the stage did nothing this time" is visible in the numbers
+    # instead of being inferred from a suspiciously short run.
+    skipped: int = 0
     checked: int = 0                     # proposals a question was actually asked about
     checks_reused: int = 0               # answers taken from landmark_checks, not re-asked
     confirmed_by_model: int = 0          # the model named this landmark (asked or reused)
@@ -804,6 +817,125 @@ def _verify_matches(matches: Sequence[_Match], landmarks: Sequence[Landmark],
     return kept
 
 
+# --- F136: the scan marker — what a later run is allowed not to look at again -------
+#
+# The stage used to be incremental in its SELECTION alone: a match becomes
+# `confidence='visual'` and leaves, everything else keeps `'unknown'` and was handed to
+# CLIP again on every single run — 7 619 frames and 138 s of the 176 s a full run costs on
+# the live collection, for an answer that could not have come out differently. The
+# interface used to work around it with a button ("do not run this stage again"), which is
+# a shortcoming of the stage delegated to a person; F135 removed the button.
+#
+# WHERE THE MARKER LIVES, and why not somewhere more obvious:
+#
+# * not in `places` — `geo` recomputes that table from scratch (`DELETE FROM places`) and
+#   always runs BEFORE landmarks, so a marker written there is gone before it is read;
+# * not in a file next to the DB — that is a second store to keep in step with
+#   `reset_index`, with `sorta ui`'s "Start over", and with a database that gets copied or
+#   moved; a stale sidecar would silently hand back answers for files it no longer
+#   describes, which is the failure this whole marker exists to prevent;
+# * `landmark_checks` is this stage's own table (F131): wiped with the index, keyed by
+#   (file_id, landmark), already carrying a fingerprint in `model`. One RESERVED key per
+#   file is all that is needed, and the schema does not move — which the F136 brief
+#   forbids outright.
+_SCAN_KEY = "#scan"
+# What a scan row's `verdict` holds: the name of the landmark CLIP proposed for the file,
+# or this — nothing reached the gate. Both are results of the pass, and neither can be
+# confused with an answer of the model: those rows are keyed by a real landmark name (a
+# place name out of the list, never "#..."), and `_stored_checks` filters on `model` on top
+# of that.
+_SCAN_NONE = "#none"
+
+
+def _stage_fingerprint(landmarks: Sequence[Landmark], prompts: Sequence[str],
+                       threshold: float, gate: float, min_group: int,
+                       dominance: float) -> str:
+    """A short digest of everything that decides this stage's answer (the F120 device).
+
+    Deliberately WIDER than what decides a single CLIP score. The prompts and the gate are
+    what produce a proposal, but an edited `data/landmarks.yaml` also moves the country,
+    the city and the geonameid a match is written with, and the group thresholds decide
+    which proposals survive — the brief names all of them, and every one of them is a way
+    for a stored answer to become a lie while still looking fresh. The cost of being wide
+    is a recompute nobody strictly needed; the cost of being narrow is old verdicts
+    silently outliving the settings that produced them.
+    """
+    payload = "\n".join([
+        *prompts,
+        *(f"{lm.name}|{lm.country}|{lm.city}|{lm.geonameid}" for lm in landmarks),
+        f"threshold={threshold!r}", f"gate={gate!r}",
+        f"group_min={min_group}", f"dominance={dominance!r}",
+    ])
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _scan_marker(fingerprint: str, row: sqlite3.Row) -> str:
+    """The `model` of a scan row: the stage's fingerprint AND the file's, in one string.
+
+    One string compared for equality, because the question the row answers is "is
+    everything that decides this file's result still what it was" — and a marker that
+    matches in part is not a match at all (the F120 rule: a mismatch means RECOMPUTE,
+    never use). The file's half is path + mtime + size, taken from the index rather than
+    from a fresh stat: the indexer is the one stage that decides what a file currently is,
+    and asking the disk here would make the stage disagree with it.
+    """
+    identity = f"{row['path']}\0{row['mtime']!r}\0{row['size']!r}"
+    return (f"scan#{fingerprint}#"
+            f"{hashlib.sha1(identity.encode('utf-8')).hexdigest()[:12]}")
+
+
+def _stored_scans(conn: sqlite3.Connection,
+                  file_ids: Sequence[int]) -> dict[int, sqlite3.Row]:
+    """file_id -> its scan row, for the files of the current selection."""
+    out: dict[int, sqlite3.Row] = {}
+    for part in batched(list(file_ids), 500):
+        rows = conn.execute(
+            "SELECT file_id, score, verdict, model FROM landmark_checks WHERE landmark = ?"
+            f" AND file_id IN ({','.join('?' * len(part))})", (_SCAN_KEY, *part))
+        out.update((int(r["file_id"]), r) for r in rows)
+    return out
+
+
+def _reuse_scan(row: sqlite3.Row, scan: sqlite3.Row | None, fingerprint: str,
+                by_name: dict[str, Landmark]) -> tuple[bool, _Match | None]:
+    """(may the CLIP pass skip this file, what it proposed the last time it did not).
+
+    A landmark the current list no longer knows is treated as no marker at all rather than
+    as a missing proposal — it cannot happen while the fingerprint covers the list, and if
+    it ever does, paying for one more CLIP pass is the cheap way to be wrong.
+    """
+    if scan is None or str(scan["model"]) != _scan_marker(fingerprint, row):
+        return False, None
+    name = str(scan["verdict"])
+    if name == _SCAN_NONE:
+        return True, None
+    landmark = by_name.get(name)
+    if landmark is None:
+        return False, None
+    return True, _Match(file_id=int(row["id"]), folder=_parent_dir(str(row["path"])),
+                        landmark=landmark, path=str(row["path"]),
+                        score=float(scan["score"] or 0.0))
+
+
+def _remember_scans(conn: sqlite3.Connection,
+                    scans: Sequence[tuple[int, str, _Match | None]]) -> None:
+    """Store what the CLIP pass found for each frame it looked at.
+
+    Written right after the pass and BEFORE corroboration, because the row records the
+    PROPOSAL and not where the file ended up. The files this feature is actually for are
+    the ones that never match: they keep `unknown`, come back into the selection on every
+    run, and are 7 619 of the 7 619 frames the live collection rescans. A row written only
+    for the survivors would miss all of them — and the survivors are the one group that
+    already skipped itself, by leaving the selection.
+    """
+    now = utcnow_iso()
+    with conn:
+        for file_id, marker, match in scans:
+            conn.execute(_CHECK_UPSERT,
+                         (file_id, _SCAN_KEY, match.score if match else None,
+                          match.landmark.name if match else _SCAN_NONE, marker, now))
+
+
 def _vlm_model_name(cfg: Config) -> str:
     """The runtime the check would use — `vlm.model`, the shared one (F95)."""
     return str(getattr(getattr(cfg, "vlm", None), "model", DEFAULT_VLM_MODEL))
@@ -851,8 +983,13 @@ def detect_landmarks(
 ) -> LandmarkStats:
     """CLIP zero-shot over the landmark list for files without a resolved place.
 
-    Incrementality for free: matched files get confidence='visual' and do not enter
-    the next run (the selection is only for 'unknown').
+    Incrementality has two halves. Matched files get confidence='visual' and do not enter
+    the next run at all (the selection is only for 'unknown'); everything else is selected
+    again, and F136 keeps the CLIP pass off the frames whose answer cannot have changed —
+    their proposal is raised out of `landmark_checks` instead. Corroboration then sees the
+    same set of matches a full run would have built, which is the point: the group rule
+    reads the company a match keeps, so a thinned-out set is not a saving but a different
+    verdict.
 
     F75: the classifier only proposes. Every match above the threshold is collected
     first, corroborated against its folder (see `_corroborate`) and only then written —
@@ -868,7 +1005,8 @@ def detect_landmarks(
     s = naming_settings(cfg)
     landmarks = load_landmarks(s.landmarks_file)
     rows = conn.execute(
-        """SELECT f.id, f.path FROM files f JOIN places p ON p.file_id = f.id
+        """SELECT f.id, f.path, f.mtime, f.size FROM files f
+             JOIN places p ON p.file_id = f.id
            WHERE f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'
              AND p.confidence = 'unknown'
            ORDER BY f.id"""
@@ -881,24 +1019,61 @@ def detect_landmarks(
 
     verify = bool(getattr(getattr(cfg, "features", None), "landmarks_verify", False))
     gate = _candidate_gate(cfg, s) if verify else s.landmark_threshold
+    # The thresholds are read through getattr: the fields live in config.py, which this
+    # module does not own (the F30/F37/F64 pattern) — an older settings object keeps
+    # working on the measured defaults. Read here rather than by the corroboration call
+    # below because the scan marker fingerprints them (F136).
+    min_group = int(getattr(s, "landmark_group_min", 5))
+    dominance = float(getattr(s, "landmark_group_dominance", 0.6))
 
     prompts = landmark_prompts(landmarks)
-    matches: list[_Match] = []
-    done = 0
+    fingerprint = _stage_fingerprint(landmarks, prompts, float(s.landmark_threshold),
+                                     float(gate), min_group, dominance)
+    stored = _stored_scans(conn, [int(r["id"]) for r in rows])
+    by_name = {lm.name: lm for lm in landmarks}
+    # Keyed by file so the match list can be rebuilt in SELECTION order below, whichever
+    # half it came from. The order is not cosmetic: `_group_minority` breaks a tie between
+    # two equally frequent cities by the order it met them, so a run that appended the
+    # raised proposals after the fresh ones could decide a folder differently from the full
+    # run it is supposed to be indistinguishable from.
+    proposals: dict[int, _Match] = {}
+    todo: list[sqlite3.Row] = []
+    for r in rows:
+        reusable, raised = _reuse_scan(r, stored.get(int(r["id"])), fingerprint, by_name)
+        if not reusable:
+            todo.append(r)
+            continue
+        stats.skipped += 1
+        if raised is not None:
+            proposals[int(r["id"])] = raised
+
+    done = len(rows) - len(todo)
     if progress:
         progress(0, len(rows))  # total right away, even if the stage is small/fast (#37)
-    for chunk in batched(rows, s.clip_batch_size):
+        if done:
+            progress(done, len(rows))  # everything the marker spared, in one jump
+    fresh: list[tuple[int, str, _Match | None]] = []
+    for chunk in batched(todo, s.clip_batch_size):
         probs = classifier([r["path"] for r in chunk], prompts)
         for r, p in zip(chunk, probs):
             best = int(np.argmax(p[: len(landmarks)]))
-            if float(p[best]) < gate:
-                continue
-            matches.append(_Match(file_id=r["id"], folder=_parent_dir(r["path"]),
-                                  landmark=landmarks[best], path=r["path"],
-                                  score=float(p[best])))
+            proposal: _Match | None = None
+            if float(p[best]) >= gate:
+                proposal = _Match(file_id=int(r["id"]), folder=_parent_dir(str(r["path"])),
+                                  landmark=landmarks[best], path=str(r["path"]),
+                                  score=float(p[best]))
+                proposals[int(r["id"])] = proposal
+            fresh.append((int(r["id"]), _scan_marker(fingerprint, r), proposal))
         done += len(chunk)
         if progress:
             progress(done, len(rows))
+    if fresh:
+        _remember_scans(conn, fresh)
+    if stats.skipped:
+        _log.info("landmarks: %s из %s кадров не изменились с прошлого прогона — "
+                  "CLIP по ним не гонялся", stats.skipped, len(rows))
+
+    matches = [proposals[int(r["id"])] for r in rows if int(r["id"]) in proposals]
     if not matches:
         return stats
 
@@ -924,11 +1099,6 @@ def detect_landmarks(
         if not matches:
             return stats
 
-    # The thresholds are read through getattr: the fields live in config.py, which this
-    # module does not own (the F30/F37/F64 pattern) — an older settings object keeps
-    # working on the measured defaults.
-    min_group = int(getattr(s, "landmark_group_min", 5))
-    dominance = float(getattr(s, "landmark_group_dominance", 0.6))
     if resolver is None:
         resolver = _default_resolver()
     lang = i18n.normalize_lang(cfg.language)

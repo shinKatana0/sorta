@@ -242,6 +242,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **`landmarks` stops recomputing what has not changed** (F136). The other half of F135,
+  and where its three minutes actually were: `index` (34 s) and `geo` (3 s) already skip
+  what they recognise, `landmarks` spent **138 s of a 176 s run** putting the same 7 619
+  frames through CLIP again. The stage was incremental in its **selection** only — a match
+  leaves as `confidence='visual'`, everything else keeps `'unknown'` and came back every
+  time, even when not one file, prompt or threshold had moved since. So a run now
+  remembers what CLIP found for each frame it looked at, and a later run looks only at the
+  frames whose answer could have changed. What makes an answer stale is fingerprinted the
+  way F120 does it: the file itself (path + mtime + size, as the index records it), the
+  landmark list including the country, city and geonameid a match would be written with,
+  `naming.landmark_threshold`, `landmark_group_min`, `landmark_group_dominance`, the score
+  proposals are collected at, and the prompt texts — the distractor classes included,
+  since editing one moves every score. Any of them moves and the frame goes back to CLIP;
+  a marker that matches in part is not a match at all. **Corroboration is not cached.** It
+  is not a per-file rule — the group rule reads the company a match keeps — so skipping a
+  frame that proposed something would thin out its folder and quietly change the verdict
+  of its neighbours, which would be a wrong city bought with saved time and is the exact
+  failure F75 exists to prevent. The proposals of the skipped frames are raised back out
+  of the DB, and the F75 rules then run over the same set a full pass would have built:
+  the test that pins this compares a partial run against a full run over the very same
+  selection, rather than against expectations written by hand. The marker lives in
+  `landmark_checks` under a reserved key, so the schema does not move and "start over"
+  still clears it; it cannot live in `places`, which `geo` recomputes from scratch before
+  this stage ever runs. With `features.landmarks_verify` on (F131), a skipped frame is
+  neither re-scored nor re-asked, and a reused answer still carries the whole decision.
 - **One run button instead of two** (F135). The "Process" tab offered "Start" and
   "Re-run selected" side by side, and the second one bought exactly three stages —
   `index` (34 s), `geo` (3 s) and `landmarks` (139 s) on the 380 GB validation run,
