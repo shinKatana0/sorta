@@ -17,6 +17,7 @@ pointless if the plan kept the frame where the classifier put it.
 """
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import unittest
@@ -244,6 +245,31 @@ class TestDocumentsAreNotPreviewed(JunkViewTestBase):
         self.assertNotIn(b"/preview/", body)
         self.assertNotIn(b"/photo/", body)
 
+    def test_the_list_comes_from_the_config_key_and_not_from_the_code(self):
+        """F133: `vlm.exclude_classes` decides, so moving a class in or out of it moves
+        the protection with it. Asserting the default alone cannot tell a config read
+        from a hard-coded "document" — only changing the key can."""
+        self.add_classified("passport.jpg", "document")
+        self.add_classified("chair.jpg", "product")
+        self.cfg.vlm = dataclasses.replace(
+            self.cfg.vlm, exclude_classes=("product",))
+        self.start_server()
+        by_verdict = {it["verdict"]: it for it in self.junk()["items"]}
+        # the class that JOINED the list lost its preview...
+        self.assertNotIn("thumb_url", by_verdict["product"])
+        # ...and the one that left it got its preview back
+        self.assertIn("thumb_url", by_verdict["document"])
+
+    def test_an_empty_list_lifts_the_protection_and_says_so_by_doing_it(self):
+        """Emptying the key is a decision a person can make — it means "show the model
+        everything", and since F133 it also means "render everything". The trade is
+        recorded in the guide; the test pins that it is the KEY doing it."""
+        self.add_classified("passport.jpg", "document")
+        self.cfg.vlm = dataclasses.replace(self.cfg.vlm, exclude_classes=())
+        self.start_server()
+        item = self.junk("?bucket=document")["items"][0]
+        self.assertIn("thumb_url", item)
+
 
 class TestBulkReturnToPhotos(JunkViewTestBase):
     def restore(self, file_ids: list[int]) -> tuple[int, dict]:
@@ -399,15 +425,21 @@ class TestJunkMarkup(JunkViewTestBase):
         _status, body, _ctype = self.get("/")
         self.html = body.decode("utf-8")
 
-    def test_the_tab_and_its_panel_exist(self):
-        self.assertIn('id="tab-btn-junk"', self.html)
-        self.assertIn('id="tab-junk"', self.html)
+    def test_the_panel_exists_inside_the_slices_tab(self):
+        # F133: the buckets became pinned slices — products, screenshots, documents and
+        # the rest sit next to people, events and animals, and the panel that renders
+        # them is the one this view has always used.
+        self.assertIn('id="tab-junk" class="slice-panel"', self.html)
+        self.assertNotIn('id="tab-btn-junk"', self.html)
+        slices = self.html.split('id="tab-slices"', 1)[1].split("</section", 1)[0]
+        self.assertIn('id="tab-junk"', slices)
 
     def test_the_bulk_controls_are_present(self):
         self.assertIn('id="junk-restore-btn"', self.html)
         self.assertIn('id="junk-select-all-btn"', self.html)
         self.assertIn('id="junk-select-none-btn"', self.html)
-        self.assertIn('id="junk-buckets"', self.html)
+        # the bucket chips are the slice pins now, and the pin row is built from data
+        self.assertIn('id="slice-pins"', self.html)
         self.assertIn('id="junk-grid"', self.html)
 
     def test_the_view_reads_the_new_route_and_writes_through_the_old_one(self):
@@ -431,7 +463,7 @@ class TestJunkMarkup(JunkViewTestBase):
 
 
 class TestJunkStringsAreTranslated(unittest.TestCase):
-    KEYS = ("tab_junk", "junk_intro", "junk_bucket_all", "junk_bucket_product",
+    KEYS = ("tab_junk", "junk_intro", "junk_bucket_product",
             "junk_bucket_document", "junk_bucket_screenshot", "junk_bucket_meme",
             "junk_empty", "junk_restore_button", "junk_restore_confirm",
             "junk_undo_restore_button", "junk_restored_mark",

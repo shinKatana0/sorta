@@ -31,6 +31,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("manual_places", tbls)  # v14 (F85c)
             self.assertIn("frame_quality", tbls)  # v15 (F113)
             self.assertIn("clip_embeddings", tbls)  # v16 (F128)
+            self.assertIn("manual_pet", tbls)  # v17 (F124)
             (v,) = conn.execute("PRAGMA user_version").fetchone()
             self.assertEqual(v, 18)
             conn.close()

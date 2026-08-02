@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 18;
+PRAGMA user_version = 19;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -252,6 +252,36 @@ CREATE TABLE IF NOT EXISTS manual_places (
     country TEXT NOT NULL,                -- ISO cc; always known (a city implies its country)
     city TEXT,                            -- canonical en/asciiname anchor, NULL = country only
     city_geonameid INTEGER,               -- GeoNames id of the city, NULL = country only
+    updated_at TEXT NOT NULL
+);
+
+-- v17 (F124): the user's verdict on ONE frame's animal mark, which outranks the model's.
+-- The pet threshold is 92% right, so out of 805 marked frames of the live collection some
+-- 64 are not animals; the person who sees them in the "Animals" tab is the one who takes
+-- the mark off, and it needs somewhere to live.
+--
+-- It cannot live in `frame_quality`: that table has exactly one writer (`junk`) and every
+-- run recomputes it from scratch — after F120 the prompt fingerprint invalidates the rows
+-- outright — so a manual mark written there would last until the next run and no longer.
+-- The same reasoning, and the same shape, as `manual_places` (F85c) against `places`.
+--
+-- It is also NOT an action of `manual_overrides`: that column is about the LAYOUT
+-- (exclude | reassign), and folding "this is not a cat" into it is how a file ends up
+-- dropped from the layout because of what is in the frame.
+--
+-- The mark is applied WHEN READ, never when written: `junk` keeps computing
+-- `frame_quality.pet` exactly as before, and the consumers (the album slice in
+-- sorter.py, the tab in ui.py) prefer this row over it — one rule, `sorter.ANIMAL_IDS_SQL`.
+-- That is what makes the edit survive any recompute at all, including a change of model,
+-- of prompts or of the threshold: it does not live in what gets recomputed.
+--
+-- Two-way on purpose: a person takes a false mark OFF and puts a missing one ON. The
+-- second direction is not hypothetical — it is how a frame the threshold missed gets into
+-- the album at all. Wiped by `reset_index` with every other manual decision (face labels,
+-- event names, dedup choices): a from-scratch reindex starts from a clean slate.
+CREATE TABLE IF NOT EXISTS manual_pet (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),
+    is_animal INTEGER NOT NULL,           -- 1 = an animal (put the mark back), 0 = not one
     updated_at TEXT NOT NULL
 );
 

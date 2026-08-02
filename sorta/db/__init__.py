@@ -52,7 +52,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # gets the column with the table from executescript below.
     if 15 <= version <= 16:  # v17: frame_quality.pet_vlm (F130 — the pet check's answer)
         conn.execute("ALTER TABLE frame_quality ADD COLUMN pet_vlm TEXT")
-    # v18 (group_keeper, F132) — a new table, created by executescript below
+    # v18 (manual_pet, F124) — a new table, created by executescript below.
+    # F124 was written against a main standing at v16 and took v17, exactly as its brief
+    # said to; F130 merged first and took that number. Renumbered here by the
+    # orchestrator — the version is the one thing two parallel workers cannot settle
+    # between themselves, because neither can see the other's worktree, and each branch
+    # is self-consistent right up until the second merge.
+    # v19 (group_keeper, F132) — a new table, created by executescript below.
+    # The third renumbering of the day, for the same reason. F124/F130/F132 all took the
+    # next free number their own main showed them; only the merge order can decide.
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

@@ -30,7 +30,7 @@ Switching the sort mode does not require re-running the pipelines.
 | events | `events.py` | `files`, `places` | `events`, `event_files` |
 | naming | `naming.py`, `landmarks.py`, `junk.py` | `files`, `places`, `events` | `places` (unknown only), `media_class`, `events.name` (name_is_manual=0 only) |
 | sorter | `sorter.py` | all | `move_batches`, `moves`, FS |
-| ui/cli | `cli.py`, `ui.py` | everything (read) | `manual_overrides`, `manual_places`, `dedup_choice` — the user's OWN decisions; otherwise orchestrate module calls |
+| ui/cli | `cli.py`, `ui.py` | everything (read) | `manual_overrides`, `manual_places`, `manual_pet`, `dedup_choice` — the user's OWN decisions; otherwise orchestrate module calls |
 
 **Architectural boundary invariants:**
 1. Modules do NOT import each other (except `core`). Data exchange happens only
@@ -69,6 +69,21 @@ Switching the sort mode does not require re-running the pipelines.
   program inferred. The whole place comes from one source: a manual row replaces country,
   city and district together (a country-only assignment leaves city/geonameid NULL and
   lands in the `country_only` branch of the layout).
+- Wiped by `reset_index` like every other manual decision.
+
+### manual_pet (written only by ui) — F124
+- The user's verdict on one frame's animal mark: `is_animal = 0` takes a false mark off,
+  `is_animal = 1` puts a missing one on. Both directions, because a person does both.
+- It cannot live in `frame_quality`: one writer (`junk`), recomputed from scratch on every
+  run, prompt fingerprint included — the same reasoning as `manual_places` against
+  `places`. It is not an action of `manual_overrides` either: that column decides the
+  layout, and "this is not a cat" must never drop a file out of it.
+- Applied WHEN READ, never when written: `junk` is untouched and keeps computing
+  `frame_quality.pet`, while the consumers (the album slice, the "Animals" tab, the
+  Overview counter) read `COALESCE(manual_pet.is_animal, frame_quality.pet IS NOT NULL)`
+  through the single expression `sorter.ANIMAL_IDS_SQL`. That is what makes the edit
+  survive a change of model, of prompts or of the threshold — it is not in what gets
+  recomputed — and what keeps the three numbers from drifting apart.
 - Wiped by `reset_index` like every other manual decision.
 
 ### geo_cache (written only by geo, online provider) — F93

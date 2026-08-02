@@ -306,11 +306,13 @@ class TestIndexHtmlTabs(DupesTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="tab-btn-city"', html)
-        # F126: the tab this list lives on is now "Review"; the list itself is its
-        # first slice and keeps its own label.
+        # F133: the city layout is the "Layout" tab now — one of the three layers
+        # (canon / slices / junk) the tabs are named after, instead of the pipeline
+        # stage that computes it. F126 had already moved this list onto "Review",
+        # where it keeps its own label as the first slice.
+        self.assertIn('id="tab-btn-layout"', html)
         self.assertIn('id="tab-btn-review"', html)
-        self.assertIn(">Cities<", html)
+        self.assertIn(">Layout<", html)
         self.assertIn(">Duplicates<", html)
         self.assertNotIn("http://", html)
         self.assertNotIn("https://", html)

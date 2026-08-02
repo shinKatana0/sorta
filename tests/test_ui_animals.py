@@ -134,14 +134,17 @@ class TestAnimalsTabVisibility(AnimalsTestBase):
         _status, body, _ctype = self.get("/api/tabs/visibility")
         self.assertTrue(json.loads(body)["animal"])
 
-    def test_button_hidden_in_the_markup_by_default(self):
+    def test_pin_absent_from_the_markup_by_default(self):
+        # F133: "Animals" is a pinned slice, and the pin row is built from data — the
+        # rule ("the slice exists exactly when there is something to show") is the same.
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="tab-btn-animal" style="display:none"', html)
+        self.assertNotIn('id="slice-pin-animal"', html)
+        self.assertIn("animal: !!data.animal,", html)
         self.assertIn(
-            'document.getElementById("tab-btn-animal").style.display =\n'
-            '            data.animal ? "" : "none";', html)
+            'if (sliceVisibility.animal) pins.push({ key: "animal", '
+            "label: I18N.tab_animal });", html)
 
 
 class TestAnimalsOverviewCounter(AnimalsTestBase):

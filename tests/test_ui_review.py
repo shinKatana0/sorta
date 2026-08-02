@@ -505,7 +505,11 @@ class TestReviewTabHtml(ReviewTestBase):
         self.assertIn('id="tab-review"', self.html)
         self.assertNotIn('id="tab-btn-dupes"', self.html)
         self.assertNotIn('id="tab-dupes"', self.html)
-        self.assertIn('"review", "person"', self.html)
+        # F133 regrouped the strip. "Review" keeps its place right after "Overview" and
+        # AHEAD of the layout, which is the ordering that matters: junk is decided
+        # before the canon is built, because `sort --apply` is the move that carries the
+        # marked files off to `_delete`.
+        self.assertIn('"overview", "review", "layout"', self.html)
 
     def test_the_duplicates_machinery_moved_in_unchanged(self):
         self.assertIn('id="dupes-list"', self.html)
