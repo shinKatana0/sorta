@@ -110,12 +110,22 @@ class TestIndexedFlag(TabsVisibilityTestBase):
 
 
 class TestTabsVisibilityMarkup(TabsVisibilityTestBase):
-    def test_person_event_buttons_hidden_by_default(self):
+    def test_person_event_pins_are_absent_until_the_data_says_otherwise(self):
+        """F133: the rule did not move, the mechanism did.
+
+        People and events used to be tab buttons written into the markup with
+        `display:none` and shown by the visibility answer. They are pinned SLICES now,
+        and the pin row is built from data — so "hidden by default" means the markup
+        contains no pin at all and `applyTabVisibility` is what puts one there.
+        """
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="tab-btn-person" style="display:none"', html)
-        self.assertIn('id="tab-btn-event" style="display:none"', html)
+        self.assertNotIn('id="slice-pin-person"', html)
+        self.assertNotIn('id="slice-pin-event"', html)
+        self.assertIn('id="slice-pins"', html)
+        self.assertIn("person: !!data.person,", html)
+        self.assertIn("event: !!data.event,", html)
 
     def test_js_has_apply_tab_visibility_wired_in(self):
         self.start_server()

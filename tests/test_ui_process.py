@@ -368,22 +368,26 @@ class TestProcessHtml(ProcessTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="tab-btn-process"', html)
-        self.assertIn('id="tab-process"', html)
+        # F133: the process controls live INSIDE "Overview" now, so what is pinned here
+        # is that they are still on the landing tab and still wired to /api/process —
+        # not that they have a tab of their own.
+        self.assertIn('id="tab-btn-overview"', html)
+        self.assertIn('id="tab-overview"', html)
+        self.assertNotIn('id="tab-btn-process"', html)
         self.assertIn('id="process-source-dir"', html)
         self.assertIn('id="process-start-btn"', html)
         self.assertIn('id="process-cancel-btn"', html)
         self.assertIn('id="process-progress"', html)
         self.assertIn("/api/process", html)
-        # "Process" — the default-active tab of the MARKUP, and it stays ahead of the
-        # working tabs. F108 put "Overview" in front of it in the strip and switches to
-        # it from JS once the index turns out to be non-empty; on an empty index the
-        # landing is still this tab, because it is the only thing there is to do.
-        process_pos = html.index('id="tab-btn-process"')
-        city_pos = html.index('id="tab-btn-city"')
-        self.assertLess(process_pos, city_pos)
-        self.assertIn('class="tab-btn active" id="tab-btn-process"', html)
-        self.assertNotIn('class="tab-btn active" id="tab-btn-city"', html)
+        # F133: "Process" stopped being a tab of its own and merged into "Overview" —
+        # the state of the collection and the button that changes it are the same
+        # question at two moments in time. The expectation is unchanged in substance:
+        # the landing tab is the one with something to do on it, and it comes first.
+        overview_pos = html.index('id="tab-btn-overview"')
+        layout_pos = html.index('id="tab-btn-layout"')
+        self.assertLess(overview_pos, layout_pos)
+        self.assertIn('class="tab-btn active" id="tab-btn-overview"', html)
+        self.assertNotIn('class="tab-btn active" id="tab-btn-layout"', html)
         # without external resources (see the other tabs/F31-F35)
         self.assertNotIn("http://", html)
         self.assertNotIn("https://", html)
@@ -393,8 +397,10 @@ class TestProcessHtml(ProcessTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        for tab_id in ("tab-btn-city", "tab-btn-review", "tab-btn-person",
-                      "tab-btn-event", "tab-btn-moves"):
+        # F133: people and events became slices of "Slices" rather than tabs of their
+        # own; the city layout is "Layout". Nothing was dropped — it was regrouped.
+        for tab_id in ("tab-btn-overview", "tab-btn-review", "tab-btn-layout",
+                       "tab-btn-slices", "tab-btn-moves"):
             self.assertIn(f'id="{tab_id}"', html)
 
 

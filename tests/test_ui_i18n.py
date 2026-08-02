@@ -16,7 +16,9 @@ class TestIndexHtmlLanguage(UiServerTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn('<html lang="en">', html)
-        self.assertIn(">Cities<", html)
+        # F133: the tab is named after what it does — the canon layout — rather than
+        # after the folders it happens to produce.
+        self.assertIn(">Layout<", html)
         self.assertIn(">Duplicates<", html)
         self.assertIn("window.I18N", html)
 
@@ -26,15 +28,14 @@ class TestIndexHtmlLanguage(UiServerTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn('<html lang="en">', html)
-        self.assertIn(">Cities<", html)
+        self.assertIn(">Layout<", html)
         self.assertIn(">Duplicates<", html)
-        self.assertIn(">People<", html)
-        self.assertIn(">Events<", html)
+        self.assertIn(">Slices<", html)
         self.assertIn(">Moves<", html)
         self.assertIn("Expand all", html)
         self.assertIn("window.I18N", html)
         # Russian chrome must not leak through with language=en.
-        self.assertNotIn(">Города<", html)
+        self.assertNotIn(">Раскладка<", html)
 
     def test_language_ja_renders_japanese_chrome(self):
         self.cfg.raw = {"language": "ja"}
@@ -42,7 +43,7 @@ class TestIndexHtmlLanguage(UiServerTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn('<html lang="ja">', html)
-        self.assertIn(">都市<", html)
+        self.assertIn(">振り分け<", html)
         self.assertIn(">重複<", html)
         self.assertIn("window.I18N", html)
 
@@ -52,7 +53,7 @@ class TestIndexHtmlLanguage(UiServerTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn('<html lang="en">', html)
-        self.assertIn(">Cities<", html)
+        self.assertIn(">Layout<", html)
 
     def test_data_strings_from_server_not_translated(self):
         # Data (folders/names) does not go through _UI_STRINGS/_t — the server does
@@ -82,9 +83,9 @@ class TestUiStringsFallback(unittest.TestCase):
             del ui._UI_STRINGS["_f33_test_only_en"]
 
     def test_t_known_key_exact_language(self):
-        self.assertEqual(ui._t("tab_city", "en"), "Cities")
-        self.assertEqual(ui._t("tab_city", "ja"), "都市")
-        self.assertEqual(ui._t("tab_city", "ru"), "Города")
+        self.assertEqual(ui._t("tab_layout", "en"), "Layout")
+        self.assertEqual(ui._t("tab_layout", "ja"), "振り分け")
+        self.assertEqual(ui._t("tab_layout", "ru"), "Раскладка")
 
 
 class TestDarkTheme(UiServerTestBase):
@@ -117,21 +118,21 @@ class TestLangSwitcher(UiServerTestBase):
         _status, body, _ctype = self.get("/?lang=en")
         html = body.decode("utf-8")
         self.assertIn('<html lang="en">', html)
-        self.assertIn(">Cities<", html)
+        self.assertIn(">Layout<", html)
 
     def test_lang_query_ja_overrides_default(self):
         self.start_server()
         _status, body, _ctype = self.get("/?lang=ja")
         html = body.decode("utf-8")
         self.assertIn('<html lang="ja">', html)
-        self.assertIn(">都市<", html)
+        self.assertIn(">振り分け<", html)
 
     def test_no_lang_query_uses_config_default(self):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn('<html lang="en">', html)
-        self.assertIn(">Cities<", html)
+        self.assertIn(">Layout<", html)
 
     def test_invalid_lang_query_falls_back_to_config_default_not_ru(self):
         # An invalid ?lang must not hardcode ru — the default is cfg.language.
@@ -141,7 +142,7 @@ class TestLangSwitcher(UiServerTestBase):
         html = body.decode("utf-8")
         self.assertEqual(status, 200)
         self.assertIn('<html lang="en">', html)
-        self.assertIn(">Cities<", html)
+        self.assertIn(">Layout<", html)
 
     def test_invalid_lang_query_is_200_and_default_en(self):
         self.start_server()

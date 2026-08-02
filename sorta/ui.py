@@ -195,11 +195,13 @@ The deep tier moves ~10% of the collection into service folders and a few of tho
 verdicts are wrong; the fix is the EXISTING `POST /api/overrides` with the F103 action
 `photo` over the selected frames — one row per file in `manual_overrides`, so the
 sorter lays them out by city again while `media_class` keeps the model's verdict (a
-re-run of the junk tier therefore cannot silently wipe the correction). The `document`
-bucket answers WITHOUT `thumb_url`: those are passports, medical forms and bank papers,
-and the project rule is that such a frame is never decoded for display — the card
-carries a name and a date only. Returning a document to the photos is still allowed;
-only its preview is not built.
+re-run of the junk tier therefore cannot silently wipe the correction). A bucket named
+by `vlm.exclude_classes` (F133; the default is `["document"]`) answers WITHOUT
+`thumb_url`: those are passports, medical forms and bank papers, and the project rule is
+that such a frame is never decoded for display — the card carries a name and a date
+only. Returning one to the photos is still allowed; only its preview is not built. The
+class list is the config key rather than a constant, so the same list that keeps a frame
+away from the model keeps it off the screen — and emptying it lifts both at once.
 
 (17) `GET|POST /api/settings` (F104, the settings column of the "Cities" tab) — the
 knobs that used to be reachable only by editing config.yaml and restarting: the deep
@@ -1308,10 +1310,17 @@ def _apply_overrides(db_path: Path, file_ids: list[int], action: str,
 # verdict is never decoded for display (a preview is a derived copy of the contents).
 # Returning one to the photos is still allowed: the person knows what is in their own
 # file, they just do not need it rendered to decide.
+# F133: which classes those are is a CONFIG question, not a constant — `vlm.exclude_classes`
+# already carries the list ("do not show this to the model") and defaults to
+# `["document"]`. One visible list of sensitive classes beats two, of which the second
+# gets forgotten. The tuple below is only the fallback for a caller that passes nothing:
+# a privacy guard must never switch itself off through an omission (the F120 lesson,
+# where a typo in the same key would silently have sent documents to the VLM).
 _JUNK_NO_PREVIEW = ("document",)
 
 
-def _junk_item_to_json(row: sqlite3.Row, restored: bool) -> dict:
+def _junk_item_to_json(row: sqlite3.Row, restored: bool,
+                       no_preview: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
     """One card of the junk view. `thumb_url` is ABSENT for a no-preview bucket."""
     path = Path(row["path"])
     verdict = row["verdict"]
@@ -1324,15 +1333,27 @@ def _junk_item_to_json(row: sqlite3.Row, restored: bool) -> dict:
         # the card says so instead of offering the same action twice.
         "restored": restored,
     }
-    if verdict not in _JUNK_NO_PREVIEW:
+    if verdict not in no_preview:
         payload["thumb_url"] = f"/thumb/{int(row['id'])}"
         payload["video"] = imaging.is_video_path(path)
     return payload
 
 
 def _junk_payload(db_path: Path, bucket: str | None,
-                  offset: int, limit: int) -> dict:
+                  offset: int, limit: int,
+                  sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
     """`GET /api/junk` — the buckets with their counts + one page of one bucket.
+
+    F133: `sensitive` is `vlm.exclude_classes` — the config list that already means
+    "handle this class as private", and whose default is `["document"]`. A class in it
+    keeps its COUNTER and loses its CONTENT: no paths, no rows, and therefore no
+    thumbnails, because a thumbnail is fetched by a path this route hands out. The guard
+    lives here rather than in the markup for exactly that reason — hiding a button in
+    the browser is not privacy when the data has already been sent to it.
+
+    Reusing the VLM key instead of adding a second one is a deliberate trade: one
+    visible list of sensitive classes beats two, of which the second gets forgotten.
+    Emptying it therefore lifts both protections at once, which the guide says out loud.
 
     The selection is `media_class.verdict <> 'photo'` over canonical, readable files —
     the same `dup_of IS NULL AND error IS NULL` population `junk.classify` writes and
@@ -1379,12 +1400,15 @@ def _junk_payload(db_path: Path, bucket: str | None,
     return {
         "bucket": bucket,
         "buckets": buckets,
+        # The client draws the counter-only state from this — it must not have to guess
+        # which classes came back empty on purpose and which are simply empty.
+        "sensitive": sorted(sensitive),
         "total": int(total),
         "offset": offset,
         "limit": limit,
         "items": [
             _junk_item_to_json(
-                r, (marks.get(int(r["id"])) or ("", None))[0] == "photo")
+                r, (marks.get(int(r["id"])) or ("", None))[0] == "photo", sensitive)
             for r in rows
         ],
     }
@@ -1650,6 +1674,45 @@ def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, 
     }
 
 
+# F133: the same three slices again, counting only the frames NOBODY has decided about.
+# "Decided" is a row in `dedup_choice` and nothing else — the rule the marks are written
+# by — so a slice empties as the person works through it, which is what makes the warning
+# on the "Layout" tab disappear on its own.
+_REVIEW_PENDING_FROM = f"{_REVIEW_FROM} LEFT JOIN dedup_choice dc ON dc.file_id = f.id"
+
+
+def _review_pending_count(conn: sqlite3.Connection, slice_: str,
+                          blur_max: float | None) -> int:
+    """How many frames of one flat slice still carry no decision."""
+    where, params = _review_where(slice_, blur_max)
+    return int(conn.execute(
+        f"SELECT COUNT(*) {_REVIEW_PENDING_FROM} WHERE {where} AND dc.action IS NULL",
+        params).fetchone()[0])
+
+
+def _review_pending_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, int]:
+    """The undecided part of each flat slice, under the same WHERE the page uses."""
+    return {
+        "blurred": _review_pending_count(conn, "blurred", blur_max),
+        "eyes": _review_pending_count(conn, "eyes", None),
+        "subject": _review_pending_count(conn, "subject", None),
+    }
+
+
+def _pending_dupe_groups(groups: list[dict]) -> int:
+    """Duplicate groups carrying no decision — no query, the payload already says so.
+
+    A group counts as decided as soon as ONE of its frames carries an action: choosing a
+    keeper writes `keep` on it and `to_delete` on the rest. "Do not delete this group"
+    CLEARS those rows (`_skip_group`), so such a group is undecided again — which is the
+    literal truth about it and the same thing the slice counters say.
+    """
+    return sum(
+        1 for g in groups
+        if not any(f.get("action") for f in g.get("frames", []))
+    )
+
+
 def _review_item_to_json(row: sqlite3.Row, action: str | None) -> dict:
     """One card of a flat slice: a thumbnail, a name, a date, sharpness, the decision."""
     path = Path(row["path"])
@@ -1690,6 +1753,7 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     conn = _connect(db_path)
     try:
         counts = _review_flat_counts(conn, blur_max)
+        pending = _review_pending_counts(conn, blur_max)
         eyes_reason = None if faces_stage_ran(conn) else "no_faces_run"
         window_total = counts["blurred"]
         items: list[dict] = []
@@ -1717,13 +1781,20 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
             items = [_review_item_to_json(r, actions.get(int(r["id"]))) for r in rows]
     finally:
         conn.close()
-    counts["dupes"] = len(_dupes_payload(db_path, max_distance))
+    groups = _dupes_payload(db_path, max_distance)
+    counts["dupes"] = len(groups)
+    pending["dupes"] = _pending_dupe_groups(groups)
     if slice_ == "dupes":
         total = counts["dupes"]
     return {
         "slice": slice_,
         "grouped": slice_ == "dupes",
         "counts": [{"slice": name, "count": counts[name]} for name in _REVIEW_SLICES],
+        # F133: what the "Layout" tab warns about — the part of the workspace nobody has
+        # answered yet. `pending_total` is the one number the warning shows; the per-slice
+        # breakdown rides along because it costs nothing and says WHERE the work is left.
+        "pending": [{"slice": name, "count": pending[name]} for name in _REVIEW_SLICES],
+        "pending_total": sum(pending.values()),
         "eyes_reason": eyes_reason,
         "blur_max": float(blur_max),
         "window_total": window_total,
@@ -3631,12 +3702,18 @@ def _run_undo(db_path: Path, cfg: Config, state: _UndoState, cache: PlanCache) -
         state.finish(error, result)
 
 
+# F133: the tabs are named after what a person DOES, not after the code that computed
+# the numbers. Three things can be done to a collection and they differ by what they do
+# to the file system: one canon (a physical move), any number of slices (hardlinks, free
+# to make and to drop) and the junk (a subtraction, and the dangerous one). "Overview"
+# holds the state of the collection and the run that produces it — one question asked at
+# two moments in time.
 _UI_STRINGS: dict[str, dict[str, str]] = {
-    "tab_process": {"ru": "Обработать", "en": "Process", "ja": "処理"},
-    "tab_city": {"ru": "Города", "en": "Cities", "ja": "都市"},
     # F126: the tab is the workspace, not one of its slices — duplicates are the first
     # of four things a person opens it to go through.
     "tab_review": {"ru": "Разбор", "en": "Review", "ja": "仕分け"},
+    "tab_layout": {"ru": "Раскладка", "en": "Layout", "ja": "振り分け"},
+    "tab_slices": {"ru": "Срезы", "en": "Slices", "ja": "スライス"},
     "tab_person": {"ru": "Люди", "en": "People", "ja": "人物"},
     "tab_event": {"ru": "События", "en": "Events", "ja": "イベント"},
     "tab_animal": {"ru": "Животные", "en": "Animals", "ja": "動物"},
@@ -4874,7 +4951,6 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "チェックを入れて戻すと、再び都市ごとに振り分けられます。モデルの"
               "判定自体は書き換えません。",
     },
-    "junk_bucket_all": {"ru": "Все", "en": "All", "ja": "すべて"},
     "junk_bucket_product": {"ru": "Товары", "en": "Products", "ja": "商品"},
     "junk_bucket_document": {"ru": "Документы", "en": "Documents", "ja": "書類"},
     "junk_bucket_screenshot": {"ru": "Скриншоты", "en": "Screenshots",
@@ -5206,6 +5282,61 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось загрузить обзор: ", "en": "Could not load the overview: ",
         "ja": "概要を読み込めません: ",
     },
+    # --- F133: the "Slices" tab, the layout warning and the settings drawer -----------
+    "slices_intro": {
+        "ru": "Срез — это подборка поверх канона: люди, события, животные, товары, "
+              "скриншоты, документы. Альбом среза — жёсткие ссылки, их можно собрать "
+              "и удалить сколько угодно раз.",
+        "en": "A slice is a selection on top of the canon: people, events, animals, "
+              "products, screenshots, documents. An album of a slice is hardlinks — "
+              "gather it and drop it as often as you like.",
+        "ja": "スライスは正本の上に重ねる抽出です（人物・イベント・動物・商品・"
+              "スクリーンショット・書類）。スライスのアルバムはハードリンクなので、"
+              "何度でも作成・削除できます。",
+    },
+    "slices_query_placeholder": {
+        "ru": "Найти срез…", "en": "Find a slice…", "ja": "スライスを検索…",
+    },
+    # The search line is DRAWN and not wired: F129 turns the slice list from something a
+    # programmer writes into a query, and a fixed row of tabs would have to be redrawn a
+    # feature later. The place for it is reserved now; the field says so plainly.
+    "slices_query_hint": {
+        "ru": "Поиск по срезам появится позже — пока доступны закреплённые.",
+        "en": "Search over slices is coming later — the pinned ones are available now.",
+        "ja": "スライス検索は後日対応します。今は固定スライスのみ利用できます。",
+    },
+    "slices_pinned_label": {
+        "ru": "Закреплённые срезы", "en": "Pinned slices", "ja": "固定スライス",
+    },
+    "slices_empty": {
+        "ru": "Срезов пока нет: обработайте коллекцию — люди, события, животные и "
+              "классы появятся здесь.",
+        "en": "No slices yet: process the collection — people, events, animals and "
+              "classes show up here.",
+        "ja": "スライスはまだありません。コレクションを処理すると、人物・イベント・"
+              "動物・分類がここに表示されます。",
+    },
+    "layout_review_warning": {
+        "ru": "В «Разборе» осталось без решения: {n}. Отмеченные к удалению уезжают в "
+              "«_delete» во время раскладки, а альбомы — ссылки из канона: собрав их "
+              "раньше, вы получите ссылки на выброшенное. Раскладку это не запрещает.",
+        "en": "The Review still holds {n} undecided. Frames marked for deletion leave "
+              "for “_delete” during the layout, and albums are links out of the canon: "
+              "gather them earlier and you get links to what you threw away. This does "
+              "not block the layout.",
+        "ja": "「仕分け」に未決定が {n} 件残っています。削除指定のコマは振り分けの際に"
+              "「_delete」へ移動し、アルバムは正本からのリンクです。先にアルバムを作ると"
+              "捨てたものへのリンクが残ります。振り分け自体は禁止されません。",
+    },
+    "layout_review_goto": {
+        "ru": "К «Разбору»", "en": "Go to Review", "ja": "「仕分け」へ",
+    },
+    "settings_open_button": {
+        "ru": "Настройки", "en": "Settings", "ja": "設定",
+    },
+    "settings_close_button": {
+        "ru": "Закрыть", "en": "Close", "ja": "閉じる",
+    },
 }
 
 
@@ -5420,6 +5551,27 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
       border-color: var(--tab-active-line); font-weight: 600; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
+/* --- F133: a slice is a panel INSIDE the "Slices" tab, switched by a pin rather than by
+   a tab of its own. The pins are drawn from data (see SLICE_PINS in the script), because
+   F129 turns the list into a query and a fixed row of buttons would have to be redrawn a
+   feature later. --- */
+.slice-panel { display: none; }
+.slice-panel.active { display: block; }
+.slice-search { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--space-md); }
+.slice-query-field { display: flex; align-items: center; gap: var(--space-sm);
+      padding: 6px var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md);
+      background: var(--card); color: var(--muted); }
+.slice-query-field svg { width: 15px; height: 15px; flex: none; }
+.slice-query-field input { flex: 1; min-width: 0; border: 0; background: transparent;
+      color: inherit; padding: 2px 0; }
+/* --- F133: the order warning. Loud enough to be read, and a hint and nothing more: the
+   collection is alive, "gather" happens again and again, and a person coming back for one
+   album must not be walked through steps. --- */
+.layout-warning { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap;
+      margin-bottom: var(--space-md); padding: var(--space-sm) var(--space-md);
+      border: 1px solid var(--danger-soft); border-left: 4px solid var(--danger);
+      border-radius: var(--radius-md);
+      background: var(--card); font-size: 0.9rem; }
 
 /* --- общие карточки ------------------------------------------------------ */
 .card { border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--space-md) var(--space-lg);
@@ -5506,10 +5658,6 @@ label { cursor: pointer; }
 /* --- F103: корзины «не личные фото» ----------------------------------- */
 /* Сетка плиток, а не таблица: здесь смотрят глазами — «это правда товар?» —
    и решение принимается по картинке, а не по колонкам. */
-.junk-buckets { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
-      margin: var(--space-md) 0; }
-.junk-bucket-btn.active { background: var(--accent); color: var(--on-accent);
-      border-color: var(--accent); font-weight: 600; }
 #junk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
       gap: var(--space-md); }
 .junk-card { border: 1px solid var(--line); border-radius: var(--radius-md);
@@ -5753,11 +5901,23 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
    gigabytes, "Delete selected" erases files and "Expand all" does nothing at all — one
    slip of the mouse costs wildly different amounts. The column drops below the tree on
    a narrow screen (see the media query): the plan itself matters more. --- */
-.city-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+.city-layout { display: grid; grid-template-columns: minmax(0, 1fr);
       gap: var(--space-lg); align-items: start; }
 .city-main { min-width: 0; }
-.city-side { display: flex; flex-direction: column; gap: var(--space-md);
-      position: sticky; top: var(--space-md); }
+/* --- F133: the settings are configuration, not a working surface. Thirteen keys people
+   come back to about once a month used to hold a third of the screen at all times; they
+   now live behind the gear in the header, in a drawer over the page. Nothing about their
+   behaviour moves: the same GET/POST /api/settings, applied without a restart and
+   refused while a run is in flight. --- */
+.settings-panel { position: fixed; inset: 0; z-index: 2100; display: flex;
+      justify-content: flex-end; background: rgba(10,14,22,.5); }
+.settings-panel[hidden] { display: none; }
+.settings-panel-box { width: min(380px, 100%); height: 100%; overflow-y: auto;
+      padding: var(--space-lg); background: var(--bg); border-left: 1px solid var(--line);
+      display: flex; flex-direction: column; gap: var(--space-md); }
+.settings-panel-head { display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-sm); }
+.settings-side { display: flex; flex-direction: column; gap: var(--space-md); }
 .settings-block { display: flex; flex-direction: column; gap: var(--space-sm);
       padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md);
       background: var(--card); }
@@ -5810,8 +5970,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .lightbox-dot.active { background: #fff; }
 
 @media (max-width: 1000px) {
-  .city-layout { grid-template-columns: minmax(0, 1fr); }
-  .city-side { position: static; }
+  .settings-panel-box { width: 100%; }
 }
 
 @media (max-width: 640px) {
@@ -5841,27 +6000,31 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
      stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>
 <span id="theme-toggle-label">{{theme_dark}}</span></button>
+<button type="button" id="settings-toggle-btn" class="btn btn-ghost settings-toggle-btn"
+        title="{{settings_open_button}}" aria-expanded="false">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/>
+<path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34
+1.7 1.7 0 0 0-1 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.5 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06
+a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1H2a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 3.7 8.5a1.7 1.7 0 0 0-.34-1.87l-.06-.06
+a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8 4.14 1.7 1.7 0 0 0 9 2.58V2a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.56
+1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H22a2 2 0 1 1 0 4h-.09
+a1.7 1.7 0 0 0-1.56 1z"/></svg>
+<span class="settings-toggle-label">{{settings_open_button}}</span></button>
 </div>
 </div>
 <div class="tabs" role="tablist">
-<button type="button" class="tab-btn" id="tab-btn-overview">{{tab_overview}}</button>
-<button type="button" class="tab-btn active" id="tab-btn-process">{{tab_process}}</button>
-<button type="button" class="tab-btn" id="tab-btn-city">{{tab_city}}</button>
+<button type="button" class="tab-btn active" id="tab-btn-overview">{{tab_overview}}</button>
 <button type="button" class="tab-btn" id="tab-btn-review">{{tab_review}}</button>
-<button type="button" class="tab-btn" id="tab-btn-person" style="display:none">{{tab_person}}</button>
-<button type="button" class="tab-btn" id="tab-btn-event" style="display:none">{{tab_event}}</button>
-<button type="button" class="tab-btn" id="tab-btn-animal" style="display:none">{{tab_animal}}</button>
-<button type="button" class="tab-btn" id="tab-btn-junk">{{tab_junk}}</button>
+<button type="button" class="tab-btn" id="tab-btn-layout">{{tab_layout}}</button>
+<button type="button" class="tab-btn" id="tab-btn-slices">{{tab_slices}}</button>
 <button type="button" class="tab-btn" id="tab-btn-moves">{{tab_moves}}</button>
 </div>
 <p id="delete-remember-row" style="display:none"><label><input type="checkbox" id="delete-remember">
 {{delete_remember_label}}</label></p>
 
-<section id="tab-overview" class="tab-panel">
+<section id="tab-overview" class="tab-panel active">
 <div id="overview-body"><div class="state-msg state-loading">{{loading}}</div></div>
-</section>
-
-<section id="tab-process" class="tab-panel active">
 <p class="process-intro">{{process_intro}}</p>
 <div class="process-controls">
 <div class="step" id="step-source">
@@ -5962,9 +6125,13 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </div>
 </section>
 
-<section id="tab-city" class="tab-panel">
+<section id="tab-layout" class="tab-panel">
 <div class="city-layout">
 <div class="city-main">
+<div id="layout-review-warning" class="layout-warning" style="display:none">
+<span id="layout-review-warning-text"></span>
+<button type="button" id="layout-review-goto-btn" class="btn btn-ghost btn-sm">{{layout_review_goto}}</button>
+</div>
 <div class="sort-controls">
 <input type="text" id="sort-dest" placeholder="{{sort_dest_placeholder}}">
 <button type="button" id="sort-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
@@ -6003,7 +6170,16 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </div>
 <div id="tree-city"><div class="state-msg state-loading">{{loading}}</div></div>
 </div>
-<aside class="city-side">
+</div>
+</section>
+
+<div id="settings-panel" class="settings-panel" hidden>
+<div class="settings-panel-box">
+<div class="settings-panel-head">
+<span class="settings-head">{{settings_title}}</span>
+<button type="button" id="settings-close-btn" class="btn btn-ghost btn-sm">{{settings_close_button}}</button>
+</div>
+<aside class="settings-side">
 <div class="settings-block">
 <div class="settings-head">{{settings_title}}</div>
 <span class="process-toggle-hint">{{settings_hint}}</span>
@@ -6064,7 +6240,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </div>
 </aside>
 </div>
-</section>
+</div>
 
 <section id="tab-review" class="tab-panel">
 <p class="process-intro">{{review_intro}}</p>
@@ -6099,7 +6275,19 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </div>
 </section>
 
-<section id="tab-person" class="tab-panel">
+<section id="tab-slices" class="tab-panel">
+<p class="process-intro">{{slices_intro}}</p>
+<div class="slice-search">
+<label class="slice-query-field" for="slice-query">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.3-4.3"/></svg>
+<input type="search" id="slice-query" placeholder="{{slices_query_placeholder}}" disabled>
+</label>
+<span class="process-toggle-hint">{{slices_query_hint}}</span>
+</div>
+<div id="slice-pins" class="review-slices" aria-label="{{slices_pinned_label}}"></div>
+
+<div id="tab-person" class="slice-panel">
 <div class="cluster-controls">
 <button type="button" id="clusters-merge-btn" class="btn btn-primary" disabled>
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
@@ -6108,13 +6296,13 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 {{merge_selected}}</button>
 </div>
 <div id="clusters-grid"><div class="state-msg state-loading">{{loading}}</div></div>
-</section>
+</div>
 
-<section id="tab-event" class="tab-panel">
+<div id="tab-event" class="slice-panel">
 <div id="events-list"><div class="state-msg state-loading">{{loading}}</div></div>
-</section>
+</div>
 
-<section id="tab-animal" class="tab-panel">
+<div id="tab-animal" class="slice-panel">
 <p class="process-intro">{{animals_intro}}</p>
 <div id="animals-album" class="album-controls"></div>
 <div id="animals-grid"><div class="state-msg state-loading">{{loading}}</div></div>
@@ -6124,11 +6312,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <span id="animals-counted" class="override-hint"></span>
 <span id="animals-mark-status" class="album-status"></span>
 </div>
-</section>
+</div>
 
-<section id="tab-junk" class="tab-panel">
+<div id="tab-junk" class="slice-panel">
 <p class="process-intro">{{junk_intro}}</p>
-<div id="junk-buckets" class="junk-buckets"></div>
 <div class="override-controls">
 <button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{junk_restore_button}}<span id="junk-selected-count"></span></button>
 <button type="button" id="junk-select-all-btn" class="btn btn-ghost">{{junk_select_all}}</button>
@@ -6141,6 +6328,9 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <button type="button" id="junk-more-btn" class="btn btn-ghost" style="display:none">{{junk_load_more}}</button>
 <span id="junk-shown" class="override-hint"></span>
 </div>
+</div>
+
+<div id="slice-empty" class="state-msg state-empty" style="display:none">{{slices_empty}}</div>
 </section>
 
 <section id="tab-moves" class="tab-panel">
@@ -7208,8 +7398,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   var junkLoaded = false;
   var animalsLoaded = false;
 
-  var TAB_NAMES = ["overview", "process", "city", "review", "person", "event",
-                   "animal", "junk", "moves"];
+  // F133: four tabs named after what a person does with the collection, plus "Moves" as
+  // it was. "Overview" holds the state AND the run that produces it; "Slices" holds
+  // people/events/animals and the classifier's classes as switchable panels of its own.
+  var TAB_NAMES = ["overview", "review", "layout", "slices", "moves"];
 
   function activateTab(name) {
     TAB_NAMES.forEach(function (t) {
@@ -7217,33 +7409,22 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       document.getElementById("tab-" + t).classList.toggle("active", t === name);
     });
     // #36: чекбокс «не спрашивать удаление» релевантен только там, где удаляют
-    // (Города/Дубли) — на остальных вкладках это шум, прячем.
+    // (Раскладка/Разбор) — на остальных вкладках это шум, прячем.
     document.getElementById("delete-remember-row").style.display =
-        (name === "city" || name === "review") ? "" : "none";
+        (name === "layout" || name === "review") ? "" : "none";
     if (name === "review" && !reviewLoaded) {
       reviewLoaded = true;
       loadReview();
     }
-    if (name === "event" && !eventsLoaded) {
-      eventsLoaded = true;
-      loadEvents();
-    }
-    if (name === "person" && !clustersLoaded) {
-      clustersLoaded = true;
-      loadClusters();
-    }
-    if (name === "junk" && !junkLoaded) {
-      junkLoaded = true;
-      loadJunk();
-    }
-    if (name === "animal" && !animalsLoaded) {
-      animalsLoaded = true;
-      loadAnimals();
-    }
+    if (name === "slices") loadSlices();
     if (name === "moves" && !movesLoaded) {
       movesLoaded = true;
       loadMoves();
     }
+    // F133: the order warning is re-asked on every open, for the same reason the numbers
+    // of "Overview" are — the person has just come back from the Review, and a warning
+    // one decision out of date is the one that teaches people to ignore warnings.
+    if (name === "layout") loadLayoutWarning();
     // F108: обзор — единственная вкладка без флага «уже загружено». Его открывают
     // ПОСЛЕ прогона, чтобы увидеть изменения, и устаревшая цифра здесь хуже
     // отсутствующей — поэтому числа перезапрашиваются на каждом открытии.
@@ -7256,47 +7437,218 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     });
   });
 
+  // --- F133: срезы -----------------------------------------------------------
+  // The pin row is BUILT, never written out in the markup: F129 replaces the fixed list
+  // with a query, and a row of hand-written buttons would have to be thrown away then.
+  // Three of the pins (people/events/animals) show a panel that used to be a tab; the
+  // rest are the classifier's classes — products, screenshots, documents and the others —
+  // and they all share the one panel `/api/junk` already fills, with its counts, its
+  // paging and its rule that a document is never decoded for display.
+
+  // Which classes go first. The order is the product's, not the counter's: a person looks
+  // for "products, screenshots, documents", and whichever of them happens to be biggest
+  // this month is not a reason to reshuffle the row under them.
+  var SLICE_CLASS_ORDER = ["product", "screenshot", "document"];
+
+  var slicePins = [];
+  var sliceCurrent = null;
+  var slicePending = null;
+  var sliceVisibility = { person: false, event: false, animal: false };
+  var junkBucketCounts = [];
+
+  function sliceKeyId(key) {
+    return "slice-pin-" + key.replace(/[^a-z0-9]+/g, "-");
+  }
+
+  function slicePanelId(key) {
+    return key.indexOf("junk") === 0 ? "tab-junk" : "tab-" + key;
+  }
+
+  function buildSlicePins() {
+    var pins = [];
+    if (sliceVisibility.person) pins.push({ key: "person", label: I18N.tab_person });
+    if (sliceVisibility.event) pins.push({ key: "event", label: I18N.tab_event });
+    if (sliceVisibility.animal) pins.push({ key: "animal", label: I18N.tab_animal });
+    var rest = junkBucketCounts.slice().sort(function (a, b) {
+      var ai = SLICE_CLASS_ORDER.indexOf(a.verdict);
+      var bi = SLICE_CLASS_ORDER.indexOf(b.verdict);
+      if (ai !== bi) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+      return a.verdict < b.verdict ? -1 : 1;
+    });
+    rest.forEach(function (b) {
+      pins.push({ key: "junk:" + b.verdict, label: junkBucketLabel(b.verdict),
+                  count: b.count, bucket: b.verdict });
+    });
+    if (rest.length) {
+      pins.push({ key: "junk", label: I18N.tab_junk, bucket: null,
+                  count: rest.reduce(function (acc, b) { return acc + b.count; }, 0) });
+    }
+    return pins;
+  }
+
+  function renderSlicePins() {
+    slicePins = buildSlicePins();
+    var box = document.getElementById("slice-pins");
+    box.textContent = "";
+    slicePins.forEach(function (pin) {
+      var label = pin.label + (pin.count === undefined ? "" : " (" + pin.count + ")");
+      var btn = makeBtn(null, null, label, "btn-sm review-slice-btn");
+      btn.id = sliceKeyId(pin.key);
+      if (pin.key === sliceCurrent) btn.classList.add("active");
+      btn.addEventListener("click", function () { selectSlice(pin.key); });
+      box.appendChild(btn);
+    });
+    document.getElementById("slice-empty").style.display =
+        slicePins.length ? "none" : "";
+  }
+
+  function selectSlice(key) {
+    var pin = null;
+    slicePins.forEach(function (p) { if (p.key === key) pin = p; });
+    if (!pin) return;
+    sliceCurrent = key;
+    var panelId = slicePanelId(key);
+    ["tab-person", "tab-event", "tab-animal", "tab-junk"].forEach(function (id) {
+      document.getElementById(id).classList.toggle("active", id === panelId);
+    });
+    slicePins.forEach(function (p) {
+      var btn = document.getElementById(sliceKeyId(p.key));
+      if (btn) btn.classList.toggle("active", p.key === key);
+    });
+    if (key === "person" && !clustersLoaded) {
+      clustersLoaded = true;
+      loadClusters();
+    }
+    if (key === "event" && !eventsLoaded) {
+      eventsLoaded = true;
+      loadEvents();
+    }
+    if (key === "animal" && !animalsLoaded) {
+      animalsLoaded = true;
+      loadAnimals();
+    }
+    if (pin.bucket !== undefined && (junkBucket !== pin.bucket || !junkLoaded)) {
+      junkLoaded = true;
+      junkBucket = pin.bucket;
+      loadJunk();
+    }
+  }
+
+  function loadSlices() {
+    // The counters of the class pins come from the route that already serves them, asked
+    // for zero items: the counts are the whole answer here.
+    return fetch("/api/junk?offset=0&limit=0")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { junkBucketCounts = data.buckets || []; })
+      .catch(function () {})
+      .then(function () {
+        renderSlicePins();
+        if (!slicePins.length) return;
+        var want = slicePending;
+        slicePending = null;
+        var still = false;
+        slicePins.forEach(function (p) {
+          if (p.key === (want || sliceCurrent)) still = true;
+        });
+        selectSlice(still ? (want || sliceCurrent) : slicePins[0].key);
+      });
+  }
+
+  // A number on "Overview" leads to its SLICE, not merely to the tab holding it — and
+  // the pins may not have been built yet, so the wish is remembered and honoured by the
+  // load that the tab switch starts.
+  function gotoSlice(key) {
+    slicePending = key;
+    activateTab("slices");
+  }
+
   // F54: «Люди»/«События» скрыты по умолчанию (без мигания) и раскрываются
   // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
   // EXISTS-проверок, вызывается при инициализации и после каждого прогона
   // (refreshTabsAfterProcess), т.к. прогон мог впервые породить кластеры/события.
-  // F108: тем же ответом решается стартовая вкладка. Разметка открывает
-  // «Обработать» — на пустом индексе это единственное, что можно сделать; при
-  // непустом индексе первым показываем «Обзор». Только на ПЕРВОМ ответе:
-  // applyTabVisibility зовётся и после прогона, а выдёргивать человека с его
-  // вкладки, когда прогон закончился, нельзя.
-  var firstTabVisibility = true;
-
+  // F133: эти три больше не вкладки, а закреплённые срезы, и правило то же —
+  // среза нет, пока в базе нечего показать.
   function applyTabVisibility() {
     fetch("/api/tabs/visibility")
       .then(function (r) { return r.json(); })
       .then(function (data) {
         indexHasFiles = !!data.indexed;
         updateRerunSelectedDisabled();
-        document.getElementById("tab-btn-person").style.display =
-            data.person ? "" : "none";
-        document.getElementById("tab-btn-event").style.display =
-            data.event ? "" : "none";
-        // F123: "Animals" follows the same rule — the tab exists exactly when there
-        // is something to show (features.pets off => no verdicts at all).
-        document.getElementById("tab-btn-animal").style.display =
-            data.animal ? "" : "none";
-        var activeBtn = document.querySelector(".tab-btn.active");
-        var activeName = activeBtn ? activeBtn.id.replace("tab-btn-", "") : null;
-        if ((activeName === "person" && !data.person) ||
-            (activeName === "event" && !data.event) ||
-            (activeName === "animal" && !data.animal)) {
-          activateTab("process");
-        }
-        if (firstTabVisibility) {
-          firstTabVisibility = false;
-          if (data.indexed) activateTab("overview");
+        sliceVisibility = {
+          person: !!data.person,
+          event: !!data.event,
+          // F123: "Animals" follows the same rule — the slice exists exactly when there
+          // is something to show (features.pets off => no verdicts at all).
+          animal: !!data.animal,
+        };
+        renderSlicePins();
+        // A slice that has just disappeared must not stay selected — but the person is
+        // never pulled off a TAB, so the fallback is the first slice, not another tab.
+        // And only while the tab is open: this runs on page load too, where selecting a
+        // slice would fetch a grid nobody has asked to see.
+        var still = false;
+        slicePins.forEach(function (p) { if (p.key === sliceCurrent) still = true; });
+        if (!still) {
+          sliceCurrent = null;
+          if (slicePins.length &&
+              document.getElementById("tab-slices").classList.contains("active")) {
+            selectSlice(slicePins[0].key);
+          }
         }
       })
       .catch(function () {});
   }
 
   applyTabVisibility();
+
+  // --- F133: предупреждение о порядке на «Раскладке» -------------------------
+  // Отмеченные к удалению кадры уезжают в «_delete» ВО ВРЕМЯ sort --apply, тогда же,
+  // когда строится канон, а альбомы — hardlink'и ИЗ канона. Собрав альбомы раньше, чем
+  // выкинут мусор, человек получит ссылки на то, что решил выбросить.
+  //
+  // Подсказка, и только: ни одна кнопка раскладки здесь не трогается. Коллекция живая,
+  // «собрать» происходит снова и снова, и вернувшемуся за одним альбомом шаги мешают —
+  // запертая вкладка стоила бы дороже, чем ошибка, от которой она защищает.
+  function renderLayoutWarning(data) {
+    var box = document.getElementById("layout-review-warning");
+    var pending = data ? Number(data.pending_total || 0) : 0;
+    document.getElementById("layout-review-warning-text").textContent =
+        fmt(I18N.layout_review_warning, { n: pending });
+    box.style.display = pending ? "" : "none";
+  }
+
+  function loadLayoutWarning() {
+    // slice=dupes carries no items — the counters are the whole answer.
+    return fetch("/api/review?slice=dupes&offset=0&limit=0")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderLayoutWarning(data); })
+      .catch(function () { renderLayoutWarning(null); });
+  }
+
+  document.getElementById("layout-review-goto-btn").addEventListener("click", function () {
+    activateTab("review");
+  });
+
+  // --- F133: настройки за шестерёнкой ---------------------------------------
+  // Ровно та же панель и те же /api/settings — переехало только место, откуда её
+  // открывают. Тринадцать ключей, к которым возвращаются раз в месяц, больше не держат
+  // треть экрана постоянно.
+  function toggleSettingsPanel(open) {
+    var panel = document.getElementById("settings-panel");
+    panel.hidden = !open;
+    document.getElementById("settings-toggle-btn")
+        .setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  document.getElementById("settings-toggle-btn").addEventListener("click", function () {
+    toggleSettingsPanel(document.getElementById("settings-panel").hidden);
+  });
+  document.getElementById("settings-close-btn").addEventListener("click", function () {
+    toggleSettingsPanel(false);
+  });
+  document.getElementById("settings-panel").addEventListener("click", function (e) {
+    if (e.target === this) toggleSettingsPanel(false);
+  });
 
   // --- вкладка «Обзор» (F108) --------------------------------------------
   // Все числа приходят одним запросом /api/overview (простые агрегаты по индексу,
@@ -7320,6 +7672,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   // ссылкой не делаем: вести на заведомо пустую вкладку не за чем.
   // F126: a review number leads to its SLICE, not just to the tab — the workspace has
   // four of them and landing on the wrong one is the same as landing nowhere.
+  // F133: the same is now true of "Slices", where people, events, animals and the
+  // classifier's classes live side by side.
   function overviewCount(count, tab, slice) {
     if (!tab || !count) return overviewValue(overviewNum(count));
     var btn = document.createElement("button");
@@ -7328,6 +7682,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     btn.textContent = overviewNum(count);
     btn.title = fmt(I18N.overview_goto_hint, { tab: I18N["tab_" + tab] || tab });
     btn.addEventListener("click", function () {
+      if (tab === "slices") {
+        gotoSlice(slice);
+        return;
+      }
       activateTab(tab);
       if (slice) selectReviewSlice(slice);
     });
@@ -7393,8 +7751,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     card.appendChild(overviewRow(I18N.overview_duplicates,
                                  overviewCount(c.duplicates, "review", "dupes")));
     card.appendChild(overviewRow(I18N.overview_errors, overviewValue(overviewNum(c.errors))));
-    card.appendChild(overviewRow(I18N.overview_events, overviewCount(c.events, "event")));
-    card.appendChild(overviewRow(I18N.overview_animals, overviewCount(c.animals, "animal")));
+    card.appendChild(overviewRow(I18N.overview_events,
+                                 overviewCount(c.events, "slices", "event")));
+    card.appendChild(overviewRow(I18N.overview_animals,
+                                 overviewCount(c.animals, "slices", "animal")));
     // F126: the three slices of the review workspace that have a number of their own.
     card.appendChild(overviewRow(I18N.overview_blurred,
                                  overviewCount(c.blurred, "review", "blurred")));
@@ -7435,10 +7795,12 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       return card;
     }
     cl.verdicts.forEach(function (row) {
-      // Всё, что не «личное фото», лежит на вкладке «Не личные» — туда и ведём.
+      // F133: всё, что не «личное фото», — закреплённый срез своего класса; ведём
+      // прямо в него, а не в общий список.
       card.appendChild(overviewRow(
           overviewVerdictLabel(row.key),
-          overviewCount(row.count, row.key === "photo" ? null : "junk")));
+          overviewCount(row.count, row.key === "photo" ? null : "slices",
+                        "junk:" + row.key)));
     });
     card.appendChild(overviewSubtitle(I18N.overview_by_source));
     cl.sources.forEach(function (row) {
@@ -7467,7 +7829,9 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       return card;
     }
     var last = lay.last;
-    var mode = I18N["tab_" + last.mode] || last.mode;
+    // The batch mode is `city` — the canon — and the tab that builds it is "Layout".
+    var mode = last.mode === "city"
+        ? I18N.tab_layout : (I18N["tab_" + last.mode] || last.mode);
     var op = last.operation === "copy" ? I18N.overview_op_copy : I18N.overview_op_move;
     card.appendChild(overviewRow(I18N.overview_layout_files,
                                  overviewValue(overviewNum(last.files)), true));
@@ -7502,7 +7866,12 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       actions.className = "process-actions";
       var startBtn = makeBtn("primary", null, I18N.overview_empty_button);
       startBtn.id = "overview-start-btn";
-      startBtn.addEventListener("click", function () { activateTab("process"); });
+      // F133: «выбор источника» стоит на этой же вкладке, сразу под приглашением —
+      // кнопка теперь доводит до него взгляд, а не переключает вкладку.
+      startBtn.addEventListener("click", function () {
+        document.getElementById("process-source-dir").focus();
+        document.getElementById("step-source").scrollIntoView({ behavior: "smooth" });
+      });
       actions.appendChild(startBtn);
       body.appendChild(actions);
       return;
@@ -7703,6 +8072,14 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     renderPlanTab("city", "tree-city");
     applyTabVisibility();
     loadCacheSizes();  // F94: a run is what makes the preview cache grow
+    // F133: a run recomputes what the order warning is about; refresh it where it is
+    // shown rather than waiting for the next open of the tab.
+    if (document.getElementById("tab-layout").classList.contains("active")) {
+      loadLayoutWarning();
+    }
+    if (document.getElementById("tab-slices").classList.contains("active")) {
+      loadSlices();
+    }
     // F108: обзор перечитывается при каждом открытии, но если человек смотрит на
     // него прямо сейчас — обновляем немедленно: прогон только что изменил числа.
     if (document.getElementById("tab-overview").classList.contains("active")) {
@@ -9192,21 +9569,11 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     document.getElementById("junk-restore-btn").disabled = n === 0;
   }
 
+  // F133: корзины классификатора — это и есть закреплённые срезы «товары / скриншоты /
+  // документы»; отдельного ряда чипов больше нет, счётчики уезжают в ряд срезов.
   function renderJunkBuckets(buckets) {
-    var box = document.getElementById("junk-buckets");
-    box.textContent = "";
-    var total = buckets.reduce(function (acc, b) { return acc + b.count; }, 0);
-    [{ verdict: null, count: total }].concat(buckets).forEach(function (b) {
-      var label = (b.verdict === null ? I18N.junk_bucket_all : junkBucketLabel(b.verdict)) +
-          " (" + b.count + ")";
-      var btn = makeBtn(null, null, label, "btn-sm junk-bucket-btn");
-      if (b.verdict === junkBucket) btn.classList.add("active");
-      btn.addEventListener("click", function () {
-        junkBucket = b.verdict;
-        loadJunk();
-      });
-      box.appendChild(btn);
-    });
+    junkBucketCounts = buckets || [];
+    renderSlicePins();
   }
 
   function renderJunkCard(item) {
@@ -10148,7 +10515,12 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                                 status=HTTPStatus.BAD_REQUEST)
                 return
             bucket, offset, limit = parsed
-            self._send_json(_junk_payload(db_path, bucket, offset, limit))
+            # F133: read the sensitive set off the LIVE config, not a snapshot — the
+            # settings panel can change `vlm.exclude_classes` without a restart, and a
+            # privacy list that needs one is not a privacy list.
+            self._send_json(_junk_payload(
+                db_path, bucket, offset, limit,
+                frozenset(cfg.vlm.exclude_classes)))
 
         def _serve_animals(self, query: dict[str, list[str]]) -> None:
             # F123: read-only, like /api/junk. The actions this tab offers are elsewhere

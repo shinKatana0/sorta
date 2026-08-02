@@ -244,7 +244,7 @@ class TestTheActionRowIsAboutStarting(SummaryTestBase):
     def test_roll_back_is_not_on_this_tab_at_all(self):
         """It lives on "Moves", next to the manifest that says WHAT is rolled back.
         A rollback from the plan screen is a rollback blind."""
-        city = self.html.split('id="tab-city"', 1)[1].split("<section", 1)[0]
+        city = self.html.split('id="tab-layout"', 1)[1].split("</section", 1)[0]
         self.assertNotIn("sort-undo-btn", city)
         self.assertNotIn("undo-btn", city)
         # the hint pointing at the tab that has it stays (F97)
@@ -256,7 +256,7 @@ class TestTheActionRowIsAboutStarting(SummaryTestBase):
         self.assertIn('cancelBtn.style.display = data.running ? "" : "none";', self.html)
 
     def test_delete_selected_appears_with_a_selection(self):
-        city = self.html.split('id="tab-city"', 1)[1].split("<section", 1)[0]
+        city = self.html.split('id="tab-layout"', 1)[1].split("</section", 1)[0]
         bar = city.split('id="city-selection-controls"', 1)[1].split("</div>", 1)[0]
         self.assertIn("city-delete-selected-btn", bar)
         self.assertIn('id="city-selection-controls" style="display:none"', city)
