@@ -395,8 +395,14 @@ class TestEstimateEndpoint(RunCostsTestBase):
     def test_the_keeper_question_is_priced_per_group_not_per_frame(self):
         """F132 measured 1.32 s for a call carrying up to five frames — multiplying a
         per-frame rate by the frames of a group is the arithmetic that turns "ten
-        minutes" into an hour."""
-        for i in range(2):
+        minutes" into an hour.
+
+        Three frames in the group, not two: `dedup.keeper_min_group_size` is 3 since
+        99b021f ("ask the keeper model about groups of three or more, not about pairs"),
+        so a pair is no longer a group this question is asked about at all — which is
+        what the case below pins.
+        """
+        for i in range(3):
             self.add_photo(f"dup{i}.jpg", phash="f" * 16)
         self.add_photo("alone.jpg", phash="0" * 16)
         self.start_server()
@@ -405,7 +411,7 @@ class TestEstimateEndpoint(RunCostsTestBase):
         self.assertAlmostEqual(data["seconds"]["keeper"],
                                round(ui._SEC_PER_VLM_GROUP, 1))
         # The same grouping is what `quality_scope: groups` asks about — by frames.
-        self.assertEqual(data["counts"]["quality_groups"], 2)
+        self.assertEqual(data["counts"]["quality_groups"], 3)
 
     def test_a_group_below_the_configured_size_is_not_asked_about(self):
         for i in range(2):

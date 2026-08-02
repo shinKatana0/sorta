@@ -169,9 +169,10 @@ class TestEverythingThatWritesIsFrozenDuringARun(MarkupCase):
     def test_gathering_an_album_is_dead(self):
         self.assertIn('document.querySelectorAll(".album-gather-btn")',
                       self.body("updateBusyControlsDisabled"))
-        # every one of the four album buttons starts from the same state, because the
-        # box that holds it is rebuilt on demand and may well be rebuilt mid-run
-        self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 4)
+        # every one of the album buttons starts from the same state, because the box
+        # that holds it is rebuilt on demand and may well be rebuilt mid-run
+        # (F152 added the fifth: the face slices share one box, rebuilt per pin)
+        self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 5)
 
     def test_applying_the_layout_is_dead(self):
         self.assertIn("applyBtn.disabled = busy || cityPlanCount === 0",
