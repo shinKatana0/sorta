@@ -29,10 +29,17 @@ printed — mismatches are reported as counts per label pair, which is all that 
 to go and look, and never a list of where the documents are (the same rule
 measure_ocr_gate.py, measure_streetclip.py and measure_vlm_resolution.py follow).
 
+F144 reopens the batch half of that, and only the batch half — see the section marked
+F144 below for why a closed verdict is worth reopening and what `--per-call` measures
+instead. It shares this file because it is the same question asked again under a
+condition that changed; it shares nothing else, and it writes no product code.
+
 Usage (from the repo root, with a GPU venv — `uv sync --extra gpu --extra vlm`):
-    python scripts/measure_vlm_speed.py                       # 300 frames, default+sdpa x 1/4/8
+    python scripts/measure_vlm_speed.py                       # 300 frames, default+sdpa x 1/2/4/8
     python scripts/measure_vlm_speed.py --attn default sdpa --batch 1 4 8 16
     python scripts/measure_vlm_speed.py --attn default vision-sdpa --batch 1
+    python scripts/measure_vlm_speed.py --per-call            # F144: 1/2/4/8 images per call
+    python scripts/measure_vlm_speed.py --per-call --batch 1 8 --sample 120
 """
 from __future__ import annotations
 
@@ -49,7 +56,7 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from PIL import Image
 
@@ -80,7 +87,9 @@ ATTN_SPECS: dict[str, naming.AttnImplementation] = {
     "vision-sdpa": naming.attn_implementation(vision="sdpa"),
 }
 DEFAULT_ATTN = ("default", "sdpa")
-DEFAULT_BATCHES = (1, 4, 8)
+# F144 added the 2: the one hint that reopened the question was measured at two images
+# (see the F144 section), so the grid has to contain the size it was measured at.
+DEFAULT_BATCHES = (1, 2, 4, 8)
 
 # How often the GPU-load sampler asks the driver. Fine enough to catch the gaps
 # between generate() calls (~0.6 s wide in the baseline), cheap enough to ignore.
@@ -650,6 +659,296 @@ def format_outcome(results: list[ModeResult]) -> str:
     return f"ИСХОД {letter}: {why}"
 
 
+# --- F144: what a call costs by the number of images in it -------------------
+#
+# Batching was rejected once already and the verdict is in the CHANGELOG: the bottleneck
+# was the PROCESSOR — ~0.6 s of preparation against ~0.19 s on the card, 0.84 cores of
+# 24 busy, the card at 26% — and a starving GPU has no use for bigger portions.
+#
+# THE CONDITION THAT VERDICT WAS MEASURED UNDER WAS REMOVED BY THE SAME FEATURE. F105
+# fixed exactly that cause: the processor is built with `use_fast=True` (the slow one was
+# pure Python over PIL and ate most of the 0.6 s) and the runtime was split into its two
+# halves so that `vlm.workers` (`naming.vlm_workers` when the verdict was written) drives
+# the preparation apart from the inference. A verdict whose premise is gone is not a
+# verdict any more, only a memory of one.
+#
+# A second hint arrived from somewhere else entirely: F132 timed the keeper question at
+# 1.32 s with TWO images against 0.78 s with one — 0.66 s per image, 15% cheaper. That is
+# NOT a controlled comparison (another prompt, another answer length, another code path),
+# which is precisely why this is a measurement and not a conclusion.
+#
+# So: one question, one set of frames, and the only thing that moves is how many images
+# go through a SINGLE generate() — 1, 2, 4, 8. Every image carries the same question in
+# its own sequence, so nothing about what is asked depends on the size of the call; only
+# how many answers come back out of it.
+#
+# The question below is this measurement's OWN, and that reverses the rule the F105 half
+# of this file opens with (`_PROMPT = junk._VLM_PROMPT` — price the stage's own prompt or
+# price something nobody runs). On purpose: F105 priced a STAGE and had to compare its
+# verdicts, this prices a CALL and compares seconds. A question of the same shape — one
+# image in, one short word back — times the same work without turning the table into a
+# statement about what the product decides, which is what would happen if the stage's
+# prompt were re-timed here while another feature is free to reword it.
+#
+# Nothing here writes anywhere: the index is opened read-only by `sample_paths`, the
+# answers are counted and dropped, and no config key, stage or prompt of the product is
+# touched by this file.
+
+_CALL_PROMPT = (
+    "Look at this image and answer with exactly one word: indoor, outdoor, or unclear.\n"
+    "indoor = the picture was taken inside a building.\n"
+    "outdoor = the picture was taken outside.\n"
+    "unclear = too little of the scene is visible to tell.\n"
+    "Answer with exactly one word: indoor, outdoor, or unclear."
+)
+# One short word back, the same budget the deep tier gives its own label: a longer one
+# would time the model writing prose rather than the call.
+_CALL_MAX_NEW_TOKENS = 8
+_CALL_ANSWERS: tuple[str, ...] = ("indoor", "outdoor", "unclear")
+
+# How much of the answered share a bigger call may lose before its speed stops counting.
+# One point rather than zero: the baseline's own share is a measurement too, and a single
+# frame out of 300 is 0.33% — a threshold of exactly zero would turn noise into a verdict.
+PARSE_TOLERANCE = 0.01
+
+
+def parse_call_answer(answer: str) -> str | None:
+    """The measurement's own answer -> one of its words, or None when nothing read.
+
+    Lenient in the way every answer in this project is read (the F96 lesson: asked for a
+    strict format the model answers in prose anyway) — the word is looked for anywhere in
+    the line. None is deliberately NOT turned into a fallback label the way the deep tier
+    turns it: an unreadable answer is the thing being counted here, and a fallback is how
+    a batch that started producing rubbish would come out of the table looking fast.
+    """
+    lowered = (answer or "").lower()
+    for word in _CALL_ANSWERS:
+        if word in lowered:
+            return word
+    return None
+
+
+@dataclass(frozen=True)
+class CallStats:
+    """What ONE call size cost: an entry per generate(), plus what the machine did.
+
+    `images` is what really reached the model. A frame that would not decode is skipped,
+    so a call can be narrower than the size it was asked for — and seconds per image has
+    to divide by what was actually shown, or a pass full of unreadable files would look
+    like a bargain.
+    """
+    batch: int
+    seconds: tuple[float, ...] = ()   # one per call, in call order
+    images: tuple[int, ...] = ()      # images in that call
+    asked: int = 0                    # answers expected — the images that went in
+    parsed: int = 0                   # ...of them, the answers that read as one word
+    failed: int = 0                   # calls that raised or came back the wrong length
+    skipped: int = 0                  # frames that would not decode, never called about
+    cpu_cores: float = 0.0            # process CPU seconds per wall second
+    gpu_util_pct: float | None = None
+    peak_vram_mb: float | None = None
+
+    @property
+    def calls(self) -> int:
+        return len(self.seconds)
+
+    @property
+    def total_images(self) -> int:
+        return sum(self.images)
+
+    @property
+    def total_sec(self) -> float:
+        return sum(self.seconds)
+
+    @property
+    def median_sec(self) -> float:
+        return statistics.median(self.seconds) if self.seconds else 0.0
+
+    @property
+    def mean_sec(self) -> float:
+        return statistics.fmean(self.seconds) if self.seconds else 0.0
+
+    @property
+    def min_sec(self) -> float:
+        return min(self.seconds) if self.seconds else 0.0
+
+    @property
+    def max_sec(self) -> float:
+        return max(self.seconds) if self.seconds else 0.0
+
+    @property
+    def sec_per_image(self) -> float:
+        """The answer of the whole measurement: the seconds spent over the images shown."""
+        return self.total_sec / self.total_images if self.total_images else 0.0
+
+    @property
+    def parsed_share(self) -> float:
+        return self.parsed / self.asked if self.asked else 0.0
+
+
+def call_groups(paths: Sequence[str],
+                max_edge: int) -> tuple[list[list[Image.Image]], int]:
+    """The frames of one call, each in a group of its own; and how many would not decode.
+
+    One image per group is what keeps the sizes comparable: every image carries the same
+    question whether the call holds one of them or eight, so the only variable left is
+    how many answers a single generate() produces. A frame that did not decode is DROPPED
+    rather than replaced by a conservative label — it has no answer to give, and a call
+    about a frame that is not there measures nothing — and it is counted, so the report
+    can say how many the pass lost.
+    """
+    groups: list[list[Image.Image]] = []
+    skipped = 0
+    for path in paths:
+        image = decode_frame(path, max_edge)
+        if image is None:
+            skipped += 1
+            continue
+        groups.append([image])
+    return groups, skipped
+
+
+def one_call(runtime: naming.BatchVlm, groups: list[list[Image.Image]], prompt: str,
+             clock: Callable[[], float] = time.perf_counter,
+             ) -> tuple[float, list[str] | None]:
+    """(seconds, answers) for ONE generate over `groups`; None — the call did not answer.
+
+    Deliberately NOT retried frame by frame the way the F105 pass retries a batch. There
+    the point was to lose no verdict; here the point is what a call of this size costs,
+    and a silent retry would time N + 1 calls and print the total as one. A call that
+    raises, or that comes back a different length than it was asked (nothing can then be
+    said about which answer belongs to which image), is reported as a failure with its
+    seconds intact — a batch size that dies is a result of the measurement, not a stop.
+    """
+    started = clock()
+    try:
+        prepared = runtime.prepare_batch(groups, prompt)
+        answers = [str(a) for a in runtime.generate_batch(prepared,
+                                                          _CALL_MAX_NEW_TOKENS)]
+    except Exception:  # noqa: BLE001 — a batch that dies is a row of the table
+        return clock() - started, None
+    elapsed = clock() - started
+    return elapsed, answers if len(answers) == len(groups) else None
+
+
+def measure_calls(runtime: naming.BatchVlm, paths: Sequence[str], batch: int,
+                  max_edge: int, prompt: str = _CALL_PROMPT,
+                  clock: Callable[[], float] = time.perf_counter) -> CallStats:
+    """One pass over `paths` with `batch` images per generate() — timed and counted.
+
+    The decode happens on this thread, right before the call it belongs to, and is NOT
+    inside the timed span: the preparation is a pipeline in the product and would only
+    add the noise of a cold preview cache to a number about the card. The CPU and GPU
+    load, on the other hand, are read over the WHOLE pass, decode included — the verdict
+    being reopened was made of exactly those two numbers, so they have to cover the same
+    work they covered then.
+    """
+    size = max(1, batch)
+    seconds: list[float] = []
+    images: list[int] = []
+    asked = parsed = failed = skipped = 0
+    _vram_peak_mb(reset=True)
+    with GpuSampler() as gpu:
+        cpu0, wall0 = time.process_time(), clock()
+        for start in range(0, len(paths), size):
+            groups, lost = call_groups(paths[start:start + size], max_edge)
+            skipped += lost
+            if not groups:
+                continue
+            elapsed, answers = one_call(runtime, groups, prompt, clock)
+            seconds.append(elapsed)
+            images.append(len(groups))
+            asked += len(groups)
+            if answers is None:
+                failed += 1
+                continue
+            parsed += sum(1 for answer in answers
+                          if parse_call_answer(answer) is not None)
+        wall = clock() - wall0
+        cpu = time.process_time() - cpu0
+    return CallStats(
+        batch=batch, seconds=tuple(seconds), images=tuple(images), asked=asked,
+        parsed=parsed, failed=failed, skipped=skipped,
+        cpu_cores=cpu / wall if wall else 0.0, gpu_util_pct=gpu.mean_pct,
+        peak_vram_mb=_vram_peak_mb())
+
+
+def call_speedup(base: CallStats, other: CallStats) -> float:
+    """How many times cheaper ONE IMAGE is in `other` than in `base` (0.0 — no rate)."""
+    if not base.sec_per_image or not other.sec_per_image:
+        return 0.0
+    return base.sec_per_image / other.sec_per_image
+
+
+def format_call_table(stats: list[CallStats]) -> str:
+    """The table the brief asks for: call size -> s/call -> s/image -> answers read."""
+    base = stats[0]
+    frames = base.total_images + base.skipped
+    out = [
+        "=" * 112,
+        f"ЦЕНА ВЫЗОВА ПО ЧИСЛУ ИЗОБРАЖЕНИЙ: {frames} кадров, вопрос замера "
+        f"(не промпт стадии), база — {base.batch} на вызов",
+        f"{'картинок':>9} {'вызовов':>8} {'медиана':>9} {'среднее':>9} {'мин':>8} "
+        f"{'макс':>8} {'с/изобр':>9} {'ускорение':>10} {'разобрано':>12} {'GPU':>6} "
+        f"{'ядер':>6} {'пик VRAM':>10}",
+    ]
+    for s in stats:
+        gain = f"x{call_speedup(base, s):.2f}" if call_speedup(base, s) else "—"
+        gpu = f"{s.gpu_util_pct:.0f}%" if s.gpu_util_pct is not None else "—"
+        vram = f"{s.peak_vram_mb:.0f} МБ" if s.peak_vram_mb is not None else "—"
+        read = f"{s.parsed}/{s.asked}"
+        out.append(
+            f"{s.batch:>9d} {s.calls:>8d} {s.median_sec:>8.2f}с {s.mean_sec:>8.2f}с "
+            f"{s.min_sec:>7.2f}с {s.max_sec:>7.2f}с {s.sec_per_image:>9.3f} "
+            f"{gain:>10} {read:>12} {gpu:>6} {s.cpu_cores:>6.2f} {vram:>10}")
+    out.append("=" * 112)
+    lost = sum(s.skipped for s in stats)
+    failed = sum(s.failed for s in stats)
+    if lost:
+        out.append(f"кадров не декодировалось (пропущены, модель их не видела): {lost}")
+    if failed:
+        out.append(f"вызовов не ответило (упали или вернули не столько ответов, "
+                   f"сколько спросили): {failed}")
+    return "\n".join(out)
+
+
+def call_outcome(stats: list[CallStats]) -> tuple[bool, str]:
+    """(does a bigger call pay?, one line saying why) — what the verdict is written from.
+
+    Two conditions, both straight from the brief. Cheaper per image by at least
+    MIN_SPEEDUP: below that the complication buys nothing worth the padding, the masks
+    and the order it adds. And no worse at ANSWERING — a call that starts producing
+    unreadable answers when it grows is not a speedup, it is the same work done twice,
+    and that is the whole reason the share is counted next to the seconds.
+    """
+    base = stats[0]
+    bigger = [s for s in stats[1:] if s.batch > base.batch]
+    if not bigger:
+        return False, "сравнивать не с чем — запрошен один размер вызова"
+    passed = [s for s in bigger
+              if call_speedup(base, s) >= MIN_SPEEDUP
+              and s.parsed_share >= base.parsed_share - PARSE_TOLERANCE]
+    if passed:
+        pick = max(passed, key=lambda s: call_speedup(base, s))
+        return True, (f"выигрыш есть: {pick.batch} изображений в вызове — "
+                      f"x{call_speedup(base, pick):.2f} на изображение "
+                      f"({pick.sec_per_image:.3f} с против {base.sec_per_image:.3f} с), "
+                      f"разобрано {pick.parsed}/{pick.asked} против "
+                      f"{base.parsed}/{base.asked}; продуктовую фичу можно заводить, "
+                      f"зная цифры")
+    best = max(bigger, key=lambda s: call_speedup(base, s))
+    return False, (f"выигрыша нет: лучший — {best.batch} изображений в вызове, "
+                   f"x{call_speedup(base, best):.2f} при пороге x{MIN_SPEEDUP:.2f}, "
+                   f"разобрано {best.parsed}/{best.asked} против "
+                   f"{base.parsed}/{base.asked}; вердикт F105 подтверждён на новых "
+                   f"условиях")
+
+
+def format_call_outcome(stats: list[CallStats]) -> str:
+    _win, why = call_outcome(stats)
+    return f"ИТОГ: {why}"
+
+
 # --- Wiring ------------------------------------------------------------------
 
 def measure(model_name: str, paths: list[str], specs: list[ModeSpec], workers: int,
@@ -699,6 +998,57 @@ def measure(model_name: str, paths: list[str], specs: list[ModeSpec], workers: i
     return results
 
 
+def measure_per_call(model_name: str, paths: list[str], batches: Sequence[int],
+                     max_edge: int) -> list[CallStats]:  # pragma: no cover — ML
+    """F144: every call size on ONE load of the weights, loaded as the product loads it.
+
+    No attention argument and no pipeline of preparation threads: this measurement moves
+    ONE thing, and the model it moves it on has to be the one that ships. The padding
+    side is checked before anything is timed, because a right-padded batch does not fail
+    — it answers plausibly and wrong, and its share of readable answers would then be a
+    lie in the one column that exists to catch exactly that.
+    """
+    model, processor, device = naming.load_qwen(model_name, use_fast=True)
+    runtime = naming.qwen_runtime(
+        model, processor, device,
+        lambda: naming.qwen_processor(model_name, use_fast=True))
+    if not naming.processor_is_fast(processor):
+        print("ВНИМАНИЕ: transformers не отдал быстрый процессор для этой модели — "
+              "условие, ради которого вердикт переоткрыт, не выполнено")
+    probe = naming.pad_generation_left(naming.qwen_processor(model_name, use_fast=True))
+    if not naming.processor_pads_left(probe):
+        print("ВНИМАНИЕ: паддинг этого процессора не встаёт налево — ответы вызовов "
+              "больше чем на одно изображение недостоверны")
+    out: list[CallStats] = []
+    for batch in batches:
+        print(f"{batch} изображений в вызове: {len(paths)} кадров...")
+        out.append(measure_calls(runtime, paths, batch, max_edge))
+    del runtime, model, processor
+    _free_vram()
+    return out
+
+
+def run_per_call(cfg: Any, batches: Sequence[int], paths: list[str],
+                 origin: str) -> int:
+    """The `--per-call` report end to end; non-zero only when nothing could be measured."""
+    sizes = sorted(dict.fromkeys(batches))
+    print(f"выборка: {len(paths)} кадров — {origin}")
+    print(f"модель: {cfg.vlm.model}, {cfg.vlm.max_edge}px; вопрос — собственный вопрос "
+          f"замера, промпты стадий не трогаются")
+    print(f"размеры вызова: {', '.join(str(size) for size in sizes)}; "
+          f"ядер в системе: {os.cpu_count()}")
+
+    stats = measure_per_call(cfg.vlm.model, paths, sizes, cfg.vlm.max_edge)
+    if not stats or not stats[0].calls:
+        print("замер не состоялся: ни одного вызова не удалось сделать")
+        return 1
+    print()
+    print(format_call_table(stats))
+    print()
+    print(format_call_outcome(stats))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="config.yaml")
@@ -713,6 +1063,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="batch sizes to compare, the baseline (1) first")
     ap.add_argument("--workers", type=int,
                     help="preparation threads (default: vlm.workers)")
+    ap.add_argument("--per-call", action="store_true",
+                    help="F144: price ONE generate() by the number of images in it — "
+                         "the measurement's own question, no attention lever, no "
+                         "verdict comparison (see the F144 section)")
     return ap
 
 
@@ -726,6 +1080,9 @@ def main() -> int:
     paths, origin = sample_paths(str(cfg.database), args.sample, args.seed)
     if not paths:
         raise SystemExit("нет подходящих кадров в индексе — нечего мерить")
+    if args.per_call:
+        return run_per_call(cfg, args.batch, paths, origin)
+
     workers = args.workers or cfg.vlm.workers
     specs = mode_specs(args.attn, args.batch)
     print(f"выборка: {len(paths)} кадров — {origin}")
