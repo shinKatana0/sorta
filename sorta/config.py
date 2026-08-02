@@ -510,6 +510,27 @@ class FeaturesConfig:
     # holds) rests on 7 labelled animals in the 18 426-frame tail, where one frame moves
     # the estimate by hundreds.
     pet_candidate_threshold: float = 0.5
+    # F140: score every photograph on how much it looks like a screenshot, a photographed
+    # screen or a receipt, and show the ones above `junk_rescue_threshold` to the VLM. Its
+    # own toggle by the rule above; the score itself costs no model pass (it is a matmul
+    # over the vectors `store_embeddings` already keeps), but the frames it selects cost
+    # ~0.78 s each in the deep tier, and with the deep tier off nothing is reclassified at
+    # all — the score is written, the candidates are marked, the verdicts stay.
+    junk_rescue: bool = False
+    # Who is shown to the model. MEASURED by eye on the live collection (19 753 stored
+    # vectors, every one of them classified `photo` — the frames below are the
+    # classifier's own misses, not junk that leaked into the index):
+    #
+    #     threshold   frames   share of the photographs   what the review found
+    #      +0.05          93            0.5%              junk outright
+    #      +0.02         955            4.8%              ~17% real photographs in
+    #                                                     the band +0.02..+0.05
+    #       0.00        5688           28.8%              junk in single figures
+    #
+    # 0.02 is the selection threshold and NOT a verdict: at ~85% precision, reclassifying
+    # by it directly would throw ~150 living photographs out of the city layout, which is
+    # the mistake F130 measured for animals. 955 frames is ~12 minutes of the deep tier.
+    junk_rescue_threshold: float = 0.02
     # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
     # what place the frame shows, and only a proposal the model names itself goes on to
     # F75 corroboration. Its own toggle, default off, and with it off the stage is
@@ -595,6 +616,9 @@ def _features_from(raw: dict) -> FeaturesConfig:
         pet_threshold=_as_float(raw.get("pet_threshold"), d.pet_threshold),
         pet_candidate_threshold=_as_float(
             raw.get("pet_candidate_threshold"), d.pet_candidate_threshold),
+        junk_rescue=_as_bool(raw.get("junk_rescue"), d.junk_rescue),
+        junk_rescue_threshold=_as_float(
+            raw.get("junk_rescue_threshold"), d.junk_rescue_threshold),
         landmarks_verify=_as_bool(raw.get("landmarks_verify"), d.landmarks_verify),
         landmark_candidate_threshold=_as_float(
             raw.get("landmark_candidate_threshold"), d.landmark_candidate_threshold),

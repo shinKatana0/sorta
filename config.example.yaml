@@ -344,6 +344,30 @@ features:
   #   everything → 19 757 frames, 4.3 hours
   # Ignored when `pets_verify` is off.
   pet_candidate_threshold: 0.5
+  # F140: find the screenshots, photographed screens and receipts this stage already
+  # classified as photographs. A search by words put memes and screenshots at the top of
+  # its results while every row of the embedding table said `photo` — so the frames were
+  # not junk leaking into the index, they were ~4% of the "photographs" being misfiled,
+  # and they go into the city layout, the duplicates and the albums as ordinary pictures.
+  # They are found by a zero-shot query over the vectors `store_embeddings` already keeps:
+  #   junk_score = max(looks like screenshot/meme/text/receipt) - max(looks like a photo)
+  # which costs no model pass over any image at all — it is a matmul over a stored table.
+  # The score is written to `frame_quality.junk_score` for every photograph that has a
+  # vector (NULL without one), and frames above the threshold below are shown to the VLM.
+  # WITHOUT THE DEEP TIER (`vlm.enabled`) NO VERDICT CHANGES: the score is stored, the
+  # candidates are counted, the run is otherwise the one you had.
+  junk_rescue: false
+  # Who is shown to the model. Reviewed by eye on the live collection (19 753 photographs):
+  #   +0.05  →    93 frames (0.5%)  — junk outright
+  #   +0.02  →   955 frames (4.8%)  — the band +0.02..+0.05 still holds ~17% real photos
+  #    0.00  → 5 688 frames (28.8%) — junk in single figures down here
+  # 0.02 is a SELECTION threshold and not a verdict: at ~85% precision, reclassifying by it
+  # directly would take ~150 living photographs out of the layout — the mistake measured
+  # for animals in F130 — which is why the model gets the last word. 955 frames is ~12
+  # minutes at the measured 0.78 s per frame. Read it off your own collection first:
+  # `python scripts/measure_junk_rescue.py` prints the distribution and what every
+  # threshold would select, before anything is switched on.
+  junk_rescue_threshold: 0.02
   # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
   # what place the frame shows, and only a proposal the model names itself goes on. The
   # order does not bend: CLIP proposes → the model checks → the corroboration of

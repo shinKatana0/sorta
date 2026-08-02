@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The screenshots and receipts the classifier took for photographs** (F140):
+  `features.junk_rescue`, off by default, with `features.junk_rescue_threshold` (0.02) next
+  to it and a new column `frame_quality.junk_score` (schema v20). The search by words (F134)
+  put memes and screenshots at the top of its results, and the table it searches turned out
+  to be clean — all 19 753 rows carry the verdict `photo`. So nothing had leaked into the
+  index: the junk stage is simply wrong about ~4% of what it calls a photograph, an error
+  nothing made visible until a query did, and those ~800 frames go into the city layout, the
+  duplicates, the quality signals and the albums like ordinary pictures. They are found by a
+  zero-shot query over the vectors F128 already stores — `max(similarity to
+  screenshot/meme/text/receipt) - max(similarity to a photograph)` — which costs **no pass
+  over any image**: the vectors are on disk and the prompts are five short strings through
+  the text tower. The whole feature is what is **not** done with that number. Reviewed by
+  eye: above +0.05 the 93 frames are junk outright, but the band +0.02..+0.05 still holds
+  ~17% real photographs, so applying the score as a verdict at ~85% precision would take
+  ~150 living pictures out of the layout — exactly the mistake F130 measured for animals,
+  where a signal of that accuracy applied directly makes a better baseline worse. The score
+  therefore **selects and does not judge**: it is written for every photograph that has a
+  vector (NULL without one, so a heuristics-only collection or `store_embeddings: false`
+  simply does not have this feature), the frames above the threshold become candidates for
+  the deep tier — 955 of them, ~12 minutes at the measured 0.78 s per frame — and only the
+  model's answer moves a verdict, with its own three-way question (screenshot / document /
+  photo) rather than a widened deep-tier prompt, which would have changed verdicts on runs
+  where this feature is off. **With the deep tier off nothing is reclassified at all**: the
+  score is stored, the candidates are counted, the run is otherwise unchanged. An unreadable
+  answer, a model that raises, a model or a text encoder that will not build — every one of
+  them leaves the fast verdict standing, never "junk". Both prompt texts enter
+  `quality_prompt_fingerprint`, so editing either invalidates the scores it produced (the
+  F120 rule), and `scripts/measure_junk_rescue.py` prints the distribution and what every
+  threshold would select **before** one is chosen, over the stored vectors and without a
+  model.
 - **A landmark is checked before it becomes a place** (F131): `features.landmarks_verify`,
   off by default, with `features.landmark_candidate_threshold` (0.5) next to it. CLIP
   proposes a landmark, the local VLM is asked what well-known place the frame shows, and
