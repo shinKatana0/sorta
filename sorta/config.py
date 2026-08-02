@@ -524,6 +524,14 @@ class FeaturesConfig:
     # full CLIP pass over the collection. The switch is for very large collections, where
     # 300 000 photos mean ~920 MB.
     store_embeddings: bool = True
+    # F129: how many frames a search by words takes — `sorta search` prints this many and
+    # an album from a query gathers this many. NOT a similarity threshold, and there will
+    # not be one, for the same reason sharpness has none: a CLIP score orders frames against
+    # each other and means nothing in absolute terms, so "this really is a cake" is not a
+    # line anybody can draw. What this number chooses is the SIZE OF THE SAMPLE a person
+    # then looks through — raise it to see further down the ranking, lower it for a shorter
+    # list. 200 is a folder a human can actually go through in one sitting.
+    search_limit: int = 200
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -542,6 +550,7 @@ def _features_from(raw: dict) -> FeaturesConfig:
         subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
+        search_limit=_as_positive_int(raw.get("search_limit"), d.search_limit),
     )
 
 
