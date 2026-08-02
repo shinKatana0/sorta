@@ -753,6 +753,25 @@ class Config:
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
 
 
+def vlm_allowed(cfg: Config) -> bool:
+    """F145: may this run load the VLM at all? — `vlm.enabled`, the master switch.
+
+    Every question the model is asked has a toggle of its own (`vlm.quality`,
+    `features.pets_verify`, `features.landmarks_verify`, `dedup.keeper_vlm`,
+    `features.junk_rescue`), and until F145 each of them could raise the weights by
+    itself: a run started WITHOUT deep analysis still loaded 20 GB because one
+    subordinate key was true in config.yaml. The hierarchy nobody wrote down is this
+    function — the subordinate keys decide WHAT to ask, this one decides whether there
+    is anybody to ask at all.
+
+    Read off `cfg.naming.vlm_enabled` and not off `cfg.vlm.enabled` for the F102 reason:
+    the two agree after load_config, and `--deep` / the "Deep analysis (VLM)" checkbox
+    force the tier for ONE run by replacing exactly that field on their own copy of the
+    config, so it is the effective per-run toggle.
+    """
+    return bool(getattr(getattr(cfg, "naming", None), "vlm_enabled", False))
+
+
 def _known(cls, raw: dict) -> dict:
     """Keep from raw only the declared fields of the dataclass cls. Config sections
     may carry "raw" keys that a module reads directly from cfg.raw (e.g.

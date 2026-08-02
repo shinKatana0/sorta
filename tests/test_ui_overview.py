@@ -515,14 +515,21 @@ class TestOverviewMarkup(OverviewTestBase):
         self.assertIn('row.key === "photo" ? null : "slices"', self.html)
         self.assertIn('"junk:" + row.key', self.html)
 
-    def test_an_empty_index_gets_an_invitation_not_a_table_of_zeros(self):
-        self.assertIn('stateEl("empty", I18N.overview_empty)', self.html)
-        # F133: the way out of the empty state is on this very tab now — the source
-        # picker sits below the invitation, and the button leads the eye to it.
-        self.assertIn('startBtn.id = "overview-start-btn"', self.html)
-        self.assertIn('I18N.overview_empty_button', self.html)
-        self.assertIn('document.getElementById("process-source-dir").focus();',
-                      self.html)
+    def test_an_empty_index_gets_the_same_rows_with_dashes(self):
+        """F145: the block holds its height from the first paint.
+
+        It used to draw an invitation with a button instead, and swap it for the full
+        set of counters the moment the index stopped being empty — which is in the
+        middle of a run, right after the `index` stage. The block below it, the run
+        options among them, moved down the page while a person was reading them.
+        """
+        self.assertIn("overviewEmpty = !!data.empty", self.html)
+        self.assertIn('if (overviewEmpty) return "\\u2014"', self.html)
+        self.assertIn("if (overviewEmpty) body.appendChild("
+                      "overviewNote(I18N.overview_empty))", self.html)
+        # The stub and its button are gone: the run button is on this screen anyway.
+        self.assertNotIn("overview-start-btn", self.html)
+        self.assertNotIn("overview_empty_button", self.html)
 
     def test_the_numbers_are_refetched_on_every_open(self):
         self.assertIn('if (name === "overview") loadOverview();', self.html)
@@ -535,7 +542,7 @@ class TestOverviewMarkup(OverviewTestBase):
 
 class TestOverviewStringsAreTranslated(unittest.TestCase):
     KEYS = (
-        "tab_overview", "overview_empty", "overview_empty_button",
+        "tab_overview", "overview_empty",
         "overview_group_collection", "overview_group_place", "overview_group_classes",
         "overview_group_layout", "overview_files", "overview_photos", "overview_videos",
         "overview_duplicates", "overview_errors", "overview_events",

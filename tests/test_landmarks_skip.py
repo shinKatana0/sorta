@@ -233,8 +233,11 @@ class TestASettingChangeRecomputesEverything(SkipCase):
     def test_a_wider_candidate_gate_recomputes_all(self) -> None:
         """Turning the F131 check on widens the band proposals are collected at."""
         self.add("/photos/DCIM", PRAGUE, prob=0.2, n=3)     # below today's threshold
+        # F145: `vlm_enabled` is what lets the check run at all — without it the toggle
+        # below would change nothing, and the gate would never widen.
         self.cfg.naming = _naming_from({"landmarks_file": self.cfg.naming.landmarks_file,
-                                        "landmark_threshold": 0.85})
+                                        "landmark_threshold": 0.85,
+                                        "vlm_enabled": True})
         self.run_stage()
         self.cfg.features = dataclasses.replace(self.cfg.features,
                                                 landmarks_verify=True,

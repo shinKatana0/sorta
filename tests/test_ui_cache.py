@@ -292,7 +292,11 @@ class TestCacheUiMarkup(UiServerTestBase):
         body = self._body("updateBusyControlsDisabled")
         self.assertIn("cache-clear-preview-btn", body)
         self.assertIn("cache-clear-geo-btn", body)
-        self.assertIn("sortRunning || processRunning", body)
+        # F145: the three flags moved behind one predicate — a dozen controls on five
+        # tabs ask the same question now.
+        self.assertIn("var busy = uiBusy();", body)
+        self.assertIn("sortRunning || processRunning || undoRunning",
+                      self._body("uiBusy"))
 
     def test_the_size_is_not_asked_for_on_every_status_tick(self):
         """A walk of a directory with tens of thousands of files, once a poll tick,

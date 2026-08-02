@@ -4388,6 +4388,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "costs_free": {
         "ru": "почти бесплатно", "en": "almost free", "ja": "ほぼ無料",
     },
+    # F145: what a line under a cleared master switch costs. Not "almost free" — that is
+    # said about a stage that RUNS and is cheap; this one does not run at all, and the
+    # number says so plainly because the sum below has to add up with it.
+    "costs_off": {
+        "ru": "0 — не выполняется", "en": "0 — does not run",
+        "ja": "0 — 実行されません",
+    },
     "costs_under_minute": {
         "ru": "меньше минуты", "en": "under a minute", "ja": "1 分未満",
     },
@@ -4438,6 +4445,18 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "It deletes nothing — it is a recommendation on the Review tab.",
         "ja": "類似写真のグループごとに 1 回、どのコマを残すかをモデルに比較させます。"
               "削除は行いません —「確認」タブでの推奨にとどまります。",
+    },
+    # F145: said next to every option that asks the SAME model the "Deep analysis"
+    # checkbox loads. With the checkbox clear each of them costs nothing and does
+    # nothing — the line says which switch turns it back on, so a dead option does not
+    # read as a missing feature.
+    "process_needs_deep_hint": {
+        "ru": "Работает только с «Глубоким анализом (VLM)» — без него модель не "
+              "поднимается и этот пункт ничего не делает.",
+        "en": "Works only with Deep analysis (VLM) — without it no model is loaded and "
+              "this option does nothing.",
+        "ja": "「詳細解析（VLM）」がオンのときのみ動作します。オフの場合モデルは読み込ま"
+              "れず、この項目は何もしません。",
     },
     # --- F81/F82: the three blocks of the first tab + the exclusion tree ------
     # F82: the two mechanisms are now side by side in one tree, so the wording carries
@@ -5331,6 +5350,17 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "A run is in progress — settings do not change mid-run. Wait for it to end.",
         "ja": "処理の実行中です — 途中で設定は変更できません。終了までお待ちください。",
     },
+    # F145: the same statement for everything else that writes — marks, the trash, an
+    # album, a layout. The server has always answered 409; this is the sentence that
+    # says so BEFORE the click instead of after it.
+    "actions_busy": {
+        "ru": "Идёт прогон — действия, меняющие данные, недоступны. "
+              "Вернутся сами по окончании.",
+        "en": "A run is in progress — actions that change data are unavailable. "
+              "They come back on their own when it ends.",
+        "ja": "処理の実行中です — データを変更する操作は利用できません。"
+              "終了すると自動的に戻ります。",
+    },
     "selection_delete_hint": {
         "ru": "Файлы уедут в корзину системы — не мимо неё.",
         "en": "The files go to the system trash, not past it.",
@@ -5740,16 +5770,17 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # --- F108: the "Overview" tab ---------------------------------------------------
     "tab_overview": {"ru": "Обзор", "en": "Overview", "ja": "概要"},
+    # F145: the caption over the SAME rows of counters, drawn with dashes. It replaced an
+    # invitation with a button, which was a block of a different height: it was swapped
+    # for the full one in the middle of a run, right after the `index` stage, and
+    # everything below — the run options among them — jumped down the page.
     "overview_empty": {
-        "ru": "Индекс пуст. Укажите папку с фото и нажмите «Обработать» — после "
-              "прогона здесь появится состояние коллекции.",
-        "en": "The index is empty. Enter a photo folder and click Process — the state "
-              "of the collection shows up here after the run.",
-        "ja": "インデックスが空です。写真フォルダを指定して「処理する」を押してください。"
-              "処理後、コレクションの状態がここに表示されます。",
-    },
-    "overview_empty_button": {
-        "ru": "К обработке", "en": "Go to Process", "ja": "処理タブへ",
+        "ru": "Данных пока нет: ниже — то, что появится после прогона. "
+              "Укажите папку с фото и нажмите «Обработать».",
+        "en": "No data yet: below is what shows up after a run. Enter a photo folder "
+              "and click Process.",
+        "ja": "まだデータがありません。以下は処理後に表示される項目です。"
+              "写真フォルダを指定して「処理する」を押してください。",
     },
     "overview_group_collection": {"ru": "Коллекция", "en": "Collection", "ja": "コレクション"},
     "overview_group_place": {"ru": "Место", "en": "Place", "ja": "場所"},
@@ -6781,6 +6812,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div class="cost-block" id="process-costs">
 <div class="cost-head">{{costs_title}}</div>
 <span class="process-toggle-hint">{{costs_estimate_note}}</span>
+<span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
 <div class="cost-row">
 <span class="cost-name">{{costs_base_label}}</span>
 <span class="cost-always">{{costs_always}}</span>
@@ -6804,6 +6836,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <label class="process-toggle-label"><input type="checkbox" id="process-pets-verify-checkbox"> {{process_pets_verify_label}}</label>
 <span class="cost-price" data-cost="pets_verify"></span>
 <span class="process-toggle-hint cost-hint">{{process_pets_verify_hint}}</span>
+<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
 </span>
 </div>
 <div class="cost-row">
@@ -6816,6 +6849,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <label class="process-toggle-label"><input type="checkbox" id="process-quality-checkbox"> {{process_quality_label}}</label>
 <span class="cost-price" data-cost="quality"></span>
 <span class="process-toggle-hint cost-hint">{{process_quality_hint}}</span>
+<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
 <span class="cost-child" id="process-quality-scope-row" style="display:none">
 <label class="process-toggle-label" for="process-quality-scope">{{process_quality_scope_label}}
 <select id="process-quality-scope"><option value="groups">{{settings_scope_groups}}</option><option value="events">{{settings_scope_events}}</option><option value="faces">{{settings_scope_faces}}</option><option value="all">{{settings_scope_all}}</option></select></label>
@@ -6825,6 +6859,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <label class="process-toggle-label"><input type="checkbox" id="process-keeper-checkbox"> {{process_keeper_label}}</label>
 <span class="cost-price" data-cost="keeper"></span>
 <span class="process-toggle-hint cost-hint">{{process_keeper_hint}}</span>
+<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
 </div>
 </div>
 </div>
@@ -6883,6 +6918,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" id="sort-apply-btn" class="btn btn-primary" disabled>{{sort_apply_button}}</button>
 <span class="sort-dest-hint">{{sort_dest_hint}}</span>
 <span class="sort-dest-hint" id="sort-empty-hint" style="display:none">{{sort_summary_empty}}</span>
+<span class="sort-dest-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <progress id="sort-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
 <div class="process-actions">
@@ -6900,6 +6936,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" id="city-override-move-btn" class="btn" disabled>{{override_move_button}}</button>
 <button type="button" id="city-override-clear-btn" class="btn btn-ghost" disabled>{{override_clear_button}}</button>
 <span id="override-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 <p class="override-hint">{{override_hint}}</p>
 </div>
 <div class="place-controls" id="city-place-controls">
@@ -6910,6 +6947,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div class="selection-controls" id="city-selection-controls" style="display:none">
 <button type="button" id="city-delete-selected-btn" class="btn btn-danger" disabled>{{delete_selected}}<span id="city-delete-selected-count"></span></button>
 <span class="override-hint">{{selection_delete_hint}}</span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="tree-city"><div class="state-msg state-loading">{{loading}}</div></div>
 </div>
@@ -6957,6 +6995,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <label class="settings-field" for="setting-imaging-preview-cache-max-gb">{{settings_preview_max_gb_label}}
 <input type="number" id="setting-imaging-preview-cache-max-gb" min="0" max="4096" step="1"></label>
 <span class="process-toggle-hint">{{settings_preview_max_gb_hint}}</span>
+<span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
 <div id="settings-status" class="override-status"></div>
 </div>
 <div class="settings-block">
@@ -6964,6 +7003,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <label class="settings-field" for="folder-lang-select">{{folder_lang_label}}
 <select id="folder-lang-select"><option value="ru">Русский</option><option value="en">English</option><option value="ja">日本語</option></select></label>
 <span class="process-toggle-hint">{{settings_folder_lang_hint}}</span>
+<span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
 </div>
 </aside>
 </div>
@@ -6981,6 +7021,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div class="dupes-controls">
 <button type="button" id="dupes-save-all-btn" class="btn btn-primary">{{save_all_choices}}</button>
 <span id="dupes-save-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="dupes-list"><div class="state-msg state-loading">{{loading}}</div></div>
 </div>
@@ -6993,6 +7034,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" id="review-select-all-btn" class="btn btn-ghost">{{review_select_all}}</button>
 <button type="button" id="review-select-none-btn" class="btn btn-ghost">{{review_select_none}}</button>
 <span id="review-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="review-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
@@ -7061,6 +7103,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" id="junk-select-all-btn" class="btn btn-ghost">{{junk_select_all}}</button>
 <button type="button" id="junk-select-none-btn" class="btn btn-ghost">{{junk_select_none}}</button>
 <span id="junk-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
 <div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
@@ -7483,6 +7526,31 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   }
 
+  // F145: the rule that used to hold for the layout button alone, stated for everything
+  // that WRITES. The server refuses all of it with 409 while a run, a layout or an undo
+  // is in flight (see BUSY_REFUSED_ROUTES), and a control that is alive for an action
+  // that cannot happen teaches that the interface lies — you find that out by clicking.
+  // So: dead while busy, with a line saying why (the `.busy-hint` spans), and alive again
+  // the moment it ends, without reloading the page — hence `= busy` everywhere below and
+  // never a one-way disable.
+  //
+  // Declared here, above the first control that uses it: the three flags themselves are
+  // set further down (they belong to the polls that own them), and until a poll has run
+  // nothing is running, which is what `undefined` means here anyway.
+  function uiBusy() {
+    return !!(sortRunning || processRunning || undoRunning);
+  }
+
+  // Some of these controls have a rule of their own ("nothing selected -> dead") and are
+  // redrawn by their own tab. They register that redraw here instead of being listed by
+  // id, so the two rules meet in one place and neither can undo the other.
+  var busyRefreshers = [];
+
+  function registerBusyRefresh(fn) {
+    busyRefreshers.push(fn);
+    fn();
+  }
+
   // Переиспользуемый множественный выбор + «Удалить выбранное» для любого
   // контейнера со строками, где есть чекбокс `.row-select` (value=file_id).
   // Делегирование на контейнер — работает и с лениво построенными строками.
@@ -7501,9 +7569,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     function refresh() {
       var n = checked().length;
       if (countEl) countEl.textContent = n ? " (" + n + ")" : "";
-      button.disabled = n === 0;
+      button.disabled = uiBusy() || n === 0;   // F145: files go to the trash from here
       if (barEl) barEl.style.display = n === 0 ? "none" : "";
     }
+    registerBusyRefresh(refresh);
     container.addEventListener("change", function (e) {
       if (e.target && e.target.classList && e.target.classList.contains("row-select")) refresh();
     });
@@ -7728,10 +7797,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     function refresh() {
       var n = selectedIds().length;
       countEl.textContent = n ? " (" + n + ")" : "";
-      excludeBtn.disabled = n === 0;
-      clearBtn.disabled = n === 0;
-      moveBtn.disabled = n === 0;
+      var dead = uiBusy() || n === 0;    // F145: these write `manual_overrides`
+      excludeBtn.disabled = dead;
+      clearBtn.disabled = dead;
+      moveBtn.disabled = dead;
     }
+    registerBusyRefresh(refresh);
     function apply(action) {
       var ids = selectedIds();
       if (!ids.length) return;
@@ -8413,6 +8484,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var destInput = appendAlbumDestControls(box);
     var albumBtn = makeBtn("primary", "folder", I18N.album_button,
                            "btn-sm album-gather-btn");
+    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
@@ -8421,6 +8493,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
     box.appendChild(albumBtn);
     box.appendChild(albumStatus);
+    appendAlbumBusyHint(box);
   }
 
   function renderSearchResults(data) {
@@ -8558,10 +8631,27 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // без построения плана) и рисуются четырьмя карточками: коллекция, место,
   // разбор, раскладка.
 
+  // F145: the empty state draws the SAME rows with a dash where the number will be.
+  // Before, it drew an invitation with a button instead — a block of a different height,
+  // swapped for the full one the moment the index stopped being empty, i.e. in the middle
+  // of a run, right after the `index` stage. Everything below it, the run options among
+  // them, jumped down the page while a person was reading. So: the block holds its height
+  // from the first paint, the numbers arriving change the text and not the layout, and
+  // the list doubles as a statement of what a run will produce.
+  var overviewEmpty = false;
+
   // Числа читают глазами: 7 619 против 7619. toLocaleString берёт разделитель
   // разрядов из локали браузера.
   function overviewNum(n) {
     return Number(n || 0).toLocaleString();
+  }
+
+  // F145: the value column of an overview row — the number, or a dash while there is no
+  // index to take it from. Separate from overviewNum, which the review slice counters on
+  // another tab also use and which must stay a plain formatter.
+  function overviewStat(n) {
+    if (overviewEmpty) return "\\u2014";
+    return overviewNum(n);
   }
 
   function overviewValue(text, extraClass) {
@@ -8578,11 +8668,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // F133: the same is now true of "Slices", where people, events, animals and the
   // classifier's classes live side by side.
   function overviewCount(count, tab, slice) {
-    if (!tab || !count) return overviewValue(overviewNum(count));
+    if (!tab || !count) return overviewValue(overviewStat(count));
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "overview-value-link";
-    btn.textContent = overviewNum(count);
+    btn.textContent = overviewStat(count);
     btn.title = fmt(I18N.overview_goto_hint, { tab: I18N["tab_" + tab] || tab });
     btn.addEventListener("click", function () {
       if (tab === "slices") {
@@ -8648,12 +8738,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function overviewCollectionCard(data) {
     var c = data.collection;
     var card = overviewCard(I18N.overview_group_collection);
-    card.appendChild(overviewRow(I18N.overview_files, overviewValue(overviewNum(c.files)), true));
-    card.appendChild(overviewRow(I18N.overview_photos, overviewValue(overviewNum(c.photos))));
-    card.appendChild(overviewRow(I18N.overview_videos, overviewValue(overviewNum(c.videos))));
+    card.appendChild(overviewRow(I18N.overview_files, overviewValue(overviewStat(c.files)), true));
+    card.appendChild(overviewRow(I18N.overview_photos, overviewValue(overviewStat(c.photos))));
+    card.appendChild(overviewRow(I18N.overview_videos, overviewValue(overviewStat(c.videos))));
     card.appendChild(overviewRow(I18N.overview_duplicates,
                                  overviewCount(c.duplicates, "review", "dupes")));
-    card.appendChild(overviewRow(I18N.overview_errors, overviewValue(overviewNum(c.errors))));
+    card.appendChild(overviewRow(I18N.overview_errors, overviewValue(overviewStat(c.errors))));
     card.appendChild(overviewRow(I18N.overview_events,
                                  overviewCount(c.events, "slices", "event")));
     card.appendChild(overviewRow(I18N.overview_animals,
@@ -8675,14 +8765,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // качество будущей раскладки, поэтому доля в процентах стоит рядом.
     card.appendChild(overviewRow(
         I18N.overview_no_place,
-        overviewValue(overviewNum(p.no_place) + " (" + p.no_place_percent + "%)"),
+        overviewValue(overviewEmpty ? overviewStat(p.no_place)
+                      : overviewStat(p.no_place) + " (" + p.no_place_percent + "%)"),
         true));
     p.confidence.forEach(function (row) {
       // «unknown» — ровно те кадры, что уже названы строкой выше (правилом
       // раскладки); второй раз их не повторяем.
       if (row.key === "unknown") return;
       card.appendChild(overviewRow(overviewPlaceLabel(row.key),
-                                   overviewValue(overviewNum(row.count))));
+                                   overviewValue(overviewStat(row.count))));
     });
     card.appendChild(overviewNote(I18N.overview_no_place_hint));
     return card;
@@ -8692,7 +8783,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var cl = data.classes;
     var card = overviewCard(I18N.overview_group_classes);
     card.appendChild(overviewRow(I18N.overview_classified,
-                                 overviewValue(overviewNum(cl.total)), true));
+                                 overviewValue(overviewStat(cl.total)), true));
     if (!cl.total) {
       card.appendChild(overviewNote(I18N.overview_not_classified));
       return card;
@@ -8708,12 +8799,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     card.appendChild(overviewSubtitle(I18N.overview_by_source));
     cl.sources.forEach(function (row) {
       card.appendChild(overviewRow(overviewSourceLabel(row.key),
-                                   overviewValue(overviewNum(row.count))));
+                                   overviewValue(overviewStat(row.count))));
     });
     card.appendChild(overviewSubtitle(I18N.overview_by_tier));
     cl.tiers.forEach(function (row) {
       card.appendChild(overviewRow(overviewTierLabel(row.key),
-                                   overviewValue(overviewNum(row.count))));
+                                   overviewValue(overviewStat(row.count))));
     });
     // Прогонялся ли глубокий ярус — вопрос, который раньше решался запросом в БД.
     card.appendChild(overviewNote(
@@ -8737,7 +8828,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         ? I18N.tab_layout : (I18N["tab_" + last.mode] || last.mode);
     var op = last.operation === "copy" ? I18N.overview_op_copy : I18N.overview_op_move;
     card.appendChild(overviewRow(I18N.overview_layout_files,
-                                 overviewValue(overviewNum(last.files)), true));
+                                 overviewValue(overviewStat(last.files)), true));
     card.appendChild(overviewRow(I18N.overview_layout_done,
                                  overviewCount(last.done, "moves")));
     card.appendChild(overviewRow(I18N.overview_layout_mode,
@@ -8750,7 +8841,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                                  overviewValue(last.dest_root, "overview-text")));
     if (lay.batches > 1) {
       card.appendChild(overviewRow(I18N.overview_layout_batches,
-                                   overviewValue(overviewNum(lay.batches))));
+                                   overviewValue(overviewStat(lay.batches))));
     }
     // Незакрытый батч — след прерванного прогона; о нём говорим явно.
     if (last.unfinished || lay.unfinished) {
@@ -8762,23 +8853,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function renderOverview(data) {
     var body = document.getElementById("overview-body");
     body.textContent = "";
-    if (data.empty) {
-      // Пустой индекс — приглашение начать, а не таблица нулей.
-      body.appendChild(stateEl("empty", I18N.overview_empty));
-      var actions = document.createElement("div");
-      actions.className = "process-actions";
-      var startBtn = makeBtn("primary", null, I18N.overview_empty_button);
-      startBtn.id = "overview-start-btn";
-      // F133: «выбор источника» стоит на этой же вкладке, сразу под приглашением —
-      // кнопка теперь доводит до него взгляд, а не переключает вкладку.
-      startBtn.addEventListener("click", function () {
-        document.getElementById("process-source-dir").focus();
-        document.getElementById("step-source").scrollIntoView({ behavior: "smooth" });
-      });
-      actions.appendChild(startBtn);
-      body.appendChild(actions);
-      return;
-    }
+    // F145: one flag, read by overviewNum — the four cards below are built the same way
+    // either way, and an empty index differs only in what stands in the value column.
+    overviewEmpty = !!data.empty;
+    if (overviewEmpty) body.appendChild(overviewNote(I18N.overview_empty));
     var groups = document.createElement("div");
     groups.className = "overview-groups";
     groups.appendChild(overviewCollectionCard(data));
@@ -8859,11 +8937,44 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     { key: "faces", id: "process-faces-checkbox" },
     { key: "events", id: "process-events-checkbox" },
     { key: "pets", id: "process-pets-checkbox" },
-    { key: "pets_verify", id: "process-pets-verify-checkbox", parent: "process-pets-checkbox" },
+    { key: "pets_verify", id: "process-pets-verify-checkbox",
+      parent: "process-pets-checkbox", vlm: true },
     { key: "deep", id: "process-deep-checkbox" },
-    { key: "quality", id: "process-quality-checkbox", scoped: true },
-    { key: "keeper", id: "process-keeper-checkbox" }
+    { key: "quality", id: "process-quality-checkbox", scoped: true, vlm: true },
+    { key: "keeper", id: "process-keeper-checkbox", vlm: true }
   ];
+
+  // --- F145: "Deep analysis (VLM)" is the master switch ----------------------
+  //
+  // The three lines marked `vlm` above ask the SAME weights this checkbox loads, and
+  // until F145 each of them could raise those weights by itself — a run started without
+  // the checkbox still spent 20 GB and hours because one key was true in config.yaml.
+  // The server now refuses to load a model without it (config.vlm_allowed), and this
+  // screen has to say the same thing before the run rather than after it:
+  //
+  //   * the options stay VISIBLE and go dead. A vanished option reads as "there is no
+  //     such thing", and there is;
+  //   * their price becomes zero, not the old number. The estimate has to add up to what
+  //     the run will actually do;
+  //   * nothing is switched on or off automatically. Clearing the master leaves the
+  //     subordinate boxes exactly as they were — one movement, one consequence.
+  var VLM_SUBORDINATE_IDS = ["process-pets-verify-checkbox", "process-quality-checkbox",
+                             "process-quality-scope", "process-keeper-checkbox"];
+
+  function vlmMasterOn() {
+    return document.getElementById("process-deep-checkbox").checked;
+  }
+
+  function updateVlmSubordinatesDisabled() {
+    var off = !vlmMasterOn();
+    VLM_SUBORDINATE_IDS.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.disabled = off || processRunning; }
+    });
+    document.querySelectorAll(".vlm-off-hint").forEach(function (el) {
+      el.style.display = off ? "" : "none";
+    });
+  }
 
   function currentQualityScope() {
     return document.getElementById("process-quality-scope").value;
@@ -8873,6 +8984,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // only line whose price depends on a second control — the scope select carries four
   // populations that differ by hours.
   function costSeconds(row) {
+    // F145: a subordinate line costs nothing with the master off, whatever the box next
+    // to it says — that IS the run, and a dash here would mean "unknown" rather than
+    // "free".
+    if (row.vlm && !vlmMasterOn()) return 0;
     if (!costEstimate) return null;
     var key = row.scoped ? "quality_" + currentQualityScope() : row.key;
     var value = costEstimate[key];
@@ -8903,12 +9018,19 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     document.getElementById("process-pets-verify-row").style.display = petsOn ? "" : "none";
     document.getElementById("process-quality-scope-row").style.display =
         qualityOn ? "" : "none";
+    updateVlmSubordinatesDisabled();
     var total = 0;
     var unknown = false;
+    var vlmOff = !vlmMasterOn();
     COST_ROWS.forEach(function (row) {
       var seconds = costSeconds(row);
       var cell = document.querySelector('[data-cost="' + row.key + '"]');
-      if (cell) cell.textContent = formatCost(seconds);
+      // F145: a line the master switch has turned off is priced at zero and says why —
+      // "almost free" is what a stage that RUNS and is cheap gets, and this one does not
+      // run at all.
+      if (cell) {
+        cell.textContent = (row.vlm && vlmOff) ? I18N.costs_off : formatCost(seconds);
+      }
       if (!costRowEnabled(row)) return;
       if (seconds === null) unknown = true;
       else total += seconds;
@@ -8993,12 +9115,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     ["process-browse-btn", "process-source-dir", "process-excludes-btn",
      "process-deep-checkbox", "process-geo-online-checkbox",
      "process-faces-checkbox", "process-events-checkbox",
-     "process-pets-checkbox", "process-pets-verify-checkbox",
-     "process-quality-checkbox", "process-quality-scope",
-     "process-keeper-checkbox"].forEach(function (id) {
+     "process-pets-checkbox"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = processRunning; }
     });
+    // F145: the options under the master switch have two reasons to be dead and one
+    // place that applies both — listing them here as well would re-enable, on the next
+    // status tick, boxes the cleared checkbox had just switched off.
+    updateVlmSubordinatesDisabled();
   }
 
   function renderStageChips(data) {
@@ -9773,13 +9897,34 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var undoBatchInfo = null;
 
   function updateBusyControlsDisabled() {
-    var busy = sortRunning || processRunning || undoRunning;
+    var busy = uiBusy();
     ["sort-browse-btn", "sort-dest",
      "process-reset-btn",
-     "cache-clear-preview-btn", "cache-clear-geo-btn"].forEach(function (id) {
+     "cache-clear-preview-btn", "cache-clear-geo-btn",
+     // F145: saving the whole set of duplicate choices writes `dedup_choice` for every
+     // group on the tab at once — the largest single write the review side has.
+     "dupes-save-all-btn",
+     "folder-lang-select"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = busy; }
     });
+    // F145: the settings column. The server has answered 409 here since F104 ("swapping
+    // the model mid-classification is not a setting but an accident") — what was missing
+    // was the ban being VISIBLE: the fields stayed live, you moved one, and learned about
+    // the refusal afterwards.
+    SETTING_CONTROLS.forEach(function (control) {
+      var el = document.getElementById(control.id);
+      if (el) { el.disabled = busy; }
+    });
+    // Album buttons are built by four different tabs and none of them exists until its
+    // tab is drawn, so they are swept by class rather than by id.
+    document.querySelectorAll(".album-gather-btn").forEach(function (btn) {
+      btn.disabled = busy;
+    });
+    document.querySelectorAll(".busy-hint").forEach(function (el) {
+      el.style.display = busy ? "" : "none";
+    });
+    busyRefreshers.forEach(function (fn) { fn(); });
     var undoBtn = document.getElementById("undo-btn");
     // «Откатить» дополнительно требует батча в манифесте — см. applyUndoAvailability
     if (undoBtn) { undoBtn.disabled = busy || !undoAvailable; }
@@ -10147,6 +10292,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   // --- альбомы (F35): кнопка «Собрать в папку» на карточках Люди/События ---
 
+  // F145: the album button moves files, so it is dead while anything runs — and the
+  // reason is written next to it, the same `.busy-hint` the static blocks carry.
+  function appendAlbumBusyHint(box) {
+    var hint = document.createElement("span");
+    hint.className = "override-hint busy-hint";
+    hint.textContent = I18N.actions_busy;
+    hint.style.display = uiBusy() ? "" : "none";
+    box.appendChild(hint);
+    return hint;
+  }
+
   function albumModeSelect() {
     var select = document.createElement("select");
     ["link", "copy", "move"].forEach(function (m) {
@@ -10329,8 +10485,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var selectedForMergeCount = 0;
 
   function updateMergeButton() {
-    document.getElementById("clusters-merge-btn").disabled = selectedForMergeCount !== 2;
+    // F145: merging two clusters rewrites `faces.cluster_id` for both of them.
+    document.getElementById("clusters-merge-btn").disabled =
+        uiBusy() || selectedForMergeCount !== 2;
   }
+
+  registerBusyRefresh(updateMergeButton);
 
   function toggleMergeSelection(clusterId, checked) {
     if (checked) {
@@ -10411,6 +10571,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       whereInput.placeholder = I18N.album_where_placeholder;
       albumBox.appendChild(whereInput);
       var albumBtn = makeBtn("primary", "folder", I18N.album_button, "btn-sm album-gather-btn");
+      albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
       var albumStatus = document.createElement("span");
       albumStatus.className = "album-status";
       albumBtn.addEventListener("click", function () {
@@ -10420,6 +10581,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       });
       albumBox.appendChild(albumBtn);
       albumBox.appendChild(albumStatus);
+      appendAlbumBusyHint(albumBox);
       card.appendChild(albumBox);
     } else {
       var hint = document.createElement("div");
@@ -10504,6 +10666,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     albumBox.appendChild(modeSelect);
     var destInput = appendAlbumDestControls(albumBox);
     var albumBtn = makeBtn("primary", "folder", I18N.album_button, "btn-sm album-gather-btn");
+    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
@@ -10513,6 +10676,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
     albumBox.appendChild(albumBtn);
     albumBox.appendChild(albumStatus);
+    appendAlbumBusyHint(albumBox);
     card.appendChild(albumBox);
 
     // F85c: событие — самая осязаемая группа, какая есть: это одна поездка, и место
@@ -10583,8 +10747,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function refreshJunkControls() {
     var n = junkSelectedIds().length;
     document.getElementById("junk-selected-count").textContent = n ? " (" + n + ")" : "";
-    document.getElementById("junk-restore-btn").disabled = n === 0;
+    // F145: "back to photos" rewrites `media_class` — the table the run in flight owns.
+    document.getElementById("junk-restore-btn").disabled = uiBusy() || n === 0;
   }
+
+  registerBusyRefresh(refreshJunkControls);
 
   // F133: корзины классификатора — это и есть закреплённые срезы «товары / скриншоты /
   // документы»; отдельного ряда чипов больше нет, счётчики уезжают в ряд срезов.
@@ -10888,6 +11055,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     box.appendChild(modeSelect);
     var destInput = appendAlbumDestControls(box);
     var albumBtn = makeBtn("primary", "folder", I18N.album_button, "btn-sm album-gather-btn");
+    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
@@ -10896,6 +11064,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
     box.appendChild(albumBtn);
     box.appendChild(albumStatus);
+    appendAlbumBusyHint(box);
   }
 
   function loadAnimals() {
@@ -10934,10 +11103,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function refreshReviewControls() {
     var n = reviewSelectedIds().length;
     document.getElementById("review-selected-count").textContent = n ? " (" + n + ")" : "";
+    var dead = uiBusy() || n === 0;   // F145: a mark is a row in `dedup_choice`
     ["review-delete-btn", "review-keep-btn", "review-clear-btn"].forEach(function (id) {
-      document.getElementById(id).disabled = n === 0;
+      document.getElementById(id).disabled = dead;
     });
   }
+
+  registerBusyRefresh(refreshReviewControls);
 
   function renderReviewCounts(counts) {
     counts.forEach(function (row) {
@@ -11325,6 +11497,44 @@ def _render_index_html(lang: i18n.Lang) -> str:
     return html
 
 
+# F145: which POST routes may not write while a run, a layout or an undo is in flight.
+#
+# The reason is not the look of a button. The pipeline rewrites `media_class`,
+# `frame_quality` and `places` wholesale, and geo empties `places` before refilling it —
+# a second writer over those tables mid-run is a race whose loser is the user's index.
+# Eight routes already refused with their own 409 and their own wording; the rest, every
+# one of which writes the database, the config file or files on disk, did not.
+#
+# The three sets are named rather than implied so that a route cannot join the server
+# without a decision being made about it: the suite walks the dispatcher below and fails
+# on any POST path that is in none of them.
+_BUSY_SELF_GUARDED_ROUTES = frozenset({
+    # These check the state themselves because they distinguish WHICH process is in the
+    # way ("sort is running" / "undo is running") or take the lock for a critical section
+    # of their own — the answer a caller gets from them is more specific, not less.
+    "/api/process", "/api/process/rerun-optional", "/api/process/reset",
+    "/api/cache/clear", "/api/config/language", "/api/settings",
+    "/api/sort", "/api/undo",
+})
+_BUSY_GUARDED_ROUTES = frozenset({
+    # Marks and choices in the index...
+    "/api/dupes/choice", "/api/dupes/choices", "/api/dupes/skip",
+    "/api/review/mark", "/api/animals/mark", "/api/overrides", "/api/place",
+    "/api/clusters/label", "/api/clusters/merge",
+    # ...files moved on disk...
+    "/api/dupes/trash", "/api/photo/trash", "/api/photos/trash", "/api/album",
+    # ...and config.yaml.
+    "/api/source-tree/excludes",
+})
+# The POST routes that stay live on purpose: cancelling is what a person reaches for
+# WHILE something runs, and the folder picker only reads.
+_BUSY_EXEMPT_ROUTES = frozenset({
+    "/api/process/cancel", "/api/sort/cancel", "/api/undo/cancel", "/api/browse",
+})
+# Every route that must answer 409 while busy, whichever half of the server refuses it.
+BUSY_REFUSED_ROUTES = _BUSY_SELF_GUARDED_ROUTES | _BUSY_GUARDED_ROUTES
+
+
 def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                   process_state: _ProcessState,
                   sort_state: _SortState,
@@ -11429,9 +11639,28 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
+        def _anything_running(self) -> bool:
+            """Is a pipeline, a layout or an undo in flight? — the busy state, one place."""
+            return bool(process_state.snapshot()["running"]
+                        or sort_state.snapshot()["running"]
+                        or undo_state.snapshot()["running"])
+
         def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler contract)
-            parts = urlsplit(self.path)
-            path = parts.path
+            path = urlsplit(self.path).path
+            if path not in _BUSY_GUARDED_ROUTES:
+                self._dispatch_post(path)
+                return
+            # F145: held for the whole write and not just for the check — otherwise a run
+            # could start in the window between the two and the very race this closes
+            # would be back, one request narrower.
+            with busy_lock:
+                if self._anything_running():
+                    self._send_json({"error": "already running"},
+                                    status=HTTPStatus.CONFLICT)
+                    return
+                self._dispatch_post(path)
+
+        def _dispatch_post(self, path: str) -> None:
             if path == "/api/dupes/choice":
                 self._handle_dupes_choice()
             elif path == "/api/dupes/choices":
@@ -11877,9 +12106,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # reset, not just the check, otherwise sort/process could start in the
             # window between the check and db.reset_index itself.
             with busy_lock:
-                if (process_state.snapshot()["running"]
-                        or sort_state.snapshot()["running"]
-                        or undo_state.snapshot()["running"]):
+                if self._anything_running():
                     self._send_json({"error": "already running"}, status=HTTPStatus.CONFLICT)
                     return
                 conn = _connect(db_path)
@@ -11902,9 +12129,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # mid-run a geo clear sends the rest of the stage back to the network, and
             # a preview clear deletes the frames that stage is writing right now.
             with busy_lock:
-                if (process_state.snapshot()["running"]
-                        or sort_state.snapshot()["running"]
-                        or undo_state.snapshot()["running"]):
+                if self._anything_running():
                     self._send_json({"error": "already running"},
                                     status=HTTPStatus.CONFLICT)
                     return
@@ -11937,9 +12162,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # hold busy_lock: the rebuild must not race a running sort/process that
             # reads cfg (the same guard as /api/process/reset).
             with busy_lock:
-                if (process_state.snapshot()["running"]
-                        or sort_state.snapshot()["running"]
-                        or undo_state.snapshot()["running"]):
+                if self._anything_running():
                     self._send_json({"error": "already running"},
                                     status=HTTPStatus.CONFLICT)
                     return
@@ -11971,9 +12194,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                                 status=HTTPStatus.BAD_REQUEST)
                 return
             with busy_lock:
-                if (process_state.snapshot()["running"]
-                        or sort_state.snapshot()["running"]
-                        or undo_state.snapshot()["running"]):
+                if self._anything_running():
                     self._send_json({"error": "already running"},
                                     status=HTTPStatus.CONFLICT)
                     return

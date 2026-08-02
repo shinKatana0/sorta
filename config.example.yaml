@@ -57,7 +57,8 @@ dedup:
   # sharpness cannot: closed eyes, a face turned away, a hand across the lens.
   # Needs the VLM extra installed; off by default. A RECOMMENDATION only — it is stored
   # in `group_keeper` and nothing is ever deleted or marked by it. With this off the
-  # interface keeps recommending by sharpness, exactly as before.
+  # interface keeps recommending by sharpness, exactly as before — and F145 made
+  # `vlm.enabled: false` mean the same thing here: no model, sharpness as before.
   keeper_vlm: false
   # How many frames of one group go into that question (the best N by sharpness). The
   # rest of the group is not shown, and the answer applies to the whole group. Groups of
@@ -251,6 +252,14 @@ vlm:
   # switched on for a single run by `--deep` and by the "Deep analysis (VLM)" checkbox
   # in the web app. It is worth switching on when the hardware allows: on a live run it
   # changed 10.7% of the verdicts, mostly into `product`, a class CLIP never produces.
+  #
+  # F145: IT IS ALSO THE MASTER SWITCH FOR EVERY OTHER QUESTION THE MODEL IS ASKED.
+  # `vlm.quality`, `features.pets_verify`, `features.landmarks_verify`,
+  # `dedup.keeper_vlm` and `features.junk_rescue` each say WHAT to ask; this one says
+  # whether a model may be raised at all. With it false none of them loads a single
+  # weight, whatever they are set to, and every one of those stages behaves exactly as
+  # it does with its own key off. Nothing here is rewritten when it is switched off —
+  # the keys keep their values and start working again the moment it is back on.
   enabled: false
   model: "Qwen/Qwen2.5-VL-3B-Instruct"
   # F101: threads that prepare frames (decode + image preprocessing) for the deep tier
@@ -265,6 +274,7 @@ vlm:
   # tool answers (are the eyes open, is there a subject at all, is this a pocket shot).
   # Its own toggle, separate from `enabled` above: the deep junk tier and the quality
   # band are different populations, and wanting one says nothing about the other.
+  # F145: subordinate to `enabled` above — with the deep tier off this asks nothing.
   # F120: privacy — media classes no VLM is ever shown, by the verdict of the fast tier.
   # `[]` sends everything, which is what happened before this key existed.
   # The default protects `document`: that bucket is passports, medical forms and bank
@@ -332,7 +342,8 @@ features:
   # as a whole and cannot tell a cat from a picture of a cat; "is this animal alive" is a
   # question about the scene, which is what the VLM answers.
   # With it OFF the stage behaves exactly as before: the label is the threshold above and
-  # no frame is shown to a model.
+  # no frame is shown to a model. F145: `vlm.enabled` off is the same "off" and stands
+  # above this key — the model is not raised for it either way.
   pets_verify: false
   # Who is shown to the model when `pets_verify` is on — the SECOND threshold, far below
   # the first. 0.70 is high because nothing was checking CLIP's answer; once something is,
@@ -382,7 +393,9 @@ features:
   # silent when it does not — 71 of the 104 answers named nothing at all.
   # With it OFF the stage behaves exactly as before: `naming.landmark_threshold` alone
   # decides, nothing is shown to a model. Needs the [vlm] extra; if the weights will not
-  # load, the run falls back to that same behaviour instead of failing.
+  # load, the run falls back to that same behaviour instead of failing. F145: so does
+  # `vlm.enabled: false` — the master switch stands above this key, and a base run
+  # without the deep tier resolves exactly the places this stage resolved before F131.
   landmarks_verify: false
   # Who is shown to the model when `landmarks_verify` is on — the second, much lower
   # threshold, exactly like the pair above. `naming.landmark_threshold` (0.85) is high

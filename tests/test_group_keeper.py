@@ -77,6 +77,7 @@ class KeeperCase(FrameQualityCase):
         super().setUp()
         self.sharpness: dict[str, float] = {}
         self.dedup(keeper_vlm=True)
+        self.deep_analysis_on()  # F145: `dedup.keeper_vlm` alone raises no model
 
     def dedup(self, **kwargs):
         self.cfg.dedup = DedupConfig(**kwargs)

@@ -24,6 +24,7 @@ import sqlite3
 import tempfile
 import unittest
 import unittest.mock
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -123,6 +124,26 @@ class FrameQualityCase(unittest.TestCase):
 
     def vlm(self, **kwargs):
         self.cfg.vlm = VlmConfig(**kwargs)
+
+    def deep_analysis_on(self):
+        """F145: `vlm.enabled` — the master switch every VLM question of this stage needs.
+
+        A subordinate key (`vlm.quality`, `features.pets_verify`, `dedup.keeper_vlm`,
+        `features.junk_rescue`) says WHAT to ask; this one says whether a model may be
+        raised at all, so a case about any of them has to switch it on.
+
+        It is the deep junk tier's own toggle too, and no case here is about that tier —
+        hence the stubbed factory rather than a `vlm_classifier` argument at every
+        classify() call: it answers `personal_photo`, so it moves no verdict, and above
+        all it loads no weights on a machine that has the [vlm] extra installed. A case
+        that injects a classifier of its own still wins, that argument is checked first.
+        """
+        self.cfg.naming = replace(self.cfg.naming, vlm_enabled=True)
+        patch = unittest.mock.patch.object(
+            junk, "qwen_vlm_classifier_factory",
+            lambda _max_edge: (lambda _model: (lambda _path: "personal_photo")))
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def add_file(self, name, camera_make="Canon", camera_model="EOS", phash=None,
                  has_face=False):
@@ -544,6 +565,10 @@ class TestPetsToggle(FrameQualityCase):
 class TestQualityIncrementality(FrameQualityCase):
     """Brief test 6: a second run neither re-measures nor re-asks."""
 
+    def setUp(self):
+        super().setUp()
+        self.deep_analysis_on()  # F145: `vlm.quality` alone raises nothing
+
     def test_the_second_run_writes_nothing_new(self):
         self.add_file("IMG_0001.jpg")
         clf = QualityClassifier()
@@ -574,6 +599,10 @@ class TestQualityIncrementality(FrameQualityCase):
 
 class TestQualityVlm(FrameQualityCase):
     """Brief tests 4, 5, 8, 9: the model tier — its toggle, its population, its failures."""
+
+    def setUp(self):
+        super().setUp()
+        self.deep_analysis_on()  # F145: `vlm.quality` alone raises nothing
 
     def test_disabled_leaves_the_model_columns_null(self):
         fid = self.add_file("IMG_0001.jpg")

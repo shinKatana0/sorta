@@ -39,6 +39,7 @@ class FacesScopeCase(FrameQualityCase):
     def setUp(self):
         super().setUp()
         self.vlm(quality=True, quality_scope="faces")
+        self.deep_analysis_on()  # F145: `vlm.quality` alone raises no model
         self.asked: list[str] = []
 
     def mark_processed(self, fid: int) -> None:

@@ -317,7 +317,7 @@ import numpy as np
 from PIL import Image
 
 from . import imaging
-from .config import Config, FeaturesConfig
+from .config import Config, FeaturesConfig, vlm_allowed
 
 # F102 moved the workers knob to `vlm.workers` and this resolver along with it (the old
 # `naming.vlm_workers` address is still honoured there) — but this module is where it was
@@ -3026,6 +3026,11 @@ def classify(
     a model that will not build leaves every verdict of the run exactly as the fast tier
     wrote it, and with the deep tier off nothing is reclassified even when the score is.
 
+    F145: every one of the four askers above is subordinate to `vlm.enabled`. Their own
+    keys say WHAT to ask, not whether a model is raised — a run without deep analysis
+    loads no weights whatever config.yaml holds, and each of them then behaves exactly as
+    it does with its own key off (the graceful-fallback path they already had).
+
     progress (F100): the usual `(done, total)` callback; if it also carries a
     `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
     which of its phases it is in — CLASSIFY_PHASE_*. A plain function without that
@@ -3049,13 +3054,18 @@ def classify(
     ).fetchall()
     stats = JunkStats(total=len(rows))
 
+    # F145: the master switch, read ONCE and required by every question below. Each of
+    # them used to gate on its own key alone, so a run started without deep analysis
+    # still loaded the weights whenever one subordinate key was true in config.yaml —
+    # the hierarchy was assumed and never written down (see config.vlm_allowed). The
+    # check stands HERE, before any factory is called: loading is five seconds and
+    # gigabytes of memory, and somebody who cleared the checkbox does not pay for them.
+    vlm_on = vlm_allowed(cfg)
+
     # F37 (Phase B): the tier gate. use_clip=False — an explicit heuristics-only
     # mode, deep does not enter there (symmetric with CLIP below).
     vlm_fn: VlmClassifyFn | None = None
-    # F102: the toggle is read off cfg.naming and not off cfg.vlm on purpose — the two
-    # agree after load_config, but `--deep` and the UI checkbox force the tier for one
-    # run by replacing exactly this field on their own copy of the config.
-    if use_clip and bool(getattr(cfg.naming, "vlm_enabled", False)):
+    if use_clip and vlm_on:
         if vlm_classifier is not None:
             vlm_fn = vlm_classifier
         else:
@@ -3077,7 +3087,7 @@ def classify(
     # weights to ask nothing is the one outcome worth a check up front.
     q = quality_settings(cfg)
     quality_ask: QualityAskFn | None = None
-    if use_clip and q.vlm_quality and quality_scope_ready(conn, q.vlm_scope):
+    if use_clip and vlm_on and q.vlm_quality and quality_scope_ready(conn, q.vlm_scope):
         if quality_vlm is not None:
             quality_ask = quality_vlm
         else:
@@ -3095,7 +3105,7 @@ def classify(
     # so switching this on next to `vlm.quality` costs a second question per frame, not a
     # second set of weights.
     pet_ask: PetAskFn | None = None
-    if use_clip and q.pets and q.pets_verify:
+    if use_clip and vlm_on and q.pets and q.pets_verify:
         if pet_vlm is not None:
             pet_ask = pet_vlm
         else:
@@ -3114,7 +3124,7 @@ def classify(
     # the runtime it uses is the shared one (F95), so switching it on next to the other
     # two questions costs calls, not a second set of weights.
     keeper_ask: KeeperAskFn | None = None
-    if use_clip and bool(getattr(cfg.dedup, "keeper_vlm", False)):
+    if use_clip and vlm_on and bool(getattr(cfg.dedup, "keeper_vlm", False)):
         if keeper_vlm is not None:
             keeper_ask = keeper_vlm
         else:
@@ -3133,7 +3143,7 @@ def classify(
     # selects. With the tier off the score is still computed and stored — that is the state
     # the feature is meant to be tried in — and not one verdict moves.
     rescue_ask: JunkAskFn | None = None
-    if use_clip and q.junk_rescue and bool(getattr(cfg.naming, "vlm_enabled", False)):
+    if use_clip and vlm_on and q.junk_rescue:
         if junk_rescue_vlm is not None:
             rescue_ask = junk_rescue_vlm
         else:
