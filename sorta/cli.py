@@ -419,6 +419,23 @@ class _LazySharedClassifier:
             self._real = self._factory()
         return self._real(paths, prompts)
 
+    def features(self, paths: list[str]) -> list[np.ndarray | None]:
+        """The CLIP vectors of the paths already scored — see `ui._LazyClassifierHolder`.
+
+        F146: the hole was found on the UI wrapper, and this one is built on the same
+        pattern, so it is closed on both rather than only where it was noticed. The junk
+        stage looks for `features` on the object it was handed to decide whether it can
+        fill `clip_embeddings`; a wrapper that forwards `__call__` alone switches that
+        half off without a word.
+
+        Laziness is untouched: an unbuilt classifier has scored nothing and so has no
+        vector to hand back, which is exactly what None per path means here.
+        """
+        features_of = getattr(self._real, "features", None)
+        if not callable(features_of):
+            return [None] * len(paths)
+        return list(features_of(paths))
+
 
 # F53/#39: faces and events — the heaviest/longest steps, not needed for the basic
 # scenario (cities + dupes) — opt-in via --faces/--events, default off.

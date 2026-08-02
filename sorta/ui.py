@@ -2927,6 +2927,25 @@ class _LazyClassifierHolder:
             self._real = self._factory()
         return self._real(paths, prompts)
 
+    def features(self, paths: list[str]) -> list[Any]:
+        """The CLIP vectors of the paths already scored — the F128 half of the junk stage.
+
+        F146: without this method the holder is not the classifier that stage expects.
+        `junk.classify` decides whether it can fill `clip_embeddings` by looking for
+        `features` on the object it was handed, so a wrapper forwarding `__call__` alone
+        turned the whole half off — silently, and for every run started from the web app,
+        which is where most runs are started.
+
+        Laziness is untouched: a classifier that has not been built has scored nothing, so
+        its cache holds nothing and every path is None — the same answer
+        `landmarks.CachingFeatureClassifier` gives for a path nobody has scored, and no
+        model is loaded to give it.
+        """
+        features_of = getattr(self._real, "features", None)
+        if not callable(features_of):
+            return [None] * len(paths)
+        return list(features_of(paths))
+
 
 def _pipeline_steps() -> list[tuple[str, _StageFn]]:
     """Processing steps in dependency order — the same as `cli._pipeline_steps`, plus

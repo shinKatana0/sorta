@@ -3188,6 +3188,16 @@ def classify(
     features_of = getattr(classifier, "features", None) if classifier is not None else None
     feature_source: FeatureSource | None = features_of if callable(features_of) else None
     can_embed = classifier is None or feature_source is not None
+    # F146: and it says so. The half switching itself off is the right behaviour and the
+    # silence around it was not: an empty `clip_embeddings` reads exactly like a collection
+    # nobody has processed yet, so a caller handing over a classifier that cannot produce
+    # vectors — as the web app did from F128 until a production run in August 2026 — gets
+    # no exception, no row and, until now, no hint of a reason.
+    if use_clip and store_embeddings and not can_embed:
+        _log.warning(
+            "junk: классификатор (%s) не отдаёт CLIP-векторы — features.store_embeddings "
+            "включён, но таблица clip_embeddings не наполняется",
+            type(classifier).__name__)
     embed_ids = ({r["id"] for r in rows
                   if r["ce_model"] != embed_model
                   and r["mc_verdict"] in (None, QUALITY_VERDICT)}
