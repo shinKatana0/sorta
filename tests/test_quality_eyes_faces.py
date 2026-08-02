@@ -34,6 +34,7 @@ class TestEyesAreBelievedOnlyWhereAFaceIs(FrameQualityCase):
         super().setUp()
         self.vlm(quality=True, quality_scope="all")
         self.features(sharpness_band_min=30.0, sharpness_band_max=300.0)
+        self.deep_analysis_on()  # F145: `vlm.quality` alone raises no model
 
     def run_junk(self) -> None:
         clf = QualityClassifier(logits={"with_face.jpg": {_PHOTO_IDX: CONFIDENT},

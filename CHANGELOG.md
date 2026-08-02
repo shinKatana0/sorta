@@ -6,6 +6,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **No option raises the model by itself** (F145). A base run started **without** deep
+  analysis called the VLM from the landmarks stage. The cause was not one setting: four of
+  the five VLM questions of the pipeline gated on their own key alone — `vlm.quality`,
+  `features.pets_verify`, `dedup.keeper_vlm`, `features.junk_rescue` — and the fifth,
+  `features.landmarks_verify`, had no condition whatsoever, so any key left true in
+  config.yaml from an earlier experiment raised 20 GB of weights on a run nobody asked to
+  pay for them. It is a consequence of the project's own rule "a new feature gets a new
+  toggle": F113, F130, F131 and F132 each honestly added one, and **nobody added the
+  hierarchy** — it was assumed to exist and never checked. `vlm.enabled` is now the
+  precondition for every one of them (`config.vlm_allowed`, read BEFORE any factory is
+  called, so the weights are not merely unused but never loaded), and with it off each
+  stage produces exactly what it produces with its own key off — the landmarks stage
+  resolves the same set of places it resolved before F131 existed, down to the gate its
+  proposals are collected at. Nothing in config.yaml is rewritten: a switched-off model is
+  a state of the run, not a reason to erase somebody's settings.
+- **The web app no longer offers what the run will not do** (F145). The three subordinate
+  options on the run screen (the animal check, the frame-quality questions, the best frame
+  of a group) go **dead rather than hidden** with the deep-analysis checkbox clear — a
+  vanished option reads as "there is no such feature" — and their price on the run budget
+  becomes zero rather than the old number, so the estimate adds up to what will actually
+  happen. Nothing switches itself on in either direction.
+- **Nothing that changes data is clickable while a run is in flight** (F145). The server
+  refused these with 409 on eight routes and did not on fourteen others that write the
+  index, the config file or files on disk — a race between two writers over
+  `media_class`, `frame_quality` and `places`, which the pipeline rewrites wholesale.
+  Every POST route is now either guarded or listed as deliberately exempt (only the three
+  cancels and the folder picker), and the suite fails on a new one that is in neither set.
+  In the interface the settings column, the duplicate-choice save, the review marks, the
+  trash, "back to photos", album gathering and the layout are all disabled for the
+  duration, each with a line saying why, and all come back on their own when the run ends
+  — no page reload.
+- **The overview block holds its height** (F145). While the index was empty it drew a stub
+  with a button and swapped it for the full set of counters the moment the index stopped
+  being empty — which is in the middle of a run, right after the `index` stage: everything
+  below it, the run options among them, jumped down the page. It now draws the same rows
+  with dashes from the first paint, so arriving numbers change the text and not the
+  layout, and the empty state doubles as a statement of what a run will produce.
+
 ### Added
 - **The screenshots and receipts the classifier took for photographs** (F140):
   `features.junk_rescue`, off by default, with `features.junk_rescue_threshold` (0.02) next

@@ -78,7 +78,11 @@ class TestRunningStateGuards(unittest.TestCase):
         body = self._body("updateBusyControlsDisabled")
         for control in ("sort-apply-btn", "sort-browse-btn", "sort-dest"):
             self.assertIn(control, body)
-        self.assertIn("processRunning", body)
+        # F145: the three flags are read through one predicate now, because the same
+        # question is asked by a dozen controls on five tabs.
+        self.assertIn("uiBusy()", body)
+        self.assertIn("sortRunning || processRunning || undoRunning",
+                      self._body("uiBusy"))
 
     def test_start_over_is_dead_while_anything_runs(self):
         """"Начать заново" wipes the whole index. The server answers 409 under the
@@ -86,7 +90,7 @@ class TestRunningStateGuards(unittest.TestCase):
         refusal after — a scary dialog for an action that could not happen anyway."""
         body = self._body("updateBusyControlsDisabled")
         self.assertIn("process-reset-btn", body)
-        self.assertIn("sortRunning || processRunning", body)
+        self.assertIn("var busy = uiBusy();", body)
 
     def test_busy_controls_are_refreshed_by_the_process_poll(self):
         """Sort polling stops when no sort runs, so the process tick has to be the one

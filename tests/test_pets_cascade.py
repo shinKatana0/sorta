@@ -118,6 +118,7 @@ class PetCascadeCase(FrameQualityCase):
         super().setUp()
         self.features(pets=True, pets_verify=True, pet_threshold=0.7,
                       pet_candidate_threshold=0.3)
+        self.deep_analysis_on()  # F145: `features.pets_verify` alone raises no model
 
     def run_stage(self, scores, asker=None, **kwargs):
         """One classify() over one frame per score, with the pet asker injected."""

@@ -16,6 +16,8 @@ F131: the proposal can additionally be put to the local VLM before corroboration
 it (`features.landmarks_verify`, default off) — CLIP proposes widely, the model says
 what place it is looking at, corroboration still decides. The order matters and is the
 whole safety argument: the model is a filter placed BEFORE F75, never a way around it.
+F145: that toggle is subordinate to `vlm.enabled` — with deep analysis off this stage
+raises no weights at all, whatever `landmarks_verify` says.
 
 F136: what CLIP found for a frame is remembered (see `_SCAN_KEY`), so a later run only
 looks at the frames whose answer could have changed — a new or edited file, a new
@@ -49,7 +51,7 @@ import yaml
 from PIL import Image
 
 from . import i18n, imaging
-from .config import Config
+from .config import Config, vlm_allowed
 from .geodata import GeoResolver
 from .naming import (
     DEFAULT_VLM_MODEL,
@@ -1000,7 +1002,9 @@ def detect_landmarks(
     argument and it does not bend: CLIP proposes -> the model checks -> corroboration
     decides. Agreement between two models never overrules a country named in the path.
     With the toggle off — or with a model that will not load — this function does exactly
-    what it did before, down to the gate the proposals are collected at.
+    what it did before, down to the gate the proposals are collected at. F145: `vlm.enabled`
+    is the same kind of "off" and stands above the toggle, so a run without deep analysis
+    resolves the same set of places this stage resolved before F131 existed.
     """
     s = naming_settings(cfg)
     landmarks = load_landmarks(s.landmarks_file)
@@ -1017,7 +1021,15 @@ def detect_landmarks(
     if classifier is None:
         classifier = clip_classifier(s)  # pragma: no cover — ML, smoke test
 
-    verify = bool(getattr(getattr(cfg, "features", None), "landmarks_verify", False))
+    # F145: `features.landmarks_verify` says WHAT to ask, `vlm.enabled` says whether a
+    # model may be raised at all — and this stage was the one with no such condition
+    # whatsoever, so a base run without deep analysis called the model here. The master
+    # switch is folded into `verify` itself rather than into the asker below, because
+    # `verify` also widens the candidate gate and that widening is part of the
+    # fingerprint: with it off the stage is the one it was before F131, down to which
+    # frames it rescans.
+    verify = (vlm_allowed(cfg)
+              and bool(getattr(getattr(cfg, "features", None), "landmarks_verify", False)))
     gate = _candidate_gate(cfg, s) if verify else s.landmark_threshold
     # The thresholds are read through getattr: the fields live in config.py, which this
     # module does not own (the F30/F37/F64 pattern) — an older settings object keeps

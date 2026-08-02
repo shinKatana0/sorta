@@ -61,13 +61,19 @@ class VerifyCase(CorroborationCase):
     threshold = 0.85          # naming.landmark_threshold — today's gate
     candidate = 0.5           # features.landmark_candidate_threshold — the check's gate
     verify = True
+    # F145: `vlm.enabled` — the master switch. `landmarks_verify` says what to ask, this
+    # says whether a model may be raised at all, and the fixture of this file is about a
+    # run that HAS deep analysis on. The case for the other state is in
+    # test_vlm_master_switch.py, where it belongs.
+    deep = True
 
     def setUp(self) -> None:
         super().setUp()
         self.cfg = dataclasses.replace(
             self.cfg,
             naming=_naming_from({"landmarks_file": self.cfg.naming.landmarks_file,
-                                 "landmark_threshold": self.threshold}),
+                                 "landmark_threshold": self.threshold,
+                                 "vlm_enabled": self.deep}),
             features=FeaturesConfig(landmarks_verify=self.verify,
                                     landmark_candidate_threshold=self.candidate),
         )
