@@ -58,6 +58,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # orchestrator — the version is the one thing two parallel workers cannot settle
     # between themselves, because neither can see the other's worktree, and each branch
     # is self-consistent right up until the second merge.
+    # v19 (group_keeper, F132) — a new table, created by executescript below.
+    # The third renumbering of the day, for the same reason. F124/F130/F132 all took the
+    # next free number their own main showed them; only the merge order can decide.
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

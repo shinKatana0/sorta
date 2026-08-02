@@ -40,7 +40,7 @@ class TestManualPetMigration(unittest.TestCase):
             (version,) = conn.execute("PRAGMA user_version").fetchone()
             conn.close()
         self.assertEqual(cols, {"file_id", "is_animal", "updated_at"})
-        self.assertEqual(version, 18)
+        self.assertEqual(version, 19)
 
     def test_v16_db_gains_the_table_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -68,7 +68,7 @@ class TestManualPetMigration(unittest.TestCase):
             files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             conn.close()
         self.assertIn("manual_pet", tables)
-        self.assertEqual(version, 18)
+        self.assertEqual(version, 19)
         self.assertEqual(files, 1)
 
     def test_reopening_is_idempotent_and_keeps_the_rows(self):
@@ -88,7 +88,7 @@ class TestManualPetMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertEqual((row["file_id"], row["is_animal"]), (1, 0))
-        self.assertEqual(version, 18)
+        self.assertEqual(version, 19)
 
     def test_one_row_per_file(self):
         """The PK is what makes "the user's verdict" singular — a second mark on the

@@ -51,6 +51,23 @@ dedup:
   # Choosing the canonical file among exact duplicates:
   # prefer_exif_then_largest — the file with an EXIF date first, then the larger one
   canonical_strategy: prefer_exif_then_largest
+  # F132: ask the local VLM which frame of a near-duplicate group is the one to keep —
+  # ONE comparative question over the whole group ("which of these is best"), which a
+  # model answers far more reliably than it scores frames one at a time. It sees what
+  # sharpness cannot: closed eyes, a face turned away, a hand across the lens.
+  # Needs the VLM extra installed; off by default. A RECOMMENDATION only — it is stored
+  # in `group_keeper` and nothing is ever deleted or marked by it. With this off the
+  # interface keeps recommending by sharpness, exactly as before.
+  keeper_vlm: false
+  # How many frames of one group go into that question (the best N by sharpness). The
+  # rest of the group is not shown, and the answer applies to the whole group. Groups of
+  # a few dozen frames exist and a 3B model asked to compare 38 pictures answers nothing
+  # usable.
+  keeper_max_frames: 5
+  # The smallest group worth asking the model about. 2 = every group. Set 3 to pay only
+  # where the choice is genuinely unclear: on a PAIR of the same scene, sharpness already
+  # compares the two frames honestly, and pairs are the overwhelming majority of groups.
+  keeper_min_group_size: 2
 
 geo:
   # A gap between frames larger than this (in hours) starts a new time session;

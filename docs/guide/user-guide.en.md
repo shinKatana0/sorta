@@ -1298,6 +1298,9 @@ entirely.
 | Key | Default | What it does |
 |---|---|---|
 | `dedup.canonical_strategy` | `prefer_exif_then_largest` | Among exact duplicates the canonical file is the one that has EXIF, and the larger one when that ties. The rest are marked duplicates and stay out of the layout. |
+| `dedup.keeper_vlm` | `false` | Ask the local VLM which frame of a near-duplicate group is the one to keep — one comparative question ("which of these is best") per group, not a score per frame. It sees what sharpness cannot: closed eyes, a head turned away, a hand across the lens. Needs the VLM extra installed; the answer is stored in the `group_keeper` table as a **recommendation** together with its source (`sharpness` or the model), and nothing is deleted, moved or marked by it — the decision about a duplicate stays yours. With this off the Duplicates tab keeps recommending by sharpness, exactly as before. |
+| `dedup.keeper_max_frames` | `5` | How many frames of one group go into that question — the best N by sharpness; the rest are not shown and the answer applies to the whole group. Groups of a few dozen frames do occur, and a 3B model asked to compare 38 pictures answers nothing usable. |
+| `dedup.keeper_min_group_size` | `2` | The smallest group worth asking the model about. `2` is every group; set `3` to pay only where the choice is genuinely unclear — on a **pair** of the same scene sharpness already compares the two frames honestly, and pairs are the large majority of groups (791 groups on the reference collection, 115 of them with three frames or more). |
 
 **`geo:` — how a place is decided**
 
