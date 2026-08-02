@@ -495,24 +495,34 @@ class TestOverviewMarkup(OverviewTestBase):
 
     def test_the_overview_is_the_first_tab(self):
         self.assertLess(self.html.index('id="tab-btn-overview"'),
-                        self.html.index('id="tab-btn-process"'))
+                        self.html.index('id="tab-btn-review"'))
 
-    def test_it_opens_by_default_once_the_index_has_files(self):
-        self.assertIn('if (data.indexed) activateTab("overview");', self.html)
+    def test_it_is_the_tab_the_page_opens_on(self):
+        # F133: the run merged into this tab, so there is no longer a second landing
+        # place to switch away from — "Overview" is simply the active tab of the markup.
+        self.assertIn('class="tab-btn active" id="tab-btn-overview"', self.html)
+        self.assertIn('<section id="tab-overview" class="tab-panel active">', self.html)
 
     def test_the_view_reads_its_own_route(self):
         self.assertIn('fetch("/api/overview")', self.html)
 
     def test_the_numbers_lead_to_their_tabs(self):
         self.assertIn('overviewCount(c.duplicates, "review", "dupes")', self.html)
-        self.assertIn('overviewCount(c.events, "event")', self.html)
-        self.assertIn('row.key === "photo" ? null : "junk"', self.html)
+        # F133: events, animals and the classifier's classes are slices of one tab now,
+        # and a number leads to its own slice rather than to the tab holding it.
+        self.assertIn('overviewCount(c.events, "slices", "event")', self.html)
+        self.assertIn('overviewCount(c.animals, "slices", "animal")', self.html)
+        self.assertIn('row.key === "photo" ? null : "slices"', self.html)
+        self.assertIn('"junk:" + row.key', self.html)
 
     def test_an_empty_index_gets_an_invitation_not_a_table_of_zeros(self):
         self.assertIn('stateEl("empty", I18N.overview_empty)', self.html)
-        # the invitation carries the way out of it — straight to the "Process" tab
+        # F133: the way out of the empty state is on this very tab now — the source
+        # picker sits below the invitation, and the button leads the eye to it.
         self.assertIn('startBtn.id = "overview-start-btn"', self.html)
         self.assertIn('I18N.overview_empty_button', self.html)
+        self.assertIn('document.getElementById("process-source-dir").focus();',
+                      self.html)
 
     def test_the_numbers_are_refetched_on_every_open(self):
         self.assertIn('if (name === "overview") loadOverview();', self.html)

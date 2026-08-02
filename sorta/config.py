@@ -90,6 +90,44 @@ class DatesConfig:
 @dataclass
 class DedupConfig:
     canonical_strategy: str = "prefer_exif_then_largest"
+    # F132: ask the local VLM which frame of a near-duplicate group is the one to keep —
+    # one comparative question over the whole group instead of a score per frame. Its own
+    # knob (the rule every model feature follows here) and OFF by default: it needs the
+    # VLM runtime installed and loaded, and with it off the interface keeps recommending
+    # by sharpness exactly as it does today. Nothing is ever deleted by it either way —
+    # the answer is a recommendation stored in `group_keeper`, and `dedup_choice` stays
+    # the user's alone.
+    keeper_vlm: bool = False
+    # How many frames of a group go into ONE question. The live collection holds a group
+    # of 38 near-duplicates: a 3B model asked to compare 38 pictures answers nothing
+    # usable and the context grows for no return. The frames sent are the best N by
+    # sharpness, and the answer applies to the group as a whole.
+    keeper_max_frames: int = 5
+    # The smallest group worth asking about. 2 — every group, which is the default
+    # because a recommendation for a pair is still a recommendation. 3 is the setting
+    # that matters on a real collection: 85% of the groups there are PAIRS, and on a pair
+    # sharpness already compares two frames of the same scene at the same scale honestly.
+    # Measured population: 791 groups in total, 115 of them with three frames or more.
+    keeper_min_group_size: int = 2
+
+
+def _dedup_from(raw: dict) -> DedupConfig:
+    """The `dedup:` section — every value tolerant of garbage, like `features:` below.
+
+    `canonical_strategy` keeps its plain str() reading (dedup._canonical falls back to
+    `largest` for anything it does not know); the F132 keys go through the shared
+    validators, so a typo in a number cannot switch a model on or send 0 frames into a
+    question.
+    """
+    d = DedupConfig()
+    return DedupConfig(
+        canonical_strategy=str(raw.get("canonical_strategy", d.canonical_strategy)),
+        keeper_vlm=_as_bool(raw.get("keeper_vlm"), d.keeper_vlm),
+        keeper_max_frames=_as_positive_int(
+            raw.get("keeper_max_frames"), d.keeper_max_frames),
+        keeper_min_group_size=_as_positive_int(
+            raw.get("keeper_min_group_size"), d.keeper_min_group_size),
+    )
 
 
 @dataclass
@@ -660,7 +698,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
             skip_dirs=idx.get("skip_dirs", IndexConfig().skip_dirs),
         ),
         dates=DatesConfig(**_known(DatesConfig, data.get("dates") or {})),
-        dedup=DedupConfig(**_known(DedupConfig, data.get("dedup") or {})),
+        dedup=_dedup_from(_mapping(data.get("dedup"))),
         geo=GeoConfig(**_known(GeoConfig, data.get("geo") or {})),
         faces=FacesConfig(**_known(FacesConfig, data.get("faces") or {})),
         events=EventsConfig(**_known(EventsConfig, data.get("events") or {})),

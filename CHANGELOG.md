@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The best frame of a duplicate group, asked comparatively** (F132): `dedup.keeper_vlm`,
+  off by default, next to `dedup.keeper_max_frames` (5) and `dedup.keeper_min_group_size`
+  (2). Sharpness already ranks a near-duplicate group honestly — inside a group the frames
+  are one picture at one scale, which is the only place the laplacian answers the question
+  it was measured for — but it cannot see what a person chooses by: closed eyes, a head
+  turned away, a hand across the lens, the expression. So the model is asked, and asked
+  **comparatively**: one call per group with the frames in a single prompt ("which of
+  these is best"), not a score per frame. The comparative form is the whole bet of the
+  feature — it needs no calibrated scale, only an ordering. The answer is a **number**,
+  read leniently (an ordinal word counts, a number outside the group does not), and stored
+  in the new `group_keeper` table (schema v18) with its `source`, so the interface can say
+  whether sharpness or the model suggested this frame. Groups have no id — they are
+  recomputed by union-find on every call — so a group is addressed by a sha1 over its
+  sorted file ids, which invalidates itself: a burst that gained or lost a frame hashes
+  differently and is asked again, an unchanged one is not. Nothing is ever deleted, moved
+  or marked: `dedup_choice` remains the user's own decision and no path of the junk stage
+  writes it. Every failure — an unreadable answer, a raise on one group, a model that will
+  not build, a group holding something that is not a personal photograph (scans of a
+  passport are exactly the burst a model must not be handed) — falls back to the sharpness
+  ranking under `source='sharpness'`, never to an empty recommendation. Cost is measured
+  before it is quoted: `scripts/measure_group_keeper.py` prints seconds per call on a
+  sample of real groups and only then projects the full population, because the 0.78 s in
+  hand was measured on a prompt with **one** image and this one carries up to five. On the
+  reference collection the population is 791 groups, 676 of them pairs — which is what
+  `keeper_min_group_size: 3` is for: 115 groups where the choice is genuinely unclear.
 - **Taking a false animal mark off a frame — and putting a missing one back** (F124):
   the "Animals" tab gained the one action it was missing. The 0.70 threshold was
   measured at 92% precision, so of the 805 marked frames of the live collection **about
