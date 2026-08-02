@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 16;
+PRAGMA user_version = 17;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -123,6 +123,16 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     pet_score REAL,                       -- the pet-group CLIP score, written whether or not
     --                                       it reached the threshold (so a threshold can be
     --                                       re-measured without a new pass)
+    -- v17 (F130): what the VLM answered about this frame — real | depiction | none — when
+    -- the pet score put it past features.pet_candidate_threshold and features.pets_verify
+    -- was on. NULL means NOT ASKED, here as everywhere in this table: below the candidate
+    -- threshold, the check switched off, the model unavailable, or an answer that did not
+    -- parse. The column is what keeps a rejected frame distinguishable from an unasked one
+    -- — without it every later run would re-ask the ~500 frames the model already turned
+    -- down, at 0.78 s each, and the interface would have nothing to explain a removed
+    -- label with. `pet` above is the DECISION: 'animal' when pet_vlm = 'real', or when
+    -- pet_vlm IS NULL and pet_score >= features.pet_threshold.
+    pet_vlm TEXT,
     eyes_open INTEGER,                    -- the VLM answers: 1 | 0 | NULL (not asked, or the
     has_subject INTEGER,                  -- answer did not parse — never guessed as 0).
     --                                       eyes_open is kept only where a face was detected

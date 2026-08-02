@@ -1,4 +1,4 @@
-"""Price the frame-quality cascade (F113): what the cheap tiers see, before any threshold.
+"""Price the frame-quality cascade (F113/F130): what each tier sees, and what it got right.
 
 Three of the numbers this feature ships with are guesses until somebody looks at a
 distribution — the pet threshold, the sharpness band, and the CLIP score below which a
@@ -17,16 +17,33 @@ private copy of the arithmetic would drift and price a cascade that does not exi
 Privacy: nothing printed identifies a frame. No path, no basename; the cache stores file
 ids and aggregates only (the same rule scripts/measure_ocr_gate.py follows).
 
+F130 adds the block the pet cascade is accepted or rejected on. Its numbers — precision
+97-99%, recall 66% — are a PREDICTION extrapolated from the F122 labelling, not a
+measurement of this feature, and the brief pre-commits to reporting whichever way the
+measurement goes. Two things are needed for that and both are here:
+
+* `--features verify` prices the candidate threshold (how many frames the model is shown,
+  how long that takes) and, after a live run, reports what the stored answers actually
+  changed — labels removed from frames CLIP scored high, labels added below its threshold;
+* `--labels` computes precision and recall over hand-labelled frames, BEFORE the check
+  (the CLIP threshold alone, which is how the 92% / 54% of F122 was produced) and AFTER
+  it, weighted back to the collection by score band so the two are comparable to F122 and
+  to each other. `--write-labels` writes the stratified worksheet to fill in.
+
 Usage (from the repo root, with the venv python):
     python scripts/measure_frame_quality.py --features pets
     python scripts/measure_frame_quality.py --features pets sharpness band
     python scripts/measure_frame_quality.py --sample 500 --cache frame_quality.json
     python scripts/measure_frame_quality.py --cache frame_quality.json   # replay, no CLIP
+    python scripts/measure_frame_quality.py --features verify             # after a run
+    python scripts/measure_frame_quality.py --features verify --labels pets.json
 
 A run costs one CLIP pass over the sample (the pet prompts ride in the same call the junk
 stage makes) plus a preview decode per frame for the laplacian — minutes on a few hundred
 frames. `--cache` writes the per-frame aggregates out so a different grid can be tried
-without paying for the model again.
+without paying for the model again. The stored VLM answers are read from the DB on every
+run, cache or no cache: a replay must not describe the state of the index before the run
+that produced those answers.
 """
 from __future__ import annotations
 
@@ -54,11 +71,23 @@ DEFAULT_SAMPLE = 500
 # useful cut is at 0.3 or at 0.9, and a narrow grid centred on the current default would
 # be the guess this script exists to avoid.
 DEFAULT_PET_GRID = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+# F130: the grid the CANDIDATE threshold is read off — how many frames the check is shown.
+# It reaches lower than the grid above because that is the whole point of the cascade: the
+# selection can go down once something verifies what it selects.
+DEFAULT_CANDIDATE_GRID = (0.1, 0.2, 0.3, 0.4, 0.5, 0.7)
+# The measured cost of one local VLM answer, the number every minute below is counted with.
+VLM_SECONDS_PER_FRAME = 0.78
 # Percentiles are how a laplacian distribution is read: it has no natural units, so what
 # matters is where the mass sits relative to itself.
 PERCENTILES = (5, 10, 25, 50, 75, 90, 95)
 
-FEATURES = ("pets", "sharpness", "band")
+# F130: the score bands a labelling sample is stratified over, and the bands the answers
+# are weighted back to the collection with. Uniform in score rather than in count: the
+# population is enormously top-heavy in the low bands, so a uniform-in-frames sample would
+# spend every label on frames nobody was ever going to mark.
+SCORE_BANDS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0001)
+
+FEATURES = ("pets", "sharpness", "band", "verify")
 
 CACHE_VERSION = 1
 
@@ -77,6 +106,11 @@ class Frame:
     pet_score: float
     sharpness: float | None  # None — the frame did not decode
     subject_score: float     # the junk-group probability of "a photograph"
+    # F130: what the stored `frame_quality.pet_vlm` says about this frame — real |
+    # depiction | none, or None for "the check never asked". Read from the DB rather than
+    # from the cache, so a replay describes the index as it is now; defaulted so every
+    # cache written before this feature still loads.
+    pet_vlm: str | None = None
 
 
 def sample_rows(db_path: str, n: int, seed: int) -> list[sqlite3.Row]:
@@ -220,6 +254,222 @@ def format_band(frames: list[Frame], q: junk.QualitySettings) -> str:
     ])
 
 
+# --- F130: the cascade — what it costs, what it changed, and whether it was right -------
+
+
+def read_pet_vlm(db_path: str, frames: list[Frame]) -> list[Frame]:
+    """`frame_quality.pet_vlm` attached to the frames — the answers a live run stored.
+
+    Read from the index and never from the cache: the whole reason to run this block is a
+    run that has happened since, and a replay that described the state before it would be
+    reporting on the wrong pass. A DB without the column (an index older than F130) simply
+    answers nothing, so the block prints "the check has not run" instead of failing.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        answers = {int(r["file_id"]): r["pet_vlm"] for r in conn.execute(
+            "SELECT file_id, pet_vlm FROM frame_quality WHERE pet_vlm IS NOT NULL")}
+    except sqlite3.OperationalError:
+        answers = {}
+    finally:
+        conn.close()
+    return [Frame(f.file_id, f.pet_class, f.pet_score, f.sharpness, f.subject_score,
+                  answers.get(f.file_id)) for f in frames]
+
+
+def format_candidates(frames: list[Frame], grid: list[float], current: float) -> str:
+    """How many frames each candidate threshold sends to the model, and for how long.
+
+    The table the candidate threshold is chosen from, and the only honest way to choose it:
+    the price is linear in the count and the count is only knowable from the scores this
+    collection actually has.
+    """
+    total = len(frames)
+    out = [
+        "=" * 88,
+        f"КАНДИДАТЫ НА ПРОВЕРКУ VLM ({total} кадров в выборке)",
+        f"{'порог':>6} {'кадров':>10} {'доля':>8} {'время на выборке':>18} "
+        f"{'на 20 000 кадров':>18}",
+    ]
+    for threshold in grid:
+        fired = sum(1 for f in frames if f.pet_score >= threshold)
+        share = fired / total if total else 0.0
+        mark = "*" if abs(threshold - current) < 1e-9 else " "
+        out.append(
+            f"{threshold:>5.2f}{mark}{fired:>10d} {_pct(fired, total):>8} "
+            f"{fired * VLM_SECONDS_PER_FRAME / 60:>15.1f} мин "
+            f"{20000 * share * VLM_SECONDS_PER_FRAME / 60:>15.1f} мин")
+    out.append("=" * 88)
+    out.append("* — порог из конфига (features.pet_candidate_threshold). "
+               f"Цена кадра — {VLM_SECONDS_PER_FRAME} с, замер F113.")
+    return "\n".join(out)
+
+
+def format_answers(frames: list[Frame], q: junk.QualitySettings) -> str:
+    """What the stored answers did to the labels — in both directions, counted separately.
+
+    Both directions matter and they are different claims. Removing a label from a high
+    score is precision (the plush toys); adding one below the threshold is recall (the
+    animals a threshold cannot reach). A table that only totalled them would hide whichever
+    half failed.
+    """
+    answered = [f for f in frames if f.pet_vlm is not None]
+    if not answered:
+        return "\n".join([
+            "=" * 88,
+            "ОТВЕТЫ VLM: в базе их нет — проверка (features.pets_verify) ещё не прогонялась"
+            " на этой выборке",
+            "=" * 88,
+        ])
+    by_answer: dict[str, int] = {}
+    for f in answered:
+        by_answer[f.pet_vlm or ""] = by_answer.get(f.pet_vlm or "", 0) + 1
+    threshold = q.pet_threshold
+    before = sum(1 for f in frames if junk.pet_label(None, f.pet_score, threshold))
+    after = sum(1 for f in frames
+                if junk.pet_label(f.pet_vlm, f.pet_score, threshold))
+    removed = sum(1 for f in frames
+                  if junk.pet_label(None, f.pet_score, threshold)
+                  and not junk.pet_label(f.pet_vlm, f.pet_score, threshold))
+    added = sum(1 for f in frames
+                if not junk.pet_label(None, f.pet_score, threshold)
+                and junk.pet_label(f.pet_vlm, f.pet_score, threshold))
+    return "\n".join([
+        "=" * 88,
+        f"ОТВЕТЫ VLM ({len(answered)} кадров из {len(frames)} спрошено)",
+        "  " + ", ".join(f"{name} {count}" for name, count in sorted(by_answer.items())),
+        f"  помечено животными до проверки (порог {threshold:.2f}): {before:>5d}",
+        f"  снято проверкой (изображение или нет животного):        {removed:>5d}",
+        f"  добавлено проверкой (ниже порога, но живое):            {added:>5d}",
+        f"  помечено после проверки:                                {after:>5d}",
+        "=" * 88,
+        "Метка снимается и ставится в обе стороны — это и есть каскад. Точность и полнота "
+        "требуют\nразметки: --labels (см. --write-labels).",
+    ])
+
+
+@dataclass(frozen=True)
+class Accuracy:
+    """Precision and recall over a weighted sample, plus the counts they came from."""
+    marked: float     # weighted frames carrying the label
+    correct: float    # of those, frames that really hold a live animal
+    truth: float      # weighted frames that really hold one, marked or not
+
+    @property
+    def precision(self) -> float:
+        return self.correct / self.marked if self.marked else 0.0
+
+    @property
+    def recall(self) -> float:
+        return self.correct / self.truth if self.truth else 0.0
+
+
+def band_weights(frames: list[Frame], labelled: set[int]) -> dict[int, float]:
+    """Weight per LABELLED frame: how many frames of the population it stands for.
+
+    The sample is stratified by score band because the population is top-heavy — a uniform
+    sample would spend every label in the bands nobody marks — and a stratified sample only
+    answers a question about the collection once each label is weighted back by the size of
+    its band. This is the F122 arithmetic, made repeatable instead of done once by hand.
+
+    A band with frames but no labels contributes nothing and is reported by the caller: it
+    is a hole in the sample, not a zero.
+    """
+    weights: dict[int, float] = {}
+    for low, high in zip(SCORE_BANDS, SCORE_BANDS[1:]):
+        band = [f for f in frames if low <= f.pet_score < high]
+        picked = [f for f in band if f.file_id in labelled]
+        if not picked:
+            continue
+        share = len(band) / len(picked)
+        for f in picked:
+            weights[f.file_id] = share
+    return weights
+
+
+def accuracy(frames: list[Frame], labels: dict[int, bool], threshold: float,
+             *, verified: bool) -> Accuracy:
+    """Weighted precision/recall of the label rule — with the stored answers, or without.
+
+    `verified=False` replays the rule as it was before the cascade (the CLIP score alone),
+    which is what the 92% / 54% of F122 measured; `verified=True` is the same rule with
+    `pet_vlm` in hand. Both call `junk.pet_label`, the pipeline's own function, so the
+    table cannot come to disagree with what the stage writes.
+    """
+    weights = band_weights(frames, set(labels))
+    marked = correct = truth = 0.0
+    for f in frames:
+        weight = weights.get(f.file_id)
+        if weight is None or f.file_id not in labels:
+            continue
+        is_animal = labels[f.file_id]
+        has_label = junk.pet_label(f.pet_vlm if verified else None,
+                                   f.pet_score, threshold) is not None
+        marked += weight * has_label
+        correct += weight * (has_label and is_animal)
+        truth += weight * is_animal
+    return Accuracy(marked, correct, truth)
+
+
+def format_accuracy(frames: list[Frame], labels: dict[int, bool],
+                    q: junk.QualitySettings) -> str:
+    """The block the feature is accepted or rejected on: before the check, and after it."""
+    known = {fid for fid in labels if any(f.file_id == fid for f in frames)}
+    if len(known) < MIN_SAMPLE:
+        head = (f"ВНИМАНИЕ: размечено {len(known)} кадров выборки, меньше {MIN_SAMPLE} — "
+                f"по такой разметке вывод не делают")
+    else:
+        head = f"размечено {len(known)} кадров выборки"
+    rows = [("до проверки (только CLIP)",
+             accuracy(frames, labels, q.pet_threshold, verified=False)),
+            ("после проверки (CLIP + VLM)",
+             accuracy(frames, labels, q.pet_threshold, verified=True))]
+    out = [
+        "=" * 88,
+        f"ТОЧНОСТЬ И ПОЛНОТА (порог {q.pet_threshold:.2f}, взвешено по полосам оценки)",
+        f"  {head}",
+        f"{'':>30} {'точность':>10} {'полнота':>10}",
+    ]
+    for name, a in rows:
+        out.append(f"{name:>30} {a.precision:>9.1%} {a.recall:>10.1%}")
+    out.append("=" * 88)
+    out.append("Замер F122 без проверки: точность 92%, полнота 54%. Если проверка полноту "
+               "не подняла\nили точность просела — это результат, а не повод двигать "
+               "ожидание: порог отбора\nоткатывается, а числа записываются в бриф.")
+    return "\n".join(out)
+
+
+def write_label_template(path: Path, frames: list[Frame], per_band: int,
+                         seed: int) -> int:
+    """A worksheet to fill in: `{file_id: null}`, stratified over the score bands.
+
+    File ids and nothing else — the same privacy rule the cache follows. Whoever fills it
+    in opens those frames in the web app and replaces each null with true (a live animal is
+    in the frame) or false. Returns how many frames were written.
+    """
+    rng = random.Random(seed)
+    picked: list[int] = []
+    for low, high in zip(SCORE_BANDS, SCORE_BANDS[1:]):
+        band = [f.file_id for f in frames if low <= f.pet_score < high]
+        rng.shuffle(band)
+        picked.extend(sorted(band[:per_band]))
+    path.write_text(json.dumps({str(fid): None for fid in picked}, indent=1),
+                    encoding="utf-8")
+    return len(picked)
+
+
+def load_labels(path: Path) -> dict[int, bool]:
+    """The filled-in worksheet -> {file_id: is there really a live animal}.
+
+    Frames still holding `null` are simply not labelled yet and are dropped — a partially
+    filled sheet has to be usable, and treating an unanswered frame as `false` would invent
+    the very labels the sheet exists to collect.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {int(fid): bool(value) for fid, value in data.items() if value is not None}
+
+
 def save_cache(path: Path, frames: list[Frame]) -> None:
     """Per-frame aggregates for a later replay. File ids only — never paths."""
     path.write_text(json.dumps({
@@ -279,6 +529,15 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=20260729)
     ap.add_argument("--pet-thresholds", type=float, nargs="+",
                     default=list(DEFAULT_PET_GRID), help="the pet-score grid")
+    ap.add_argument("--candidate-thresholds", type=float, nargs="+",
+                    default=list(DEFAULT_CANDIDATE_GRID),
+                    help="the grid features.pet_candidate_threshold is read off")
+    ap.add_argument("--labels", help="JSON {file_id: true|false} — is there really a live "
+                                     "animal in the frame; enables the accuracy block")
+    ap.add_argument("--write-labels", help="write a stratified worksheet to fill in "
+                                           "(file ids only) and exit")
+    ap.add_argument("--per-band", type=int, default=20,
+                    help="frames per score band in the worksheet (default 20)")
     ap.add_argument("--cache", help="JSON with the per-frame aggregates: written after a "
                                     "measurement, replayed instead of one")
     ap.add_argument("--refresh", action="store_true",
@@ -305,6 +564,16 @@ def main() -> None:
             save_cache(cache, frames)
             print(f"кэш записан: {cache} (только file_id и агрегаты, без путей)")
 
+    # F130: the answers live in the index, not in the cache — see read_pet_vlm.
+    frames = read_pet_vlm(str(cfg.database), frames)
+
+    if args.write_labels:
+        written = write_label_template(
+            Path(args.write_labels), frames, args.per_band, args.seed)
+        print(f"размечать: {written} кадров записано в {args.write_labels} "
+              f"(только file_id; замените null на true/false)")
+        return
+
     print()
     if "pets" in args.features:
         print(format_pets(frames, sweep_pets(frames, sorted(args.pet_thresholds)),
@@ -313,6 +582,12 @@ def main() -> None:
         print(format_sharpness(frames, q))
     if "band" in args.features:
         print(format_band(frames, q))
+    if "verify" in args.features:
+        print(format_candidates(frames, sorted(args.candidate_thresholds),
+                                q.pet_candidate_threshold))
+        print(format_answers(frames, q))
+        if args.labels:
+            print(format_accuracy(frames, load_labels(Path(args.labels)), q))
 
 
 if __name__ == "__main__":

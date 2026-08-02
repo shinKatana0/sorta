@@ -48,6 +48,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v14 (manual_places, F85c) — a new table, created by executescript below
     # v15 (frame_quality, F113) — a new table, created by executescript below
     # v16 (clip_embeddings, F128) — a new table, created by executescript below
+    # frame_quality itself only appeared in v15, so the range starts there: an older DB
+    # gets the column with the table from executescript below.
+    if 15 <= version <= 16:  # v17: frame_quality.pet_vlm (F130 — the pet check's answer)
+        conn.execute("ALTER TABLE frame_quality ADD COLUMN pet_vlm TEXT")
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
