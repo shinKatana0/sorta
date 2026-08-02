@@ -46,6 +46,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **Search that answers Russian** (F141): `features.search_index`, off by default, with
+  `features.search_model` (`xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k`) next to it and a
+  new table `search_embeddings` (schema v22). Search by words was accurate in English and
+  did not work in Russian, and 217 hand-labelled judgements over 8 concepts say how badly:
+  22% precision at top-5 against 98% for the multilingual model, with four of the eight
+  concepts — cake, food, mountains, children — returning **nothing at all**. That is not
+  "worse", it is a feature that does not exist for half its users. The obvious fix, swapping
+  `naming.clip.*`, is the one thing that must not happen: the landmark threshold 0.85 with
+  corroboration (F75), the animal threshold 0.70 (F122), the cascade selection at 0.50
+  (F130) and the junk classification are all calibrated on `ViT-L-14`'s numbers, and a swap
+  invalidates every one of those measurements at once. So `ViT-L-14` stays the
+  **classification** model and search gets a **second vector of its own**, written by a
+  second CLIP pass over the same previews and the same population (canonical photographs,
+  F120). The control that had to pass before that could be believed did: the smaller image
+  tower is not weaker in English either — 95% against 98% at top-5, three points on forty
+  judgements. The price is named in the config rather than hidden, which is why the toggle
+  is off: **19 753 frames in 635 seconds** (~10.5 minutes) on the machine it was measured
+  on, plus ~40 MB per 20 000 photographs. F128's rule is not weakened — every row carries
+  the model that produced it, a mismatch means recompute and never use — and search reads
+  the search index alone: with the toggle off it says there is nothing to rank (F134) rather
+  than quietly falling back to vectors of another model, because a ranking produced by the
+  wrong model looks exactly like a good one. Not one classification threshold moved.
+  `scripts/measure_search.py` measures the search index it now reads.
 - **The screenshots and receipts the classifier took for photographs** (F140):
   `features.junk_rescue`, off by default, with `features.junk_rescue_threshold` (0.02) next
   to it and a new column `frame_quality.junk_score` (schema v20). The search by words (F134)

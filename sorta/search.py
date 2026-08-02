@@ -1,10 +1,21 @@
-"""F129: search by words over the CLIP vectors F128 kept — the engine, without an interface.
+"""F129: search by words over the CLIP vectors the junk stage keeps — the engine, no interface.
 
 Every slice of the collection is written code today: a tab for animals, a tab for people,
 a tab for products. A search turns a slice into a QUERY — someone types a word and gets
 one — so "food", "snow", "the sea" stop being a programmer's work. What that stands on is
-already on disk: `clip_embeddings` holds an L2-normalized CLIP vector per canonical
-photograph together with the name of the model that produced it (F128).
+already on disk: `search_embeddings` holds an L2-normalized CLIP vector per canonical
+photograph together with the name of the model that produced it.
+
+F141 is why that table is not `clip_embeddings`. A search has to answer the language the
+user types, and the classification model does not: `ViT-L-14` scores 22% precision at
+top-5 on Russian queries against 98% for `xlm-roberta-base-ViT-B-32`, with four of eight
+labelled concepts (cake, food, mountains, children) returning nothing whatsoever. Swapping
+the pipeline's model would fix that for free and would also invalidate the landmark (F75),
+animal (F122) and cascade (F130) thresholds calibrated on its numbers — so search got a
+SECOND vector, from a model of its own (`features.search_model`), written by a second pass
+behind `features.search_index`. With that toggle off this engine has nothing to rank and
+says so; the classification vectors are deliberately not a fallback, because a ranking
+produced by the wrong model looks exactly like a good one.
 
 Three properties are the whole feature, and each of them is a decision rather than an
 implementation detail:
@@ -14,7 +25,7 @@ implementation detail:
   in the output marks as wrong. Rows of another model never enter the ranking; if that
   leaves nothing to rank, the caller is told so (`EmbeddingsMissing`) instead of being
   handed a short list. The filter itself lives where F128 put it — inside
-  `junk.read_clip_embeddings`, the one function that reads the table.
+  `junk.read_search_embeddings`, the one function that reads the table.
 * **An empty table is a reason, not an empty result.** "Nothing was found" and "nothing was
   ever computed" read identically in a list of zero lines, and only one of them is fixed by
   running `sorta junk`.
@@ -28,12 +39,17 @@ compound queries ("a cake with candles on a table by the window") are weak — C
 sentence as one whole and single subjects are what it does well. The population is
 personal photographs only (F120): a screenshot's vector is noise in a search over a family
 archive, and it is not in the table to begin with — which also means a document (a
-passport, a medical form) can never surface here, because F128 stores no row for one.
+passport, a medical form) can never surface here, because the stage stores no row for one.
 
-The accuracy of this search on a real collection has NOT been measured. That is what
-`scripts/measure_search.py` is for, and F121/F122 is why it is not optional: the animal
-class looked like it worked until 320 hand-labelled frames showed that only half of the
-question was right.
+The accuracy of this search HAS been measured on a real collection, with
+`scripts/measure_search.py` and 217 hand-labelled judgements over 8 concepts, each
+concept-frame pair judged once whatever produced it. With the search index on
+(`xlm-roberta-base-ViT-B-32`) it is 98% precision at top-5 in Russian and 95% in English;
+the classification model it replaced for this purpose gave 22% in Russian and 98% in
+English. F121/F122 is why that measurement was not optional: the animal class looked like
+it worked until 320 hand-labelled frames showed that only half of the question was right.
+The one concept still weak for both models is "a city at night" (80%) — a compound query,
+which is the class the limits above already name.
 
 The real CLIP is loaded exactly once, in `text_encoder`; everything else takes an encoder
 as an argument, which is what lets the tests run the whole engine without a model.
@@ -46,7 +62,7 @@ from typing import Callable, Sequence
 import numpy as np
 
 from .config import Config
-from .junk import embedding_model, read_clip_embeddings
+from .junk import read_search_embeddings, search_index_model, search_index_settings
 from .landmarks import batched
 from .naming import NamingSettings, naming_settings
 
@@ -56,7 +72,7 @@ from .naming import NamingSettings, naming_settings
 TextEncoder = Callable[[Sequence[str]], np.ndarray]
 
 # The population of a search (F120), and the reason it is spelled out here rather than left
-# to the table: `clip_embeddings` is written by the junk stage and only ever holds personal
+# to the table: `search_embeddings` is written by the junk stage and only ever holds personal
 # photographs, but a file can become a duplicate or go unreadable AFTER its vector was
 # stored, and neither of those belongs in a result list.
 _CANDIDATES_SQL = """SELECT id FROM files
@@ -93,6 +109,13 @@ def text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML, 
     deliberately so: the pair (architecture, checkpoint) has to be resolved by the same call
     the image side used, otherwise "the same model" is a claim rather than a fact. The
     returned vectors are L2-normalized here as well, so a dot product is a cosine.
+
+    F141: WHICH settings those are is the caller's to get right, and for a search they are
+    the search side's — `junk.search_index_settings(naming_settings(cfg), model)`, which is
+    what `search_text` passes. Handed `naming_settings(cfg)` unchanged this builds the
+    classification tower, whose queries land in a space no row of the search index lives
+    in; the width check in `search` catches that and leaves nothing to rank, which is a
+    visible failure rather than a quiet one.
     """
     import open_clip
     import torch
@@ -139,13 +162,15 @@ def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
     whatever order the dict happened to have: a ranking that reshuffles between runs cannot
     be measured, and measuring it is a condition of this feature.
 
-    Vectors of another model are absent by construction — `read_clip_embeddings` filters on
-    `model` — and a row whose width does not match the query is dropped as well: a truncated
-    blob is a broken row, not a reason for the whole search to fail.
+    Vectors of another model are absent by construction — `read_search_embeddings` filters
+    on `model` — and a row whose width does not match the query is dropped as well: a
+    truncated blob is a broken row, not a reason for the whole search to fail. That width
+    check is also the last guard against a query encoded by the classification tower (768
+    numbers) reaching the search index (512): it cannot rank, so it ranks nothing.
     """
     q = np.asarray(query, dtype=np.float32).ravel()
     candidates = [int(r["id"]) for r in conn.execute(_CANDIDATES_SQL)]
-    vectors = read_clip_embeddings(conn, model, candidates)
+    vectors = read_search_embeddings(conn, model, candidates)
     ids = sorted(fid for fid, vec in vectors.items() if vec.size == q.size)
     if not ids:
         raise _nothing_to_rank(conn, model)
@@ -161,15 +186,23 @@ def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
     """`encode_query` + `search` with everything the config already knows.
 
     The one entry point the CLI, the album and the measurement share, so that "which model
-    are we comparing against" is answered in one place (`junk.embedding_model` — the
+    are we comparing against" is answered in one place (`junk.search_index_model` — the
     architecture AND the weights) instead of three. `limit=None` means
     `features.search_limit`. The encoder is loaded only when the caller does not bring one,
     which is what keeps the CLIP import out of every module that merely imports this one.
+
+    F141: that model is `features.search_model` and NOT `naming.clip.*`. The two are
+    different on purpose — the classification model is the one every threshold in the
+    pipeline is calibrated on, and the search model is the one that answers a Russian query
+    — so the text tower is built from the search side's settings as well. A caller who
+    brings its own encoder brings the responsibility with it; a mismatch cannot corrupt a
+    ranking (the model filter and the width check in `search` see to that), it can only
+    leave nothing to rank.
     """
+    model = search_index_model(cfg)
     if encoder is None:  # pragma: no cover — ML, smoke test
-        encoder = text_encoder(naming_settings(cfg))
+        encoder = text_encoder(search_index_settings(naming_settings(cfg), model))
     vector = encode_query(text, encoder)
-    model = embedding_model(naming_settings(cfg))
     return search(conn, vector, model,
                   int(limit if limit is not None else cfg.features.search_limit))
 
@@ -193,9 +226,14 @@ def _nothing_to_rank(conn: sqlite3.Connection, model: str) -> EmbeddingsMissing:
 
     A count over the table rather than a second read of it: this runs on the path where the
     answer is already known to be empty, and what is missing is the reason, not the data.
+
+    F141: the table counted is the SEARCH index. A collection with a full
+    `clip_embeddings` and no search index is `empty` here, and correctly so — those
+    vectors cannot answer this query, and saying "you have 19 757 of them" about a table
+    this search will never read would be an answer to a question nobody asked.
     """
-    total = int(conn.execute("SELECT COUNT(*) FROM clip_embeddings").fetchone()[0])
+    total = int(conn.execute("SELECT COUNT(*) FROM search_embeddings").fetchone()[0])
     stored = int(conn.execute(
-        "SELECT COUNT(*) FROM clip_embeddings WHERE model = ?", (model,)).fetchone()[0])
+        "SELECT COUNT(*) FROM search_embeddings WHERE model = ?", (model,)).fetchone()[0])
     reason = REASON_OTHER_MODEL if total and not stored else REASON_EMPTY
     return EmbeddingsMissing(reason, model, total, stored)

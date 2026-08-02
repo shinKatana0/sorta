@@ -214,6 +214,17 @@ row carry the reasoning, and the schema comment states them once more:
   screenshot or a product shot is noise in a search over personal photographs — and this
   half, like the other two, keeps its own incrementality marker (`clip_embeddings.model`).
 
+F141: and a SECOND vector next to it (`search_embeddings`), from a different model, for
+search alone. The one pass of this stage that encodes the same frames twice, and the
+justification is a measurement: `ViT-L-14` scores 22% at top-5 on Russian queries against
+98% for `xlm-roberta-base-ViT-B-32`, with four of eight concepts returning nothing at all.
+Swapping the model would be free and is exactly what must not happen — the landmark (F75),
+animal (F122) and cascade (F130) thresholds are calibrated on L14's numbers — so the
+search side pays for its own pass instead, behind `features.search_index`, off by default
+because ten and a half minutes per 20 000 frames is a cost a person agrees to. It keeps
+the F128 rules unchanged: the model in every row, a mismatch means recompute, and the F120
+population.
+
 F130: the animal question becomes a CASCADE — CLIP selects widely, the VLM checks
 (`features.pets_verify`, default off). F122 measured where the CLIP-only answer stands:
 92% precision at 0.70 and 54% recall, with ~466 animals sitting below 0.30 among 18 400
@@ -309,7 +320,7 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from queue import Queue
 from typing import TYPE_CHECKING, Any, Callable, Generator, Sequence
@@ -324,7 +335,7 @@ from .config import Config, FeaturesConfig, vlm_allowed
 # `naming.vlm_workers` address is still honoured there) — but this module is where it was
 # born and where the measurement scripts import it from, so the name stays re-exported.
 from .config import resolve_vlm_workers  # noqa: F401
-from .landmarks import Classifier, batched, clip_classifier
+from .landmarks import CachingFeatureClassifier, Classifier, batched, clip_classifier
 from .naming import (
     DEFAULT_VLM_MODEL,
     VLM_MAX_EDGE,
@@ -2182,6 +2193,11 @@ CLASSIFY_PHASE_CLIP = "junk_clip"
 CLASSIFY_PHASE_OCR = "junk_ocr"
 CLASSIFY_PHASE_VLM = "junk_vlm"
 CLASSIFY_PHASE_WRITE = "junk_write"
+# F141: the search index — a phase of its own and not part of `junk_clip`, because it is
+# the one pass here that is a SECOND encode of the same frames rather than a use of the
+# first. Its seconds are the price of `features.search_index` and nothing else, and that
+# is exactly the number somebody deciding whether to switch it on needs to read.
+CLASSIFY_PHASE_SEARCH = "junk_search"
 
 # F147: the name this stage is timed under in the run log — the same one the pipeline
 # calls it by (`cli._pipeline_steps`), because the phase lines are read next to the
@@ -2484,6 +2500,216 @@ class _EmbeddingPass:
             " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
 
 
+# --- F141: the search index, a second vector with a model of its own ------------------
+#
+# The vector above is the CLASSIFICATION vector and it stays that. This one is the SEARCH
+# vector, and the two are separate because the measurement said so twice over.
+#
+# `ViT-L-14` is accurate in English and does not work in Russian: over 217 hand-labelled
+# judgements on 8 concepts it gives 22% precision at top-5 against 98% for
+# `xlm-roberta-base-ViT-B-32`, and four of the eight concepts (cake, food, mountains,
+# children) return nothing at all. The multilingual model is not weaker in English either
+# (95% against 98% at top-5, three points on forty judgements), which was the objection
+# that had to be ruled out before its smaller image tower could be trusted.
+#
+# The cheap fix — swap `naming.clip.*` — is the one thing that must not happen. The
+# landmark threshold 0.85 with corroboration (F75), the animal threshold 0.70 (F122), the
+# cascade selection at 0.50 (F130) and the junk classification are all calibrated on L14's
+# numbers; a swap invalidates every one of them at once, and nothing in the pipeline would
+# say so. So the search side pays for a pass of its own: ~10.5 minutes per 20 000 frames,
+# behind `features.search_index`, off until a person switches it on.
+#
+# Everything else is `clip_embeddings`' arrangement, deliberately unchanged: the model
+# name is written into every row (F128's rule, not weakened — a vector that does not say
+# what computed it is rubbish that looks like data), a mismatch means recompute rather
+# than use, the wire format is L2-normalized little-endian float32, and the population is
+# canonical photographs only (F120).
+
+_SEARCH_UPSERT = """INSERT INTO search_embeddings (file_id, model, dim, vec, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(file_id) DO UPDATE SET
+                        model = excluded.model, dim = excluded.dim,
+                        vec = excluded.vec, updated_at = excluded.updated_at"""
+
+# Which frames this pass owes a vector: a canonical photograph (F120 — the same population
+# `clip_embeddings` and `frame_quality` have) whose stored vector is missing or was
+# computed by another model. A frame with no verdict yet is included for the reason the
+# F128 selection includes it: a first run has classified nothing, and the purge below
+# settles whatever this run turns out to have decided.
+_SEARCH_PENDING_SQL = """SELECT f.id, f.path
+    FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
+                 LEFT JOIN search_embeddings se ON se.file_id = f.id
+    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'
+      AND (mc.verdict IS NULL OR mc.verdict = ?)
+      AND (se.model IS NULL OR se.model != ?)
+    ORDER BY f.id"""
+
+
+def search_index_model(cfg: Config) -> str:
+    """What the search side computes with — `features.search_model`, as one name.
+
+    A key of its own and not `naming.clip.*`: that model is what the classification
+    thresholds are calibrated on, and the whole feature is the refusal to change it. The
+    string is `<architecture>/<weights>` in the same spelling `embedding_model` writes, so
+    a row of either table answers "which model" the same way.
+    """
+    features = getattr(cfg, "features", None) or FeaturesConfig()
+    return str(getattr(features, "search_model", FeaturesConfig.search_model))
+
+
+def search_index_enabled(cfg: Config) -> bool:
+    """`features.search_index` — is the second pass wanted at all? (default: no)"""
+    features = getattr(cfg, "features", None) or FeaturesConfig()
+    return bool(getattr(features, "search_index", False))
+
+
+def search_index_settings(s: NamingSettings, model: str) -> NamingSettings:
+    """The CLIP settings of the SEARCH model: `s` with its model name replaced.
+
+    Everything else about the encode is deliberately inherited — the batch size, the
+    decode pool, and through them the shared preview cache — because this pass reads the
+    very same previews the classification pass does (the brief's requirement, and the
+    reason its ten minutes are ten and not thirty). Only the pair (architecture, weights)
+    differs, and it is split here, once, so no caller has to know the name is a pair.
+    """
+    architecture, _, weights = model.partition("/")
+    return replace(s, clip_model=architecture, clip_pretrained=weights)
+
+
+def read_search_embeddings(conn: sqlite3.Connection, model: str,
+                           file_ids: Sequence[int] | None = None,
+                           ) -> dict[int, np.ndarray]:
+    """Stored SEARCH vectors of this model by file_id — the same rule, the other table.
+
+    A separate function rather than a table argument on `read_clip_embeddings`: the model
+    filter is the safety property of both (mixing two spaces produces a plausible ranking
+    nothing marks as wrong), and a parameter that selects which table to apply it to is
+    one call site away from being passed the wrong one.
+    """
+    sql = "SELECT file_id, vec FROM search_embeddings WHERE model = ?"
+
+    def rows(cursor: sqlite3.Cursor) -> dict[int, np.ndarray]:
+        return {int(r["file_id"]): unpack_embedding(r["vec"]) for r in cursor}
+
+    if file_ids is None:
+        return rows(conn.execute(sql, (model,)))
+    out: dict[int, np.ndarray] = {}
+    for part in batched(list(file_ids), 500):
+        out.update(rows(conn.execute(
+            f"{sql} AND file_id IN ({','.join('?' * len(part))})",
+            (model, *part))))
+    return out
+
+
+def search_image_encoder(s: NamingSettings) -> FeatureSource:  # pragma: no cover — ML
+    """The image tower of the search model: paths -> a unit vector each, None where not.
+
+    `landmarks.clip_classifier` and nothing new: it already decodes through the shared
+    preview cache, in a pool, in one GPU batch, and returns None for a frame that would
+    not decode. What this pass needs is its `encode` half alone — there are no prompts
+    here, the vector IS the answer — so the classifier is built and its encoder taken.
+    """
+    classifier = clip_classifier(s)
+    if not isinstance(classifier, CachingFeatureClassifier):
+        raise TypeError(f"clip_classifier не отдаёт энкодер: {type(classifier).__name__}")
+    return classifier.encode
+
+
+class _SearchIndexPass:
+    """F141: the second CLIP pass, the one that pays for itself in Russian queries.
+
+    The only pass of this stage that ENCODES IMAGES AGAIN, and every property of it
+    follows from that being expensive. It runs last, over the verdicts everything above
+    has settled, so a frame the deep tier has just called a screenshot is never encoded;
+    it is incremental on `search_embeddings.model`, so switching the model recomputes and
+    a repeated run does nothing; and it is built lazily — a run with no frames to encode
+    loads no weights, which is what makes leaving the toggle on cheap for a collection
+    that is already indexed.
+
+    The failures are the same shape as every other optional half here. A model that will
+    not build leaves the run exactly as it was (the search index simply stays as it is,
+    and search says so rather than ranking with the classification vectors); a chunk that
+    will not encode is logged and skipped, and its frames are selected again next run,
+    which is the same "no row rather than a wrong row" rule `_EmbeddingPass.store` states.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, model: str,
+                 encoder: Callable[[], FeatureSource], batch_size: int, now: str,
+                 stats: JunkStats, enabled: bool) -> None:
+        self._conn = conn
+        self._model = model
+        self._encoder = encoder
+        self._batch = max(1, int(batch_size))
+        self._now = now
+        self._stats = stats
+        self._enabled = enabled
+
+    def run(self, report: _PhaseProgress) -> None:
+        """Purge what must not be indexed, then encode what has no current vector."""
+        if not self._enabled:
+            return  # `features.search_index` off: the table is not this run's business
+        self._purge()
+        todo = [(int(r["id"]), str(r["path"])) for r in self._conn.execute(
+            _SEARCH_PENDING_SQL, (QUALITY_VERDICT, self._model))]
+        if not todo:
+            return
+        try:
+            encode = self._encoder()
+        except Exception as exc:  # noqa: BLE001 — the index is optional, must not crash
+            _log.warning(
+                "junk: модель поискового индекса недоступна (%s) — таблица "
+                "search_embeddings остаётся как была, поиск скажет об этом сам", exc)
+            return
+        report.start(CLASSIFY_PHASE_SEARCH, len(todo))
+        done = 0
+        for chunk in batched(todo, self._batch):
+            self._store(chunk, self._encode(encode, chunk))
+            done += len(chunk)
+            report.count(CLASSIFY_PHASE_SEARCH, len(chunk))
+            report.step(done)
+
+    def _encode(self, encode: FeatureSource,
+                chunk: Sequence[tuple[int, str]]) -> list[np.ndarray | None]:
+        """One batch through the tower; a batch that raises costs the run nothing.
+
+        The encoder answers None per unreadable frame on its own — this catches the
+        failure of the CALL, which is a batch of frames and not one of them, and turns it
+        into the same "no vector" every one of them would have got individually.
+        """
+        try:
+            return list(encode([path for _file_id, path in chunk]))
+        except Exception as exc:  # noqa: BLE001 — one batch, not the stage
+            _log.warning("junk: поисковый индекс — не закодирована пачка из %d кадров "
+                         "(%s), они попадут в следующий прогон", len(chunk), exc)
+            return [None] * len(chunk)
+
+    def _store(self, chunk: Sequence[tuple[int, str]],
+               vectors: Sequence[np.ndarray | None]) -> None:
+        """Write the vectors of one batch, on the caller's thread (single writer)."""
+        with self._conn:
+            for (file_id, _path), vec in zip(chunk, vectors):
+                if vec is None:
+                    continue  # did not encode: no row, and selected again next run
+                self._conn.execute(
+                    _SEARCH_UPSERT, (file_id, self._model, int(np.size(vec)),
+                                     pack_embedding(vec), self._now))
+                self._stats.search_vectors_stored += 1
+
+    def _purge(self) -> None:
+        """Drop the rows of everything this run decided is not a personal photograph.
+
+        The same statement and the same reason as `_EmbeddingPass.purge`: incrementality
+        skips a frame whose row already looks current, so a screenshot indexed before its
+        verdict changed would stay in the search index PRECISELY because its vector is up
+        to date. Runs whenever the toggle is on, including on the runs that have no frame
+        left to encode — that is the state a collection settles into.
+        """
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM search_embeddings WHERE file_id IN"
+                " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
+
+
 @dataclass
 class JunkStats:
     total: int = 0        # canonical photos in total
@@ -2515,6 +2741,11 @@ class JunkStats:
     # F128: vectors written into `clip_embeddings` in this run. On a repeated run it is 0
     # and the table is unchanged — the observable sign that this half is incremental too.
     embeddings_stored: int = 0
+    # F141: and the same number for the SEARCH index, counted apart from it because the
+    # two are not the same cost. This one is a second CLIP pass — ~10.5 minutes per 20 000
+    # frames — so "how many frames did that pass actually encode" is what prices the
+    # toggle, and on a repeated run it is 0 like the counter above it.
+    search_vectors_stored: int = 0
     # F132: near-duplicate groups the keeper pass looked at (those of at least
     # `dedup.keeper_min_group_size` frames), how many were actually shown to the model, and
     # how many came back with a number that parsed. The three price the question the way
@@ -3021,6 +3252,8 @@ def classify(
     junk_rescue_vlm_factory: Callable[[str], JunkAskFn] | None = None,
     junk_text_encoder: TextEncoder | None = None,
     junk_text_encoder_factory: Callable[[NamingSettings], TextEncoder] | None = None,
+    search_encoder: FeatureSource | None = None,
+    search_encoder_factory: Callable[[NamingSettings], FeatureSource] | None = None,
     progress: ProgressCB | None = None,
 ) -> JunkStats:
     """Classify canonical photos into media_class.
@@ -3105,6 +3338,14 @@ def classify(
     at all. Same shape and same graceful fallback as the three askers above: an encoder or
     a model that will not build leaves every verdict of the run exactly as the fast tier
     wrote it, and with the deep tier off nothing is reclassified even when the score is.
+
+    search_encoder / search_encoder_factory (F141): the image tower of the SEARCH index,
+    the one pass of this stage that encodes the frames a second time. Behind
+    `features.search_index` (off by default — it is ~10.5 minutes per 20 000 frames), with
+    a model of its own (`features.search_model`) that no threshold of this pipeline is
+    calibrated on, which is the entire reason it exists next to `naming.clip.*` instead of
+    replacing it. Injectable and built lazily for the same reasons the rescue encoder is:
+    the suite must not load a model, and a run with nothing left to encode must not either.
 
     F145: every one of the four askers above is subordinate to `vlm.enabled`. Their own
     keys say WHAT to ask, not whether a model is raised — a run without deep analysis
@@ -3318,8 +3559,22 @@ def classify(
     # — is timed on that path too instead of running under a throwaway reporter.
     report = _PhaseProgress(progress)
     keeper = _KeeperPass(conn, cfg, keeper_ask, now, stats)
+    # F141: the search index, and — like the keeper above it — a pass that can have work
+    # when every other half of the stage is up to date. That is its ORDINARY case: the
+    # toggle is switched on for a collection that is already classified, and an early
+    # return that skipped it would leave the feature silently doing nothing. Its encoder
+    # is a closure so that a run with nothing to encode never builds one.
+    index_model = search_index_model(cfg)
+    search_index = _SearchIndexPass(
+        conn, index_model,
+        (lambda: search_encoder) if search_encoder is not None
+        else (lambda: (search_encoder_factory or search_image_encoder)(
+            search_index_settings(s, index_model))),
+        s.clip_batch_size, now, stats,
+        use_clip and search_index_enabled(cfg))
     if not work:
         keeper.run(report)
+        search_index.run(report)
         report.log_timings()
         return stats
     # F121: has the faces stage ever run here? One row is enough to tell — after that,
@@ -3646,6 +3901,11 @@ def classify(
     # and what the group falls back to). It writes `group_keeper` and nothing else; no
     # path of this stage touches `dedup_choice`.
     keeper.run(report)
+    # F141: and after even that, the second CLIP pass — every verdict of this run is
+    # written and the purges above have run, so a frame the deep tier has just called a
+    # screenshot is not encoded. Ten minutes is too much to spend on rows that would be
+    # deleted a moment later.
+    search_index.run(report)
     # F147: the breakdown of the seconds the caller's `stage_timer` is about to report as
     # a single number. Written at the exits rather than from a `finally`: a stage that
     # raised or was cancelled has its own line from `stage_timer`, and half-measured

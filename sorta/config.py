@@ -388,6 +388,25 @@ def _as_scope(value: Any, default: str) -> str:
     return default
 
 
+def _as_model_name(value: Any, default: str) -> str:
+    """F141: `<open_clip architecture>/<weights>`; anything else -> the default.
+
+    Both halves are required, and that is the whole check: a name carrying only the
+    architecture resolves to a model with no weights, which open_clip is happy to build
+    and which would fill the search index with vectors of an untrained tower. The pair is
+    also what `junk.embedding_model` writes into every row, so the two spellings of "which
+    model" cannot drift apart.
+    """
+    text = value.strip() if isinstance(value, str) else ""
+    architecture, sep, weights = text.partition("/")
+    if sep and architecture.strip() and weights.strip():
+        return text
+    if value is not None:
+        _log.warning("config: features.search_model=%r — ожидалось "
+                     "'<модель open_clip>/<веса>', использую %r", value, default)
+    return default
+
+
 def resolve_vlm_workers(raw: dict | None) -> int:
     """Threads preparing frames for the VLM — `vlm.workers` (was `naming.vlm_workers`).
 
@@ -614,6 +633,28 @@ class FeaturesConfig:
     # then looks through — raise it to see further down the ranking, lower it for a shorter
     # list. 200 is a folder a human can actually go through in one sitting.
     search_limit: int = 200
+    # F141: the SEARCH index — a second CLIP vector per photograph, computed by a
+    # multilingual model and read by search alone (table `search_embeddings`). OFF by
+    # default, and that is the deliberate half of this setting: unlike `store_embeddings`
+    # it is not free, it is a SECOND CLIP pass over the collection — 19 753 frames in
+    # 635 s (~10.5 minutes) on the machine it was measured on, plus ~40 MB per 20 000
+    # photographs. A cost like that is switched on by a person, not by a default.
+    #
+    # What it buys is measured, on 217 hand-labelled judgements over 8 concepts: Russian
+    # queries go from 22% to 98% precision at top-5, and four of the eight concepts (cake,
+    # food, mountains, children) go from returning NOTHING to working. English does not
+    # regress (95% against 98% — three points on forty judgements).
+    #
+    # Switching it off leaves search with nothing to rank, and it says so (F134) instead
+    # of returning an empty list: the classification vectors are NOT a fallback, because a
+    # search silently answered by the wrong model is the one outcome nobody can see.
+    search_index: bool = False
+    # The model of the search side, `<open_clip architecture>/<weights>` — and a key of
+    # its own rather than `naming.clip.*`, which is the entire point of the feature.
+    # `naming.clip.*` stays ViT-L-14 because the landmark threshold (F75), the animal
+    # threshold (F122), the cascade selection (F130) and the junk classification are
+    # calibrated on ITS numbers; changing it to fix search would invalidate all of them.
+    search_model: str = "xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k"
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -639,6 +680,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
         search_limit=_as_positive_int(raw.get("search_limit"), d.search_limit),
+        search_index=_as_bool(raw.get("search_index"), d.search_index),
+        search_model=_as_model_name(raw.get("search_model"), d.search_model),
     )
 
 

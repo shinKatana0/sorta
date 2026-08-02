@@ -452,6 +452,24 @@ features:
   # well; and the population is personal photographs only (screenshots and documents have
   # no vector at all).
   search_limit: 200
+  # F141: a SECOND CLIP vector per photograph, computed by a multilingual model and used
+  # by search alone (table `search_embeddings`). The price is named here because it is the
+  # reason this is off by default: an EXTRA CLIP PASS over the whole collection — 19 753
+  # frames in 635 seconds (~10.5 minutes) on the machine it was measured on — and ~40 MB
+  # per 20 000 photographs. Nothing else in the pipeline pays for it: the classification
+  # model stays `naming.clip.*`, so the landmark, animal and cascade thresholds calibrated
+  # on it are untouched.
+  # What it buys, on 217 hand-labelled judgements over 8 concepts: Russian queries go from
+  # 22% to 98% precision at top-5, and four of the eight (cake, food, mountains, children)
+  # go from returning NOTHING to working. English does not regress (95% against 98%).
+  # While this is off, `sorta search` and `sorta album query` have nothing to rank and say
+  # so — the classification vectors are deliberately NOT used as a fallback, because a
+  # ranking quietly produced by the wrong model looks exactly like a good one.
+  search_index: false
+  # The model of the search side, `<open_clip architecture>/<weights>`. Changing it makes
+  # every stored search vector stale (they are recomputed, never mixed), and it does NOT
+  # touch classification — that model is `naming.clip.*` and is calibrated on separately.
+  search_model: "xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k"
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding
