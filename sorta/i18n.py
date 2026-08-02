@@ -629,14 +629,58 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # F127: only `animal` has nothing to select inside it. For a person and an event the
     # selector IS the subject, so its absence is an error and never "the whole slice".
+    # F129: and for a query it is the words themselves, which makes it the subject too.
     "cli.album.selector_required": {
-        "ru": "альбому person/event нужен селектор: имя человека либо имя или id "
-              "события. Без селектора собирается только `sorta album animal`",
-        "en": "a person/event album needs a selector: a person's name, or an event's "
-              "name or id. Only `sorta album animal` is gathered without one",
-        "ja": "person/event のアルバムにはセレクタが必要です: 人物の名前、または"
-              "イベントの名前か id。セレクタなしで作成できるのは "
+        "ru": "альбому person/event/query нужен селектор: имя человека, имя или id "
+              "события либо слова запроса. Без селектора собирается только "
+              "`sorta album animal`",
+        "en": "a person/event/query album needs a selector: a person's name, an event's "
+              "name or id, or the words to search for. Only `sorta album animal` is "
+              "gathered without one",
+        "ja": "person/event/query のアルバムにはセレクタが必要です: 人物の名前、"
+              "イベントの名前か id、または検索する語。セレクタなしで作成できるのは "
               "`sorta album animal` だけです",
+    },
+    # F129: search by words — the engine's two refusals and the sentence that closes a
+    # result list. The hit lines themselves carry no words in any language (a rank, a
+    # score, a path) and are printed directly, like the landmark names of a summary.
+    "cli.search.empty_query": {
+        "ru": 'пустой запрос: напишите слово — `sorta search "торт"`',
+        "en": 'empty query: type a word — `sorta search "cake"`',
+        "ja": '問い合わせが空です: 語を入力してください — `sorta search "ケーキ"`',
+    },
+    "cli.search.no_embeddings": {
+        "ru": "эмбеддинги не посчитаны — запустите `sorta junk` "
+              "(нужен features.store_embeddings: true). Пустая выдача здесь читалась бы "
+              "как «ничего не нашлось», а это другое",
+        "en": "the embeddings have not been computed — run `sorta junk` (with "
+              "features.store_embeddings: true). An empty list here would read as "
+              "“nothing matched”, which is a different thing",
+        "ja": "埋め込みがまだ計算されていません — `sorta junk` を実行してください"
+              "（features.store_embeddings: true が必要）。ここで空の一覧を返すと"
+              "「該当なし」と読めてしまいますが、それとは別のことです",
+    },
+    "cli.search.other_model": {
+        "ru": "в индексе {n} эмбеддингов, и все посчитаны другой моделью — сейчас "
+              "настроена {model}. Векторы разных моделей несравнимы: запустите "
+              "`sorta junk` заново, он их пересчитает",
+        "en": "the index holds {n} embeddings and every one of them was computed by "
+              "another model — the configured one is {model}. Vectors of different "
+              "models are not comparable: run `sorta junk` again and it recomputes them",
+        "ja": "インデックスには {n} 件の埋め込みがありますが、すべて別のモデルで"
+              "計算されたものです（現在の設定は {model}）。異なるモデルのベクトルは"
+              "比較できません。`sorta junk` を再実行すると再計算されます",
+    },
+    "cli.search.done": {
+        "ru": "Найдено: {n} кадров по запросу «{query}». Это ранжирование, а не фильтр: "
+              "порога «точно оно» здесь нет — смотрите, где оценки перестают быть "
+              "про ваш запрос",
+        "en": "Found: {n} frames for “{query}”. This is a ranking, not a filter: there "
+              "is no “definitely it” threshold — look at where the scores stop being "
+              "about your words",
+        "ja": "「{query}」で {n} 件。これはフィルタではなくランキングです: "
+              "「確実にそれ」という閾値はありません — スコアが問い合わせから"
+              "離れる位置を見てください",
     },
     # reset
     "cli.reset.confirm": {
@@ -1073,26 +1117,57 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "このディレクトリのファイルを整理しません（繰り返し指定可）。"
               "sort.exclude_dirs と統合されます",
     },
+    # search (F129)
+    "cli.help.search": {
+        "ru": "Найти кадры словами: CLIP-ранжирование по сохранённым эмбеддингам.\n"
+              "\n"
+              "Печатает пути и оценки, лучшие сверху. Это ранжирование, а не фильтр:\n"
+              "порога «точно оно» здесь нет. Одиночные предметы («торт», «снег», «море»)\n"
+              "CLIP разбирает заметно лучше составных фраз.",
+        "en": "Find frames by words: a CLIP ranking over the stored embeddings.\n"
+              "\n"
+              "Prints paths and scores, the best ones first. This is a ranking, not a\n"
+              "filter: there is no “definitely it” threshold. Single subjects (“cake”,\n"
+              "“snow”, “the sea”) work markedly better than compound phrases.",
+        "ja": "語で写真を探します: 保存済みの埋め込みに対する CLIP のランキングです。\n"
+              "\n"
+              "パスとスコアを、上位から順に表示します。これはフィルタではなく"
+              "ランキングで、\n「確実にそれ」という閾値はありません。単独の被写体"
+              "（「ケーキ」「雪」「海」）は\n複合的な言い回しよりはるかにうまく扱えます。",
+    },
+    "cli.help.search.query": {
+        "ru": "Что искать: слово или короткая фраза",
+        "en": "What to look for: a word or a short phrase",
+        "ja": "探すもの: 語または短い言い回し",
+    },
+    "cli.help.search.limit": {
+        "ru": "Сколько кадров показать (по умолчанию features.search_limit) — "
+              "это размер выборки, а не порог похожести",
+        "en": "How many frames to show (features.search_limit by default) — a sample "
+              "size, not a similarity threshold",
+        "ja": "表示する枚数（既定は features.search_limit）— 類似度の閾値ではなく、"
+              "取り出す標本の大きさです",
+    },
     # album
     "cli.help.album": {
-        "ru": "Выгрузить срез (человека/события/животных) в отдельную папку. "
+        "ru": "Выгрузить срез (человека/события/животных/запроса) в отдельную папку. "
               "По умолчанию — hardlink, dry-run.",
-        "en": "Export a slice (a person/an event/the animals) into a separate folder. "
-              "By default — hardlink, dry run.",
-        "ja": "スライス（人物・イベント・動物）を別のフォルダに書き出します。"
+        "en": "Export a slice (a person/an event/the animals/a query) into a separate "
+              "folder. By default — hardlink, dry run.",
+        "ja": "スライス（人物・イベント・動物・問い合わせ）を別のフォルダに書き出します。"
               "デフォルトはハードリンクの dry-run です。",
     },
     "cli.help.album.kind": {
-        "ru": "person | event | animal",
-        "en": "person | event | animal",
-        "ja": "person | event | animal",
+        "ru": "person | event | animal | query",
+        "en": "person | event | animal | query",
+        "ja": "person | event | animal | query",
     },
     "cli.help.album.selector": {
-        "ru": "имя человека / имя или id события; для animal не нужен — "
+        "ru": "имя человека / имя или id события / слова запроса; для animal не нужен — "
               "срез животных в коллекции один",
-        "en": "a person's name / an event's name or id; not needed for animal — "
-              "the collection has a single animal slice",
-        "ja": "人物の名前 / イベントの名前または id。animal では不要です — "
+        "en": "a person's name / an event's name or id / the words to search for; not "
+              "needed for animal — the collection has a single animal slice",
+        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal では不要です — "
               "コレクションの動物のスライスは 1 つだけです",
     },
     "cli.help.album.dest": {

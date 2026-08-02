@@ -100,6 +100,7 @@ from .dedup import near_duplicate_groups
 from .geodata import GeoResolver
 from .hashing import file_hash
 from .indexer import excludes_path, load_excludes
+from .search import TextEncoder, search_text
 
 _log = logging.getLogger(__name__)
 
@@ -1729,7 +1730,14 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 # frame-quality stage marked as holding an animal — and the only thing that makes it
 # different is that there is nothing to select INSIDE it: the whole collection has one
 # animal view, so the selector is accepted and ignored.
-ALBUM_KINDS = ("person", "event", "animal")
+#
+# F129: `query` is the one whose slice is not written down anywhere. The selector is the
+# words a person typed, and what it selects is the top of a RANKING over the stored CLIP
+# vectors (search.py) — `features.search_limit` frames, best first. There is no threshold
+# in it and there will not be one: the score orders frames against each other and says
+# nothing in absolute terms, so the album is a sample to look through, not a claim that
+# each of its frames holds a cake. Everything else about it is an album like any other.
+ALBUM_KINDS = ("person", "event", "animal", "query")
 ALBUM_MODES = ("link", "copy", "move")
 
 # F124: THE rule for "is there an animal in this frame", written down once. The user's
@@ -1814,7 +1822,8 @@ def _resolve_event_ids_and_name(conn: sqlite3.Connection, selector: str) -> tupl
 def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
                dest: Path, mode: str = "link",
                where: Sequence[str] | None = None, apply: bool = False,
-               album_name: str | None = None) -> AlbumReport:
+               album_name: str | None = None,
+               encoder: TextEncoder | None = None) -> AlbumReport:
     """Build an album export plan; with apply=True materialize it (link/copy/move).
 
     kind='person': selector — a person's name; the slice = canonical files (dup_of IS
@@ -1826,6 +1835,11 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     tab and counter read, never a second copy of it). The selector is not used — the
     collection has exactly one animal slice — and an empty string is accepted for it; the
     default album name is the localized `animals` folder.
+    kind='query' (F129): selector — the words themselves; the slice = the top
+    `features.search_limit` canonical photographs of the CLIP ranking for those words
+    (search.py), and the default album name is the query. `encoder` is the CLIP text
+    encoder and exists for the same reason `detect_landmarks` takes a classifier: the real
+    one is loaded on demand, tests hand in a fake. It is ignored by every other kind.
     where (opt.) reuses parse_where as an additional AND condition on top of the slice
     (person here is the subject, not a where field; --where can still carry its own
     city/country/event/year/person conditions). junk is NOT filtered (these are the
@@ -1870,6 +1884,18 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         # ANIMAL_IDS_SQL. dup_of/error are excluded below, with the other kinds.
         resolved_name = i18n.folder("animals", lang)
         subject_cond = f"f.id IN ({ANIMAL_IDS_SQL})"
+        subject_params = []
+    elif kind == "query":
+        # F129: the ranking runs FIRST and the ids it returns are the slice. The ids are
+        # interpolated rather than bound because `features.search_limit` is a user-set
+        # number and SQLite has a ceiling on bound parameters (the reason
+        # `read_clip_embeddings` batches its own reads); they come straight out of
+        # `files.id`, so the int() is the whole sanitization there is to do.
+        # `search_text` raises when there is nothing to rank at all — a caller gets the
+        # reason (no vectors / vectors of another model) instead of an empty album.
+        resolved_name = selector
+        ids = [fid for fid, _score in search_text(cfg, conn, selector, encoder=encoder)]
+        subject_cond = f"f.id IN ({','.join(str(int(i)) for i in ids)})" if ids else "0"
         subject_params = []
     else:
         event_ids, resolved_name = _resolve_event_ids_and_name(conn, selector)

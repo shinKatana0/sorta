@@ -357,6 +357,18 @@ features:
   # naming.clip.model or naming.clip.pretrained and the stored rows are recomputed rather
   # than used, because vectors of different models are not comparable.
   store_embeddings: true
+  # F129: how many frames a search by words takes — `sorta search "торт"` prints this many
+  # and `sorta album query "торт"` gathers this many.
+  # This is NOT a similarity threshold, and there will not be one, for the same reason
+  # sharpness has none: a CLIP score orders frames against each other and means nothing in
+  # absolute terms, so "this really is a cake" is not a line anybody can draw. What this
+  # number chooses is the size of the SAMPLE a person then looks through — raise it to see
+  # further down the ranking, lower it for a shorter list.
+  # Two limits of the method worth knowing before choosing it: compound queries ("a cake
+  # with candles on a table by the window") are weak, single subjects are what CLIP does
+  # well; and the population is personal photographs only (screenshots and documents have
+  # no vector at all).
+  search_limit: 200
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

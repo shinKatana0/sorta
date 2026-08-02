@@ -133,6 +133,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overshoot by ~75 MB between checks, which is nothing against any ceiling worth
   setting. `sorta cache` now prints the ceiling and the share used, or says none is set
   and names the key that would set one.
+- **Search by words, and an album from a query** (F129): `sorta search "cake"` prints a
+  ranked list of paths and scores, `sorta album query "cake" --dest …` gathers the top of
+  it into a folder with hardlinks. The engine is a new module, `sorta/search.py`; nothing
+  new is computed for it — F128 already stores an L2-normalized CLIP vector per canonical
+  photograph, so a query is one text encode and one matmul against what is on disk. What
+  this changes is not only the interface: a slice of the collection stops being written
+  code (a tab for animals, a tab for people) and becomes a **query**, so "food", "snow",
+  "the sea" are no longer a programmer's work. Three properties are the feature.
+  **Vectors of another model never rank** — mixing two embedding spaces produces a
+  plausible order that nothing in the output marks as wrong, so such rows are skipped and,
+  if that leaves nothing, the command says which of the two states it is in. **An empty
+  table is a reason, not an empty list**: "nothing was found" and "nothing was ever
+  computed" read identically in zero lines, and only one of them is fixed by running
+  `sorta junk`. And **this ranks, it does not classify** — there is no "this really is a
+  cake" threshold and there will not be one, for the same reason sharpness has none, so
+  `features.search_limit` (200) is a **sample size**: how many frames the list prints and
+  the album gathers. The known limits are written down rather than discovered later:
+  compound queries ("a cake with candles on a table by the window") are weak where single
+  subjects work well, and the population is personal photographs only — a screenshot or a
+  document has no vector at all. The accuracy on a real collection has **not** been named:
+  `scripts/measure_search.py` prints the top-N, the distribution over similarity bands and,
+  from a filled-in worksheet, precision by depth and by band — F121/F122 is why a number
+  nobody measured is not allowed to stand in for one. No interface button yet: the search
+  box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
 - **`sort`, `album`, `geo` and `ui` speak the configured language** (F118). F112 moved

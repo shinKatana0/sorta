@@ -53,6 +53,7 @@ from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
 from .progress import progress_task
 from .runlog import default_log_path, log_environment, stage_timer
+from .search import REASON_OTHER_MODEL, EmbeddingsMissing, file_paths, search_text
 from .sorter import plan_album, plan_and_sort
 from .sorter import undo as undo_batch
 
@@ -757,6 +758,47 @@ def _cmd_sort(config_path: str, by: str, dest: Path | None = None, *,
                  failed=report.failed, extra=extra))
 
 
+def _search_unavailable(exc: EmbeddingsMissing, lang: Lang) -> str:
+    """F129: why a search cannot run, in a sentence that says what to do about it.
+
+    An empty result would read as "nothing matched", which is the one thing this state is
+    not — and the two states need two different sentences: a table that was never filled is
+    fixed by running the junk stage, a table full of another model's vectors by running it
+    again after the model change (F128 recomputes them; it does not mix them in).
+    """
+    if exc.reason == REASON_OTHER_MODEL:
+        return _t("cli.search.other_model", lang, model=exc.model, n=exc.total)
+    return _t("cli.search.no_embeddings", lang)
+
+
+def _cmd_search(config_path: str, query: str, limit: int | None = None) -> None:
+    """F129: print the CLIP ranking for a query — paths and scores, best first.
+
+    The scores are printed because they are the only thing that tells a reader how far down
+    the list stopped being about their words: this ranks, it does not classify, so the line
+    where a query runs out is something only a human can see. The lines themselves carry no
+    words in any language (a rank, a score, a path — data, like the landmark names in
+    `_summarize_landmarks`); the sentence around them goes through the catalog.
+    """
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    lang = _lang(cfg)
+    if not query.strip():
+        raise SystemExit(_t("cli.search.empty_query", lang))
+    conn = connect(cfg.database)
+    try:
+        try:
+            hits = search_text(cfg, conn, query, limit=limit)
+        except EmbeddingsMissing as exc:
+            raise SystemExit(_search_unavailable(exc, lang)) from None
+        paths = file_paths(conn, [file_id for file_id, _score in hits])
+        for rank, (file_id, score) in enumerate(hits, 1):
+            print(f"{rank:>4}. {score:.3f}  {paths.get(file_id, '')}")
+        print(_t("cli.search.done", lang, n=len(hits), query=query))
+    finally:
+        conn.close()
+
+
 def _cmd_album(config_path: str, kind: str, selector: str, dest: Path, *,
                copy: bool = False, move: bool = False,
                where: list[str] | None = None, name: str | None = None,
@@ -767,8 +809,11 @@ def _cmd_album(config_path: str, kind: str, selector: str, dest: Path, *,
     lang = _lang(cfg)
     conn = connect(cfg.database)
     with progress_task(f"album {kind} {selector}"):
-        report = plan_album(cfg, conn, kind, selector, dest, mode=mode,
-                            where=where or [], apply=apply, album_name=name)
+        try:
+            report = plan_album(cfg, conn, kind, selector, dest, mode=mode,
+                                where=where or [], apply=apply, album_name=name)
+        except EmbeddingsMissing as exc:  # F129: only kind='query' can raise this
+            raise SystemExit(_search_unavailable(exc, lang)) from None
     if apply:
         extra = (_t("cli.album.blocked_multi", lang, n=report.blocked_multi)
                  if report.blocked_multi else "")
@@ -990,6 +1035,15 @@ def build_app(lang: Lang) -> typer.Typer:
                   thumbnails=thumbnails, dedupe=dedupe,
                   delete_worse_dupes=delete_worse_dupes, exclude=exclude)
 
+    @app.command("search", help=h("cli.help.search"))
+    def search_cmd(
+        query: str = typer.Argument(..., help=h("cli.help.search.query")),
+        limit: int = typer.Option(None, "--limit", min=1,
+                                  help=h("cli.help.search.limit")),
+        config: str = cfg_opt,
+    ):
+        _cmd_search(config, query, limit=limit)
+
     @app.command(help=h("cli.help.album"))
     def album(
         kind: str = typer.Argument(..., help=h("cli.help.album.kind")),
@@ -1009,8 +1063,9 @@ def build_app(lang: Lang) -> typer.Typer:
         # F127: `animal` is the one slice with nothing to select INSIDE it — the
         # collection has a single animal view — so there the selector is optional and
         # `sorta album animal --dest ...` is the whole command. For a person and an
-        # event it is the subject itself: a missing one has to be an error here, said
-        # out loud, rather than an album quietly gathered from something else.
+        # event it is the subject itself — and for a query (F129) it is the words — so a
+        # missing one has to be an error here, said out loud, rather than an album
+        # quietly gathered from something else.
         if kind != "animal" and not (selector or "").strip():
             raise typer.BadParameter(
                 _t("cli.album.selector_required", _lang_of(config)))
