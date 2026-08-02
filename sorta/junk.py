@@ -265,6 +265,39 @@ measurement is per collection:
 The answer is read leniently (F96 again) and an unreadable one is not a failure of the
 feature: the group keeps the sharpness ranking, stored as `source='sharpness'`, which is
 exactly the recommendation the interface showed before this existed.
+
+F140: the search by words (F134) put memes and screenshots at the top of its results, and
+the table it searches is clean — all 19 753 rows of it carry the verdict `photo`. So this
+was not junk leaking into the index but THIS STAGE being wrong about ~4% of what it calls a
+photograph, an error nothing made visible until a query did. Those frames are laid out by
+city today, and they land in the duplicates, in the quality signals and in the albums.
+
+They are found by a zero-shot query over the vectors F128 already stores — no new pass over
+any model:
+
+    junk_score = max(similarity to screenshot/meme/text/receipt)
+               - max(similarity to a photograph)
+
+and the whole feature is what is NOT done with that number. Reviewed by eye on the live
+collection: above +0.05 the 93 frames are junk outright, but the band +0.02..+0.05 still
+holds ~17% real photographs. Applied as a verdict at 85% precision it would take ~150
+living pictures out of the layout — exactly the mistake F130 measured for animals, where a
+signal of 80-85% applied directly makes a 92% baseline worse. So the score SELECTS and does
+not judge:
+
+* it is computed for every photograph with a stored vector and kept
+  (`frame_quality.junk_score`); a frame without one (a heuristics-only run,
+  `store_embeddings: false`) gets NULL and is no candidate;
+* frames above `features.junk_rescue_threshold` (0.02, the measured row above — 955 frames,
+  ~12 minutes at 0.78 s each) are shown to the VLM, which answers with a verdict rather
+  than a resemblance, and only the model's answer moves `media_class`;
+* with the deep tier off nothing is reclassified at all, and with `features.junk_rescue`
+  off nothing is even computed. The score prompts and the model's question both enter
+  `quality_prompt_fingerprint`, so editing either invalidates the scores it produced (the
+  F120 rule).
+
+It is the same device as the OCR rescue gate (F38): a cheap signal decides who is worth an
+expensive check. Cheaper, in fact — this one is a matmul over a table that already exists.
 """
 from __future__ import annotations
 
@@ -455,6 +488,78 @@ PET_VLM_NONE = "none"
 # Where each group sits in the prompt list of the single call (start, stop).
 _JUNK_GROUP = (0, len(_CLIP_CLASSES))
 _PET_GROUP = (len(_CLIP_CLASSES), len(_CLIP_CLASSES) + len(_PET_CLASSES))
+
+# --- F140: the screenshots and receipts this stage took for photographs ----------------
+#
+# These prompts are NOT part of the call above and are deliberately not appended to it: the
+# score they produce is read off the STORED vector (F128), which is what makes it free and
+# what makes it answerable for a collection whose junk classification is already current.
+# Nothing here is encoded a second time — the images were encoded once, months ago
+# perhaps, and this is a matmul against a handful of text vectors.
+#
+# The junk classes themselves are reused rather than re-worded (`_CLIP_PROMPT`), because
+# the score is a statement about the same question the stage already asks and a second
+# wording of "a screenshot" would be a second definition of one. What is added is what the
+# review of the live collection actually found among the misclassified frames — a
+# photographed screen, a page of text, a receipt.
+_CLIP_PROMPT = dict(_CLIP_CLASSES)
+_JUNK_RESCUE_POS_PROMPTS: tuple[str, ...] = (
+    _CLIP_PROMPT["screenshot"],
+    _CLIP_PROMPT["meme"],
+    "a photo of a computer monitor or a phone screen",
+    "a picture that is mostly text",
+    "a photo of a receipt, a bill or a ticket",
+)
+# The other side of the subtraction. One prompt, and the same one the junk group calls
+# `photo`: the score is a MARGIN over that class, so adding prompts here would move every
+# number and the threshold measured against them with it.
+_JUNK_RESCUE_NEG_PROMPTS: tuple[str, ...] = (_CLIP_PROMPT["photo"],)
+
+
+def junk_rescue_prompts() -> list[str]:
+    """The prompt list of the rescue score, POSITIVES FIRST — the order is the contract.
+
+    One list rather than two because it is one text-encoder call, and `junk_rescue_score`
+    splits it back at `len(_JUNK_RESCUE_POS_PROMPTS)`. The measurement script builds its
+    prompts through here as well, so it cannot price a score the stage does not compute.
+    """
+    return list(_JUNK_RESCUE_POS_PROMPTS) + list(_JUNK_RESCUE_NEG_PROMPTS)
+
+
+def unit_rows(matrix: np.ndarray) -> np.ndarray:
+    """Rows of a text-feature matrix, L2-normalized — so a dot product is a cosine.
+
+    Done here even though the encoder already normalizes, for the reason
+    `pack_embedding` normalizes a vector the image tower had normalized: the guarantee
+    costs a norm over a few rows and is worth more than the trust. A zero row has no
+    direction to preserve and is left as it is rather than divided by zero.
+    """
+    m = np.asarray(matrix, dtype=np.float32)
+    if m.ndim != 2:
+        return m
+    norms = np.linalg.norm(m, axis=1, keepdims=True)
+    return np.divide(m, norms, out=m.copy(), where=norms > 0)
+
+
+def junk_rescue_score(vec: np.ndarray, text_features: np.ndarray) -> float | None:
+    """max(junk prompts) - max(photograph prompts) over one stored vector.
+
+    A margin and not a probability: softmax would compress exactly the region the
+    threshold lives in (the useful band is 0.02 wide), and the frames this looks for are
+    the ones the softmax of the main call already called a photograph. Both sides are unit
+    vectors, so every similarity here is a cosine.
+
+    None — the widths do not match: a vector stored by another model, or a truncated blob.
+    A number computed across two spaces would look exactly like a real score, which is the
+    one thing a selection signal must not do (`search.search` drops such rows for the same
+    reason).
+    """
+    v = np.asarray(vec, dtype=np.float32).ravel()
+    if text_features.ndim != 2 or v.size != text_features.shape[1]:
+        return None
+    sims = text_features @ v
+    split = len(_JUNK_RESCUE_POS_PROMPTS)
+    return float(sims[:split].max() - sims[split:].max())
 
 
 def clip_prompts(pets: bool) -> list[str]:
@@ -1469,6 +1574,105 @@ def qwen_vlm_pet_factory(max_edge: int) -> Callable[[str], PetAskFn]:
     return lambda model_name: qwen_vlm_pet(model_name, max_edge=max_edge)
 
 
+# --- F140: the question asked of a rescue candidate ------------------------------------
+#
+# path -> the model's raw answer about one candidate (parsed by `parse_junk_rescue_answer`).
+# The same shape as PetAskFn, and injected by the suite for the same reason: no test loads
+# a model.
+JunkAskFn = Callable[[str], str]
+
+# Query strings -> one text feature per string, in the same order. The real one is
+# `search.text_encoder` — the project's own open_clip, because the query has to land in the
+# space the stored vectors live in — and it is resolved lazily, only for a run that has
+# frames to score.
+TextEncoder = Callable[[Sequence[str]], np.ndarray]
+
+# The three answers, and they are the `media_class.verdict` values on purpose: this
+# question exists to correct a verdict, so an answer that had to be translated into one
+# would be a second vocabulary for the same fact.
+JUNK_RESCUE_SCREENSHOT = "screenshot"
+JUNK_RESCUE_DOCUMENT = "document"
+JUNK_RESCUE_PHOTO = "photo"
+
+# A question about the KIND of picture, not about its quality, and asked separately from
+# the deep tier's own 3-way prompt (personal_photo/document/product) rather than by widening
+# it: that prompt has no screenshot among its answers — the deep tier never had to detect
+# one, it is the fast tier's job — and adding a fourth class there would move the verdicts
+# of every frame it sees, including on runs where this feature is off.
+_JUNK_RESCUE_PROMPT = (
+    "Classify this image into exactly one category: screenshot, document, or photo.\n"
+    "screenshot = a screen capture, or a photograph of a phone, monitor or TV screen, or "
+    "a meme, or a picture that is mostly text.\n"
+    "document = a receipt, a bill, a ticket, a form, an ID card or another text-heavy "
+    "paper.\n"
+    "photo = an ordinary photograph of people, places, pets or everyday life.\n"
+    "Answer with exactly one word: screenshot, document, or photo."
+)
+# One word, like the other labels of this stage: a larger budget only buys the model room
+# to explain itself, which the parser below would then have to wade through.
+_JUNK_RESCUE_MAX_NEW_TOKENS = 8
+
+# Keyword -> answer, IN PRIORITY ORDER, and the order is the same decision `_PET_VLM_KEYWORDS`
+# documents: `photo` is the word a model reaches for while describing one of the other two
+# ("a photo of a receipt", "a photo of a screen"), so a scan that met it first would read
+# half the rejections as agreement.
+_JUNK_RESCUE_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("screenshot", JUNK_RESCUE_SCREENSHOT),
+    ("screen", JUNK_RESCUE_SCREENSHOT),
+    ("meme", JUNK_RESCUE_SCREENSHOT),
+    ("document", JUNK_RESCUE_DOCUMENT),
+    ("receipt", JUNK_RESCUE_DOCUMENT),
+    ("photo", JUNK_RESCUE_PHOTO),
+    ("photograph", JUNK_RESCUE_PHOTO),
+)
+
+
+def parse_junk_rescue_answer(answer: str) -> str | None:
+    """The model's answer -> screenshot | document | photo; None when nothing was read.
+
+    Lenient in the two ways every answer of this stage is read (the F96 lesson), and None
+    is NOT `photo`: an unreadable answer means the question was effectively not asked, so
+    the frame keeps the verdict the fast tier gave it. Reading it as a junk class would
+    delete a photograph on the strength of a resemblance score — the one thing the whole
+    feature is arranged to avoid.
+    """
+    text = "_" + _NON_WORD_RE.sub("_", (answer or "").lower()) + "_"
+    return next((value for keyword, value in _JUNK_RESCUE_KEYWORDS
+                 if f"_{keyword}_" in text), None)
+
+
+def vlm_junk_rescue_asker(describe: Callable[[Sequence[Image.Image], str, int], str],
+                          max_edge: int) -> JunkAskFn:
+    """The rescue question over a loaded runtime — see _frame_question."""
+    return _frame_question(describe, max_edge, _JUNK_RESCUE_PROMPT,
+                           _JUNK_RESCUE_MAX_NEW_TOKENS)
+
+
+def qwen_vlm_junk_rescue(model_name: str = _DEFAULT_VLM_MODEL,
+                         max_edge: int = _DEFAULT_VLM_MAX_EDGE,
+                         ) -> JunkAskFn:  # pragma: no cover — ML, smoke test
+    """The real rescue asker — the SAME weights as everything else (F95): one per run."""
+    return vlm_junk_rescue_asker(shared_vlm(model_name), max_edge=max_edge)
+
+
+def qwen_vlm_junk_rescue_factory(max_edge: int) -> Callable[[str], JunkAskFn]:
+    """The default `junk_rescue_vlm_factory` of classify(), carrying `vlm.max_edge`."""
+    return lambda model_name: qwen_vlm_junk_rescue(model_name, max_edge=max_edge)
+
+
+def clip_text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML
+    """The default text encoder of the rescue score — the search engine's own (F129).
+
+    Imported here and not at module scope because `search` imports this module, and built
+    only when a run actually has frames to score: it loads the model, and a stage that has
+    nothing to ask must not pay for one (`_JunkRescuePass` calls this lazily, the same
+    rule `_unused_classifier` states for the image side).
+    """
+    from .search import text_encoder
+
+    return text_encoder(s)
+
+
 # --- F132: the keeper of a near-duplicate group ---------------------------------------
 #
 # paths -> the model's raw answer about WHICH of them to keep (parsed by
@@ -1621,6 +1825,11 @@ class QualitySettings:
     # the suite — keeps working unchanged when the check is not what it is asking about.
     pets_verify: bool = False
     pet_candidate_threshold: float = 0.3
+    # F140: the rescue score — its own toggle, and the threshold that decides who is shown
+    # to the model. Defaulted for the same reason the two fields above are: a caller that
+    # built these settings by hand keeps working when this is not what it is asking about.
+    junk_rescue: bool = False
+    junk_rescue_threshold: float = 0.02
 
 
 def quality_settings(cfg: Config) -> QualitySettings:
@@ -1638,6 +1847,8 @@ def quality_settings(cfg: Config) -> QualitySettings:
         exclude_classes=frozenset(getattr(vlm, "exclude_classes", ()) or ()),
         pets_verify=bool(getattr(f, "pets_verify", False)),
         pet_candidate_threshold=float(getattr(f, "pet_candidate_threshold", 0.3)),
+        junk_rescue=bool(getattr(f, "junk_rescue", False)),
+        junk_rescue_threshold=float(getattr(f, "junk_rescue_threshold", 0.02)),
     )
 
 
@@ -1758,6 +1969,9 @@ class FrameQuality:
     eyes_open: bool | None = None
     has_subject: bool | None = None
     is_accidental: bool | None = None
+    # F140: the zero-shot "screenshot rather than photograph" margin, or None for "not
+    # computed" — the toggle is off, or this frame has no stored CLIP vector to read it off.
+    junk_score: float | None = None
     source: str = QUALITY_SOURCE_CLASSIC
 
 
@@ -1775,7 +1989,7 @@ def read_frame_quality(conn: sqlite3.Connection,
     exactly once and quietly discard frames nobody had looked at.
     """
     sql = ("SELECT file_id, sharpness, pet, pet_score, pet_vlm, eyes_open, has_subject,"
-           " is_accidental, source FROM frame_quality")
+           " is_accidental, junk_score, source FROM frame_quality")
 
     def rows(cursor: sqlite3.Cursor) -> dict[int, FrameQuality]:
         return {
@@ -1788,6 +2002,7 @@ def read_frame_quality(conn: sqlite3.Connection,
                 eyes_open=_bool_or_none(r["eyes_open"]),
                 has_subject=_bool_or_none(r["has_subject"]),
                 is_accidental=_bool_or_none(r["is_accidental"]),
+                junk_score=None if r["junk_score"] is None else float(r["junk_score"]),
                 source=str(r["source"]),
             )
             for r in cursor
@@ -1812,13 +2027,13 @@ def read_frame_quality(conn: sqlite3.Connection,
 # frame only when its own marker went stale (a prompt edit among other things), and a
 # stale prompt is exactly when a stored answer must not survive.
 _QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, pet, pet_score,
-                         pet_vlm, eyes_open, has_subject, is_accidental, source,
-                         updated_at)
-                     VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+                         pet_vlm, eyes_open, has_subject, is_accidental, junk_score,
+                         source, updated_at)
+                     VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
                      ON CONFLICT(file_id) DO UPDATE SET
                          sharpness = excluded.sharpness, pet = excluded.pet,
                          pet_score = excluded.pet_score, pet_vlm = NULL, eyes_open = NULL,
-                         has_subject = NULL, is_accidental = NULL,
+                         has_subject = NULL, is_accidental = NULL, junk_score = NULL,
                          source = excluded.source, updated_at = excluded.updated_at"""
 _QUALITY_ANSWER_UPDATE = """UPDATE frame_quality
                             SET eyes_open = ?, has_subject = ?, is_accidental = ?,
@@ -1831,6 +2046,24 @@ _QUALITY_ANSWER_UPDATE = """UPDATE frame_quality
 _PET_ANSWER_UPDATE = """UPDATE frame_quality
                         SET pet_vlm = ?, pet = ?, updated_at = ?
                         WHERE file_id = ?"""
+# F140: the rescue score, written on its own after the fast pass — it is read off the
+# vector `_EmbeddingPass` stores inside the same loop, so it cannot be part of the upsert
+# that opens the row.
+_JUNK_SCORE_UPDATE = """UPDATE frame_quality
+                        SET junk_score = ?, updated_at = ?
+                        WHERE file_id = ?"""
+
+# The verdict of one frame. F68: `tier` is written on every path and always equals the
+# run's active tier — a row the active tier touched must never stay unmarked (or marked by
+# an older tier), otherwise it is reclassified on every run. Lifted out of classify() by
+# F140 for the same reason F90 lifted the gate functions: a second writer of this row
+# (the rescue) must write it the same way, and a paraphrase would drift.
+_MEDIA_CLASS_UPSERT = """INSERT INTO media_class (file_id, verdict, source, score,
+                                                  updated_at, tier)
+                         VALUES (?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(file_id) DO UPDATE SET verdict = excluded.verdict,
+                             source = excluded.source, score = excluded.score,
+                             updated_at = excluded.updated_at, tier = excluded.tier"""
 
 
 def _as_int(value: bool | None) -> int | None:
@@ -1850,7 +2083,8 @@ def _unused_classifier(paths: list[str], prompts: list[str]) -> np.ndarray:
 
 
 def quality_prompt_fingerprint(pets: bool, *, with_vlm: bool,
-                               verify_pets: bool = False) -> str:
+                               verify_pets: bool = False, rescue: bool = False,
+                               rescue_vlm: bool = False) -> str:
     """Eight hex characters over the TEXT that decides what lands in `frame_quality`.
 
     F120: the marker used to name the tier and nothing else, so editing a prompt left
@@ -1879,6 +2113,15 @@ def quality_prompt_fingerprint(pets: bool, *, with_vlm: bool,
         # CLIP prompts does. Only when the check actually ran: a collection measured
         # without it must not be invalidated by a prompt nobody asked.
         parts.append(_PET_VLM_PROMPT)
+    if rescue:
+        # F140: these prompts decide `junk_score` and, through the threshold, which frames
+        # are shown to the model at all — so an edit has to invalidate the stored scores
+        # (brief requirement 1) and, with them, the candidate list a later run rebuilds.
+        parts.extend(junk_rescue_prompts())
+    if rescue_vlm:
+        # And the question itself, only when it is asked: a collection scored without the
+        # deep tier must not be invalidated by wording nobody used on it.
+        parts.append(_JUNK_RESCUE_PROMPT)
     if with_vlm:
         parts.append(_QUALITY_PROMPT)
     raw = "\x00".join(parts)
@@ -1895,19 +2138,27 @@ def quality_tier(source: str) -> str:
 
 
 def _quality_source(use_clip: bool, pets: bool, ask: QualityAskFn | None,
-                    pet_ask: PetAskFn | None = None) -> str:
+                    pet_ask: PetAskFn | None = None, rescue: bool = False,
+                    rescue_ask: JunkAskFn | None = None) -> str:
     """The tier marker this run writes — and therefore what it considers up to date.
 
     F130: the pet check is a model too, so a run that only does that one still writes the
     `vlm` tier — the marker names WHICH TIER processed the row, and a row whose animal
     label came from the model did not come from the CLIP tier.
+
+    F140: the rescue score is a CLIP signal (text vectors against a stored image vector),
+    so switching it on moves the row to the `clip` tier at worst — and to `vlm` when the
+    deep tier is there to answer for its candidates. Either way the fingerprint carries the
+    prompts, which is what makes the score recomputable after an edit.
     """
-    if ask is not None or pet_ask is not None:
+    if ask is not None or pet_ask is not None or rescue_ask is not None:
         fingerprint = quality_prompt_fingerprint(
-            pets, with_vlm=ask is not None, verify_pets=pet_ask is not None)
+            pets, with_vlm=ask is not None, verify_pets=pet_ask is not None,
+            rescue=rescue, rescue_vlm=rescue_ask is not None)
         return f"{QUALITY_SOURCE_VLM}#{fingerprint}"
-    if use_clip and pets:
-        return f"{QUALITY_SOURCE_CLIP}#{quality_prompt_fingerprint(pets, with_vlm=False)}"
+    if use_clip and (pets or rescue):
+        return (f"{QUALITY_SOURCE_CLIP}#"
+                f"{quality_prompt_fingerprint(pets, with_vlm=False, rescue=rescue)}")
     # Sharpness only: no prompt took part, so there is nothing for a prompt edit to
     # invalidate — and a bare marker keeps the cheap case cheap to read.
     return QUALITY_SOURCE_CLASSIC
@@ -2196,6 +2447,33 @@ class JunkStats:
     keeper_groups: int = 0
     keeper_asked: int = 0
     keeper_answered: int = 0
+    # F140: photographs the rescue score was computed for, how many of them cleared
+    # `features.junk_rescue_threshold` (the frames the deep tier is asked about), and how
+    # many verdicts the model actually moved off `photo`. The first two price the gate the
+    # way pet_candidates/pet_verified price the animal check; the third is the whole point
+    # of the feature, and it is deliberately not the same number as the second — a
+    # candidate the model calls a photograph stays one.
+    junk_scored: int = 0
+    junk_candidates: int = 0
+    junk_rescued: int = 0
+
+
+def _non_photo_ids(conn: sqlite3.Connection, file_ids: Sequence[int]) -> set[int]:
+    """Which of these frames `media_class` says are NOT personal photographs.
+
+    One query over an indexed column, and it is asked AFTER the deep tier rather than
+    trusted from the fast pass: the deep tier (and, since F140, the rescue) is the one
+    thing that can move a verdict while a candidate list is standing, and `document` is
+    precisely the class `vlm.exclude_classes` protects by default. A frame with no verdict
+    at all is not in the answer — a first run has classified nothing yet, and that is not a
+    reason to withhold it.
+    """
+    out: set[int] = set()
+    for part in batched(list(file_ids), 500):
+        out.update(int(r["file_id"]) for r in conn.execute(
+            "SELECT file_id FROM media_class WHERE verdict != ? AND file_id IN"
+            f" ({','.join('?' * len(part))})", (QUALITY_VERDICT, *part)))
+    return out
 
 
 class _QualityPass:
@@ -2237,11 +2515,20 @@ class _QualityPass:
         # (file_id, path, label the cheap tier wrote) — the third field is what keeps
         # `stats.pets_found` the FINAL count when an answer moves the label.
         self._pet_candidates: list[tuple[int, str, str | None]] = []
+        # F140: (file_id, path) of every frame this run actually wrote a row for — the
+        # population of the rescue score, which is the same one by construction: a score
+        # belongs to a `frame_quality` row, and a row exists for personal photographs only.
+        self._measured: list[tuple[int, str]] = []
 
     @property
     def candidates(self) -> list[tuple[int, str, bool]]:
         """Frames of the uncertain band, in file order — the model's whole population."""
         return self._candidates
+
+    @property
+    def measured(self) -> list[tuple[int, str]]:
+        """Frames whose row this run wrote — what `_JunkRescuePass` scores (F140)."""
+        return self._measured
 
     def wanted(self, file_id: int) -> bool:
         """Does this frame need quality work in this run? (its own incrementality)"""
@@ -2284,6 +2571,7 @@ class _QualityPass:
         self._conn.execute(_QUALITY_UPSERT, (file_id, sharpness, pet, pet_score,
                                              self._source, self._now))
         self._stats.quality_rows += 1
+        self._measured.append((file_id, path))
         if pet is not None:
             self._stats.pets_found += 1
         # F130: the label written above is the UNVERIFIED one — `pet_score >=
@@ -2313,13 +2601,8 @@ class _QualityPass:
         and `document` is precisely the class `vlm.exclude_classes` protects by default.
         One query over an indexed column is a cheap way not to show the model a passport.
         """
-        ids = [fid for fid, _path, _before in self._pet_candidates]
-        out: set[int] = set()
-        for part in batched(ids, 500):
-            out.update(int(r["file_id"]) for r in self._conn.execute(
-                "SELECT file_id FROM media_class WHERE verdict != ? AND file_id IN"
-                f" ({','.join('?' * len(part))})", (QUALITY_VERDICT, *part)))
-        return out
+        return _non_photo_ids(
+            self._conn, [fid for fid, _path, _before in self._pet_candidates])
 
     def ask_pets(self, report: _PhaseProgress) -> None:
         """The pet check over its candidates — one frame per call, one word back (F130).
@@ -2397,6 +2680,134 @@ class _QualityPass:
                         _as_int(flags.eyes_open), _as_int(flags.has_subject),
                         _as_int(flags.is_accidental), self._now, file_id))
                     self._stats.quality_answered += 1
+                report.step(i + 1)
+
+
+class _JunkRescuePass:
+    """F140: the zero-shot score over the stored vectors, and the check it selects for.
+
+    Owns the three things the other halves own and nothing else: which frames are scored
+    (the ones this run wrote a `frame_quality` row for — the score belongs to that row, and
+    that row exists for personal photographs only), where the numbers come from (the
+    `clip_embeddings` table F128 filled, never a new pass over any image), and who is shown
+    to the model. It writes on the caller's thread, inside the caller's transaction.
+
+    Two failures leave a frame alone rather than junked, and they are the reason this is a
+    gate and not a classifier: no stored vector (the score stays NULL and the frame is no
+    candidate — a heuristics-only collection or `store_embeddings: false` simply does not
+    have this feature), and no answer from the model (the fast verdict stands). Neither is
+    ever read as "this is junk": the score alone is right ~85% of the time, and the F130
+    lesson is that such a signal applied directly makes a better baseline worse.
+
+    The text encoder is built LAZILY, inside `run`, and only when there are frames to
+    score: it loads a model, and a run with nothing to ask must not pay for one.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, q: QualitySettings, model: str,
+                 encoder: Callable[[], TextEncoder], ask: JunkAskFn | None,
+                 now: str, tier: str, stats: JunkStats) -> None:
+        self._conn = conn
+        self._q = q
+        self._model = model
+        self._encoder = encoder
+        self._ask = ask
+        self._now = now
+        self._tier = tier
+        self._stats = stats
+
+    def _text_features(self) -> np.ndarray | None:
+        """The prompts as a matrix of unit rows; None — the encoder could not be had.
+
+        The same graceful fallback the model halves of this stage have, and for the same
+        reason: an optional signal that cannot be computed must cost the run nothing. The
+        rows are not cached between runs — five short strings through a text tower is
+        nothing next to the pass that has just finished.
+        """
+        try:
+            rows = np.asarray(self._encoder()(junk_rescue_prompts()), dtype=np.float32)
+        except Exception as exc:  # noqa: BLE001 — the stage must survive it
+            _log.warning(
+                "junk: текстовый энкодер для отбора мусора недоступен (%s) — "
+                "оценка junk_score не считается, вердикты не меняются", exc)
+            return None
+        return unit_rows(rows)
+
+    def run(self, frames: Sequence[tuple[int, str]], report: _PhaseProgress) -> None:
+        """Score `frames`, store the scores, then ask the model about the candidates."""
+        if not self._q.junk_rescue or not frames:
+            return
+        features = self._text_features()
+        if features is None:
+            return
+        candidates = self._score(frames, features)
+        if not candidates:
+            return
+        self._stats.junk_candidates = len(candidates)
+        self._reclassify(candidates, report)
+
+    def _score(self, frames: Sequence[tuple[int, str]],
+               features: np.ndarray) -> list[tuple[int, str]]:
+        """Write `junk_score` for every frame that has a vector; return the candidates.
+
+        A frame the deep tier has since moved off `photo` is skipped entirely — it is junk
+        already, its row is about to be purged, and scoring it would only inflate the
+        counters the gate is priced by (brief test 7).
+        """
+        ids = [file_id for file_id, _path in frames]
+        vectors = read_clip_embeddings(self._conn, self._model, ids)
+        gone = _non_photo_ids(self._conn, ids)
+        candidates: list[tuple[int, str]] = []
+        with self._conn:
+            for file_id, path in frames:
+                if file_id in gone:
+                    continue
+                vec = vectors.get(file_id)
+                score = None if vec is None else junk_rescue_score(vec, features)
+                if score is None:
+                    continue  # no vector of this model: NULL means "not computed"
+                self._conn.execute(_JUNK_SCORE_UPDATE, (score, self._now, file_id))
+                self._stats.junk_scored += 1
+                if score >= self._q.junk_rescue_threshold:
+                    candidates.append((file_id, path))
+        return candidates
+
+    def _reclassify(self, candidates: list[tuple[int, str]],
+                    report: _PhaseProgress) -> None:
+        """One question per candidate; only the model's answer moves a verdict.
+
+        With the deep tier off there is no asker at all and this returns immediately: the
+        scores are stored, the candidates are counted, and not one verdict of the run has
+        changed — which is the promise the feature is switched on under.
+
+        `photo` back from the model is an answer, not a refusal: the frame was a candidate
+        because it LOOKS like a screenshot, and the model saying otherwise is exactly what
+        the ~15% of candidates that are real photographs need. It is written as a verdict
+        anyway (the source becomes `vlm`) so that a later reader can tell a frame the model
+        confirmed from one it was never shown.
+        """
+        if self._ask is None:
+            return
+        report.start(CLASSIFY_PHASE_VLM, len(candidates))
+        with self._conn:
+            for i, (file_id, path) in enumerate(candidates):
+                try:
+                    answer = self._ask(path)
+                except Exception as exc:  # noqa: BLE001 — one frame, not the stage
+                    _log.warning(
+                        "junk: VLM не ответила по кандидату file_id=%s (%s) — "
+                        "остаётся вердикт быстрого яруса", file_id, exc)
+                    answer = ""
+                verdict = parse_junk_rescue_answer(answer)
+                if verdict is not None:
+                    self._conn.execute(_MEDIA_CLASS_UPSERT,
+                                       (file_id, verdict, "vlm", None, self._now,
+                                        self._tier))
+                    if verdict != QUALITY_VERDICT:
+                        self._stats.junk_rescued += 1
+                        self._stats.by_verdict[QUALITY_VERDICT] = (
+                            self._stats.by_verdict.get(QUALITY_VERDICT, 1) - 1)
+                        self._stats.by_verdict[verdict] = (
+                            self._stats.by_verdict.get(verdict, 0) + 1)
                 report.step(i + 1)
 
 
@@ -2526,6 +2937,10 @@ def classify(
     pet_vlm_factory: Callable[[str], PetAskFn] | None = None,
     keeper_vlm: KeeperAskFn | None = None,
     keeper_vlm_factory: Callable[[str], KeeperAskFn] | None = None,
+    junk_rescue_vlm: JunkAskFn | None = None,
+    junk_rescue_vlm_factory: Callable[[str], JunkAskFn] | None = None,
+    junk_text_encoder: TextEncoder | None = None,
+    junk_text_encoder_factory: Callable[[NamingSettings], TextEncoder] | None = None,
     progress: ProgressCB | None = None,
 ) -> JunkStats:
     """Classify canonical photos into media_class.
@@ -2600,6 +3015,16 @@ def classify(
     over its cache, which the real one (landmarks.CachingFeatureClassifier) has — so a
     classifier injected as a plain function stores nothing, logs why once, and changes no
     other behaviour of the stage.
+
+    junk_rescue_vlm / junk_rescue_vlm_factory / junk_text_encoder /
+    junk_text_encoder_factory (F140): the rescue of the screenshots and receipts this stage
+    called photographs, behind `features.junk_rescue`. The score is read off the stored
+    CLIP vectors (F128) with the text encoder — injected here, and built lazily from
+    `naming.clip.*` otherwise, so a run with nothing to score loads no model — and the
+    frames it selects are shown the VLM, which needs the deep tier (`vlm.enabled`) to be on
+    at all. Same shape and same graceful fallback as the three askers above: an encoder or
+    a model that will not build leaves every verdict of the run exactly as the fast tier
+    wrote it, and with the deep tier off nothing is reclassified even when the score is.
 
     progress (F100): the usual `(done, total)` callback; if it also carries a
     `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
@@ -2702,6 +3127,26 @@ def classify(
                     "остаётся по резкости", exc)
                 keeper_ask = None
 
+    # F140: the rescue check, resolved the same way and with the same fallback again. Two
+    # conditions gate it and they are different questions: `features.junk_rescue` says the
+    # SCORE is wanted, the deep tier says there is somebody to answer for the candidates it
+    # selects. With the tier off the score is still computed and stored — that is the state
+    # the feature is meant to be tried in — and not one verdict moves.
+    rescue_ask: JunkAskFn | None = None
+    if use_clip and q.junk_rescue and bool(getattr(cfg.naming, "vlm_enabled", False)):
+        if junk_rescue_vlm is not None:
+            rescue_ask = junk_rescue_vlm
+        else:
+            r_factory = junk_rescue_vlm_factory or qwen_vlm_junk_rescue_factory(
+                cfg.vlm.max_edge)
+            try:
+                rescue_ask = r_factory(cfg.vlm.model)
+            except Exception as exc:  # noqa: BLE001 — the rescue is optional, must not crash
+                _log.warning(
+                    "junk: VLM-проверка кандидатов недоступна (%s) — вердикты остаются "
+                    "за быстрым ярусом, счёт всё равно пишется", exc)
+                rescue_ask = None
+
     # F68: incrementality runs on media_class.tier — the marker of WHICH TIER
     # processed the row, independent of `source` (what decided the verdict). Three
     # tiers: 'heuristic' (use_clip=False), 'clip' (the fast pass), 'vlm' (the fast
@@ -2714,7 +3159,8 @@ def classify(
     # change a single junk verdict, and a collection whose junk was classified before this
     # feature existed has no quality rows at all. A frame is walked when EITHER half wants
     # it, and each half then writes only its own table.
-    quality_source = _quality_source(use_clip, q.pets, quality_ask, pet_ask)
+    quality_source = _quality_source(use_clip, q.pets, quality_ask, pet_ask,
+                                     use_clip and q.junk_rescue, rescue_ask)
     # F120: only personal photographs are asked the quality questions. Selection uses the
     # verdict ALREADY STORED, because this run's verdict is not known until the frame is
     # walked; a frame with no verdict yet (a first run) is included and settled below, and
@@ -2772,6 +3218,13 @@ def classify(
         quality_ask,
         quality_scope_ids(cfg, conn, q.vlm_scope) if quality_ask is not None else None,
         quality_source, quality_ids, now, stats, faces_known, pet_ask)
+    # F140: the encoder is a closure and not an object, so that a run whose rescue has
+    # nothing to score never builds one — see _JunkRescuePass.
+    rescue = _JunkRescuePass(
+        conn, q, embed_model,
+        (lambda: junk_text_encoder) if junk_text_encoder is not None
+        else (lambda: (junk_text_encoder_factory or clip_text_encoder)(s)),
+        rescue_ask, now, active_tier, stats)
     # F100: the phase channel of the callback, if it has one. The total is reported
     # right away, even if the stage is small/fast (#37); which phase the stage opens
     # with depends on the tier — a heuristics-only run classifies nothing, it only
@@ -2786,15 +3239,9 @@ def classify(
         for r in work
     }
     heur = {fid: v or "photo" for fid, v in heur_raw.items()}
-    # F68: `tier` is written on every path and always equals active_tier — a row the
-    # active tier touched must never stay unmarked (or marked by an older tier),
-    # otherwise it is reclassified on every run.
-    upsert = """INSERT INTO media_class (file_id, verdict, source, score, updated_at,
-                                         tier)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(file_id) DO UPDATE SET verdict = excluded.verdict,
-                    source = excluded.source, score = excluded.score,
-                    updated_at = excluded.updated_at, tier = excluded.tier"""
+    # F68: `tier` is written on every path and always equals active_tier — see
+    # _MEDIA_CLASS_UPSERT, where the statement and that rule now live.
+    upsert = _MEDIA_CLASS_UPSERT
 
     if not use_clip:
         with conn:
@@ -3028,6 +3475,14 @@ def classify(
                 # leave the bar one short of its total for good).
                 report.step(j + 1)
 
+    # F140: the rescue, over the frames the fast tier called photographs. Here and not in
+    # the loop because it reads what the loop wrote — the vector of each frame — and after
+    # the deep tier because that tier is the other thing that can move a verdict, and a
+    # frame it has just called a `document` must not be asked about again. Before the two
+    # questions below it for the reason the pet check comes before the band: the verdict is
+    # what the rest of the pipeline depends on, and a run interrupted afterwards has
+    # finished the part that matters most.
+    rescue.run(quality.measured, report)
     # F130: the animal check, over the candidates the CLIP pet group turned up. After the
     # deep tier for the same reason the quality band is (one GPU, and the verdict is what
     # the rest of the pipeline depends on), and before the band because it is the shorter

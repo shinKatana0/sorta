@@ -700,11 +700,18 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
         data = json.loads(body)
+        # F138: the four knobs that left the settings column start from the config here
+        # too — the file is their only home now, and this is what the screen reads.
         self.assertEqual(set(data.keys()),
-                         {"deep", "geo_online", "pets", "vlm_available"})
+                         {"deep", "geo_online", "pets", "pets_verify", "quality",
+                          "quality_scope", "keeper", "vlm_available"})
         self.assertFalse(data["deep"])
         self.assertFalse(data["geo_online"])
         self.assertFalse(data["pets"])
+        self.assertFalse(data["pets_verify"])
+        self.assertFalse(data["quality"])
+        self.assertFalse(data["keeper"])
+        self.assertEqual(data["quality_scope"], "groups")
 
     def test_vlm_enabled_and_online_provider_in_cfg_reflected(self):
         self.cfg.naming = dataclasses.replace(self.cfg.naming, vlm_enabled=True)

@@ -31,6 +31,7 @@ from sorta.landmarks import (
     CHECK_CONFIRMED,
     CHECK_REJECTED,
     LANDMARK_NAMING_PROMPT,
+    _SCAN_KEY as SCAN_KEY,
     detect_landmarks,
     landmark_check_model,
 )
@@ -93,11 +94,16 @@ class VerifyCase(CorroborationCase):
                                 resolver=self.resolver, asker=asker, **kwargs)
 
     def checks(self) -> dict[tuple[str, str], tuple[str, float]]:
-        """(path, proposed landmark) -> (verdict, score), out of `landmark_checks`."""
+        """(path, proposed landmark) -> (verdict, score), out of `landmark_checks`.
+
+        The stage's own scan rows (F136, `landmark = SCAN_KEY`) are left out: they record
+        what CLIP found, and everything here is about what the MODEL was asked.
+        """
         by_id = {file_id: path for path, file_id in self.ids.items()}
         return {(by_id[r["file_id"]], r["landmark"]): (r["verdict"], r["score"])
                 for r in self.conn.execute(
-                    "SELECT file_id, landmark, verdict, score FROM landmark_checks")}
+                    "SELECT file_id, landmark, verdict, score FROM landmark_checks"
+                    " WHERE landmark != ?", (SCAN_KEY,))}
 
 
 class TestToggleOff(VerifyCase):
@@ -367,6 +373,12 @@ class TestTheAnswerIsRemembered(VerifyCase):
         path = self.says(self.add("/photos/DCIM", PRAGUE, prob=0.99), SAYS_BERLIN)
         self.run_stage()
         self.scores[path] = (PARIS, 0.99)                  # CLIP changed its mind
+        # ...which, since F136, only happens when the frame itself changed: an unedited
+        # file with unchanged settings is not shown to CLIP a second time at all, so the
+        # test has to say what a real re-proposal means — the photo was replaced.
+        self.conn.execute("UPDATE files SET mtime = 42, size = 2000 WHERE id = ?",
+                          (self.ids[path],))
+        self.conn.commit()
         self.run_stage()
         self.assertEqual(self.asked, [path, path])
         self.assertEqual(set(self.checks()),

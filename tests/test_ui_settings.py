@@ -22,13 +22,15 @@ from unittest import mock
 import yaml
 
 from sorta import imaging, ui
-from sorta.config import load_config
+from sorta.config import VLM_QUALITY_SCOPES, load_config
 
 from tests.test_ui_process import ProcessTestBase, _poll_until
 
 _F104_SETTINGS_KEYS = (
     "settings_title", "settings_hint",
-    "settings_vlm_enabled_label", "settings_vlm_enabled_hint",
+    # F138: the deep-tier toggle left this column for the run screen (with its price),
+    # and its two strings went with it — what stays here is what costs a run nothing.
+    "settings_costs_moved_hint",
     "settings_vlm_model_label",
     "settings_vlm_workers_label", "settings_vlm_workers_hint",
     "settings_vlm_max_edge_label", "settings_vlm_max_edge_hint",
@@ -104,15 +106,12 @@ class TestReadSettings(SettingsTestBase):
             self.cfg.vlm, enabled=True, model="some/other-vlm", workers=3, max_edge=640)
         self.start_server()
         self.assertEqual(self.settings(), {
-            "vlm.enabled": True,
             "vlm.model": "some/other-vlm",
             "vlm.workers": 3,
             "vlm.max_edge": 640,
-            # F119: the F113 quality cascade reached the column too. Defaults, because
-            # this case only replaces the four fields above.
-            "vlm.quality": False,
-            "vlm.quality_scope": "groups",
-            "features.pets": False,
+            # F138: `vlm.enabled`, `vlm.quality`, `vlm.quality_scope` and
+            # `features.pets` are not answered here any more — they cost a run time, so
+            # they are priced on the run screen and this column is not their second home.
             "features.pet_threshold": 0.7,
             "features.sharpness_max_edge": 512,
             "features.sharpness_band_min": 30.0,
@@ -129,7 +128,6 @@ class TestReadSettings(SettingsTestBase):
         self.start_server()
         data = self.settings()
         self.assertEqual(set(data), set(ui._SETTINGS_SPEC))
-        self.assertIs(data["vlm.enabled"], False)
         self.assertTrue(data["vlm.model"])
         self.assertGreaterEqual(data["vlm.workers"], 1)
         self.assertGreater(data["vlm.max_edge"], 0)
@@ -138,16 +136,16 @@ class TestReadSettings(SettingsTestBase):
 class TestWriteSettings(SettingsTestBase):
     def test_a_toggle_changes_the_running_config_and_the_file(self):
         self.start_server()
-        status, resp = self.post_raw("/api/settings", {"vlm.enabled": True})
+        status, resp = self.post_raw("/api/settings", {"vlm.model": "some/other-vlm"})
         self.assertEqual(status, 200)
         self.assertTrue(resp["ok"])
-        self.assertIs(resp["settings"]["vlm.enabled"], True)
+        self.assertEqual(resp["settings"]["vlm.model"], "some/other-vlm")
         # in memory — the run that starts next reads this, no restart involved
-        self.assertIs(self.cfg.vlm.enabled, True)
+        self.assertEqual(self.cfg.vlm.model, "some/other-vlm")
         # F102: the field the junk stage actually consults is held equal to it
-        self.assertIs(self.cfg.naming.vlm_enabled, True)
+        self.assertEqual(self.cfg.naming.classify_vlm_model, "some/other-vlm")
         # and on disk
-        self.assertIs(self.saved()["vlm"]["enabled"], True)
+        self.assertEqual(self.saved()["vlm"]["model"], "some/other-vlm")
 
     def test_the_rest_of_the_file_is_untouched(self):
         self.start_server()
@@ -209,24 +207,34 @@ class TestWriteSettings(SettingsTestBase):
         self.assertEqual(resp["settings"]["imaging.preview_cache_max_gb"], 0)
         self.assertEqual(imaging.preview_cache_max_gb(), 0.0)
 
-    def test_the_quality_cascade_applies_and_persists(self):
+    def test_the_quality_thresholds_apply_and_persist(self):
         """F119: `features:` is a second dataclass section, and F113 shipped it without
-        an interface — the only way to switch the cascade on was editing the file."""
+        an interface — the only way to set the cascade's thresholds was editing the
+        file. F138: the cascade's TOGGLES moved to the run screen, the thresholds (which
+        cost a run nothing) stayed here, and this is the half that still saves."""
         self.start_server()
         status, resp = self.post_raw("/api/settings", {
-            "vlm.quality": True,
-            "vlm.quality_scope": "events",
-            "features.pets": True,
             "features.pet_threshold": 0.75,
+            "features.subject_score_min": 0.8,
         })
         self.assertEqual(status, 200)
-        self.assertIs(self.cfg.vlm.quality, True)
-        self.assertEqual(self.cfg.vlm.quality_scope, "events")
-        self.assertIs(self.cfg.features.pets, True)
         self.assertEqual(self.cfg.features.pet_threshold, 0.75)
-        self.assertIs(self.saved()["vlm"]["quality"], True)
+        self.assertEqual(self.cfg.features.subject_score_min, 0.8)
         self.assertEqual(self.saved()["features"]["pet_threshold"], 0.75)
-        self.assertEqual(resp["settings"]["features.pets"], True)
+        self.assertEqual(resp["settings"]["features.subject_score_min"], 0.8)
+
+    def test_a_knob_that_moved_to_the_run_screen_is_refused_here(self):
+        """F138 §2: a knob has one home. The column no longer offers `vlm.quality`, so
+        the endpoint must not quietly accept it either — two writable addresses for one
+        value is exactly the pair of truths the move was made to end."""
+        self.start_server()
+        for key, value in (("vlm.enabled", True), ("vlm.quality", True),
+                           ("vlm.quality_scope", "all"), ("features.pets", True)):
+            with self.subTest(key=key):
+                status, _resp = self.post_raw("/api/settings", {key: value})
+                self.assertEqual(status, 400)
+        self.assertIs(self.cfg.vlm.quality, False)
+        self.assertIs(self.cfg.features.pets, False)
 
     def test_a_float_setting_takes_a_whole_number_too(self):
         """A form posting `1` for a threshold of 1.0 is not an error."""
@@ -235,16 +243,6 @@ class TestWriteSettings(SettingsTestBase):
             "/api/settings", {"features.subject_score_min": 1})
         self.assertEqual(status, 200)
         self.assertEqual(self.cfg.features.subject_score_min, 1.0)
-
-    def test_an_unknown_scope_is_refused_rather_than_defaulted(self):
-        """`all` is the 4.3-hour option — drifting into it (or past it) on a typo is
-        expensive, so the set is closed and a miss is a 400."""
-        self.start_server()
-        status, _resp = self.post_raw(
-            "/api/settings", {"vlm.quality_scope": "everything"})
-        self.assertEqual(status, 400)
-        self.assertEqual(self.cfg.vlm.quality_scope, "groups")
-        self.assertNotIn("quality_scope", self.saved().get("vlm", {}))
 
     def test_a_float_out_of_range_is_refused(self):
         self.start_server()
@@ -266,20 +264,10 @@ class TestWriteSettings(SettingsTestBase):
     def test_the_new_value_is_what_a_reload_of_the_config_would_give(self):
         """"Saved" has to mean the next `sorta index` sees it too, not just this tab."""
         self.start_server()
-        self.post_raw("/api/settings", {"vlm.enabled": True, "vlm.max_edge": 640})
+        self.post_raw("/api/settings", {"vlm.workers": 7, "vlm.max_edge": 640})
         reloaded = load_config(self.config_path)
-        self.assertIs(reloaded.vlm.enabled, True)
+        self.assertEqual(reloaded.vlm.workers, 7)
         self.assertEqual(reloaded.vlm.max_edge, 640)
-
-    def test_the_process_tab_default_follows_the_toggle(self):
-        """The "Deep analysis (VLM)" checkbox is initialized from the same field — a
-        toggle that did not move it would be a setting saved and not applied."""
-        self.start_server()
-        _s, body, _c = self.get("/api/process/defaults")
-        self.assertIs(json.loads(body)["deep"], False)
-        self.post_raw("/api/settings", {"vlm.enabled": True})
-        _s2, body2, _c2 = self.get("/api/process/defaults")
-        self.assertIs(json.loads(body2)["deep"], True)
 
     def test_without_a_config_path_the_change_is_memory_only(self):
         """`sorta ui` can be handed no config file at all (the CLI decides). The
@@ -303,20 +291,19 @@ class TestRejectedValues(SettingsTestBase):
             {"vlm.workers": True},          # bool is an int in Python, not here
             {"vlm.max_edge": 0},
             {"vlm.max_edge": 99999},        # a typo that costs the whole VRAM budget
-            {"vlm.enabled": "true"},        # the string, not the boolean
+            {"features.pet_threshold": "high"},  # a string where a number belongs
             {"vlm.model": ""},              # an empty model name
             {"vlm.model": 5},
             {"sort.exclude_dirs": ["/tmp"]},  # a key this endpoint does not own
             {},                             # an "ok" that changed nothing
             [],
-            "vlm.enabled",
+            "vlm.model",
         ):
             with self.subTest(payload=payload):
                 status, resp = self.post_raw("/api/settings", payload)
                 self.assertEqual(status, 400)
                 self.assertIn("error", resp)
         self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
-        self.assertIs(self.cfg.vlm.enabled, False)
         self.assertEqual(self.cfg.vlm.workers, 2)
 
     def test_one_bad_key_rejects_the_whole_body(self):
@@ -324,10 +311,10 @@ class TestRejectedValues(SettingsTestBase):
         half of it is real."""
         self.start_server()
         status, _resp = self.post_raw(
-            "/api/settings", {"vlm.enabled": True, "vlm.workers": -3})
+            "/api/settings", {"vlm.max_edge": 640, "vlm.workers": -3})
         self.assertEqual(status, 400)
-        self.assertIs(self.cfg.vlm.enabled, False)
-        self.assertIs(self.saved()["vlm"]["enabled"], False)
+        self.assertEqual(self.cfg.vlm.max_edge, 896)
+        self.assertEqual(self.saved()["vlm"]["max_edge"], 896)
 
     def test_the_bounds_of_the_spec_are_the_ones_the_form_shows(self):
         """The number inputs carry min/max attributes; if they drifted from the
@@ -351,20 +338,18 @@ class TestRejectedValues(SettingsTestBase):
     def test_the_scope_select_offers_no_value_the_server_refuses(self):
         """A select that offers a scope the server refuses is worse than no select.
 
-        F125 added `faces` to the accepted values and deliberately did not touch this
-        form: the option and its three translations belong to F126, which owns ui.py.
-        So the direction that can break a user — offering something the server would
-        reject — is what is asserted here, and the other direction (a scope the form does
-        not offer yet) is a config-file-only value until then.
+        F138 moved the select onto the run screen (the scope is what makes the quality
+        question 95 minutes or 4.3 hours), so the pairing is checked against the run
+        route's accepted set — the same assertion about the same hazard, one address
+        further along.
         """
         html = ui._render_index_html("en")
         offered = re.findall(
-            r'<select id="setting-vlm-quality-scope">(.*?)</select>', html, re.S)
+            r'<select id="process-quality-scope">(.*?)</select>', html, re.S)
         self.assertEqual(len(offered), 1)
         values = re.findall(r'value="([^"]+)"', offered[0])
-        accepted = list(ui._SETTINGS_SPEC["vlm.quality_scope"].choices)
         self.assertTrue(values)
-        self.assertEqual(values, [v for v in accepted if v in values])
+        self.assertEqual(values, [v for v in VLM_QUALITY_SCOPES if v in values])
 
 
 class TestRefusedWhileBusy(SettingsTestBase):
@@ -383,11 +368,11 @@ class TestRefusedWhileBusy(SettingsTestBase):
         _poll_until(lambda: json.loads(self.get("/api/process/status")[1]),
                     lambda d: d["running"] and "geo" in self.calls)
 
-        status, resp = self.post_raw("/api/settings", {"vlm.enabled": True})
+        status, resp = self.post_raw("/api/settings", {"vlm.max_edge": 640})
         self.assertEqual(status, 409)
         self.assertEqual(resp["error"], "already running")
         self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
-        self.assertIs(self.cfg.vlm.enabled, False)
+        self.assertEqual(self.cfg.vlm.max_edge, 896)
 
         block.set()
         _poll_until(lambda: json.loads(self.get("/api/process/status")[1]),
@@ -399,9 +384,9 @@ class TestRefusedWhileBusy(SettingsTestBase):
         self.post("/api/process", {"source_dir": str(self.src_dir)})
         _poll_until(lambda: json.loads(self.get("/api/process/status")[1]),
                     lambda d: d["finished"])
-        status, _resp = self.post_raw("/api/settings", {"vlm.enabled": True})
+        status, _resp = self.post_raw("/api/settings", {"vlm.max_edge": 640})
         self.assertEqual(status, 200)
-        self.assertIs(self.saved()["vlm"]["enabled"], True)
+        self.assertEqual(self.saved()["vlm"]["max_edge"], 640)
 
     def test_a_sort_in_flight_also_refuses(self):
         state = ui._SortState()
@@ -429,7 +414,7 @@ class TestSettingsMarkup(SettingsTestBase):
         self.html = ui._render_index_html("en")
 
     def test_the_column_holds_a_control_per_knob(self):
-        for control in ("setting-vlm-enabled", "setting-vlm-model",
+        for control in ("setting-vlm-model",
                         "setting-vlm-workers", "setting-vlm-max-edge",
                         "setting-imaging-preview-cache-max-gb"):
             self.assertIn(f'id="{control}"', self.html)

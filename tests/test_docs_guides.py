@@ -18,6 +18,15 @@ false statements — a `ru` default language, a junk class list without `product
 superseded timing reference — so the cases below read each of those facts out of the
 module that owns it (`config.Config`, `config.VlmConfig`, `scripts/check.py`) instead
 of hard-coding the prose. A key added to `vlm:` fails the suite until it is written up.
+
+F142 widens that principle from the config file to the command line. Twelve features
+landed on 2026-08-01/02 and the guides stayed silent about every one of them, because
+the only watchdog here read `config.yaml` keys: `sorta search` had one accidental
+mention, `sorta album query` one, `--pets`, `--quality-scope` and `--preview-max-gb`
+none at all. So `TestEveryCommandAndFlagIsDocumented` walks the application `cli.py`
+builds and requires each command and each of its options to be named in all three
+guides. The source is the built application on purpose — a list of commands kept in
+this file would drift exactly the way the prose did.
 """
 from __future__ import annotations
 
@@ -27,7 +36,8 @@ import unittest
 import unicodedata
 from pathlib import Path
 
-from sorta import config
+from sorta import cli, config
+from sorta.sorter import ALBUM_KINDS
 
 _ROOT = Path(__file__).resolve().parent.parent
 _GUIDE_DIR = _ROOT / "docs" / "guide"
@@ -98,6 +108,95 @@ def headings(text: str) -> list[str]:
 def sections(text: str) -> list[tuple[int, str]]:
     """The numbered `## N. Title` sections, in file order."""
     return [(int(m.group(1)), m.group(2).strip()) for m in _SECTION.finditer(without_code(text))]
+
+
+def cli_surface() -> list[tuple[str, list[str]]]:
+    """Every command of the CLI as `("sorta faces label", ["--config", "-c"])`.
+
+    Walked off the application `cli.build_app` returns rather than parsed out of the
+    source: typer turns the decorated functions into a tree of commands, so a command
+    or a flag added to `cli.py` appears here on the next run with nothing to update.
+    Sub-applications (`faces`, `events`) are groups and recurse.
+
+    The walk duck-types on `.commands` instead of importing click: typer 0.27 vendors
+    click as `typer._click`, and `import click` fails in this environment.
+    """
+    import typer.main
+
+    def walk(command: object, path: list[str]) -> list[tuple[str, list[str]]]:
+        found = []
+        for name, sub in sorted(getattr(command, "commands", {}).items()):
+            found.extend(walk(sub, [*path, name]))
+        opts: list[str] = []
+        for param in command.params:  # type: ignore[attr-defined]
+            opts.extend([*param.opts, *param.secondary_opts])
+        # `--pets/--no-pets` is two option strings and both have to be documented: the
+        # negative half is the one that switches OFF what config.yaml switched on.
+        found.append((" ".join(path), sorted({o for o in opts if o.startswith("-")})))
+        return found
+
+    return walk(typer.main.get_command(cli.build_app("en")), ["sorta"])
+
+
+class TestEveryCommandAndFlagIsDocumented(unittest.TestCase):
+    """F142: the terminal surface, checked against `cli.py` rather than against a list.
+
+    A command that exists and is documented nowhere is invisible: `sorta search` shipped
+    and the only mention of it in 1,600 lines of guide was one a worker had added in
+    passing. These cases are cheap to satisfy (a line in §16 counts) and impossible to
+    satisfy by accident, which is the point — the next command is caught the day it
+    lands, not at the next audit.
+    """
+
+    def setUp(self):
+        if cli.app is None:  # pragma: no cover — the argparse fallback, no typer
+            self.skipTest("typer is not installed")
+        self.surface = cli_surface()
+
+    def test_the_walk_actually_found_the_command_line(self):
+        """A green suite must not be the result of an empty walk.
+
+        Everything below is a loop over what `cli_surface` returned, so a typer release
+        that renames `.commands` or `.params` would silently check nothing at all.
+        """
+        names = {name for name, _opts in self.surface}
+        self.assertIn("sorta search", names)
+        self.assertIn("sorta faces label", names)
+        self.assertGreaterEqual(len(names), 15)
+        flags = {opt for _name, opts in self.surface for opt in opts}
+        self.assertIn("--quality-scope", flags)
+        self.assertIn("--no-pets", flags)
+
+    # `assertTrue` rather than `assertIn`: the container here is a 1,600-line guide, and
+    # a failure that prints all of it buries the one word it is about.
+    def test_every_command_is_named_in_every_guide(self):
+        for name, _opts in self.surface:
+            for lang, path in GUIDES.items():
+                with self.subTest(lang=lang, command=name):
+                    self.assertTrue(name in read(path),
+                                    f"{path.name}: undocumented command `{name}`")
+
+    def test_every_flag_is_named_in_every_guide(self):
+        for name, opts in self.surface:
+            for opt in opts:
+                for lang, path in GUIDES.items():
+                    with self.subTest(lang=lang, command=name, flag=opt):
+                        self.assertTrue(
+                            opt in read(path),
+                            f"{path.name}: undocumented flag {opt} of `{name}`")
+
+    def test_every_album_kind_is_named_in_every_guide(self):
+        """The kinds are positional arguments, so the flag loop above cannot see them.
+
+        `animal` and `query` are exactly the pair this case exists for: they arrived with
+        F123/F129 and the guides described albums as "one person or one event" for the
+        whole week after.
+        """
+        for kind in ALBUM_KINDS:
+            for lang, path in GUIDES.items():
+                with self.subTest(lang=lang, kind=kind):
+                    self.assertTrue(f"album {kind}" in read(path),
+                                    f"{path.name}: undocumented album kind {kind!r}")
 
 
 class TestLinksResolve(unittest.TestCase):

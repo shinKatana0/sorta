@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The screenshots and receipts the classifier took for photographs** (F140):
+  `features.junk_rescue`, off by default, with `features.junk_rescue_threshold` (0.02) next
+  to it and a new column `frame_quality.junk_score` (schema v20). The search by words (F134)
+  put memes and screenshots at the top of its results, and the table it searches turned out
+  to be clean — all 19 753 rows carry the verdict `photo`. So nothing had leaked into the
+  index: the junk stage is simply wrong about ~4% of what it calls a photograph, an error
+  nothing made visible until a query did, and those ~800 frames go into the city layout, the
+  duplicates, the quality signals and the albums like ordinary pictures. They are found by a
+  zero-shot query over the vectors F128 already stores — `max(similarity to
+  screenshot/meme/text/receipt) - max(similarity to a photograph)` — which costs **no pass
+  over any image**: the vectors are on disk and the prompts are five short strings through
+  the text tower. The whole feature is what is **not** done with that number. Reviewed by
+  eye: above +0.05 the 93 frames are junk outright, but the band +0.02..+0.05 still holds
+  ~17% real photographs, so applying the score as a verdict at ~85% precision would take
+  ~150 living pictures out of the layout — exactly the mistake F130 measured for animals,
+  where a signal of that accuracy applied directly makes a better baseline worse. The score
+  therefore **selects and does not judge**: it is written for every photograph that has a
+  vector (NULL without one, so a heuristics-only collection or `store_embeddings: false`
+  simply does not have this feature), the frames above the threshold become candidates for
+  the deep tier — 955 of them, ~12 minutes at the measured 0.78 s per frame — and only the
+  model's answer moves a verdict, with its own three-way question (screenshot / document /
+  photo) rather than a widened deep-tier prompt, which would have changed verdicts on runs
+  where this feature is off. **With the deep tier off nothing is reclassified at all**: the
+  score is stored, the candidates are counted, the run is otherwise unchanged. An unreadable
+  answer, a model that raises, a model or a text encoder that will not build — every one of
+  them leaves the fast verdict standing, never "junk". Both prompt texts enter
+  `quality_prompt_fingerprint`, so editing either invalidates the scores it produced (the
+  F120 rule), and `scripts/measure_junk_rescue.py` prints the distribution and what every
+  threshold would select **before** one is chosen, over the stored vectors and without a
+  model.
 - **A landmark is checked before it becomes a place** (F131): `features.landmarks_verify`,
   off by default, with `features.landmark_candidate_threshold` (0.5) next to it. CLIP
   proposes a landmark, the local VLM is asked what well-known place the frame shows, and
@@ -242,6 +272,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **What costs time is on the run screen, and it says how much** (F138). Three knobs
+  worth between a quarter of an hour and four hours of a run — `vlm.quality` +
+  `vlm.quality_scope` (95 minutes by faces, 4.3 hours over everything),
+  `features.pets_verify` (~13 min) and `dedup.keeper_vlm` (~20 min) — sat in the
+  settings column next to the number of preparation threads, while the one knob of that
+  weight that was already a checkbox (the deep tier, ~29 min) sat on the run screen. The
+  line ran through history rather than through the idea, and the idea is: **the run
+  screen holds what costs THIS run time, the settings hold how the product is arranged**.
+  All four are now on the run screen and none of them is in the column any more — a
+  value with two homes acquires two truths and a question about which one is in force.
+  They behave exactly as `deep` and `pets` have since F123: the checkbox **starts from
+  config.yaml** (`/api/process/defaults`) and what a person changes decides **one run**,
+  the file is never rewritten. What keeps this from being the console of switches F133
+  removed is that the list now means something: **every line carries its price and the
+  sum stands under them**, right where the eye is already going to the button. The
+  numbers are computed, not written into the markup — the same checkbox is four hours on
+  one collection and four minutes on another — so the new `GET /api/process/estimate`
+  multiplies a **measured rate** (0.78 s a frame for a VLM question, F113; 1.32 s for the
+  comparative group question, F132) by a count taken out of **this index**: the frames
+  the deep tier answered on last time, the frames above `pet_candidate_threshold`, the
+  near-duplicate groups at or above `keeper_min_group_size`, the population of each of
+  the four quality scopes. All four scope prices travel at once, so switching the select
+  costs no request and the sum moves the instant a box is ticked. Where a count cannot be
+  taken — a fresh collection, a stage that has never run — the answer is a **dash, never
+  a zero**: a zero reads as "free", and the estimate says out loud that it is an
+  estimate, because a person promised twenty minutes who then waits two hours believes no
+  figure on that screen again. The block stays at **seven lines** including the
+  un-switchable first one, and the only nested control is the scope of the quality
+  question, shown when its parent is on and hidden when it is not.
+- **`landmarks` stops recomputing what has not changed** (F136). The other half of F135,
+  and where its three minutes actually were: `index` (34 s) and `geo` (3 s) already skip
+  what they recognise, `landmarks` spent **138 s of a 176 s run** putting the same 7 619
+  frames through CLIP again. The stage was incremental in its **selection** only — a match
+  leaves as `confidence='visual'`, everything else keeps `'unknown'` and came back every
+  time, even when not one file, prompt or threshold had moved since. So a run now
+  remembers what CLIP found for each frame it looked at, and a later run looks only at the
+  frames whose answer could have changed. What makes an answer stale is fingerprinted the
+  way F120 does it: the file itself (path + mtime + size, as the index records it), the
+  landmark list including the country, city and geonameid a match would be written with,
+  `naming.landmark_threshold`, `landmark_group_min`, `landmark_group_dominance`, the score
+  proposals are collected at, and the prompt texts — the distractor classes included,
+  since editing one moves every score. Any of them moves and the frame goes back to CLIP;
+  a marker that matches in part is not a match at all. **Corroboration is not cached.** It
+  is not a per-file rule — the group rule reads the company a match keeps — so skipping a
+  frame that proposed something would thin out its folder and quietly change the verdict
+  of its neighbours, which would be a wrong city bought with saved time and is the exact
+  failure F75 exists to prevent. The proposals of the skipped frames are raised back out
+  of the DB, and the F75 rules then run over the same set a full pass would have built:
+  the test that pins this compares a partial run against a full run over the very same
+  selection, rather than against expectations written by hand. The marker lives in
+  `landmark_checks` under a reserved key, so the schema does not move and "start over"
+  still clears it; it cannot live in `places`, which `geo` recomputes from scratch before
+  this stage ever runs. With `features.landmarks_verify` on (F131), a skipped frame is
+  neither re-scored nor re-asked, and a reused answer still carries the whole decision.
 - **One run button instead of two** (F135). The "Process" tab offered "Start" and
   "Re-run selected" side by side, and the second one bought exactly three stages —
   `index` (34 s), `geo` (3 s) and `landmarks` (139 s) on the 380 GB validation run,
