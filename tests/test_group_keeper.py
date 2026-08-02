@@ -440,7 +440,7 @@ class TestStorage(unittest.TestCase):
         self.addCleanup(conn.close)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(group_keeper)")}
         self.assertEqual(cols, {"group_key", "keeper_id", "source", "updated_at"})
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 19)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 20)
 
     def test_a_v17_db_gains_the_table_and_keeps_its_rows(self):
         conn = connect(self.db)
@@ -448,6 +448,9 @@ class TestStorage(unittest.TestCase):
             "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
             "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
         conn.execute("DROP TABLE group_keeper")
+        # A real v17 DB predates F140's column too (v20) — leaving it in place would make
+        # that migration add a column that already exists and raise.
+        conn.execute("ALTER TABLE frame_quality DROP COLUMN junk_score")
         conn.execute("PRAGMA user_version = 17")
         conn.commit()
         conn.close()
@@ -456,7 +459,7 @@ class TestStorage(unittest.TestCase):
         self.addCleanup(conn.close)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0], 1)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM group_keeper").fetchone()[0], 0)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 19)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 20)
 
     def test_a_stored_recommendation_is_overwritten_not_duplicated(self):
         conn = connect(self.db)

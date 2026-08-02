@@ -510,6 +510,27 @@ class FeaturesConfig:
     # holds) rests on 7 labelled animals in the 18 426-frame tail, where one frame moves
     # the estimate by hundreds.
     pet_candidate_threshold: float = 0.5
+    # F140: score every photograph on how much it looks like a screenshot, a photographed
+    # screen or a receipt, and show the ones above `junk_rescue_threshold` to the VLM. Its
+    # own toggle by the rule above; the score itself costs no model pass (it is a matmul
+    # over the vectors `store_embeddings` already keeps), but the frames it selects cost
+    # ~0.78 s each in the deep tier, and with the deep tier off nothing is reclassified at
+    # all — the score is written, the candidates are marked, the verdicts stay.
+    junk_rescue: bool = False
+    # Who is shown to the model. MEASURED by eye on the live collection (19 753 stored
+    # vectors, every one of them classified `photo` — the frames below are the
+    # classifier's own misses, not junk that leaked into the index):
+    #
+    #     threshold   frames   share of the photographs   what the review found
+    #      +0.05          93            0.5%              junk outright
+    #      +0.02         955            4.8%              ~17% real photographs in
+    #                                                     the band +0.02..+0.05
+    #       0.00        5688           28.8%              junk in single figures
+    #
+    # 0.02 is the selection threshold and NOT a verdict: at ~85% precision, reclassifying
+    # by it directly would throw ~150 living photographs out of the city layout, which is
+    # the mistake F130 measured for animals. 955 frames is ~12 minutes of the deep tier.
+    junk_rescue_threshold: float = 0.02
     # The longer side the frame is scaled to before the laplacian. FIXED on purpose: the
     # variance of the laplacian is scale-dependent, so two frames measured at different
     # resolutions are not comparable and no threshold over them means anything.
@@ -563,6 +584,9 @@ def _features_from(raw: dict) -> FeaturesConfig:
         pet_threshold=_as_float(raw.get("pet_threshold"), d.pet_threshold),
         pet_candidate_threshold=_as_float(
             raw.get("pet_candidate_threshold"), d.pet_candidate_threshold),
+        junk_rescue=_as_bool(raw.get("junk_rescue"), d.junk_rescue),
+        junk_rescue_threshold=_as_float(
+            raw.get("junk_rescue_threshold"), d.junk_rescue_threshold),
         sharpness_max_edge=_as_positive_int(
             raw.get("sharpness_max_edge"), d.sharpness_max_edge),
         sharpness_band_min=_as_float(raw.get("sharpness_band_min"), d.sharpness_band_min),

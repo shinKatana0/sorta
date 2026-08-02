@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 19;
+PRAGMA user_version = 20;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -142,6 +142,20 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     --                                       column stays because NULL already means "not
     --                                       asked", which is the truth, and dropping a column
     --                                       in SQLite costs a table rebuild.
+    -- v20 (F140): how much this frame looks like a screenshot, a photographed screen or a
+    -- receipt RATHER THAN a photograph — max(similarity to the junk prompts) minus
+    -- max(similarity to the photograph prompts), over the stored CLIP vector (F128). It
+    -- costs no model pass: the vector is on disk and the prompts are a few lines of text.
+    --
+    -- IT IS NOT A VERDICT AND MUST NEVER BE READ AS ONE. Measured by eye on the live
+    -- collection: above +0.05 the frames are junk outright (93 of them), but the band
+    -- +0.02..+0.05 still holds ~17% real photographs, so applying the score directly would
+    -- throw ~150 living pictures out of the city layout — the F130 lesson about a signal
+    -- of 80-85% accuracy applied where the baseline is higher. What the score does is
+    -- SELECT: a frame above features.junk_rescue_threshold is shown to the VLM, which has a
+    -- real verdict rather than a resemblance. NULL = not computed (features.junk_rescue
+    -- off, or no row in clip_embeddings for this frame).
+    junk_score REAL,
     source TEXT NOT NULL,                 -- classic | clip | vlm — WHICH TIER processed the
     --                                       row, and with it the incrementality marker (the
     --                                       F68 lesson, one column that means the tier)

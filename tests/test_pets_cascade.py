@@ -520,6 +520,9 @@ class TestMigration(unittest.TestCase):
                 "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
                 "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
             conn.execute("ALTER TABLE frame_quality DROP COLUMN pet_vlm")
+            # A real v16 DB predates F140's column as well — see the note in
+            # test_manual_pet: a simulated old DB has to be old in every respect.
+            conn.execute("ALTER TABLE frame_quality DROP COLUMN junk_score")
             conn.execute(
                 "INSERT INTO frame_quality (file_id, sharpness, pet, pet_score, source,"
                 " updated_at) VALUES (1, 12.5, 'animal', 0.9, 'clip#abcd1234', 'x')")
@@ -533,7 +536,7 @@ class TestMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertIn("pet_vlm", cols)
-        self.assertEqual(version, 19)
+        self.assertEqual(version, 20)
         self.assertEqual(row["pet"], "animal")       # the label survived the migration
         self.assertIsNone(row["pet_vlm"])            # and means "never asked", not "no"
         self.assertAlmostEqual(row["pet_score"], 0.9)

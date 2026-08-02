@@ -113,7 +113,7 @@ class TestMigration(unittest.TestCase):
             (version,) = conn.execute("PRAGMA user_version").fetchone()
             conn.close()
         self.assertEqual(cols, {"file_id", "model", "dim", "vec", "updated_at"})
-        self.assertEqual(version, 19)
+        self.assertEqual(version, 20)
 
     def test_v15_db_gains_the_table_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,6 +128,7 @@ class TestMigration(unittest.TestCase):
             # place would make the fixture a shape no released version ever had, and the
             # migration would fail on a duplicate column instead of on anything real.
             conn.execute("ALTER TABLE frame_quality DROP COLUMN pet_vlm")
+            conn.execute("ALTER TABLE frame_quality DROP COLUMN junk_score")  # F140, v20
             conn.execute("PRAGMA user_version = 15")
             conn.commit()
             conn.close()
@@ -139,7 +140,7 @@ class TestMigration(unittest.TestCase):
             files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             conn.close()
         self.assertIn("clip_embeddings", tables)
-        self.assertEqual(version, 19)
+        self.assertEqual(version, 20)
         self.assertEqual(files, 1)
 
     def test_reopening_is_idempotent_and_keeps_the_rows(self):
@@ -161,7 +162,7 @@ class TestMigration(unittest.TestCase):
             conn.close()
         self.assertEqual(row["model"], "m")
         np.testing.assert_allclose(unpack_embedding(row["vec"]), [0.6, 0.8], atol=1e-3)
-        self.assertEqual(version, 19)
+        self.assertEqual(version, 20)
 
 
 def unit_sample(rng, n=256, dim=768):
