@@ -307,7 +307,9 @@ class TestIndexHtmlTabs(DupesTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn('id="tab-btn-city"', html)
-        self.assertIn('id="tab-btn-dupes"', html)
+        # F126: the tab this list lives on is now "Review"; the list itself is its
+        # first slice and keeps its own label.
+        self.assertIn('id="tab-btn-review"', html)
         self.assertIn(">Cities<", html)
         self.assertIn(">Duplicates<", html)
         self.assertNotIn("http://", html)

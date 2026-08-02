@@ -237,6 +237,27 @@ the existing `POST /api/album` with the new `kind='animal'`, and taking a false 
 a frame is F124's job (`frame_quality` has one writer and every run recomputes it, so a
 correction written there would not survive).
 
+(21) `GET /api/review` + `POST /api/review/mark` (F126, the "Review" tab, which replaces
+the "Duplicates" tab) — the four things a person looks at in order to decide what stays:
+near-duplicates, blurred frames, closed eyes, frames with no subject. One workspace with
+four SLICES rather than four tabs, because it is one job. Duplicates are the only GROUPED
+slice and keep their own route and their own rendering untouched — `/api/dupes` and the
+four write routes above answer exactly as they did, since that is the one path in the
+product that deletes files and the one that has been run against a live collection. The
+GET carries the counters of all four slices (a slice with nothing in it stays in the
+switcher with a zero — an empty slice is an answer, a missing one is a riddle) plus one
+bounded page of the current flat slice, over photographs only (`media_class.verdict =
+'photo'`, F120) that are canonical and readable. The blurred list is ordered by ascending
+sharpness and opens as far as `features.blur_review_max`; `beyond=1` continues past that
+window, which is a prefix of the same ordering, so nothing is lost or repeated at the
+seam. Without a faces run the eyes slice answers `eyes_reason='no_faces_run'` rather than
+a zero (F125: the question is only asked where a face was found). The POST writes the
+decision into the EXISTING `dedup_choice` (`keep`/`to_delete`, or `clear` to drop the
+row) — `file_id` is its primary key, so a frame that appears in two slices carries one
+decision, and `to_delete` is already understood by the sorter. There is deliberately no
+route that marks a whole slice at once: reviewed by eye, blurred frames turn up in every
+band up to 400, so sharpness ranks the list and a person decides each frame.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -291,6 +312,7 @@ from .geodata import GeoDataMissing, GeoResolver
 from .indexer import excludes_path, index as run_index, load_excludes, normalize_exclude
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
+from .junk import faces_stage_ran
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
 from .runlog import log_environment, stage_timer
@@ -1415,6 +1437,254 @@ def _animals_payload(db_path: Path, offset: int, limit: int) -> dict:
     }
 
 
+# --- F126: the "Review" workspace — duplicates, blur, closed eyes, no subject -------
+# Four signals, one job: look at a frame and decide whether it stays. Duplicates have had
+# a tab with the whole viewing-and-deleting machinery since U3; the other three have been
+# computed into `frame_quality` since F113 and were not visible anywhere. So this is one
+# place with four SLICES rather than four tabs — and the duplicates half is deliberately
+# untouched: `/api/dupes` and its four write routes answer exactly as before, because that
+# is the one path in the product that deletes files and it is the one path that has been
+# run against the live collection.
+#
+# Two rules the slices are built on:
+#
+# * a decision is a row in `dedup_choice` and nothing else. `to_delete` already means
+#   "move into `_delete` on the next `sort --apply`" (sorter.py), and a second deletion
+#   path in a program that moves 300 GB of somebody's photographs is a second way to lose
+#   them. `file_id` is the primary key there, so a frame that shows up in two slices
+#   carries ONE decision and shows it in both;
+# * nothing is ever marked automatically. There is no "delete everything below the
+#   threshold" route here, and the measurement is why: reviewed by eye in bands, blurred
+#   frames turn up in every band up to 400, and the blurred frame that gets kept is the
+#   only photograph of a person or a place. Sharpness ranks the list; a human decides.
+_REVIEW_SLICES = ("dupes", "blurred", "eyes", "subject")
+
+# Photographs only (F120: the quality signals mean nothing on a screenshot or a receipt),
+# canonical and readable — the same population every other counter in this file uses.
+_REVIEW_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
+
+# What makes a frame a member of its slice. `eyes_open`/`has_subject` are `= 0` and never
+# `IS NOT 1`: NULL there means "not asked" (schema), and a frame nobody looked at must not
+# be shown to a user as an answer.
+_REVIEW_SLICE_WHERE = {
+    "blurred": "fq.sharpness IS NOT NULL",
+    "eyes": "fq.eyes_open = 0",
+    "subject": "fq.has_subject = 0",
+}
+# Blurred is ranked by the number the slice exists for; the other two have no ranking of
+# their own, so they go in index order — stable between pages, which is what paging needs.
+_REVIEW_SLICE_ORDER = {
+    "blurred": "fq.sharpness ASC, f.id",
+    "eyes": "f.id",
+    "subject": "f.id",
+}
+
+_REVIEW_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
+                "JOIN media_class mc ON mc.file_id = f.id")
+
+
+def _review_where(slice_: str, blur_max: float | None) -> tuple[str, list[object]]:
+    """The WHERE of one flat slice + its parameters.
+
+    `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
+    applies to that slice alone; None — "show more" has been pressed and the list runs on
+    without a ceiling. The window is a prefix of the same ordering, so continuing past it
+    neither repeats a frame nor skips one.
+    """
+    where = f"{_REVIEW_POPULATION} AND {_REVIEW_SLICE_WHERE[slice_]}"
+    params: list[object] = []
+    if slice_ == "blurred" and blur_max is not None:
+        where += " AND fq.sharpness < ?"
+        params.append(float(blur_max))
+    return where, params
+
+
+def _review_count(conn: sqlite3.Connection, slice_: str,
+                  blur_max: float | None) -> int:
+    """How many frames one flat slice holds, under the same WHERE the page uses."""
+    where, params = _review_where(slice_, blur_max)
+    return int(conn.execute(
+        f"SELECT COUNT(*) {_REVIEW_FROM} WHERE {where}", params).fetchone()[0])
+
+
+def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, int]:
+    """The three flat slice counters — plain aggregates, cheap enough for "Overview".
+
+    Blurred is counted INSIDE the window, so the chip, the "Overview" row and the length
+    of the list the tab opens with are the same number.
+    """
+    return {
+        "blurred": _review_count(conn, "blurred", blur_max),
+        "eyes": _review_count(conn, "eyes", None),
+        "subject": _review_count(conn, "subject", None),
+    }
+
+
+def _review_item_to_json(row: sqlite3.Row, action: str | None) -> dict:
+    """One card of a flat slice: a thumbnail, a name, a date, sharpness, the decision."""
+    path = Path(row["path"])
+    return {
+        "file_id": int(row["id"]),
+        "name": path.name,
+        "date": row["taken_at"],
+        # Where it lies, as on the Cities and Duplicates lists: with a burst of similar
+        # frames the folder is often the only thing that tells them apart.
+        "src_dir": path.parent.name,
+        "src_path": str(path.parent),
+        "sharpness": None if row["sharpness"] is None else float(row["sharpness"]),
+        "action": action,
+        "thumb_url": f"/thumb/{int(row['id'])}",
+        "video": imaging.is_video_path(path),
+    }
+
+
+def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
+                    beyond: bool, blur_max: float, max_distance: int) -> dict:
+    """`GET /api/review` — the slice counters + one bounded page of the current slice.
+
+    `counts` is always the full set (it is what the switcher draws, and a slice with
+    nothing in it stays in the list showing a zero: "you have no closed eyes" is an
+    answer, a vanished entry is a riddle). `dupes` counts GROUPS and comes from the
+    cached `_dupes_payload` — the same payload the duplicates half of the tab renders
+    from, so opening the workspace pays for it once.
+
+    `slice='dupes'` carries no items: duplicates are the one grouped slice, and forcing
+    them into the flat shape would cost the keeper choice that the whole view is for.
+    The client renders that slice from `/api/dupes`, exactly as it did when it was a tab
+    of its own.
+
+    `eyes_reason='no_faces_run'` (F125) — the eyes question is asked only where a face
+    was found, so without a faces run the honest answer is why there is no data, not a
+    zero that looks like "your subjects all had their eyes open".
+    """
+    conn = _connect(db_path)
+    try:
+        counts = _review_flat_counts(conn, blur_max)
+        eyes_reason = None if faces_stage_ran(conn) else "no_faces_run"
+        window_total = counts["blurred"]
+        items: list[dict] = []
+        total = 0
+        if slice_ != "dupes":
+            ceiling = None if (beyond or slice_ != "blurred") else blur_max
+            where, params = _review_where(slice_, ceiling)
+            total = int(conn.execute(
+                f"SELECT COUNT(*) {_REVIEW_FROM} WHERE {where}", params).fetchone()[0])
+            rows = conn.execute(
+                f"""SELECT f.id, f.path, f.taken_at, fq.sharpness
+                    {_REVIEW_FROM} WHERE {where}
+                    ORDER BY {_REVIEW_SLICE_ORDER[slice_]}
+                    LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
+            actions: dict[int, str] = {}
+            if rows:
+                ids = [int(r["id"]) for r in rows]
+                placeholders = ",".join("?" * len(ids))
+                actions = {
+                    int(r["file_id"]): r["action"]
+                    for r in conn.execute(
+                        f"SELECT file_id, action FROM dedup_choice "
+                        f"WHERE file_id IN ({placeholders})", ids).fetchall()
+                }
+            items = [_review_item_to_json(r, actions.get(int(r["id"]))) for r in rows]
+    finally:
+        conn.close()
+    counts["dupes"] = len(_dupes_payload(db_path, max_distance))
+    if slice_ == "dupes":
+        total = counts["dupes"]
+    return {
+        "slice": slice_,
+        "grouped": slice_ == "dupes",
+        "counts": [{"slice": name, "count": counts[name]} for name in _REVIEW_SLICES],
+        "eyes_reason": eyes_reason,
+        "blur_max": float(blur_max),
+        "window_total": window_total,
+        "beyond": bool(beyond),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": items,
+    }
+
+
+def _parse_review_query(
+    query: dict[str, list[str]],
+) -> tuple[str, int, int, bool] | None:
+    """(slice, offset, limit, beyond) for `GET /api/review`, or None -> 400.
+
+    An unknown slice is refused rather than answered with an empty page: the switcher
+    offers exactly four, so anything else is a client that has lost track of what it is
+    asking for. The window is parsed by the plan-page rules (`_parse_page_window`).
+    """
+    window = _parse_page_window(query)
+    if window is None:
+        return None
+    slice_ = ((query.get("slice") or [_REVIEW_SLICES[0]])[0].strip()
+              or _REVIEW_SLICES[0])
+    if slice_ not in _REVIEW_SLICES:
+        return None
+    beyond = (query.get("beyond") or ["0"])[0].strip() in ("1", "true")
+    return slice_, window[0], window[1], beyond
+
+
+_REVIEW_MARK_ACTIONS = ("keep", "to_delete", "clear")
+
+
+def _validate_review_mark_payload(payload: object) -> tuple[list[int], str] | None:
+    """Parse the body `POST /api/review/mark`:
+    `{"file_ids": [int,...], "action": "keep"|"to_delete"|"clear"}`.
+
+    None -> invalid (400). The ids go through the same `_validate_file_ids_payload` as
+    every other bulk route — ints only, never a path.
+    """
+    if not isinstance(payload, dict):
+        return None
+    ids = _validate_file_ids_payload(payload)
+    if ids is None:
+        return None
+    action = payload.get("action")
+    if action not in _REVIEW_MARK_ACTIONS:
+        return None
+    return ids, action
+
+
+def _apply_review_mark(db_path: Path, ids: list[int], action: str) -> int:
+    """Write the decision of a flat slice into `dedup_choice`; returns how many landed.
+
+    The same table and the same two values the duplicates half writes, on purpose: one
+    decision per file, understood by one consumer (`sorter`, which moves `to_delete`
+    into `_delete` on `--apply`). `clear` removes the row, i.e. "I have not decided",
+    which is not the same as `keep` — and `keep` is what survives the next run, so the
+    two or three blurred frames a person keeps for the memory are not asked about again.
+
+    Nothing here touches a file on disk. An id outside the current index is skipped
+    rather than written (`_trash_files` resolves ids the same way): a decision about a
+    file the program does not know is not a decision about anything.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(ids))
+        known = [int(r["id"]) for r in conn.execute(
+            f"SELECT id FROM files WHERE id IN ({placeholders})", ids).fetchall()]
+        if not known:
+            return 0
+        known_placeholders = ",".join("?" * len(known))
+        with conn:
+            if action == "clear":
+                conn.execute(
+                    f"DELETE FROM dedup_choice WHERE file_id IN ({known_placeholders})",
+                    known)
+            else:
+                conn.executemany(
+                    """INSERT INTO dedup_choice (file_id, action, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(file_id) DO UPDATE SET
+                           action = excluded.action, updated_at = excluded.updated_at""",
+                    [(fid, action, now) for fid in known])
+    finally:
+        conn.close()
+    return len(known)
+
+
 def _parse_junk_query(query: dict[str, list[str]]) -> tuple[str | None, int, int] | None:
     """(bucket, offset, limit) for `GET /api/junk`, or None -> 400.
 
@@ -1993,11 +2263,19 @@ def _overview_layout(conn: sqlite3.Connection) -> dict:
     return payload
 
 
-def _overview_payload(db_path: Path) -> dict:
+def _overview_payload(db_path: Path, blur_max: float) -> dict:
     """`GET /api/overview` — the four groups of numbers the tab draws.
 
     `empty` is the whole answer for a fresh index: the view then invites the user to pick
     a folder instead of drawing a table of zeros.
+
+    F126: the three flat review slices are counted here too, by the SAME queries the
+    workspace itself uses (`_review_flat_counts`) — a counter that disagrees with the
+    list it links to is worse than no counter. `blur_max` is `features.blur_review_max`,
+    the window the blurred list opens to, so this row and that list say one number. The
+    duplicates row above stays what it always was: exact copies found by hash, not the
+    phash groups of the workspace, which cost seconds to build and have no place on a
+    tab made of plain aggregates.
     """
     conn = _connect(db_path)
     try:
@@ -2015,6 +2293,7 @@ def _overview_payload(db_path: Path) -> dict:
             f"""SELECT COUNT(*) FROM files f
                 JOIN frame_quality fq ON fq.file_id = f.id
                 WHERE {_ANIMALS_POPULATION}""").fetchone()[0]
+        review = _review_flat_counts(conn, blur_max)
         place = _overview_place(conn)
         classes_total = conn.execute(
             f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
@@ -2048,6 +2327,9 @@ def _overview_payload(db_path: Path) -> dict:
             "errors": int(files["errors"]),
             "events": int(events),
             "animals": int(animals),
+            "blurred": review["blurred"],
+            "eyes_closed": review["eyes"],
+            "no_subject": review["subject"],
         },
         "place": place,
         "classes": classes,
@@ -3219,7 +3501,9 @@ def _run_undo(db_path: Path, cfg: Config, state: _UndoState, cache: PlanCache) -
 _UI_STRINGS: dict[str, dict[str, str]] = {
     "tab_process": {"ru": "Обработать", "en": "Process", "ja": "処理"},
     "tab_city": {"ru": "Города", "en": "Cities", "ja": "都市"},
-    "tab_dupes": {"ru": "Дубли", "en": "Duplicates", "ja": "重複"},
+    # F126: the tab is the workspace, not one of its slices — duplicates are the first
+    # of four things a person opens it to go through.
+    "tab_review": {"ru": "Разбор", "en": "Review", "ja": "仕分け"},
     "tab_person": {"ru": "Люди", "en": "People", "ja": "人物"},
     "tab_event": {"ru": "События", "en": "Events", "ja": "イベント"},
     "tab_animal": {"ru": "Животные", "en": "Animals", "ja": "動物"},
@@ -4136,6 +4420,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Группы похожих", "en": "Near-duplicate groups", "ja": "類似のグループ",
     },
     "settings_scope_events": {"ru": "События", "en": "Events", "ja": "イベント"},
+    # F125 added the value; the entry in the list is F126's, which owns this file.
+    "settings_scope_faces": {"ru": "По лицам", "en": "By faces", "ja": "顔で"},
     "settings_scope_all": {"ru": "Все кадры", "en": "Every frame", "ja": "すべてのコマ"},
     "settings_vlm_quality_scope_hint": {
         "ru": "«Группы похожих» — дёшево и по делу: выбор лучшего из серии. «Все кадры» "
@@ -4540,6 +4826,103 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось загрузить животных: ", "en": "Could not load the animals: ",
         "ja": "動物を読み込めません: ",
     },
+    # --- F126: the "Review" workspace -------------------------------------------------
+    # The switcher labels are the four slices; the duplicates one keeps the wording the
+    # tab had, because that is what the user has been calling it since U3.
+    "review_slice_dupes": {"ru": "Дубли", "en": "Duplicates", "ja": "重複"},
+    "review_slice_blurred": {"ru": "Размытые", "en": "Blurred", "ja": "ぼやけ"},
+    "review_slice_eyes": {"ru": "Закрытые глаза", "en": "Closed eyes", "ja": "目を閉じた"},
+    "review_slice_subject": {"ru": "Без сюжета", "en": "No subject", "ja": "被写体なし"},
+    "review_intro": {
+        "ru": "Одно место для всего, что надо просмотреть глазами и частью удалить. "
+              "Отметка «удалить» — это пометка, а не удаление: файлы уедут в папку "
+              "«_удалить» на следующей раскладке. Отметка «оставить» переживает "
+              "пересчёт и больше не спросится.",
+        "en": "One place for everything that has to be looked at by eye and partly "
+              "deleted. Marking “delete” is a mark, not a deletion: those files go to "
+              "the “_delete” folder on the next layout. A “keep” survives a recompute "
+              "and is not asked about again.",
+        "ja": "目で確認して一部を削除する作業を、ここ一か所にまとめています。「削除」は"
+              "印であって削除ではありません。対象は次回の振り分けで「_削除」フォルダへ"
+              "移ります。「残す」は再計算後も保持され、再び尋ねられません。",
+    },
+    "review_hint_blurred": {
+        "ru": "Список открыт до резкости {max} и отсортирован от самых размытых. Это "
+              "окно, а не приговор: размытые кадры встречаются во всех полосах вплоть "
+              "до 400, поэтому кнопки «удалить всё ниже порога» здесь нет и по "
+              "умолчанию не удаляется ничего.",
+        "en": "The list opens down to a sharpness of {max} and starts with the "
+              "blurriest. That is a window, not a verdict: blurred frames turn up in "
+              "every band up to 400, so there is no “delete everything below the "
+              "threshold” button here and nothing is marked by default.",
+        "ja": "リストは鮮鋭度 {max} まで開き、ぼやけの強い順に並びます。これは判定では"
+              "なく表示範囲です。ぼやけたコマは 400 までのどの帯にも現れるため、"
+              "「しきい値以下をすべて削除」というボタンはなく、既定では何も削除しません。",
+    },
+    "review_hint_eyes": {
+        "ru": "Кадры, на которых у людей закрыты глаза. Вопрос задаётся только там, где "
+              "найдено лицо.",
+        "en": "Frames where the people have their eyes closed. The question is only "
+              "asked where a face was found.",
+        "ja": "人物が目を閉じているコマです。この質問は顔が検出されたコマにのみ行われます。",
+    },
+    "review_hint_subject": {
+        "ru": "Кадры, в которых модель не нашла осмысленного сюжета: снятый пол, "
+              "смазанная стена, случайное нажатие.",
+        "en": "Frames where the model found no subject at all: a shot of the floor, a "
+              "smeared wall, an accidental press.",
+        "ja": "モデルが被写体を見つけられなかったコマです。床の写り込み、ぶれた壁、"
+              "誤操作などです。",
+    },
+    "review_eyes_no_faces": {
+        "ru": "Данных нет: стадия «лица» не запускалась, а про глаза спрашивают только "
+              "там, где найдено лицо. Прогоните лица и повторите разбор.",
+        "en": "No data: the faces stage never ran, and the eyes question is only asked "
+              "where a face was found. Run faces and come back to this slice.",
+        "ja": "データがありません。顔ステージが実行されておらず、目の質問は顔が検出された"
+              "コマにのみ行われます。顔ステージを実行してから、この区分を開いてください。",
+    },
+    "review_empty": {
+        "ru": "Здесь пусто — таких кадров нет.",
+        "en": "Nothing here — there are no such frames.",
+        "ja": "ここは空です。該当するフレームはありません。",
+    },
+    "review_sharpness_label": {
+        "ru": "резкость {value}", "en": "sharpness {value}", "ja": "鮮鋭度 {value}",
+    },
+    "review_mark_delete": {
+        "ru": "Пометить на удаление", "en": "Mark for deletion", "ja": "削除の印を付ける",
+    },
+    "review_mark_keep": {"ru": "Оставить", "en": "Keep", "ja": "残す"},
+    "review_mark_clear": {
+        "ru": "Снять отметку", "en": "Clear the mark", "ja": "印を外す",
+    },
+    "review_select_label": {"ru": "выбрать", "en": "select", "ja": "選択"},
+    "review_select_all": {"ru": "Выбрать всё на странице",
+                          "en": "Select everything on this page",
+                          "ja": "このページをすべて選択"},
+    "review_select_none": {"ru": "Снять выделение", "en": "Clear the selection",
+                           "ja": "選択を解除"},
+    "review_marked_status": {
+        "ru": "Отмечено кадров: {n}", "en": "Frames marked: {n}", "ja": "印を付けたコマ: {n}",
+    },
+    "review_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
+    "review_load_more_beyond": {
+        "ru": "Показать за пределами окна", "en": "Show past the window",
+        "ja": "表示範囲の先も表示",
+    },
+    "review_shown_label": {
+        "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
+        "ja": "{total} 件中 {shown} 件を表示",
+    },
+    "review_error_prefix": {
+        "ru": "Не удалось сохранить отметку: ", "en": "Could not save the mark: ",
+        "ja": "印を保存できません: ",
+    },
+    "error_loading_review": {
+        "ru": "Не удалось загрузить разбор: ", "en": "Could not load the review: ",
+        "ja": "仕分けを読み込めません: ",
+    },
     # --- F108: the "Overview" tab ---------------------------------------------------
     "tab_overview": {"ru": "Обзор", "en": "Overview", "ja": "概要"},
     "overview_empty": {
@@ -4565,6 +4948,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "overview_errors": {"ru": "Ошибок чтения", "en": "Read errors", "ja": "読み込みエラー"},
     "overview_events": {"ru": "Событий", "en": "Events", "ja": "イベント"},
     "overview_animals": {"ru": "С животными", "en": "With animals", "ja": "動物あり"},
+    # F126: the three review slices that have a number of their own. Blurred is counted
+    # inside the window the list opens to, so the row and the list agree.
+    "overview_blurred": {"ru": "Размытых", "en": "Blurred", "ja": "ぼやけ"},
+    "overview_eyes_closed": {"ru": "С закрытыми глазами", "en": "With closed eyes",
+                             "ja": "目を閉じた"},
+    "overview_no_subject": {"ru": "Без сюжета", "en": "With no subject",
+                            "ja": "被写体なし"},
     "overview_place_exact_gps": {"ru": "Точный GPS", "en": "Exact GPS", "ja": "正確なGPS"},
     "overview_place_manual": {"ru": "Указано вручную", "en": "Set by hand", "ja": "手動指定"},
     "overview_place_session_inferred": {
@@ -4993,6 +5383,34 @@ label { cursor: pointer; }
 .animal-card-score { font-size: 0.75rem; color: var(--muted);
       font-variant-numeric: tabular-nums; }
 
+/* --- F126: the "Review" workspace ---------------------------------------- */
+/* The switcher looks like the junk bucket chips, for the same reason: a row of
+   named counters is how a person picks which pile to go through next. Every slice
+   stays in the row at zero — a slice that disappears when it empties turns an answer
+   into a question about the interface. The flat slices reuse the tile grid; only
+   duplicates keep their table, because only there is a keeper chosen. */
+.review-slices { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; }
+.review-slice-btn.active { background: var(--accent); color: var(--on-accent);
+      border-color: var(--accent); font-weight: 600; }
+.review-slice-count { margin-left: 6px; font-variant-numeric: tabular-nums; }
+#review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.review-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+/* The decision is visible on the card itself: a frame already decided is not asked
+   about again, in this slice or in any other it shows up in. */
+.review-card.marked-delete { outline: 2px solid var(--danger); outline-offset: -2px;
+      background: var(--danger-soft); }
+.review-card.marked-keep { outline: 2px solid var(--good); outline-offset: -2px;
+      background: var(--good-soft); }
+.review-card img { width: 100%; height: 110px; margin: 0; }
+.review-card-name { font-size: 0.8rem; word-break: break-all; }
+.review-card-meta { font-size: 0.75rem; color: var(--muted);
+      font-variant-numeric: tabular-nums; }
+.review-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
+
 /* --- F108: вкладка «Обзор» ---------------------------------------------- */
 /* Четыре группы рядом, а не одна длинная простыня: вопрос «что с архивом»
    распадается ровно на них, и ответ должен читаться без прокрутки. */
@@ -5262,7 +5680,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <button type="button" class="tab-btn" id="tab-btn-overview">{{tab_overview}}</button>
 <button type="button" class="tab-btn active" id="tab-btn-process">{{tab_process}}</button>
 <button type="button" class="tab-btn" id="tab-btn-city">{{tab_city}}</button>
-<button type="button" class="tab-btn" id="tab-btn-dupes">{{tab_dupes}}</button>
+<button type="button" class="tab-btn" id="tab-btn-review">{{tab_review}}</button>
 <button type="button" class="tab-btn" id="tab-btn-person" style="display:none">{{tab_person}}</button>
 <button type="button" class="tab-btn" id="tab-btn-event" style="display:none">{{tab_event}}</button>
 <button type="button" class="tab-btn" id="tab-btn-animal" style="display:none">{{tab_animal}}</button>
@@ -5454,7 +5872,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <span class="process-toggle-hint">{{settings_vlm_quality_hint}}</span>
 </div>
 <label class="settings-field" for="setting-vlm-quality-scope">{{settings_vlm_quality_scope_label}}
-<select id="setting-vlm-quality-scope"><option value="groups">{{settings_scope_groups}}</option><option value="events">{{settings_scope_events}}</option><option value="all">{{settings_scope_all}}</option></select></label>
+<select id="setting-vlm-quality-scope"><option value="groups">{{settings_scope_groups}}</option><option value="events">{{settings_scope_events}}</option><option value="faces">{{settings_scope_faces}}</option><option value="all">{{settings_scope_all}}</option></select></label>
 <span class="process-toggle-hint">{{settings_vlm_quality_scope_hint}}</span>
 <div class="settings-subhead">{{settings_quality_gate_title}}</div>
 <span class="process-toggle-hint">{{settings_quality_gate_hint}}</span>
@@ -5481,12 +5899,37 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 </div>
 </section>
 
-<section id="tab-dupes" class="tab-panel">
+<section id="tab-review" class="tab-panel">
+<p class="process-intro">{{review_intro}}</p>
+<div id="review-slices" class="review-slices">
+<button type="button" class="btn btn-sm review-slice-btn active" id="review-slice-dupes">{{review_slice_dupes}}<span class="review-slice-count" id="review-count-dupes"></span></button>
+<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-blurred">{{review_slice_blurred}}<span class="review-slice-count" id="review-count-blurred"></span></button>
+<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-eyes">{{review_slice_eyes}}<span class="review-slice-count" id="review-count-eyes"></span></button>
+<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-subject">{{review_slice_subject}}<span class="review-slice-count" id="review-count-subject"></span></button>
+</div>
+<div id="review-dupes">
 <div class="dupes-controls">
 <button type="button" id="dupes-save-all-btn" class="btn btn-primary">{{save_all_choices}}</button>
 <span id="dupes-save-status"></span>
 </div>
 <div id="dupes-list"><div class="state-msg state-loading">{{loading}}</div></div>
+</div>
+<div id="review-flat" style="display:none">
+<p id="review-hint" class="override-hint"></p>
+<div class="override-controls">
+<button type="button" id="review-delete-btn" class="btn btn-danger" disabled>{{review_mark_delete}}<span id="review-selected-count"></span></button>
+<button type="button" id="review-keep-btn" class="btn btn-primary" disabled>{{review_mark_keep}}</button>
+<button type="button" id="review-clear-btn" class="btn btn-ghost" disabled>{{review_mark_clear}}</button>
+<button type="button" id="review-select-all-btn" class="btn btn-ghost">{{review_select_all}}</button>
+<button type="button" id="review-select-none-btn" class="btn btn-ghost">{{review_select_none}}</button>
+<span id="review-status" class="override-status"></span>
+</div>
+<div id="review-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="review-more-btn" class="btn btn-ghost" style="display:none">{{review_load_more}}</button>
+<span id="review-shown" class="override-hint"></span>
+</div>
+</div>
 </section>
 
 <section id="tab-person" class="tab-panel">
@@ -6589,13 +7032,14 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
   // --- вкладки ---------------------------------------------------------
 
   var dupesLoaded = false;
+  var reviewLoaded = false;
   var movesLoaded = false;
   var clustersLoaded = false;
   var eventsLoaded = false;
   var junkLoaded = false;
   var animalsLoaded = false;
 
-  var TAB_NAMES = ["overview", "process", "city", "dupes", "person", "event",
+  var TAB_NAMES = ["overview", "process", "city", "review", "person", "event",
                    "animal", "junk", "moves"];
 
   function activateTab(name) {
@@ -6606,10 +7050,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     // #36: чекбокс «не спрашивать удаление» релевантен только там, где удаляют
     // (Города/Дубли) — на остальных вкладках это шум, прячем.
     document.getElementById("delete-remember-row").style.display =
-        (name === "city" || name === "dupes") ? "" : "none";
-    if (name === "dupes" && !dupesLoaded) {
-      dupesLoaded = true;
-      loadDupes();
+        (name === "city" || name === "review") ? "" : "none";
+    if (name === "review" && !reviewLoaded) {
+      reviewLoaded = true;
+      loadReview();
     }
     if (name === "event" && !eventsLoaded) {
       eventsLoaded = true;
@@ -6705,14 +7149,19 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 
   // Число, у которого есть своя вкладка, само является переходом на неё. Ноль
   // ссылкой не делаем: вести на заведомо пустую вкладку не за чем.
-  function overviewCount(count, tab) {
+  // F126: a review number leads to its SLICE, not just to the tab — the workspace has
+  // four of them and landing on the wrong one is the same as landing nowhere.
+  function overviewCount(count, tab, slice) {
     if (!tab || !count) return overviewValue(overviewNum(count));
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "overview-value-link";
     btn.textContent = overviewNum(count);
     btn.title = fmt(I18N.overview_goto_hint, { tab: I18N["tab_" + tab] || tab });
-    btn.addEventListener("click", function () { activateTab(tab); });
+    btn.addEventListener("click", function () {
+      activateTab(tab);
+      if (slice) selectReviewSlice(slice);
+    });
     return btn;
   }
 
@@ -6772,10 +7221,18 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     card.appendChild(overviewRow(I18N.overview_files, overviewValue(overviewNum(c.files)), true));
     card.appendChild(overviewRow(I18N.overview_photos, overviewValue(overviewNum(c.photos))));
     card.appendChild(overviewRow(I18N.overview_videos, overviewValue(overviewNum(c.videos))));
-    card.appendChild(overviewRow(I18N.overview_duplicates, overviewCount(c.duplicates, "dupes")));
+    card.appendChild(overviewRow(I18N.overview_duplicates,
+                                 overviewCount(c.duplicates, "review", "dupes")));
     card.appendChild(overviewRow(I18N.overview_errors, overviewValue(overviewNum(c.errors))));
     card.appendChild(overviewRow(I18N.overview_events, overviewCount(c.events, "event")));
     card.appendChild(overviewRow(I18N.overview_animals, overviewCount(c.animals, "animal")));
+    // F126: the three slices of the review workspace that have a number of their own.
+    card.appendChild(overviewRow(I18N.overview_blurred,
+                                 overviewCount(c.blurred, "review", "blurred")));
+    card.appendChild(overviewRow(I18N.overview_eyes_closed,
+                                 overviewCount(c.eyes_closed, "review", "eyes")));
+    card.appendChild(overviewRow(I18N.overview_no_subject,
+                                 overviewCount(c.no_subject, "review", "subject")));
     return card;
   }
 
@@ -7068,6 +7525,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 
   function refreshTabsAfterProcess() {
     dupesLoaded = false;
+    reviewLoaded = false;  // F126: a run recomputes every signal the slices are built on
     clustersLoaded = false;
     eventsLoaded = false;
     movesLoaded = false;
@@ -8813,7 +9271,226 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     fetchAnimals(animalsOffset, true);
   });
 
-  // --- вкладка «Дубли» ---------------------------------------------------
+  // --- F126: the "Review" workspace ----------------------------------------
+  // One tab, four slices, one job: look and decide. The switcher keeps every slice in
+  // place at zero, because "you have no closed eyes" is an answer and a vanished entry
+  // is a riddle. Duplicates are rendered by the code below this block, untouched — they
+  // are the only grouped slice, the only one where a keeper is chosen, and the only path
+  // in the program that deletes files. The three flat slices share the tile grid and the
+  // one action they afford: a mark in `dedup_choice`, which the sorter already reads.
+  // Paged like every other grid since F70 — 530 cards with previews do not go into the
+  // DOM at once.
+
+  var REVIEW_PAGE_SIZE = 200;
+  var REVIEW_SLICES = ["dupes", "blurred", "eyes", "subject"];
+  var reviewSlice = "dupes";
+  var reviewOffset = 0;
+  // Blur opens to `features.blur_review_max` and continues past it only when asked:
+  // the number is a window, not a verdict.
+  var reviewBeyond = false;
+  var reviewWindowTotal = 0;
+  var reviewSelected = {};
+
+  function reviewSelectedIds() {
+    return Object.keys(reviewSelected).map(Number);
+  }
+
+  function refreshReviewControls() {
+    var n = reviewSelectedIds().length;
+    document.getElementById("review-selected-count").textContent = n ? " (" + n + ")" : "";
+    ["review-delete-btn", "review-keep-btn", "review-clear-btn"].forEach(function (id) {
+      document.getElementById(id).disabled = n === 0;
+    });
+  }
+
+  function renderReviewCounts(counts) {
+    counts.forEach(function (row) {
+      var el = document.getElementById("review-count-" + row.slice);
+      if (el) el.textContent = " (" + overviewNum(row.count) + ")";
+    });
+  }
+
+  // Why this slice looks the way it does, in one line above the grid. For closed eyes
+  // it is also where the F125 answer lands: without a faces run there is no data, and
+  // saying so beats showing a zero that reads as "nobody blinked".
+  function reviewHintText(data) {
+    if (reviewSlice === "blurred") {
+      return fmt(I18N.review_hint_blurred, { max: data.blur_max });
+    }
+    if (reviewSlice === "eyes") {
+      return data.eyes_reason === "no_faces_run"
+          ? I18N.review_eyes_no_faces : I18N.review_hint_eyes;
+    }
+    return I18N.review_hint_subject;
+  }
+
+  function renderReviewCard(item) {
+    var card = document.createElement("div");
+    card.className = "review-card" +
+        (item.action === "to_delete" ? " marked-delete" : "") +
+        (item.action === "keep" ? " marked-keep" : "");
+    card.appendChild(
+        clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
+    var name = document.createElement("span");
+    name.className = "review-card-name";
+    name.textContent = item.name;
+    name.title = item.src_path || item.name;
+    card.appendChild(name);
+    var meta = document.createElement("span");
+    meta.className = "review-card-meta";
+    var sharp = item.sharpness === null || item.sharpness === undefined ? "" :
+        fmt(I18N.review_sharpness_label, { value: Number(item.sharpness).toFixed(0) });
+    meta.textContent = [item.src_dir, item.date || "", sharp, actionLabel(item.action)]
+        .filter(Boolean).join(" \\u00b7 ");
+    card.appendChild(meta);
+    var label = document.createElement("label");
+    label.className = "review-card-select";
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "review-select";
+    box.value = String(item.file_id);
+    box.checked = !!reviewSelected[item.file_id];
+    box.addEventListener("change", function () {
+      if (box.checked) reviewSelected[item.file_id] = true;
+      else delete reviewSelected[item.file_id];
+      refreshReviewControls();
+    });
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(" " + I18N.review_select_label));
+    card.appendChild(label);
+    return card;
+  }
+
+  function renderReviewPage(data, append) {
+    var grid = document.getElementById("review-grid");
+    if (!append) grid.textContent = "";
+    (data.items || []).forEach(function (it) { grid.appendChild(renderReviewCard(it)); });
+    var shown = grid.querySelectorAll(".review-card").length;
+    if (!shown) {
+      grid.appendChild(stateEl("empty",
+          data.eyes_reason === "no_faces_run" && reviewSlice === "eyes"
+              ? I18N.review_eyes_no_faces : I18N.review_empty));
+    }
+    document.getElementById("review-shown").textContent =
+        shown ? fmt(I18N.review_shown_label, { shown: shown, total: data.total }) : "";
+    // Past the end of the window the button changes its meaning, not just its target:
+    // the next page is no longer "more of the same list" but a step outside the window
+    // the list opened to.
+    var beyondNext = reviewSlice === "blurred" && !reviewBeyond &&
+        shown >= reviewWindowTotal;
+    var more = shown < data.total || beyondNext;
+    var moreBtn = document.getElementById("review-more-btn");
+    moreBtn.textContent = beyondNext ? I18N.review_load_more_beyond : I18N.review_load_more;
+    moreBtn.style.display = more ? "" : "none";
+    reviewOffset = shown;
+  }
+
+  function fetchReview(offset, append) {
+    var flat = reviewSlice !== "dupes";
+    var grid = document.getElementById("review-grid");
+    if (flat && !append) {
+      grid.textContent = "";
+      grid.appendChild(stateEl("loading", I18N.loading));
+    }
+    var url = "/api/review?slice=" + reviewSlice + "&offset=" + offset +
+        "&limit=" + REVIEW_PAGE_SIZE + (reviewBeyond ? "&beyond=1" : "");
+    return fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        renderReviewCounts(data.counts || []);
+        reviewWindowTotal = data.window_total || 0;
+        if (!flat) return;
+        document.getElementById("review-hint").textContent = reviewHintText(data);
+        renderReviewPage(data, append);
+      })
+      .catch(function (err) {
+        if (!flat) return;   // the duplicates list reports its own failures
+        grid.textContent = "";
+        grid.appendChild(stateEl("error", I18N.error_loading_review + err));
+      });
+  }
+
+  function selectReviewSlice(slice) {
+    if (REVIEW_SLICES.indexOf(slice) < 0) return;
+    reviewSlice = slice;
+    reviewBeyond = false;
+    reviewSelected = {};
+    refreshReviewControls();
+    document.getElementById("review-status").textContent = "";
+    REVIEW_SLICES.forEach(function (name) {
+      document.getElementById("review-slice-" + name)
+          .classList.toggle("active", name === slice);
+    });
+    var grouped = slice === "dupes";
+    document.getElementById("review-dupes").style.display = grouped ? "" : "none";
+    document.getElementById("review-flat").style.display = grouped ? "none" : "";
+    if (grouped && !dupesLoaded) {
+      dupesLoaded = true;
+      loadDupes();
+    }
+    return fetchReview(0, false);
+  }
+
+  function applyReviewMark(action) {
+    var ids = reviewSelectedIds();
+    if (!ids.length) return;
+    var status = document.getElementById("review-status");
+    status.textContent = "";
+    return postJson("/api/review/mark", { file_ids: ids, action: action })
+      .then(function (resp) {
+        if (resp && resp.ok) {
+          status.textContent = fmt(I18N.review_marked_status, { n: resp.marked });
+          reviewSelected = {};
+          refreshReviewControls();
+          fetchReview(0, false);
+        } else {
+          status.textContent = I18N.review_error_prefix + ((resp && resp.error) || "");
+        }
+      })
+      .catch(function (err) { status.textContent = I18N.review_error_prefix + err; });
+  }
+
+  function loadReview() {
+    return selectReviewSlice(reviewSlice);
+  }
+
+  REVIEW_SLICES.forEach(function (name) {
+    document.getElementById("review-slice-" + name).addEventListener("click", function () {
+      selectReviewSlice(name);
+    });
+  });
+  document.getElementById("review-more-btn").addEventListener("click", function () {
+    if (reviewSlice === "blurred" && !reviewBeyond && reviewOffset >= reviewWindowTotal) {
+      reviewBeyond = true;
+    }
+    fetchReview(reviewOffset, true);
+  });
+  document.getElementById("review-delete-btn").addEventListener("click", function () {
+    applyReviewMark("to_delete");
+  });
+  document.getElementById("review-keep-btn").addEventListener("click", function () {
+    applyReviewMark("keep");
+  });
+  document.getElementById("review-clear-btn").addEventListener("click", function () {
+    applyReviewMark("clear");
+  });
+  document.getElementById("review-select-all-btn").addEventListener("click", function () {
+    document.querySelectorAll("#review-grid .review-select").forEach(function (box) {
+      box.checked = true;
+      reviewSelected[parseInt(box.value, 10)] = true;
+    });
+    refreshReviewControls();
+  });
+  document.getElementById("review-select-none-btn").addEventListener("click", function () {
+    document.querySelectorAll("#review-grid .review-select").forEach(function (box) {
+      box.checked = false;
+    });
+    reviewSelected = {};
+    refreshReviewControls();
+  });
+  refreshReviewControls();
+
+  // --- the duplicates slice (U3/F32), unchanged inside the new workspace ---
 
   function postJson(url, data) {
     return fetch(url, {
@@ -9063,6 +9740,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_junk(parse_qs(parts.query))
             elif path == "/api/animals":
                 self._serve_animals(parse_qs(parts.query))
+            elif path == "/api/review":
+                self._serve_review(parse_qs(parts.query))
             elif path == "/api/places/search":
                 self._serve_places_search(parse_qs(parts.query))
             elif path == "/api/process/status":
@@ -9088,7 +9767,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             elif path == "/api/overview":
                 # F108: plain aggregates, computed per request. The plan cache is not
                 # touched on purpose — building a layout here would cost minutes.
-                self._send_json(_overview_payload(db_path))
+                self._send_json(_overview_payload(db_path, cfg.features.blur_review_max))
             elif path == "/api/cache":
                 self._send_json(_cache_payload(db_path))
             elif path == "/api/source-tree":
@@ -9117,6 +9796,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_dupes_skip()
             elif path == "/api/dupes/trash":
                 self._handle_dupes_trash()
+            elif path == "/api/review/mark":
+                self._handle_review_mark()
             elif path == "/api/photo/trash":
                 self._handle_photo_trash()
             elif path == "/api/photos/trash":
@@ -9227,6 +9908,23 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             offset, limit = window
             self._send_json(_animals_payload(db_path, offset, limit))
 
+        def _serve_review(self, query: dict[str, list[str]]) -> None:
+            # F126: read-only. The only write of this workspace is the decision itself
+            # (`POST /api/review/mark` -> `dedup_choice`), and there is deliberately no
+            # route that marks a whole slice: sharpness ranks frames, it does not
+            # classify them, so "delete everything below X" would delete photographs
+            # nobody looked at.
+            parsed = _parse_review_query(query)
+            if parsed is None:
+                self._send_json({"error": "invalid slice/offset/limit"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            slice_, offset, limit, beyond = parsed
+            self._send_json(_review_payload(
+                db_path, slice_, offset, limit, beyond=beyond,
+                blur_max=cfg.features.blur_review_max,
+                max_distance=cfg.index.phash_max_distance))
+
         def _serve_places_search(self, query: dict[str, list[str]]) -> None:
             # F85c: read-only, bundled data only. `?lang=` decides the language of the
             # LABELS; the search itself always tries all three, because a place is
@@ -9291,6 +9989,17 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 return
             trashed = _trash_group(db_path, group, keep)
             self._send_json({"trashed": trashed})
+
+        def _handle_review_mark(self) -> None:
+            # F126: a soft mark and nothing else — the same `dedup_choice` the
+            # duplicates half writes, so the sorter keeps its single deletion path.
+            parsed = _validate_review_mark_payload(self._read_json_body())
+            if parsed is None:
+                self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            ids, action = parsed
+            marked = _apply_review_mark(db_path, ids, action)
+            self._send_json({"ok": True, "marked": marked})
 
         def _handle_photo_trash(self) -> None:
             file_id = _validate_file_id_payload(self._read_json_body())

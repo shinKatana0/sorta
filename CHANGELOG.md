@@ -34,6 +34,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature — `scripts/measure_frame_quality.py --features verify [--labels …]` is the tool
   that will confirm or refute it, and the brief pre-commits to reporting whichever way it
   goes.
+- **A workspace for going through frames** (F126): the "Duplicates" tab became
+  "Review", and duplicates became the first of its four slices — **duplicates ·
+  blurred · closed eyes · no subject**. Those are four names for one job (look at a
+  frame, decide whether it stays), and three of them were computed into `frame_quality`
+  back in F113 and **reachable from nowhere**. Every slice keeps its place in the
+  switcher with a counter, at zero as well: "you have no closed eyes" is an answer, a
+  vanished entry is a riddle. The counters repeat in "Overview" over the same queries,
+  so a number and the list it links to cannot disagree. Duplicates stay the **only
+  grouped** slice, with the keeper choice, their own route and their own rendering
+  untouched — that is the one path in the product that deletes files, and a regression
+  there would cost more than the whole feature. The blurred list is ordered by
+  ascending sharpness and opens as far as `features.blur_review_max` (90), with "show
+  more" continuing past it: the window is a prefix of the same ordering, so the seam
+  neither repeats a frame nor skips one. There is **no "delete everything below the
+  threshold"** button, and that is the measurement talking rather than caution —
+  reviewed by eye in bands, blurred frames turn up in every band up to 400, so
+  sharpness ranks the list and a person decides each frame ("almost everything is
+  blurred and I would delete it, except a couple I keep for the memory"). A decision is
+  a row in the existing `dedup_choice` and nothing else: `to_delete` is already
+  understood by the sorter, `file_id` is the primary key there, so a frame that shows
+  up in two slices carries **one** decision and shows it in both — and `keep` survives
+  the next recompute of `frame_quality`, which is what stops the same kept frames from
+  being asked about after every run. Without a faces run the closed-eyes slice answers
+  with the reason instead of a zero (F125), and the `vlm.quality_scope` dropdown gained
+  the **"By faces"** entry that F125's value was waiting for.
 - **Animals are visible and actionable in the web app** (F123): a checkbox on the
   "Process" tab, an "Animals" tab, a counter in "Overview" and an album. The signal has
   been computed since F113 and calibrated in F122 — 805 frames of the live collection at
