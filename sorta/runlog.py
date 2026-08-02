@@ -200,14 +200,36 @@ class StageResult:
     processed: int | None = None
 
 
-def _counters(result: StageResult, elapsed: float) -> str:
+def _counters(processed: int | None, elapsed: float) -> str:
     """The ` processed=<n> rate=<n>/s` tail — empty if the caller reported nothing."""
-    if result.processed is None:
+    if processed is None:
         return ""
-    tail = f" processed={result.processed}"
+    tail = f" processed={processed}"
     if elapsed > 0:
-        tail += f" rate={result.processed / elapsed:.1f}/s"
+        tail += f" rate={processed / elapsed:.1f}/s"
     return tail
+
+
+def log_phase(stage: str, phase: str, elapsed: float,
+              processed: int | None = None) -> None:
+    """Write the timing of ONE phase inside a stage (F147).
+
+    `stage=<name> phase=<name> elapsed=<sec> processed=<n> rate=<n>/s` — the same
+    key=value shape, the same logger and the same INFO level as the stage summary
+    above, so one grep collects both and both reach the file at the settings a long
+    production run is actually started with. A breakdown that only existed under DEBUG
+    would be a breakdown nobody has when they need it: the junk stage of 2026-08-02
+    took 2 070 seconds and the log held one line about it.
+
+    The unit count is not optional decoration — eighteen minutes over 1 362 model calls
+    and eighteen minutes over 22 096 frames are different news, and without the counter
+    they read the same.
+
+    A phase that did not run is simply never passed here. `elapsed=0` would read as
+    "it happened instantly"; absence reads as "it did not happen".
+    """
+    _LOG.info("stage=%s phase=%s elapsed=%.3f%s", stage, phase, elapsed,
+              _counters(processed, elapsed))
 
 
 @contextmanager
@@ -235,7 +257,7 @@ def stage_timer(name: str, *, total: int | None = None) -> Iterator[StageResult]
     except Exception:
         elapsed = time.perf_counter() - started
         _LOG.error(
-            "stage=%s failed elapsed=%.3f%s", name, elapsed, _counters(result, elapsed),
+            "stage=%s failed elapsed=%.3f%s", name, elapsed, _counters(result.processed, elapsed),
             exc_info=True,
         )
         raise
@@ -243,11 +265,11 @@ def stage_timer(name: str, *, total: int | None = None) -> Iterator[StageResult]
         elapsed = time.perf_counter() - started
         _LOG.info(
             "stage=%s interrupted (%s) elapsed=%.3f%s",
-            name, type(exc).__name__, elapsed, _counters(result, elapsed),
+            name, type(exc).__name__, elapsed, _counters(result.processed, elapsed),
         )
         raise
     elapsed = time.perf_counter() - started
-    _LOG.info("stage=%s elapsed=%.3f%s", name, elapsed, _counters(result, elapsed))
+    _LOG.info("stage=%s elapsed=%.3f%s", name, elapsed, _counters(result.processed, elapsed))
 
 
 def _package_origin() -> str:
