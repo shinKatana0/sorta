@@ -370,10 +370,14 @@ from .sorter import (
     ALBUM_KINDS,
     ALBUM_MODES,
     ANIMAL_IDS_SQL,
+    CLASS_ALBUM_KINDS,
+    QUALITY_FROM,
+    SELECTORLESS_ALBUM_KINDS,
     AlbumReport,
     PlanItem,
     plan_album,
     plan_and_sort,
+    quality_slice_where,
     undo,
 )
 # F104: the pre-apply summary has to say what the apply will DO, so it asks the two
@@ -1401,6 +1405,13 @@ def _junk_payload(db_path: Path, bucket: str | None,
     from), independent of the current filter; `total` is the size of the CURRENT
     selection. An unknown bucket is an empty page, not an error — the same rule as an
     unknown category in `PlanCache.page`.
+
+    F139: `album_kind` is the album this bucket can be gathered into, or None — the
+    server decides, because the answer depends on `sensitive` and a client that worked it
+    out for itself would be a second copy of the privacy rule. It is None for the "all"
+    view (an album of "everything the classifier carried off" is not a slice anybody
+    asked for) and for a class in `vlm.exclude_classes`, which keeps its counter and gets
+    neither a preview nor an album.
     """
     conn = _connect(db_path)
     try:
@@ -1434,6 +1445,9 @@ def _junk_payload(db_path: Path, bucket: str | None,
     return {
         "bucket": bucket,
         "buckets": buckets,
+        "album_kind": (
+            bucket if (bucket in CLASS_ALBUM_KINDS and bucket not in sensitive)
+            else None),
         # The client draws the counter-only state from this — it must not have to guess
         # which classes came back empty on purpose and which are simply empty.
         "sensitive": sorted(sensitive),
@@ -1647,18 +1661,15 @@ def _apply_animal_mark(db_path: Path, ids: list[int], action: str) -> dict:
 #   only photograph of a person or a place. Sharpness ranks the list; a human decides.
 _REVIEW_SLICES = ("dupes", "blurred", "eyes", "subject")
 
-# Photographs only (F120: the quality signals mean nothing on a screenshot or a receipt),
-# canonical and readable — the same population every other counter in this file uses.
-_REVIEW_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
+# F139: which album kind each flat slice gathers into — and, read the other way, the map
+# that keeps the list and the album on one rule. The names differ because the switcher's
+# are older than the album's (`eyes` is a chip label, `eyes_closed` is a folder), and
+# renaming either half would move an API parameter for nothing. Duplicates have no kind:
+# they are the grouped slice, the one where a keeper is chosen, and the one path in the
+# program that deletes files — collecting them into a folder is not what they are for.
+_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed",
+                      "subject": "no_subject"}
 
-# What makes a frame a member of its slice. `eyes_open`/`has_subject` are `= 0` and never
-# `IS NOT 1`: NULL there means "not asked" (schema), and a frame nobody looked at must not
-# be shown to a user as an answer.
-_REVIEW_SLICE_WHERE = {
-    "blurred": "fq.sharpness IS NOT NULL",
-    "eyes": "fq.eyes_open = 0",
-    "subject": "fq.has_subject = 0",
-}
 # Blurred is ranked by the number the slice exists for; the other two have no ranking of
 # their own, so they go in index order — stable between pages, which is what paging needs.
 _REVIEW_SLICE_ORDER = {
@@ -1667,24 +1678,20 @@ _REVIEW_SLICE_ORDER = {
     "subject": "f.id",
 }
 
-_REVIEW_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
-                "JOIN media_class mc ON mc.file_id = f.id")
+# The membership rule itself lives in sorter.py (`quality_slice_where`, `QUALITY_FROM`)
+# and is read from there rather than restated here: the album of a slice and the list of
+# it must be the same set of frames, and two spellings of one condition drift.
+_REVIEW_FROM = QUALITY_FROM
 
 
 def _review_where(slice_: str, blur_max: float | None) -> tuple[str, list[object]]:
-    """The WHERE of one flat slice + its parameters.
+    """The WHERE of one flat slice + its parameters — the shared rule, by slice name.
 
     `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
     applies to that slice alone; None — "show more" has been pressed and the list runs on
-    without a ceiling. The window is a prefix of the same ordering, so continuing past it
-    neither repeats a frame nor skips one.
+    without a ceiling.
     """
-    where = f"{_REVIEW_POPULATION} AND {_REVIEW_SLICE_WHERE[slice_]}"
-    params: list[object] = []
-    if slice_ == "blurred" and blur_max is not None:
-        where += " AND fq.sharpness < ?"
-        params.append(float(blur_max))
-    return where, params
+    return quality_slice_where(_REVIEW_SLICE_KIND[slice_], blur_max)
 
 
 def _review_count(conn: sqlite3.Connection, slice_: str,
@@ -1823,6 +1830,10 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     return {
         "slice": slice_,
         "grouped": slice_ == "dupes",
+        # F139: the album kind of the CURRENT slice, or None for the duplicates. The
+        # client draws its "gather into a folder" row from this and never from a table of
+        # its own — see `_REVIEW_SLICE_KIND`.
+        "album_kind": _REVIEW_SLICE_KIND.get(slice_),
         "counts": [{"slice": name, "count": counts[name]} for name in _REVIEW_SLICES],
         # F133: what the "Layout" tab warns about — the part of the workspace nobody has
         # answered yet. `pending_total` is the one number the warning shows; the per-slice
@@ -2590,6 +2601,11 @@ def _validate_album_payload(
     single animal slice — so an empty selector is accepted there (and only there: for a
     person or an event an empty selector is a client that lost its subject, and
     gathering "everything" would be the wrong answer to it).
+    F139: the class and quality slices join it, by the same rule and through the same
+    shared list (`SELECTORLESS_ALBUM_KINDS`).
+
+    Whether a KIND may be gathered at all is not decided here: that answer depends on
+    `vlm.exclude_classes` and is given by the route, which has the config (F133).
     """
     if not isinstance(payload, dict):
         return None
@@ -2599,10 +2615,11 @@ def _validate_album_payload(
     mode = payload.get("mode")
     if mode not in ALBUM_MODES:
         return None
-    selector = payload.get("selector", "" if kind == "animal" else None)
+    selectorless = kind in SELECTORLESS_ALBUM_KINDS
+    selector = payload.get("selector", "" if selectorless else None)
     if not isinstance(selector, str):
         return None
-    if kind != "animal" and not selector.strip():
+    if not selectorless and not selector.strip():
         return None
     where = payload.get("where", [])
     if not isinstance(where, list) or not all(isinstance(w, str) for w in where):
@@ -7055,6 +7072,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span id="review-status" class="override-status"></span>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
+<div id="review-album" class="album-controls"></div>
 <div id="review-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
 <button type="button" id="review-more-btn" class="btn btn-ghost" style="display:none">{{review_load_more}}</button>
@@ -7125,6 +7143,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
+<div id="junk-album" class="album-controls"></div>
 <div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
 <button type="button" id="junk-more-btn" class="btn btn-ghost" style="display:none">{{junk_load_more}}</button>
@@ -10388,6 +10407,44 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   }
 
+  // F139: the gather row of a slice that has no subject to choose inside it — a class
+  // bucket ("Products") or a quality slice ("Blurred"). The same three controls every
+  // other album has (mode, an optional folder name, a destination) and the same
+  // dry-run-then-confirm path; the only thing that varies is the `kind` the server was
+  // asked to gather, and `kind` = null takes the row away entirely, which is what a
+  // sensitive class and the duplicates look like.
+  //
+  // Rebuilt only when the kind CHANGES: the row is drawn from inside the paging render,
+  // and re-creating it per page would ask the server for a default destination again and
+  // wipe a path somebody had typed.
+  function renderSliceAlbumControls(boxId, kind) {
+    var box = document.getElementById(boxId);
+    if (box.getAttribute("data-kind") === (kind || "")) return;
+    box.setAttribute("data-kind", kind || "");
+    box.textContent = "";
+    if (!kind) return;
+    var modeSelect = albumModeSelect();
+    box.appendChild(modeSelect);
+    var nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "album-name-input";
+    nameInput.placeholder = I18N.album_name_placeholder;
+    box.appendChild(nameInput);
+    var destInput = appendAlbumDestControls(box);
+    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
+                           "btn-sm album-gather-btn");
+    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
+    var albumStatus = document.createElement("span");
+    albumStatus.className = "album-status";
+    albumBtn.addEventListener("click", function () {
+      gatherAlbum(kind, "", modeSelect.value, null, nameInput.value.trim() || null,
+          destInput.value.trim() || null, albumStatus);
+    });
+    box.appendChild(albumBtn);
+    box.appendChild(albumStatus);
+    appendAlbumBusyHint(box);
+  }
+
   // --- лайтбокс (F42): один переиспользуемый оверлей поверх /photo/<id> ---
   // Заполняется по клику (не N скрытых оверлеев). Клик по фону/Esc закрывает;
   // стрелки ←/→ листают переданный список sample-кадров (опц., F42).
@@ -10832,6 +10889,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function renderJunkPage(data, append) {
     var grid = document.getElementById("junk-grid");
+    // F139: the bucket is gathered into a folder like any other slice — or it is not,
+    // and the server says which (a sensitive class keeps its counter and gets neither a
+    // preview nor an album). The "back to photos" row above is untouched: one movement
+    // must not be able to both gather and delete.
+    renderSliceAlbumControls("junk-album", data.album_kind);
     if (!append) grid.textContent = "";
     var items = data.items || [];
     items.forEach(function (it) { grid.appendChild(renderJunkCard(it)); });
@@ -11226,6 +11288,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .then(function (data) {
         renderReviewCounts(data.counts || []);
         reviewWindowTotal = data.window_total || 0;
+        // F139: the flat slices are gathered into a folder like people and events are;
+        // the duplicates are not (`album_kind` is null there), and the marking row above
+        // stays exactly where it was — gathering and deleting are two movements.
+        renderSliceAlbumControls("review-album", data.album_kind);
         if (!flat) return;
         document.getElementById("review-hint").textContent = reviewHintText(data);
         renderReviewPage(data, append);
@@ -12017,6 +12083,16 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
             kind, selector, mode, where, name, apply_, dest_str = parsed
+            # F139/F133: a sensitive class has no album, and the refusal lives here
+            # rather than in the markup — a button the page does not draw is not a rule,
+            # and a request sent past the interface would gather the folder all the same.
+            # `plan_album` refuses it a second time, for the terminal; this end answers
+            # with a status instead of a traceback. The settings panel can change
+            # `vlm.exclude_classes` without a restart, so the key is read per request.
+            if kind in CLASS_ALBUM_KINDS and kind in frozenset(cfg.vlm.exclude_classes):
+                self._send_json({"error": "sensitive class"},
+                                status=HTTPStatus.FORBIDDEN)
+                return
             dest = Path(dest_str) if dest_str else _album_dest(cfg, db_path)
             conn = _connect(db_path)
             try:

@@ -48,6 +48,11 @@ FOLDER_KEYS: tuple[str, ...] = (
     "products",
     "to_delete",
     "animals",
+    "screenshots",
+    "memes",
+    "blurred",
+    "eyes_closed",
+    "no_subject",
 )
 
 _FOLDERS: dict[str, dict[Lang, str]] = {
@@ -71,6 +76,15 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     # itself after (unlike a person or an event), so the name is a folder name like any
     # other the layout creates — and follows `language:` for the same reason.
     "animals": {"ru": "_Животные", "en": "_Animals", "ja": "_動物"},
+    # F139: the default folder of the remaining slices, for the same reason as
+    # `animals` — none of them has a selector to name itself after. `products` above is
+    # reused by the product album rather than duplicated: the folder the layout files
+    # that bucket into and the album a person gathers by hand are one name.
+    "screenshots": {"ru": "_Скриншоты", "en": "_Screenshots", "ja": "_スクリーンショット"},
+    "memes": {"ru": "_Мемы", "en": "_Memes", "ja": "_ミーム"},
+    "blurred": {"ru": "_Размытые", "en": "_Blurred", "ja": "_ぼやけ"},
+    "eyes_closed": {"ru": "_Закрытые_глаза", "en": "_Closed_eyes", "ja": "_目を閉じた"},
+    "no_subject": {"ru": "_Без_сюжета", "en": "_No_subject", "ja": "_被写体なし"},
 }
 
 
@@ -630,16 +644,19 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # F127: only `animal` has nothing to select inside it. For a person and an event the
     # selector IS the subject, so its absence is an error and never "the whole slice".
     # F129: and for a query it is the words themselves, which makes it the subject too.
+    # F139: the class and quality slices join `animal` — the collection holds exactly one
+    # products bucket and exactly one blurred list, so there is nothing to select there.
     "cli.album.selector_required": {
         "ru": "альбому person/event/query нужен селектор: имя человека, имя или id "
-              "события либо слова запроса. Без селектора собирается только "
-              "`sorta album animal`",
+              "события либо слова запроса. Срезы animal, product, screenshot, meme, "
+              "blurred, eyes_closed и no_subject собираются без селектора",
         "en": "a person/event/query album needs a selector: a person's name, an event's "
-              "name or id, or the words to search for. Only `sorta album animal` is "
-              "gathered without one",
+              "name or id, or the words to search for. The animal, product, screenshot, "
+              "meme, blurred, eyes_closed and no_subject slices are gathered without one",
         "ja": "person/event/query のアルバムにはセレクタが必要です: 人物の名前、"
-              "イベントの名前か id、または検索する語。セレクタなしで作成できるのは "
-              "`sorta album animal` だけです",
+              "イベントの名前か id、または検索する語。animal・product・screenshot・"
+              "meme・blurred・eyes_closed・no_subject のスライスはセレクタなしで"
+              "作成できます",
     },
     # F129: search by words — the engine's two refusals and the sentence that closes a
     # result list. The hit lines themselves carry no words in any language (a rank, a
@@ -1150,25 +1167,29 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # album
     "cli.help.album": {
-        "ru": "Выгрузить срез (человека/события/животных/запроса) в отдельную папку. "
-              "По умолчанию — hardlink, dry-run.",
-        "en": "Export a slice (a person/an event/the animals/a query) into a separate "
-              "folder. By default — hardlink, dry run.",
-        "ja": "スライス（人物・イベント・動物・問い合わせ）を別のフォルダに書き出します。"
-              "デフォルトはハードリンクの dry-run です。",
+        "ru": "Выгрузить срез (человека/события/животных/запроса/класса/качества) "
+              "в отдельную папку. По умолчанию — hardlink, dry-run.",
+        "en": "Export a slice (a person/an event/the animals/a query/a class/a quality "
+              "slice) into a separate folder. By default — hardlink, dry run.",
+        "ja": "スライス（人物・イベント・動物・問い合わせ・分類・画質）を別のフォルダに"
+              "書き出します。デフォルトはハードリンクの dry-run です。",
     },
     "cli.help.album.kind": {
-        "ru": "person | event | animal | query",
-        "en": "person | event | animal | query",
-        "ja": "person | event | animal | query",
+        "ru": "person | event | animal | query | product | screenshot | meme | "
+              "blurred | eyes_closed | no_subject",
+        "en": "person | event | animal | query | product | screenshot | meme | "
+              "blurred | eyes_closed | no_subject",
+        "ja": "person | event | animal | query | product | screenshot | meme | "
+              "blurred | eyes_closed | no_subject",
     },
     "cli.help.album.selector": {
-        "ru": "имя человека / имя или id события / слова запроса; для animal не нужен — "
-              "срез животных в коллекции один",
+        "ru": "имя человека / имя или id события / слова запроса; для animal и срезов "
+              "класса и качества не нужен — такой срез в коллекции один",
         "en": "a person's name / an event's name or id / the words to search for; not "
-              "needed for animal — the collection has a single animal slice",
-        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal では不要です — "
-              "コレクションの動物のスライスは 1 つだけです",
+              "needed for animal or for a class/quality slice — the collection has a "
+              "single such slice",
+        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal と分類・画質の"
+              "スライスでは不要です — そのスライスはコレクションに 1 つだけです",
     },
     "cli.help.album.dest": {
         "ru": "Куда выгрузить альбом",
