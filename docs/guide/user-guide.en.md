@@ -39,7 +39,10 @@ full safety guarantees (dry‑run by default, a move journal, and one‑command 
 18. [The run log](#19-the-run-log)
 19. [Offline models](#20-offline-models)
 20. [Configuration reference](#21-configuration-reference)
-21. [Troubleshooting](#22-troubleshooting)
+21. [The Review workspace](#22-the-review-workspace)
+22. [Search by words](#23-search-by-words)
+23. [Animals and frame quality](#24-animals-and-frame-quality)
+24. [Troubleshooting](#25-troubleshooting)
 
 ---
 
@@ -276,7 +279,7 @@ language: ru             # UI/folder language: ru | en | ja  (default en)
 > are evaluated at import time, before any config is read, so `sorta --help` and
 > `sorta sort --help` stay English whatever `language` says. Everything else — folder
 > names, the web UI, progress lines and command summaries — is localized. See the
-> worked examples in §7 and §9 for what real CLI output looks like, and §22 if it
+> worked examples in §7 and §9 for what real CLI output looks like, and §25 if it
 > renders as `????` in your terminal.
 
 See the [Configuration reference](#21-configuration-reference) for every option.
@@ -319,7 +322,17 @@ The web UI is the easiest path and needs no terminal knowledge beyond starting i
 sorta ui                       # opens a local server on http://127.0.0.1:8756
 ```
 
-Then in the browser:
+Then in the browser there are five tabs: **Overview · Review · Layout · Slices ·
+Moves**. They are named after **what you do to the collection**, not after the pipeline
+stages, because there are exactly three things you can do to it and they differ in what
+happens to the files:
+
+- **the canon** — one city layout; the files physically move, and there is only one
+  such structure;
+- **slices** — people, events, animals, products, screenshots, a query in words: as
+  many as you like, gathered as hardlinks, so making and dropping one is free;
+- **the junk** — a subtraction: the frames that have to be looked at by eye and partly
+  thrown away.
 
 1. **Overview** tab → the state of the collection on one screen: how many files are
    indexed, photos and videos, duplicates, read errors, events; where the place came
@@ -328,44 +341,57 @@ Then in the browser:
    classifier decided (personal photos, products, documents, screenshots, memes — by
    which signal and which tier); whether a layout has run, where to, in which mode and
    how many files made it. The numbers are **clickable**: a click takes you to the tab
-   where you can act on that group. Always visible; on an empty index it shows a
-   **Go to Process** button instead.
-2. **Process** tab → enter the path to your photo folder. Two checkboxes, both
-   **unchecked by default**: **"Detect faces"** and **"Detect events"** — the
-   pipeline's slowest stages, opt‑in on purpose (see §8). Leave them off for a fast
-   city‑sorting‑only run, or tick what you need. Click **Process**: it runs in the
-   background with per‑stage progress (index → geo → landmarks → [faces] → [events]
-   → junk → near‑duplicates — faces/events only if ticked). You can close the tab;
-   processing continues.
-3. **Cities** tab → review the proposed structure (`Country/City/Year/District`).
-   This is also where the **Settings** column (below) and the button that starts the
-   layout live. Always visible.
-4. **Duplicates** tab → review near‑duplicate groups; the recommended keeper is
-   pre‑selected. Adjust where you disagree, then click **Save all choices** once.
-   Always visible.
-5. **People** tab → only appears once face clusters exist (you ticked "Detect faces"
-   at least once, or ran `sorta faces`). Name clusters and merge duplicates of the
-   same person.
-6. **Events** tab → only appears once events exist (you ticked "Detect events" at
-   least once, or ran `sorta events`). Rename events; collect any person/event into
-   a folder with **Collect into folder**.
-7. **Not personal photos** tab → the buckets the classifier carried out of your
-   memories: **Products**, **Documents**, **Screenshots**, **Memes** (and "All" at
-   once). Tick the frames that landed there by mistake and press **Return to
-   photos** — they go back into the city layout; the model's verdict is not
-   rewritten, and the return itself is reversible with **Undo the return**. Always
-   visible.
+   where you can act on that group. **Starting a run lives here too**: the path to the
+   photo folder, the stage checkboxes and the **Process** button — the state of the
+   collection and the run that changes it are one question asked at two moments in
+   time. Enter the path, tick **"Detect faces"** and **"Detect events"** if you want
+   them (both **unchecked by default** — the pipeline's slowest stages, opt‑in on
+   purpose, see §8) and click **Process**: it runs in the background with per‑stage
+   progress (index → geo → landmarks → [faces] → [events] → junk → near‑duplicates).
+   You can close the tab; processing continues.
+2. **Review** tab → one workspace for everything that has to be looked at by eye and
+   partly deleted: **Duplicates**, **Blurred**, **Closed eyes**, **No subject** — four
+   slices of a single tab, described in §22.
+3. **Layout** tab → the canon: the proposed structure (`Country/City/Year/District`),
+   where to lay it out, move or copy, and the button that starts it. Always visible.
+4. **Slices** tab → everything built **on top of** the canon: **People**, **Events**,
+   **Animals** and the classifier's buckets — **Products**, **Documents**,
+   **Screenshots**, **Memes**. At the top of it sits the **search line** (§23). Any
+   slice is gathered into its own folder with **Collect into folder**, hardlinks by
+   default, so it can be gathered and dropped as often as you like. In the classifier's
+   buckets, tick the frames that landed there by mistake and press **Return to
+   photos** — they go back into the city layout; the model's verdict is not rewritten,
+   and the return itself is reversible with **Undo the return**.
    **Documents are shown without thumbnails** — file name and date only. That is a
    rule, not an unfinished corner: this bucket holds passports, certificates and
    medical forms, and Sorta neither opens nor renders them even locally; the name and
    the date are enough to decide.
-8. **Moves** tab → after you apply a sort/album, see exactly what went where. This is
+5. **Moves** tab → after you apply a layout/album, see exactly what went where. This is
    also where a layout is **rolled back** (§15). Always visible.
 
-The **Process** tab has two more checkboxes beyond faces/events, both reflecting
-`config.yaml` and acting as a full override for this run only (checked = force on,
-unchecked = force off) — the UI equivalent of the CLI's `--deep`/`--no-deep` and
-`--geo online`/`--geo offline` (§8):
+**Where the familiar tabs went.** Nothing was removed, the grouping changed: Process
+moved inside Overview, Cities is now called Layout, Duplicates became the first slice of
+Review, and People, Events and "Not personal photos" became panels of Slices. Inside
+Slices, People and Events appear only once face clusters or events exist — that is,
+after a run with faces/events enabled (or after `sorta faces`/`sorta events`).
+
+**Why Review comes before Layout.** Frames marked for deletion leave for the `_delete`
+folder during `sort --apply` — the same moment the canon is built — and the albums of a
+slice are hardlinks *out of the canon*. Gather the albums before you have been through
+the junk and you get links to what you threw away. It is not forbidden: the Layout tab
+shows a warning while the Review still holds undecided frames, and nothing more. The
+collection is alive, "gather" happens again and again, and a locked tab would cost more
+than the mistake it guards against.
+
+**There is no "Re-run selected" button any more.** The stages skip what is already done
+by themselves — a repeat run touches only new and changed files — so starting a run is
+one **Process** button rather than a choice of stages. The button went, not the route:
+the HTTP endpoint `POST /api/process/rerun-optional` is still there for external callers.
+
+The run block on the **Overview** tab has two more checkboxes beyond faces/events, both
+reflecting `config.yaml` and acting as a full override for this run only (checked =
+force on, unchecked = force off) — the UI equivalent of the CLI's `--deep`/`--no-deep`
+and `--geo online`/`--geo offline` (§8):
 
 - **"Deep analysis (VLM)"** — use the deep VLM tier instead of the fast CLIP tier
   for junk/document classification. It only actually takes effect if it's *both*
@@ -377,13 +403,13 @@ unchecked = force off) — the UI equivalent of the CLI's `--deep`/`--no-deep` a
   instead of the bundled offline GeoNames data for this run; sends only GPS
   coordinates, never photos (see §15).
 
-People/Events staying hidden on a fresh Process run is expected — it means faces/
+People/Events staying hidden in Slices after a run is expected — it means faces/
 events weren't enabled for that run, not that something broke; re‑run with the
-checkbox ticked (or `sorta faces`/`sorta events`) and the tab appears.
+checkbox ticked (or `sorta faces`/`sorta events`) and the panel appears.
 
-### The Settings column
+### The Settings panel
 
-On the right of the **Cities** tab there is a **Settings** column. It edits
+The **Settings** button in the header opens the settings panel. It edits
 `config.yaml` for real: the value is written to the file straight away and **there is
 no need to restart `sorta ui`** — the next run reads the new one. What lives there:
 
@@ -536,9 +562,23 @@ written to `config.yaml`):
 --geo offline|online       Reverse-geocoding provider for this run. `online` is more
                             accurate abroad but sends GPS coordinates (never images)
                             to Nominatim. Default: from config.yaml (geo.provider).
+--pets / --no-pets         Look for animals this run (features.pets, §24). CLIP answers
+                            it on a pass that runs anyway, so it is cheap.
+--quality / --no-quality   Ask the model about frame quality this run (vlm.quality):
+                            are the eyes open, is there a subject at all. Needs the
+                            `vlm` extra.
+--quality-scope groups|events|faces|all
+                           Which frames reach those questions (vlm.quality_scope). The
+                            price is measured: `all` ≈ 4.3 hours on 20 thousand frames,
+                            `faces` ≈ 95 minutes on 7,341 (and needs a `faces` run —
+                            without one the population is empty and nothing is asked).
 --by city|person|event     Also print a dry-run sort plan at the end (see §9)
 --dest DIR                 Destination for that plan (omit for in-place)
 ```
+
+`sorta junk` takes the same three quality flags — it is the same stage run on its own.
+Like `--deep`/`--geo`, they apply to the current run only and write nothing into
+`config.yaml`.
 
 The **base run** (`sorta run`, no flags) is deliberately the fast path: city sorting
 and duplicate detection, nothing else. Enable `--faces`/`--events` when you actually
@@ -810,8 +850,9 @@ Events: 1 automatic (7 files, names kept: 0), 0 manual (0 files)
 
 ## 13. Albums
 
-An **album** collects a specific slice — one person (optionally filtered) or one
-event — into its own named folder, without disturbing the canonical city structure.
+An **album** collects a specific slice — one person, one event, every animal, or the
+answer to a query in words — into its own named folder, without disturbing the canonical
+city structure.
 
 ```bash
 # All photos of "Mom", as hardlinks (default), preview then apply:
@@ -824,7 +865,21 @@ sorta album person "Mom" --where "city=Barcelona" --dest /path/to/albums --apply
 # A specific event with a custom folder name, as copies:
 sorta album event "2025-05-21..05-23 Tokyo" --dest /path/to/albums \
       --name "IEEE conference Tokyo" --copy --apply
+
+# Every frame with an animal — NO selector: the collection has exactly one animal
+# slice (§24):
+sorta album animal --dest /path/to/albums --apply
+
+# An album from a query in words (§23) — ask in English:
+sorta album query "cake" --dest /path/to/albums --apply
 ```
+
+- **`animal`** is the one album kind without a selector: there is nothing to choose
+  inside that slice, so `sorta album animal --dest …` is the whole command.
+- **`person` / `event` / `query`** require the selector, because the selector *is* the
+  subject of the album (a person's name, an event's name, the words themselves). A
+  missing one is an **error**, not "the whole collection": an album quietly gathered
+  from everything is indistinguishable from a correct one.
 
 - Default mode is **link** (hardlink, ~0 extra space; a photo can appear in several
   albums *and* in the city structure).
@@ -931,45 +986,65 @@ Classification: 12/12 processed (photo: 11, screenshot: 1)
 ## 16. Full command reference
 
 ```
-sorta index [DIR]                 Scan sources (or DIR) → metadata, hashes, exact dupes
+sorta index [DIR] [--exclude-dir NAME]
+                                  Scan sources (or DIR) → metadata, hashes, exact dupes;
+                                  --exclude-dir keeps a subfolder out of the scan (§21a)
 sorta index --refresh-exif        Re-read metadata of already-indexed files (§17)
-sorta run [--src DIR] [--faces] [--events] [--deep/--no-deep] [--geo offline|online]
-          [--by city|person|event] [--dest DIR]
+sorta run [--src DIR] [--faces/--no-faces] [--events/--no-events] [--deep/--no-deep]
+          [--geo offline|online] [--pets/--no-pets] [--quality/--no-quality]
+          [--quality-scope groups|events|faces|all] [--by city|person|event] [--dest DIR]
                                   Base pipeline (index→geo→landmarks→junk); --src
                                   overrides config sources for this run; --faces/
                                   --events opt into the slow stages (default: off,
-                                  independent of each other); --deep/--geo override
-                                  config.yaml for this run only; with --by, also
-                                  prints a dry-run plan at the end
+                                  independent of each other); --deep/--geo/--pets/
+                                  --quality/--quality-scope override config.yaml for
+                                  this run only (§8, §24); with --by, also prints a
+                                  dry-run plan at the end
 sorta geo                         Resolve places (GPS + session inference)
 sorta landmarks                   Visual place guess for GPS-less scenes (conservative)
-sorta faces                       Detect faces + cluster people
+sorta faces [--rescan] [--limit N]     Detect faces + cluster people; --rescan redoes
+                                  files already processed, --limit N caps that rescan
+                                  at the first N files (only together with --rescan)
 sorta faces label <cluster> <name>    Name a cluster
 sorta faces merge <src> <dst>          Merge two clusters (same person)
 sorta faces sheet <cluster> <out.html> Contact sheet to identify a cluster
 sorta events                      (Re)build events
 sorta events add <name> <from> <to>    Manual event over a date range
 sorta events rename <id> <name>        Manual event name
-sorta junk                        Classify photo/screenshot/meme/document/product
+sorta junk [--pets/--no-pets] [--quality/--no-quality]
+           [--quality-scope groups|events|faces|all]
+                                  Classify photo/screenshot/meme/document/product; the
+                                  frame-quality flags override config for this run (§24)
 sorta phash                       Perceptual hashes (for near-duplicates)
 sorta stats                       Index coverage (GPS, date sources, duplicates)
 sorta dupes [--near]              List exact / near duplicates
+sorta search "<words>" [--limit N]
+                                  Find frames by words: the CLIP ranking, best first
+                                  (§23). --limit N is how many lines to print
 sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
            [--where …] [--dedupe] [--delete-worse-dupes] [--exclude PATH] [--thumbnails]
                                   Plan/apply a sort (dry-run without --apply)
-sorta album person|event <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
-                                  Collect a slice into a named folder (hardlink by default)
+sorta album person|event|query <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album animal --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+                                  Collect a slice into a named folder (hardlink by
+                                  default); `animal` takes no selector, the other kinds
+                                  require one (§13)
 sorta undo [--batch ID]           Reverse the last (or a specific) batch
-sorta reset [--yes] [--clear-geo] Wipe the index (DB) and start over — leaves your
+sorta reset [--yes|-y] [--clear-geo]
+                                  Wipe the index (DB) and start over — leaves your
                                   photos and any already-sorted folders untouched
                                   (names of people/events and dup decisions are lost).
                                   The online-geo cache survives unless --clear-geo
-sorta ui [--port 8756]            Local web app (Process / Cities / Duplicates / People / Events / Moves)
+sorta ui [--port 8756]            Local web app (Overview / Review / Layout / Slices / Moves)
 sorta doctor                      Environment check: torch/onnxruntime, GPU, geo data,
                                   log path, preview cache path (§3.5)
-sorta cache [--clear] [--clear-geo]
-                                  Caches: preview size or deletion (§18), and
-                                  --clear-geo drops the cached online-geo answers
+sorta cache [--clear] [--clear-geo] [--preview-max-gb N]
+                                  Caches: preview size or deletion (§18); --clear-geo
+                                  drops the cached online-geo answers, --preview-max-gb
+                                  sets the cache ceiling for this invocation
+                                  (0 = no ceiling)
+sorta --install-completion        Install shell completion for `sorta`
+sorta --show-completion           Print the completion script without installing it
 ```
 
 Every command takes `-c/--config <path>` (default `config.yaml`) — except
@@ -1027,6 +1102,11 @@ Preview cache: C:\Users\you\AppData\Local\sorta\previews
 $ sorta cache --clear -c config.yaml
 Preview cache removed: C:\Users\you\AppData\Local\sorta\previews
 ```
+
+`--preview-max-gb N` sets the cache ceiling (§18) for this invocation without touching
+`config.yaml`: `sorta cache --preview-max-gb 40` reports the size against 40 GB, and
+`--preview-max-gb 0` takes off a ceiling the config had set. The zero has to be spelled
+out — it is the value that means "no ceiling".
 
 Deleting the cache is safe at any moment: it is lazy and rebuilds itself, one frame
 at a time, in whichever stage next needs that frame. The only cost is that those
@@ -1514,7 +1594,146 @@ named as a verdict — forwarded pictures are often worth looking through.
 
 ---
 
-## 22. Troubleshooting
+## 22. The Review workspace
+
+The **Review** tab (§6) is one workspace for everything that has to be looked at by eye
+and partly deleted. Four slices, switched by the buttons at the top, and each button
+carries the number of frames still undecided:
+
+- **Duplicates** — near‑duplicate groups, with the recommended keeper (★) pre‑selected
+  (§10).
+- **Blurred** — frames from the blurriest down; the list opens as far as
+  `features.blur_review_max` (default `90`) and continues on a button, including past
+  that window.
+- **Closed eyes** — the model's answers about frame quality (`vlm.quality`, §24). The
+  question is only asked where the detector found a face, so without a `faces` run this
+  slice is empty and says so.
+- **No subject** — frames where the model found no subject at all: a shot of the floor,
+  a smeared wall, an accidental press.
+
+**The decision goes into one shared journal, one per file.** There are three buttons:
+**Mark for deletion**, **Keep**, **Clear the mark**. Marking "delete" is a mark, not a
+deletion: those files leave for the `_delete` folder on the next layout (§9), and until
+then nothing happens. A **Keep survives a recompute** — a frame you have decided about
+is not asked about a second time, even if the next run scores it as blurred again. The
+journal is shared by all four slices, so a file that turns up both in "blurred" and in
+"no subject" has one decision, not two.
+
+**There is no "delete everything below the threshold" button, and there will not be
+one.** That follows from a measurement rather than from caution: reviewing by sharpness
+bands, blurred frames turned up **in every band up to 400**. Sharpness, then, ranks but
+does not classify, and the line that separates a write‑off from a soft but wanted frame
+simply does not exist. So `features.blur_review_max` (§21) is how far the list opens,
+not a verdict, and **nothing is ever deleted by that number**. What the bands did show is
+where the returns fall off — around 90–120: below 70 there are 378 frames, below 90 530,
+below 120 785, below 160 1,215, on a collection of 19,757 photographs.
+
+While the Review holds undecided frames, the Layout tab shows a warning — see §6 for why
+the order is what it is.
+
+---
+
+## 23. Search by words
+
+The search goes by the image, not by file names and not by tags: every personal
+photograph has a CLIP vector (`features.store_embeddings`, §21), and the query is
+compared against it.
+
+```bash
+sorta search "cake"                 # the ranking: rank, closeness, path
+sorta search "cake" --limit 50      # how many lines to print
+sorta album query "cake" --dest /path/to/albums --apply   # the same thing, as a folder
+```
+
+In the web UI this is the search line at the top of the **Slices** tab (§6): type the
+words, press **Search**, then gather what came back into a folder with the album button —
+like any other slice.
+
+**It is a ranking, not a filter.** The list is sorted by closeness to the query and there
+is no "this really is it" threshold, nor will there be one: the CLIP score orders frames
+against each other and means nothing in absolute terms. Read top‑down and stop where the
+resemblance runs out. `features.search_limit` (default `200`) is a sample size, not a
+similarity threshold.
+
+**Four states of the search index.** The line under the input always says which one it
+is in:
+
+1. **The index is empty** — there is nothing to search yet. An ordinary run over the
+   collection fixes it: no separate model and no extra setting are needed, the vectors
+   are written on the same pass that classifies the frames anyway.
+2. **The index was computed by another model** — its vectors are not comparable with the
+   current one, so the ranking would be plausible nonsense. Those rows never enter the
+   ranking; the collection has to be processed again, which recomputes them.
+3. **Part of the collection is covered** — "searching N of M photographs": the rest join
+   the index on the next run. That is the normal life of a growing archive, and telling
+   "it is not in the collection" from "it is not in the index yet" matters more than a
+   tidy number.
+4. **Everything is ready** — "searching all M photographs of the collection".
+
+**A limit measured on 2026‑08‑02: ask in English.** The index is computed by the
+`ViT-L-14` model (`naming.clip_model`, `ViT-L-14-quickgelu` by default), trained on
+English captions, so **queries in other languages work noticeably worse than English
+ones**. Checked on eight pairs of queries: `cake` finds cakes, its Russian translation
+does not. Until a multilingual index exists, the advice is blunt: phrase the query in
+English even when the rest of your work is in another language.
+
+Two more things worth knowing in advance: CLIP is weak on compound queries ("a cake with
+candles on a table by the window") and good at single subjects; and the population is
+personal photographs only — a screenshot or a document has no vector at all, so a
+passport can never surface in the results.
+
+---
+
+## 24. Animals and frame quality
+
+The signals about the frame itself, rather than about the place or the people in it. All
+of it is **off by default** — this is the tier you pay for in time — and it is switched
+on either by a flag for one run (§8) or by a key in `config.yaml` (§21).
+
+### Animals
+
+- **There is exactly one class, `animal`.** There is no species and there will not be
+  one: the measurement says the binary question "is there an animal in this frame" is
+  answered correctly in 92% of cases, and the species question is not. Hence one
+  **Animals** slice in the UI, and one album in the terminal:
+  `sorta album animal --dest …`, with no selector (§13).
+- **CLIP answers it, not the VLM** — on a pass that runs anyway. That is why `--pets`
+  costs minutes: the same coverage through the model would cost 4.3 hours.
+- **The threshold `features.pet_threshold` is `0.70`.** Measured on 320 hand‑labelled
+  frames: at `0.70` it marks 805 frames with a precision of 92% and a recall of 54%.
+- **The verifying cascade** is switched on by `features.pets_verify`: CLIP proposes
+  widely, the local VLM confirms or drops (it can tell a cat from a plush cat, CLIP
+  cannot). Candidates are then selected by a separate, far lower threshold,
+  `features.pet_candidate_threshold` — **`0.50`**. Do not go lower: at `0.30` the
+  precision falls below what you get with no cascade at all.
+- **A false mark can be taken off by hand.** The card offers **Not an animal** / **This
+  is an animal** / **Back to automatic**. The correction is stored in the index and
+  **survives any recompute**: the next run will not put back a mark you removed. The
+  tab, the counter and the `animal` album all read the same rule, so they cannot
+  disagree with each other.
+
+### Frame quality
+
+Sharpness is the variance of a Laplacian, computed with no model at all, while "are the
+eyes open" and "is there a subject" are asked of the local VLM (`vlm.quality`) — those
+are the ones that cost time. Who gets asked is decided by `vlm.quality_scope`:
+
+| Value | Who is asked | Price |
+|---|---|---|
+| `groups` | the frames of near‑duplicate groups (default) | the narrowest population |
+| `events` | plus a sample of each event's frames | wider than `groups`, narrower than `all` |
+| `faces` | the frames a face was found on | **≈ 95 minutes on 7,341 frames** |
+| `all` | every live photograph | **≈ 4.3 hours on 20 thousand frames** |
+
+Both numbers are measurements, not estimates. `faces` needs a `faces` run: that is a
+dependency and not a filter — without one the population is empty and nothing is asked at
+all. The answers show up in the Review (§22), and for a single run the whole thing is
+switched on with `--quality`/`--no-quality` and `--quality-scope` on `sorta run` and
+`sorta junk` (§8).
+
+---
+
+## 25. Troubleshooting
 
 - **`sorta doctor` says `torch: 2.13.0+cpu` on a GPU machine** — the extra never
   reached the install command. `uv tool install` has no `--extra` flag; the extra
