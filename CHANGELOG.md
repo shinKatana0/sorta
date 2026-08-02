@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A search line in the "Slices" block** (F134): the field F133 drew and left disabled is
+  wired to the F129 engine — type "cake" and the collection comes back ranked, with the
+  score on every card and a "Gather into folder" button that is the existing album route
+  with `kind='query'` and the words as the selector. The engine is untouched; what this
+  feature is actually about is the state in which it cannot run. `clip_embeddings` is
+  filled by the junk stage of an ordinary run, so a fresh collection — and any collection
+  last processed before F128 — has nothing to rank, and an empty result list would read as
+  "you have no photographs like that": a conclusion about somebody's own archive drawn
+  from a table nobody filled. So the new `GET /api/search` carries the state of the index
+  in **every** answer (`state`, `available`, `indexed`, `total`, `index_model`), the line
+  stays **disabled** while there is nothing to search, and the reason stands next to it
+  with the way to fix it — a button to "Overview", where the run is started. The two
+  unavailable states are deliberately two sentences: an index that was never computed
+  ("this is an ordinary run, no separate model") and an index computed by **another
+  model**, which is named, because its vectors are not comparable with the query and
+  mixing them would produce a plausible ranking nothing marks as wrong. Partial coverage
+  does not block anything and says its denominator out loud ("searching 19 753 of 19 757
+  photographs") — an incremental run is the normal way to live with a growing archive, and
+  a person has to be able to tell "it is not in the collection" from "it is not in the
+  index yet". No threshold is introduced anywhere: the list ranks, the reader stops where
+  the resemblance runs out, and the interface promises no accuracy, since nobody has
+  measured it on a real collection yet. The privacy rule of F133 is carried over
+  unchanged — a frame whose class is in `vlm.exclude_classes` is ranked but hands out no
+  thumbnail, so a search cannot become the way around what the slices already close. An
+  empty query never reaches the model, in the browser or on the server.
 - **The best frame of a duplicate group, asked comparatively** (F132): `dedup.keeper_vlm`,
   off by default, next to `dedup.keeper_max_frames` (5) and `dedup.keeper_min_group_size`
   (2). Sharpness already ranks a near-duplicate group honestly — inside a group the frames
