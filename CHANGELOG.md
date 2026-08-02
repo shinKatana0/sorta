@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **"There is an animal here" is computed when read, not frozen when written** (F137).
+  The thresholds of the animal cascade are deliberately **not** part of the prompt
+  fingerprint — the scores and the model's answers are stored precisely so a threshold can
+  be re-chosen without another pass over the collection, and hashing them would send
+  sharpness, CLIP and the VLM round again on every edit. But the label itself was read off
+  `frame_quality.pet`, i.e. off the config of whichever run last wrote it, so an edited
+  threshold changed nothing anybody could see: the live collection kept **966** animals
+  selected at a 0.30 candidate gate long after the gate went back to 0.50, where the stored
+  answers say **848**, and nothing in the interface connected the number to the setting.
+  The verdict is now derived at the moment of the read, from `pet_score`, `pet_vlm` and the
+  thresholds in force — the check's stored answer where the current
+  `features.pet_candidate_threshold` would still ask for one (the same replay F130 chose
+  that threshold with), `pet_score >= features.pet_threshold` otherwise, and the user's own
+  `manual_pet` verdict over both, unchanged (F124). Editing either threshold now moves the
+  album, the "Animals" tab and the "Overview" counter **at once and without a run**.
+  `frame_quality.pet` is still written and is still the column to query a database by, but
+  no consumer decides by it — one of them doing so would reopen the same gap somewhere
+  else. No schema change, no migration and no one-off recount: a stale label misleads
+  nobody once nothing reads it.
 - **No option raises the model by itself** (F145). A base run started **without** deep
   analysis called the VLM from the landmarks stage. The cause was not one setting: four of
   the five VLM questions of the pipeline gated on their own key alone — `vlm.quality`,
@@ -173,8 +192,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file ends up dropped from the layout because of what is in the frame. The mark is
   applied **when read, never when written** — `junk` is untouched, and the consumers
   (the album slice, the tab, the "Overview" counter) read one shared expression,
-  `sorter.ANIMAL_IDS_SQL` = `COALESCE(manual_pet.is_animal, frame_quality.pet IS NOT
-  NULL)`. That is what makes an edit survive **any** recompute, a change of model, of
+  `sorter.animal_ids_sql` = `COALESCE(manual_pet.is_animal, <the automatic rule>)`
+  (F137). That is what makes an edit survive **any** recompute, a change of model, of
   prompts or of the threshold included, and what keeps the three numbers from drifting
   apart. The mark is two-way on purpose: a person takes a false one off and puts a
   missing one on, which is also the only way a frame the threshold missed reaches the
