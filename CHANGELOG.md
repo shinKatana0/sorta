@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A landmark is checked before it becomes a place** (F131): `features.landmarks_verify`,
+  off by default, with `features.landmark_candidate_threshold` (0.5) next to it. CLIP
+  proposes a landmark, the local VLM is asked what well-known place the frame shows, and
+  only a proposal the model names **itself** goes on. This cascade was not assumed to
+  work — it was measured first, and the measurement could have closed the feature. F75
+  established that CLIP fails here for a different reason than it fails on animals: not
+  perception (a cat against a drawing of a cat, which a model that looks at the scene
+  cures) but **discriminating knowledge** — the wrong cities scored 0.980 against 0.991
+  for the right one, so no threshold splits them — and a 3-billion-parameter model could
+  share exactly that weakness, in which case it would confirm wrong cities with an air of
+  authority and be worse than no cascade at all. The probe (`measure_landmarks.py
+  --probe`) asked 104 frames with a known answer, 24 of them hard negatives — proposals
+  above 0.50 that CLIP believed and corroboration threw away — and the model confirmed a
+  wrong city **zero** times, at 92% accuracy. The mechanism is not knowledge but silence:
+  71 of the 104 answers named nothing at all, which is the behaviour a gate wants. The
+  **form of the question** decided more than the model did, so it is fixed in code with
+  the numbers behind it: "what place is this?" backed 80% of the right proposals in each
+  of three runs, "was this taken at X?" backed 20/42/42% — naming the proposal is what
+  turns a check into an agreement. Silence is a **rejection**, not a parse failure, and
+  the row stays `unknown` rather than moving to the place the model did name. The order
+  does not bend: CLIP proposes → the model checks → **F75 corroboration decides**, so a
+  country named in the path still refutes a match both models agreed on. Answers are
+  remembered in the new `landmark_checks` table (schema v20) with the score that produced
+  them — a rejected frame stays `unknown` and comes back into the stage on every run, and
+  without the table it would be re-asked forever (the F130 loss), while the score is what
+  the next calibration needs and what the stage previously stored nowhere at all. The
+  `model` column carries a fingerprint of the question, so rewording it invalidates the
+  answers it produced. Every failure keeps the cheap tier intact: a model that raises on
+  one frame, or will not build at all, leaves that proposal to the rule of a run without
+  the check (`naming.landmark_threshold`), and an unavailable model also leaves the gate
+  unwidened — a wider band with nothing checking it is the one outcome worse than no
+  feature. With the toggle off the stage is unchanged in every respect, down to the score
+  its proposals are collected at.
 - **A search line in the "Slices" block** (F134): the field F133 drew and left disabled is
   wired to the F129 engine — type "cake" and the collection comes back ranked, with the
   score on every card and a "Gather into folder" button that is the existing album route
