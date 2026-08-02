@@ -343,7 +343,7 @@ features:
   #   0.50  →   993 frames, 12.9 min      0.20 →  1 679 frames, 21.8 min
   #   everything → 19 757 frames, 4.3 hours
   # Ignored when `pets_verify` is off.
-  pet_candidate_threshold: 0.3
+  pet_candidate_threshold: 0.5
   # The longer side the frame is scaled to before the laplacian. Fixed on purpose: the
   # variance of the laplacian is scale-dependent, so frames measured at different
   # resolutions are not comparable and every threshold below is tied to this number.

@@ -473,7 +473,12 @@ class TestSettingsAndAsker(unittest.TestCase):
     def test_the_defaults_are_the_measured_ones(self):
         d = FeaturesConfig()
         self.assertFalse(d.pets_verify)
-        self.assertAlmostEqual(d.pet_candidate_threshold, 0.3)
+        # 0.30 was the brief's guess; 0.50 is what the run measured. Replayed against the
+        # F122 labels, 0.30 turned out to be the WORST gate of the sweep — 90% precision
+        # against a 92% CLIP-only baseline — because the frames it adds down there are
+        # only 80% correct and dilute what is already better. The table is in config.py
+        # next to the value.
+        self.assertAlmostEqual(d.pet_candidate_threshold, 0.5)
 
     def test_the_asker_decodes_the_frame_and_asks_one_question(self):
         from PIL import Image

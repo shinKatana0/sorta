@@ -487,9 +487,29 @@ class FeaturesConfig:
     # checking CLIP's answer, and once something does, the selection can be widened. The
     # arithmetic is counted on the stored `pet_score` of the live collection, not
     # estimated — 0.70 selects 805 frames (10.5 min at 0.78 s/frame), 0.50 993 (12.9),
-    # 0.30 1 331 (17.3), 0.20 1 679 (21.8), everything 19 757 (4.3 h). 0.30 is where the
-    # recall left below the cut stops being worth the minutes.
-    pet_candidate_threshold: float = 0.3
+    # 0.30 1 331 (17.3), 0.20 1 679 (21.8), everything 19 757 (4.3 h).
+    #
+    # 0.50 is MEASURED, not chosen. The cascade was run on the live collection and
+    # replayed against the 312 labels F122 was scored on (the answers are stored, so
+    # every gate above 0.30 is a replay rather than another pass):
+    #
+    #     gate    asked  marked  precision  recall   min
+    #     none        0     805        92%     36%   0.0
+    #     0.70      797     748        97%     36%  10.4
+    #     0.60      886     804        97%     38%  11.5
+    #     0.50      982     848        96%     40%  12.8
+    #     0.40     1108     899        95%     41%  14.4
+    #     0.30     1308     966        90%     43%  17.0
+    #
+    # The brief predicted 97-99% precision and it is real — but only down to 0.60. At
+    # 0.30 precision falls BELOW the CLIP-only baseline: the frames added there are 80%
+    # correct against a 92% baseline, so each one dilutes. 0.30 was the worst row of the
+    # table, buying three points of recall with two of precision; 0.50 keeps four points
+    # of precision over the baseline and still adds four of recall. Recall is quoted for
+    # comparison WITHIN this table only — its denominator (how many animals the archive
+    # holds) rests on 7 labelled animals in the 18 426-frame tail, where one frame moves
+    # the estimate by hundreds.
+    pet_candidate_threshold: float = 0.5
     # The longer side the frame is scaled to before the laplacian. FIXED on purpose: the
     # variance of the laplacian is scale-dependent, so two frames measured at different
     # resolutions are not comparable and no threshold over them means anything.
