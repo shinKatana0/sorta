@@ -36,7 +36,7 @@ import numpy as np
 
 from sorta import junk
 from sorta.config import Config, FeaturesConfig, _naming_from
-from sorta.db import connect, reset_index
+from sorta.db import SCHEMA_VERSION, connect, reset_index
 from sorta.junk import (
     classify,
     embedding_model,
@@ -45,6 +45,8 @@ from sorta.junk import (
     unpack_embedding,
 )
 from sorta.landmarks import CachingFeatureClassifier
+
+from tests.schema_history import roll_back_before
 from tests.test_junk import NO_OCR, FakeClassifier
 
 _SCREENSHOT_IDX = 1  # the junk classes, in order: photo | screenshot | meme
@@ -115,21 +117,19 @@ class TestMigration(unittest.TestCase):
         self.assertEqual(cols, {"file_id", "model", "dim", "vec", "updated_at"})
         self.assertEqual(version, SCHEMA_VERSION)
 
-    def test_v15_db_gains_the_table_without_touching_its_data(self):
+    def test_a_db_from_before_the_table_gains_it_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "v15.db"
+            db = Path(tmp) / "old.db"
             conn = connect(db)
             conn.execute(
                 "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
                 "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
-            conn.execute("DROP TABLE clip_embeddings")
-            # F130: a v15 DB is one that predates every later column too, and the
-            # migration for the next version adds this one to a v15 table. Leaving it in
-            # place would make the fixture a shape no released version ever had, and the
-            # migration would fail on a duplicate column instead of on anything real.
-            conn.execute("ALTER TABLE frame_quality DROP COLUMN pet_vlm")
-            conn.execute("ALTER TABLE frame_quality DROP COLUMN junk_score")  # F140, v20
-            conn.execute("PRAGMA user_version = 15")
+            # F130: a database from before this table predates every LATER column too, and
+            # the migrations that add those columns run on it. Leaving one in place would
+            # make the fixture a shape no released version ever had, and the migration
+            # would fail on a duplicate column instead of on anything real — which is why
+            # the rollback is shared (tests/schema_history.py) rather than written here.
+            roll_back_before(conn, "clip_embeddings")
             conn.commit()
             conn.close()
 
