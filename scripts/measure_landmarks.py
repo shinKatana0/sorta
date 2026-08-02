@@ -49,6 +49,19 @@ after seeing the table is not a bar. The same pass also prints the size of the
 uncertainty band per threshold, which is the number phase 1 would need to pick a lower
 `naming.landmark_threshold` from.
 
+The run said go (2026-08-02, 104 frames: zero wrong proposals confirmed by either form,
+92% accuracy on the naming one against 78% on the verification one), and phase 1 shipped
+that naming question as `features.landmarks_verify`. Two things follow for this script.
+The naming half is now IMPORTED from the stage rather than owned here, so a re-run prices
+the question the pipeline really asks. And the re-run is owed: only 24 of the 64 wrong
+proposals in the deciding pass were hard ones — a specific wrong city rather than a scene
+from a country the list does not cover — which is a small sample to rest a feature on.
+The hard negatives are collected by lowering the threshold in a TEMPORARY copy of the
+config (`--probe-band-min` changes the printed table only, not the sample):
+
+    python scripts/measure_landmarks.py --config <copy with landmark_threshold: 0.50> \
+        --probe --probe-frames 40 --probe-pool 800
+
 Privacy: the report is counts only. No path, no file id and no basename reaches the
 output — the rule of measure_ocr_gate.py and measure_vlm_resolution.py before it.
 
@@ -63,7 +76,6 @@ from __future__ import annotations
 import argparse
 import os
 import random
-import re
 import sqlite3
 import sys
 from collections import Counter, defaultdict
@@ -79,16 +91,22 @@ from sorta import i18n, imaging  # noqa: E402
 from sorta.config import load_config  # noqa: E402
 from sorta.geodata import GeoResolver  # noqa: E402
 from sorta.landmarks import (  # noqa: E402
+    LANDMARK_MAX_NEW_TOKENS,
+    LANDMARK_NAMING_PROMPT,
     Landmark,
     LandmarkStats,
+    _answer_words,
     _corroborate,
     _folder_hints,
     _Match,
     _parent_dir,
     batched,
     clip_classifier,
+    landmark_phrase,
     landmark_prompts,
     load_landmarks,
+    match_named_landmark,
+    vlm_landmark_asker,
 )
 from sorta.naming import naming_settings  # noqa: E402
 
@@ -130,16 +148,20 @@ PROBE_GROUPS = (GROUP_CONFIRMED, GROUP_REJECTED, GROUP_FOREIGN)
 # The two question forms of the brief. Verification is what a cascade would really run —
 # CLIP proposes, the model checks — and naming is the control: a model that cannot name
 # the place it is looking at cannot be checking it either, it is only agreeing.
+#
+# The run decided between them (naming, by a factor of two on the right proposals in all
+# three passes), so the naming half is no longer the script's own: phase 1 took the
+# prompt into the stage and this imports it back. A private copy would have let the two
+# drift, and then this script would be measuring a question the pipeline does not ask —
+# the same rule that makes the corroboration below an import rather than a reimplementation.
 FORM_VERIFY = "verify"
 FORM_NAMING = "naming"
 VERIFY_PROMPT = ("Look at the photo. Was this photo taken at {place}? "
                  "Answer with exactly one word: yes or no.")
-NAMING_PROMPT = ("Look at the photo. If it shows a famous landmark or a well-known "
-                 "place, answer with the name of that place and nothing else. "
-                 "If it does not, answer with exactly one word: none.")
+NAMING_PROMPT = LANDMARK_NAMING_PROMPT
 # Long enough for "no, this is not ..." and short enough that a chatty model cannot turn
 # the pass into a text generation benchmark.
-PROBE_MAX_NEW_TOKENS = 16
+PROBE_MAX_NEW_TOKENS = LANDMARK_MAX_NEW_TOKENS
 
 # What the naming form did with one frame.
 NAMED_PROPOSED = "proposed"   # it named the landmark CLIP proposed
@@ -168,32 +190,15 @@ VERDICT_GO = "ИДТИ В ФАЗУ 1"
 VERDICT_CLOSE = "ЗАКРЫТЬ ФИЧУ"
 VERDICT_UNCLEAR = "ВЕРДИКТА НЕТ"
 
-# The landmark list writes its names in the interface language, so the English wording of
-# a place comes from the CLIP prompt instead: asking a 3B model about «Карлов мост» would
-# measure its Russian rather than its geography.
-_PHOTO_PREFIX_RE = re.compile(r"^\s*(?:a|an|the)\s+photo\s+of\s+", re.IGNORECASE)
-_NON_LETTER_RE = re.compile(r"[^a-z]+")
-# Words that carry no place: articles, prepositions and the wording of the prompt itself.
-# The KIND of a place ("bridge", "tower") is deliberately NOT here — two landmarks
-# sharing one is exactly what the uniqueness rule in match_named_landmark is for.
-_STOPWORDS = frozenset({"a", "an", "the", "of", "in", "and", "at", "photo", "s"})
+# The wording of a place, the word splitter and the reader of a free-form answer all
+# live in the stage now (phase 1) and are imported above — `landmark_phrase`,
+# `_answer_words`, `match_named_landmark`. Only the verification form is still the
+# script's own: it lost the measurement, so the pipeline does not ask it and has no
+# reason to carry it, while re-running the comparison is exactly what this script is for.
+_words = _answer_words
 
 AskVerifyFn = Callable[[str, Landmark], str]   # (path, proposed landmark) -> the answer
 AskNamingFn = Callable[[str], str]             # (path) -> the answer
-
-
-def landmark_phrase(landmark: Landmark) -> str:
-    """The English wording of a landmark for the question ("the Charles Bridge in Prague")."""
-    return _PHOTO_PREFIX_RE.sub("", landmark.prompt).strip() or landmark.name
-
-
-def _words(text: str) -> str:
-    """Lowercased text with every non-letter run turned into an underscore, and padded.
-
-    So a keyword is looked for as `_word_` and cannot match inside another one — "no"
-    must not be found in "not", and "york" must not be found in "yorkshire".
-    """
-    return "_" + _NON_LETTER_RE.sub("_", (text or "").lower()).strip("_") + "_"
 
 
 def parse_yes_no(answer: str) -> bool | None:
@@ -211,70 +216,29 @@ def parse_yes_no(answer: str) -> bool | None:
     return no < 0 or 0 <= yes < no
 
 
-def _content_words(landmark: Landmark) -> tuple[str, ...]:
-    """The words of a landmark's English wording that could name a place."""
-    return tuple(dict.fromkeys(
-        word for word in _words(landmark_phrase(landmark)).strip("_").split("_")
-        if word and word not in _STOPWORDS))
-
-
-def match_named_landmark(answer: str, landmarks: Sequence[Landmark]) -> int | None:
-    """A free-form answer -> the index of the landmark it names, or None.
-
-    A landmark counts as named when the answer carries its city, or a word that belongs
-    to it ALONE in this list ("eiffel", "colosseum"), or at least two of its words. The
-    uniqueness is computed against the list in hand rather than from a private word
-    list: "bridge" is evidence in a list with one bridge in it and none at all in a list
-    with two, and hard-coding either answer would make the probe wrong on the day
-    somebody adds a landmark. Ties go to the landmark that matched more words, then to
-    list order.
-    """
-    text = _words(answer)
-    words = [_content_words(lm) for lm in landmarks]
-    seen = Counter(word for group in words for word in set(group))
-    best: int | None = None
-    best_score = 0
-    for i, landmark in enumerate(landmarks):
-        hits = [word for word in words[i] if f"_{word}_" in text]
-        city = _words(landmark.city)
-        city_hit = len(city) > 2 and city in text
-        if not (city_hit or len(hits) >= 2 or any(seen[word] == 1 for word in hits)):
-            continue
-        score = len(hits) + (1 if city_hit else 0)
-        if score > best_score:
-            best, best_score = i, score
-    return best
-
-
 def question_askers(describe: Callable[[Sequence[Any], str, int], str],
                     max_edge: int) -> tuple[AskVerifyFn, AskNamingFn]:
     """The two question forms over an ALREADY LOADED runtime (naming.shared_vlm).
 
-    The decode goes through the shared preview cache — Unicode/HEIC-safe, the same frame
-    every other stage sees. A frame that will not decode gets an empty answer, which
+    The naming half IS the stage's asker (`vlm_landmark_asker`), not a copy of it: a
+    re-measurement has to price the question the pipeline really asks, down to the decode.
+    The verification half is built the same way here — the shared preview cache,
+    Unicode/HEIC-safe — and a frame that will not decode gets an empty answer, which
     parses to "the model did not say" instead of to a confirmation.
     """
-    def frame(path: str) -> Any:
+    def verify(path: str, landmark: Landmark) -> str:
         try:
             st = os.stat(path)
         except OSError:
-            return None
-        return imaging.decode_rgb_preview(path, st.st_mtime, st.st_size, max_edge=max_edge)
-
-    def verify(path: str, landmark: Landmark) -> str:
-        image = frame(path)
+            return ""
+        image = imaging.decode_rgb_preview(path, st.st_mtime, st.st_size,
+                                           max_edge=max_edge)
         if image is None:
             return ""
         return describe([image], VERIFY_PROMPT.format(place=landmark_phrase(landmark)),
                         PROBE_MAX_NEW_TOKENS)
 
-    def naming(path: str) -> str:
-        image = frame(path)
-        if image is None:
-            return ""
-        return describe([image], NAMING_PROMPT, PROBE_MAX_NEW_TOKENS)
-
-    return verify, naming
+    return verify, vlm_landmark_asker(describe, max_edge)
 
 
 @dataclass(frozen=True)

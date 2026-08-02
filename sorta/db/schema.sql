@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 19;
+PRAGMA user_version = 20;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -209,6 +209,34 @@ CREATE TABLE IF NOT EXISTS group_keeper (
     keeper_id INTEGER NOT NULL REFERENCES files(id),
     source TEXT NOT NULL,                 -- sharpness | vlm#<prompt fingerprint>
     updated_at TEXT NOT NULL
+);
+
+-- v20 (F131): what the local VLM answered about a landmark CLIP proposed.
+--
+-- The stage writes ONLY into `places`, and only when a match survives; a proposal it
+-- threw away used to leave no trace at all. That cost twice over. A rejected frame stays
+-- `confidence='unknown'`, so the next run selects it again, proposes the same landmark
+-- again and pays for the same VLM question again (the F130 loss, in a stage where one
+-- question is ~0.8 s). And the SCORE that produced the proposal was nowhere either, which
+-- is why the size of the uncertainty band could not be answered with a query and had to
+-- be re-measured by `scripts/measure_landmarks.py --probe`.
+--
+-- One row per (file, proposed landmark): the question asked is about that pair, and CLIP
+-- proposing a different landmark next time is a different question rather than a stale
+-- answer. `model` carries the runtime AND the fingerprint of the question ("<model>#<8
+-- hex>"), the group_keeper device above — editing the prompt has to invalidate the
+-- answers it produced, and nobody should have to remember to empty a table by hand.
+--
+-- NOT a place: this table never decides where a file goes. It records what was asked and
+-- what came back; F75 corroboration still has the last word over every confirmation.
+CREATE TABLE IF NOT EXISTS landmark_checks (
+    file_id INTEGER NOT NULL REFERENCES files(id),
+    landmark TEXT NOT NULL,               -- the proposed landmark's name, as in the list
+    score REAL,                           -- the CLIP probability that proposed it
+    verdict TEXT NOT NULL,                -- confirmed | rejected
+    model TEXT NOT NULL,                  -- <vlm model>#<prompt fingerprint>
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (file_id, landmark)
 );
 
 -- v7 (U3): user decisions on near-duplicates from the web app (sorta ui).

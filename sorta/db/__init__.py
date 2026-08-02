@@ -61,6 +61,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v19 (group_keeper, F132) — a new table, created by executescript below.
     # The third renumbering of the day, for the same reason. F124/F130/F132 all took the
     # next free number their own main showed them; only the merge order can decide.
+    # v20 (landmark_checks, F131) — a new table, created by executescript below.
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
