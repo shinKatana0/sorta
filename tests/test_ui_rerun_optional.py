@@ -2,7 +2,11 @@
 
 Re-running the SELECTED over an already-built index: faces (with faces), events
 (with events), junk with the VLM (with deep) — without index/geo/landmarks/phash.
-The same stage-mocking trick as in test_ui_process.py (patch_fast_stages)."""
+The same stage-mocking trick as in test_ui_process.py (patch_fast_stages).
+
+F135 removed the BUTTON that used to call this, and deliberately not the route: it is
+in the API documentation and can be called from outside. So every expectation below is
+the F62/F63 one, untouched — only the markup class at the bottom changed sides."""
 from __future__ import annotations
 
 import threading
@@ -203,34 +207,14 @@ class TestRerunOptionalBlockedDuringSort(SortBlockingTestBase):
 
 
 class TestRerunOptionalHtml(ProcessTestBase):
-    def test_button_in_rerun_block_and_disabled_by_default(self):
-        # F63: the button + its hint are moved into a separate column block
-        # (.process-rerun-block), not the horizontal .process-actions row.
+    def test_the_page_no_longer_carries_the_button(self):
+        # F135: the button is gone, the ROUTE is not. Everything above this class
+        # still passes unchanged — that is the point of keeping this test here.
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="process-rerun-optional-btn"', html)
-        self.assertIn('class="process-rerun-block"', html)
-        block_pos = html.index('class="process-rerun-block"')
-        rerun_pos = html.index('id="process-rerun-optional-btn"')
-        self.assertLess(block_pos, rerun_pos)  # the button is inside the re-run block
-        # disabled by default (the faces/events/deep checkboxes are cleared at start)
-        btn_tag_end = html.index(">", rerun_pos)
-        self.assertIn("disabled", html[rerun_pos:btn_tag_end])
-
-    def test_i18n_ru_en_ja(self):
-        self.start_server()
-        _status, body, _ctype = self.get("/?lang=ru")
-        html = body.decode("utf-8")
-        self.assertIn("Дозапустить выбранное", html)
-
-        _status, body, _ctype = self.get("/?lang=en")
-        html = body.decode("utf-8")
-        self.assertIn("Re-run selected", html)
-
-        _status, body, _ctype = self.get("/?lang=ja")
-        html = body.decode("utf-8")
-        self.assertIn("選択項目を再実行", html)
+        self.assertNotIn("process-rerun-optional-btn", html)
+        self.assertNotIn("process-rerun-block", html)
 
     def test_no_external_resources(self):
         self.start_server()
@@ -239,53 +223,6 @@ class TestRerunOptionalHtml(ProcessTestBase):
         self.assertNotIn("http://", html)
         self.assertNotIn("https://", html)
         self.assertNotIn("<link", html)
-
-
-class TestRerunOptionalJs(ProcessTestBase):
-    def test_change_listeners_wired_to_all_three_checkboxes(self):
-        self.start_server()
-        _status, body, _ctype = self.get("/")
-        html = body.decode("utf-8")
-        self.assertIn("updateRerunSelectedDisabled", html)
-        # button availability depends on faces/events/deep — deep is in the list too
-        self.assertIn('"process-faces-checkbox", "process-events-checkbox", '
-                      '"process-deep-checkbox"', html)
-        self.assertIn('.addEventListener("change", updateRerunSelectedDisabled)', html)
-
-    def test_click_handler_posts_rerun_optional_endpoint_with_deep(self):
-        self.start_server()
-        _status, body, _ctype = self.get("/")
-        html = body.decode("utf-8")
-        self.assertIn(
-            'document.getElementById("process-rerun-optional-btn").addEventListener('
-            '"click", function () {', html)
-        # F123: `pets` rides in the same body — it re-runs the same junk stage.
-        self.assertIn('postJson("/api/process/rerun-optional",\n'
-                      '             { faces: faces, events: events, deep: deep, '
-                      'pets: pets })', html)
-
-    def test_current_process_stages_set_to_selected_on_rerun_click(self):
-        self.start_server()
-        _status, body, _ctype = self.get("/")
-        html = body.decode("utf-8")
-        self.assertIn("filterRerunStages", html)
-        self.assertIn(
-            "currentProcessStages = filterRerunStages(faces, events, deep, pets);", html)
-
-
-class TestRerunOptionalHintPlacement(ProcessTestBase):
-    def test_hint_in_rerun_block_below_actions_not_inside_flex_row(self):
-        # F63: the hint — in the column block under the re-run button, after the
-        # horizontal .process-actions row (not inline between the buttons).
-        self.start_server()
-        _status, body, _ctype = self.get("/")
-        html = body.decode("utf-8")
-        self.assertIn('class="process-rerun-hint"', html)
-        actions_close = html.index("</div>", html.index('class="process-actions"'))
-        hint_pos = html.index('class="process-rerun-hint"')
-        rerun_pos = html.index('id="process-rerun-optional-btn"')
-        self.assertLess(actions_close, hint_pos)   # the hint after the actions row
-        self.assertLess(rerun_pos, hint_pos)       # and after the button itself (in its block)
 
 
 if __name__ == "__main__":

@@ -209,6 +209,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **One run button instead of two** (F135). The "Process" tab offered "Start" and
+  "Re-run selected" side by side, and the second one bought exactly three stages —
+  `index` (34 s), `geo` (3 s) and `landmarks` (139 s) on the 380 GB validation run,
+  about three minutes — in exchange for a permanent fork in the road: which of the two
+  is the right button this time. Everything else was already skipped by the stages
+  themselves (`junk` by the prompt fingerprint, `faces` by the marker, `events` by
+  composition). So "Start" is the whole pipeline again and the stages skip what is done,
+  which is what they were built to do. Two things make that an improvement rather than
+  three minutes saved for a worse tab. The **source comes back by itself**: the status
+  snapshot carries the path of the last run, and an empty field is filled from it — the
+  browser's own memory covers a page reload, this covers a fresh profile against a live
+  server, and between them a repeat run never means typing a path again. And the run now
+  **says what it skipped**: the stages that can tell new work from work they recognised
+  as already done — `index` and `junk` — report `processed`/`skipped` into the status,
+  and the finished run prints a line per stage, the same pair the CLI has always printed.
+  Without it a run that correctly skipped everything is indistinguishable from a run that
+  did nothing, which is the reading the second button existed to avoid. The checkboxes
+  are unchanged: unticked still means the stage does not run at all. `POST
+  /api/process/rerun-optional` **keeps working** and its tests are untouched — it is in
+  the API documentation and callable from outside, and retiring a public route is a
+  decision of its own, not a side effect of tidying up the markup.
 - **`sort`, `album`, `geo` and `ui` speak the configured language** (F118). F112 moved
   the CLI's output into the i18n catalog and reached `cli.py` only: `sorter.py` printed
   its plan summary, its in-place and `--move` warnings and its blocked-multi notice in
