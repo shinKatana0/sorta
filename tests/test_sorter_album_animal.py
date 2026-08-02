@@ -1,7 +1,9 @@
 """F123: the animal album — `sorter.plan_album(kind='animal')`.
 
-The slice is the whole feature: canonical, readable files whose `frame_quality.pet`
-carries a verdict. There is nothing to select inside it, so the selector is accepted and
+The slice is the whole feature: canonical, readable files the frame-quality stage's stored
+scores make animals (F137 — the thresholds come from the config the call is handed, so it
+is `pet_score` and not the `pet` label the fixture below is really setting). There is
+nothing to select inside it, so the selector is accepted and
 ignored; everything else (dry-run semantics, the journal-before-the-operation invariant,
 `_resolve_dst` on a repeat gather) is inherited from F34/F97 and pinned here for the new
 kind, because inheritance that is not checked is a plan, not a property.
@@ -26,7 +28,9 @@ class AnimalAlbumTestBase(SorterTestBase):
         """A `frame_quality` row as the junk stage writes it (F113/F122).
 
         `pet=None` with a score is the frame that was ASKED about and did not clear
-        `features.pet_threshold` — the case the slice has to leave out.
+        `features.pet_threshold` — the case the slice has to leave out. What decides that
+        since F137 is the score itself (0.9 clears the 0.70 default, 0.4 does not); the
+        label is written alongside it exactly as the stage writes it, and read by nobody.
         """
         self.conn.execute(
             """INSERT INTO frame_quality (file_id, sharpness, pet, pet_score, source,

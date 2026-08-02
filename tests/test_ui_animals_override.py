@@ -6,7 +6,7 @@ Three properties, in the order they matter:
   single writer, so the next `junk` run cannot quietly undo the user;
 * a corrected frame stays VISIBLE on the tab, marked as decided by hand. A card that
   vanishes moves the counter for no reason a reader can see and takes the undo with it;
-* the tab, the counter and the album read ONE rule (`sorter.ANIMAL_IDS_SQL`). The case
+* the tab, the counter and the album read ONE rule (`sorter.animal_ids_sql`). The case
   that pins this is the one with both directions of correction present at once: two
   expressions of that rule would disagree there first.
 """

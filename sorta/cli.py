@@ -1077,14 +1077,14 @@ def build_app(lang: Lang) -> typer.Typer:
         if copy and move:
             raise typer.BadParameter(
                 _t("cli.album.copy_move_exclusive", _lang_of(config)))
-        # F127: `animal` is the one slice with nothing to select INSIDE it — the
-        # collection has a single animal view — so there the selector is optional and
-        # `sorta album animal --dest ...` is the whole command. For a person and an
-        # event it is the subject itself — and for a query (F129) it is the words — so a
-        # missing one has to be an error here, said out loud, rather than an album
-        # quietly gathered from something else.
-        # F152: the face slices join `animal` in that list, hence the shared constant —
-        # the rule is a property of the kinds and belongs where they are declared.
+        # F127: a slice with nothing to select INSIDE it takes no selector — the
+        # collection has a single animal view, and since F139 a single products bucket
+        # and a single blurred list — so there `sorta album <kind> --dest ...` is the
+        # whole command. For a person and an event the selector is the subject itself —
+        # and for a query (F129) it is the words — so a missing one has to be an error
+        # here, said out loud, rather than an album quietly gathered from something else.
+        # F152: the face slices join that list too, hence the shared constant — the rule
+        # is a property of the kinds and belongs where they are declared.
         if kind not in SELECTORLESS_ALBUM_KINDS and not (selector or "").strip():
             raise typer.BadParameter(
                 _t("cli.album.selector_required", _lang_of(config)))

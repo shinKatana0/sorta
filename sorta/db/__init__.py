@@ -1,11 +1,42 @@
 """SQLite connection and schema application."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from importlib.resources import files
 from pathlib import Path
 
 SCHEMA = files("sorta.db").joinpath("schema.sql").read_text(encoding="utf-8")
+
+_USER_VERSION_PRAGMA = re.compile(r"^\s*PRAGMA\s+user_version\s*=\s*(\d+)\s*;", re.MULTILINE)
+
+
+def _declared_version(schema: str) -> int:
+    """The schema version, read off the schema itself.
+
+    The number is written ONCE, in `schema.sql`, where `executescript` applies it to the
+    database; everything that has to know it reads `SCHEMA_VERSION` instead of repeating
+    the literal. It used to be repeated in every test that checks a migration, and the
+    version is the one thing parallel features cannot settle between themselves: F124,
+    F132 and F131 each raised it, and each had to chase the same number through five or
+    six test files — the last of them with the RIGHT number and still red, because the
+    literals that broke belonged to its NEIGHBOURS' tests, which compare a fresh database
+    against a hard-coded figure.
+
+    A missing or duplicated PRAGMA is an error rather than a default: a second one would
+    be a second source of truth, and silently guessing 0 would make every migration run
+    against a database that claims to predate the schema.
+    """
+    found = _USER_VERSION_PRAGMA.findall(schema)
+    if len(found) != 1:
+        raise RuntimeError(
+            "schema.sql must declare `PRAGMA user_version = N` exactly once, "
+            f"found {len(found)}"
+        )
+    return int(found[0])
+
+
+SCHEMA_VERSION = _declared_version(SCHEMA)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

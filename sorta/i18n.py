@@ -48,6 +48,11 @@ FOLDER_KEYS: tuple[str, ...] = (
     "products",
     "to_delete",
     "animals",
+    "screenshots",
+    "memes",
+    "blurred",
+    "eyes_closed",
+    "no_subject",
     "people",
     "group_photos",
     "portraits",
@@ -74,9 +79,18 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     # itself after (unlike a person or an event), so the name is a folder name like any
     # other the layout creates — and follows `language:` for the same reason.
     "animals": {"ru": "_Животные", "en": "_Animals", "ja": "_動物"},
+    # F139: the default folder of the remaining slices, for the same reason as
+    # `animals` — none of them has a selector to name itself after. `products` above is
+    # reused by the product album rather than duplicated: the folder the layout files
+    # that bucket into and the album a person gathers by hand are one name.
+    "screenshots": {"ru": "_Скриншоты", "en": "_Screenshots", "ja": "_スクリーンショット"},
+    "memes": {"ru": "_Мемы", "en": "_Memes", "ja": "_ミーム"},
+    "blurred": {"ru": "_Размытые", "en": "_Blurred", "ja": "_ぼやけ"},
+    "eyes_closed": {"ru": "_Закрытые_глаза", "en": "_Closed_eyes", "ja": "_目を閉じた"},
+    "no_subject": {"ru": "_Без_сюжета", "en": "_No_subject", "ja": "_被写体なし"},
     # F152: the three face slices have no selector either — the collection holds exactly
     # one of each — so their album folders are named the same way the animal one is.
-    # "People" here is the question "is there a person in this frame", not "who is it":
+    # "People" here is the question "is there a face in this frame", not "who is it":
     # a named person's album is still called after the person.
     "people": {"ru": "_С людьми", "en": "_With people", "ja": "_人物あり"},
     "group_photos": {"ru": "_Групповые", "en": "_Group photos", "ja": "_集合写真"},
@@ -640,16 +654,19 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # F127: only `animal` has nothing to select inside it. For a person and an event the
     # selector IS the subject, so its absence is an error and never "the whole slice".
     # F129: and for a query it is the words themselves, which makes it the subject too.
+    # F139: the class and quality slices join `animal` — the collection holds exactly one
+    # products bucket and exactly one blurred list, so there is nothing to select there.
     "cli.album.selector_required": {
         "ru": "альбому person/event/query нужен селектор: имя человека, имя или id "
-              "события либо слова запроса. Без селектора собирается только "
-              "`sorta album animal`",
+              "события либо слова запроса. Срезы animal, product, screenshot, meme, "
+              "blurred, eyes_closed и no_subject собираются без селектора",
         "en": "a person/event/query album needs a selector: a person's name, an event's "
-              "name or id, or the words to search for. Only `sorta album animal` is "
-              "gathered without one",
+              "name or id, or the words to search for. The animal, product, screenshot, "
+              "meme, blurred, eyes_closed and no_subject slices are gathered without one",
         "ja": "person/event/query のアルバムにはセレクタが必要です: 人物の名前、"
-              "イベントの名前か id、または検索する語。セレクタなしで作成できるのは "
-              "`sorta album animal` だけです",
+              "イベントの名前か id、または検索する語。animal・product・screenshot・"
+              "meme・blurred・eyes_closed・no_subject のスライスはセレクタなしで"
+              "作成できます",
     },
     # F129: search by words — the engine's two refusals and the sentence that closes a
     # result list. The hit lines themselves carry no words in any language (a rank, a
@@ -1160,26 +1177,31 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # album
     "cli.help.album": {
-        "ru": "Выгрузить срез (человека/события/животных/запроса/лиц) в отдельную папку. "
-              "По умолчанию — hardlink, dry-run.",
-        "en": "Export a slice (a person/an event/the animals/a query/the faces) into a "
-              "separate folder. By default — hardlink, dry run.",
-        "ja": "スライス（人物・イベント・動物・問い合わせ・顔）を別のフォルダに"
+        "ru": "Выгрузить срез (человека/события/животных/запроса/класса/качества/лиц) "
+              "в отдельную папку. По умолчанию — hardlink, dry-run.",
+        "en": "Export a slice (a person/an event/the animals/a query/a class/a quality "
+              "slice/the faces) into a separate folder. By default — hardlink, dry run.",
+        "ja": "スライス（人物・イベント・動物・問い合わせ・分類・画質・顔）を別のフォルダに"
               "書き出します。デフォルトはハードリンクの dry-run です。",
     },
     "cli.help.album.kind": {
-        "ru": "person | event | animal | query | people | group | portrait",
-        "en": "person | event | animal | query | people | group | portrait",
-        "ja": "person | event | animal | query | people | group | portrait",
+        "ru": "person | event | animal | query | product | screenshot | meme | "
+              "blurred | eyes_closed | no_subject | people | group | portrait",
+        "en": "person | event | animal | query | product | screenshot | meme | "
+              "blurred | eyes_closed | no_subject | people | group | portrait",
+        "ja": "person | event | animal | query | product | screenshot | meme | "
+              "blurred | eyes_closed | no_subject | people | group | portrait",
     },
     "cli.help.album.selector": {
-        "ru": "имя человека / имя или id события / слова запроса; для animal, people, "
-              "group и portrait не нужен — такой срез в коллекции один",
+        "ru": "имя человека / имя или id события / слова запроса; для animal, срезов "
+              "класса и качества, people, group и portrait не нужен — такой срез в "
+              "коллекции один",
         "en": "a person's name / an event's name or id / the words to search for; not "
-              "needed for animal, people, group and portrait — the collection has a "
-              "single slice of each",
-        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal・people・"
-              "group・portrait では不要です — コレクションにそれぞれ 1 つだけです",
+              "needed for animal, a class/quality slice, people, group or portrait — "
+              "the collection has a single slice of each",
+        "ja": "人物の名前 / イベントの名前または id / 検索する語。animal・分類・画質・"
+              "people・group・portrait では不要です — そのスライスはコレクションに"
+              " 1 つだけです",
     },
     "cli.help.album.dest": {
         "ru": "Куда выгрузить альбом",

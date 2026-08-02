@@ -95,11 +95,14 @@ from typing import Callable, Sequence
 from urllib.parse import quote
 
 from . import i18n, imaging
-from .config import Config
+from .config import Config, FeaturesConfig
 from .dedup import near_duplicate_groups
 from .geodata import GeoResolver
 from .hashing import file_hash
 from .indexer import excludes_path, load_excludes
+# F137: the one constant of the read rule that belongs to the stage that writes it —
+# spelling 'real' a second time here is how the two halves start meaning different things.
+from .junk import PET_VLM_REAL
 from .search import TextEncoder, search_text
 
 _log = logging.getLogger(__name__)
@@ -1738,27 +1741,79 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 # nothing in absolute terms, so the album is a sample to look through, not a claim that
 # each of its frames holds a cake. Everything else about it is an album like any other.
 #
-# F152: `people`, `group` and `portrait` are the opposite of `query` in exactly the way
-# that matters here. They are read straight off the `faces` table, which was filled by a
-# detector, so membership is a FACT and not an estimate: either a box was found on this
-# frame or it was not. See FACE_SLICES below for the three rules.
-ALBUM_KINDS = ("person", "event", "animal", "query", "people", "group", "portrait")
-# The kinds with nothing to select INSIDE them: the collection holds exactly one of each,
-# so an empty selector is the correct call and not a client that lost its subject. Written
-# down here because both places that ask the question are outside this module — the web
-# app's album validator and the CLI — and the answer is a property of the kinds.
-SELECTORLESS_ALBUM_KINDS = ("animal", "people", "group", "portrait")
+# F139: the rest of the slices the interface already draws. Nothing about them needed
+# inventing — the engine has gathered any slice into a folder since F34, and products,
+# screenshots, memes, blurred frames, closed eyes and "no subject" were left with a
+# counter and a delete button only because their views arrived after the album did.
+#
+# The class slices are one `media_class.verdict` each, over the same canonical, readable
+# population every other counter uses — so the album and the bucket's counter are the
+# same number by construction. `document` is deliberately absent from the tuple, and it
+# is a config question rather than a constant: `vlm.exclude_classes` (F133) already means
+# "this class is private", and the guard in `plan_album` reads that key, so a class moved
+# INTO it loses its album along with its preview instead of keeping one of the two.
+CLASS_ALBUM_KINDS = ("product", "screenshot", "meme")
+
+# The quality slices of the "Review" workspace (F126). They select on `frame_quality`,
+# and `blurred` selects through the SAME window the workspace lists — see
+# `quality_slice_where`.
+QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed", "no_subject")
+
+# F152: `people`, `group` and `portrait` are read straight off the `faces` table, which a
+# detector filled — so membership is a FACT about boxes, not an estimate. What that fact
+# is worth was measured afterwards on 500 labelled frames: 77% of the frames a person
+# calls "people" and 64% of "children". The ceiling is the detector, not a threshold, and
+# the wording in the interface says "a face was found" rather than "your photos of
+# people". See FACE_SLICES below for the three rules.
+FACE_ALBUM_KINDS = ("people", "group", "portrait")
+
+ALBUM_KINDS = (("person", "event", "animal", "query")
+               + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS + FACE_ALBUM_KINDS)
 ALBUM_MODES = ("link", "copy", "move")
 
+# The kinds with nothing to select INSIDE them: the collection has exactly one animal
+# view, one products bucket, one blurred list. An empty selector is accepted for these
+# (and only for these — for a person, an event or a query it is the subject itself, and
+# gathering "everything" would be the wrong answer to a client that lost it).
+SELECTORLESS_ALBUM_KINDS = (("animal",) + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS
+                            + FACE_ALBUM_KINDS)
+
+# The default album name of a slice that cannot name itself after a selector: a folder
+# name like any other the layout creates, so it comes from the catalog and follows
+# `language:`. `product` reuses the `products` folder the city layout already files that
+# bucket into — the album a person gathers by hand and the folder the plan builds should
+# not be two differently named things.
+ALBUM_FOLDER_KEYS = {
+    "animal": "animals",
+    "product": "products",
+    "screenshot": "screenshots",
+    "meme": "memes",
+    "blurred": "blurred",
+    "eyes_closed": "eyes_closed",
+    "no_subject": "no_subject",
+}
+
 # F124: THE rule for "is there an animal in this frame", written down once. The user's
-# verdict (`manual_pet`, they looked at the frame) outranks the model's
-# (`frame_quality.pet`, it looked at the frame), and COALESCE keeps the automatic answer
-# wherever no manual row exists — a file nobody has touched behaves exactly as it did
-# before this feature.
+# verdict (`manual_pet`, they looked at the frame) outranks the model's (it looked at the
+# frame), and COALESCE keeps the automatic answer wherever no manual row exists — a file
+# nobody has touched behaves exactly as it did before this feature.
 #
 # The rule is applied WHEN READ, never when written: `junk` still recomputes
-# `frame_quality` from scratch on every run and knows nothing about this table, which is
+# `frame_quality` from scratch on every run and knows nothing about `manual_pet`, which is
 # precisely why a manual mark survives a change of model, of prompts or of the threshold.
+#
+# F137 takes the automatic half the same way. It used to read `frame_quality.pet`, the
+# label the last run happened to write — with the thresholds that run happened to have.
+# The thresholds are deliberately NOT part of `quality_prompt_fingerprint` (they are what
+# the stored scores exist to be re-chosen with, and hashing them would send sharpness,
+# CLIP and the VLM round again on every edit), so a threshold that moved left the database
+# behind without a word: the live archive kept 966 animals selected at a 0.30 candidate
+# gate long after the gate went back to 0.50, where the stored answers say 848.
+#
+# So the label is DERIVED here, out of what the stage stores — `pet_score` and `pet_vlm` —
+# and out of the thresholds the caller's config holds right now. `frame_quality.pet` is
+# still written and is still the column to grep a database by, but nothing reads it to
+# decide anything; a consumer that did would reopen the same gap somewhere else.
 #
 # Both joins are LEFT joins, and that is not decoration: a frame the user marked as an
 # animal need not have a `frame_quality` row at all (the stage never reached it), and it
@@ -1766,14 +1821,92 @@ ALBUM_MODES = ("link", "copy", "move")
 #
 # A SELECT of ids rather than a CTE, because it has to compose in two places — the album
 # query already opens with the recursive `_CTE`, and the tab needs the same rule inside a
-# SELECT list. It takes no parameters, so it can be interpolated into either. The one
-# consumer outside this module is ui.py (the "Animals" tab and the Overview counter):
-# two independent spellings of this expression would drift, and the day they did the
-# counter, the tab and the album would each report a different collection.
-ANIMAL_IDS_SQL = """SELECT af.id FROM files af
+# SELECT list. It binds no parameters (the thresholds are interpolated as the floats they
+# are, the way F129 interpolates its ids), so it drops into either without disturbing the
+# positional parameters around it. The one consumer outside this module is ui.py (the
+# "Animals" tab and the Overview counter): two independent spellings of this expression
+# would drift, and the day they did the counter, the tab and the album would each report
+# a different collection.
+
+
+def animal_auto_sql(features: FeaturesConfig, fq: str = "afq") -> str:
+    """The AUTOMATIC half of the animal rule — the F130 cascade as a SQL expression.
+
+    `junk.pet_label` is the same rule in Python and is what the stage writes with; this is
+    what every reader decides by. Two spellings of one rule, and they are kept side by side
+    on purpose: the stage labels one frame it has just scored, a reader answers "which
+    files" over a whole index, and a Python loop over 20 000 rows is not the shape of that
+    question.
+
+    The order is F130's and does not change: an answer from the model outranks the score
+    (0.95 and "a plush toy" is not an animal, 0.35 and "alive" is), and a frame it never
+    answered about falls back to `pet_score >= features.pet_threshold`.
+
+    What F137 adds is the gate the answer is read THROUGH: a stored answer counts only for
+    a frame the current `features.pet_candidate_threshold` would still show the model. It
+    is the same replay F130 chose that threshold with (the 0.30 → 0.50 rows of its table
+    are stored answers re-read at a higher gate, not a second pass), and without it the
+    candidate threshold would be the one setting that still needed a run to take effect —
+    the exact gap this feature closes. In a database whose answers came from the config now
+    in force the gate changes nothing: every frame that has an answer cleared it to get one.
+
+    `fq` is the alias of the `frame_quality` row in the caller's query. Every branch is
+    NULL-safe: a frame with no row at all (no score, no answer) is not an animal, which is
+    what the LEFT JOIN needs it to be rather than a NULL that COALESCE would swallow.
+    """
+    return (f"CASE WHEN {fq}.pet_vlm IS NOT NULL"
+            f" AND {fq}.pet_score >= {float(features.pet_candidate_threshold)!r}"
+            f" THEN {fq}.pet_vlm = '{PET_VLM_REAL}'"
+            f" ELSE COALESCE({fq}.pet_score >= {float(features.pet_threshold)!r}, 0) END")
+
+
+def animal_ids_sql(features: FeaturesConfig) -> str:
+    """The ids of the animal slice — the whole rule, manual verdict included."""
+    return f"""SELECT af.id FROM files af
     LEFT JOIN frame_quality afq ON afq.file_id = af.id
     LEFT JOIN manual_pet amp ON amp.file_id = af.id
-    WHERE COALESCE(amp.is_animal, afq.pet IS NOT NULL)"""
+    WHERE COALESCE(amp.is_animal, {animal_auto_sql(features)})"""
+
+# F139: the same idea as animal_ids_sql, for the three quality slices — the membership
+# rule written down ONCE, in terms of the aliases `f` (files), `fq` (frame_quality) and
+# `mc` (media_class), and read by both consumers: the album here and the "Review"
+# workspace in ui.py, which draws the list and its counter from it. Two spellings would
+# drift, and the day they did the chip, the list and the album would each report a
+# different set of frames — which is the one thing this feature must not do, because the
+# whole point of these slices is that the decision is taken by eye, on what was shown.
+#
+# Photographs only (F120: sharpness and open eyes mean nothing on a screenshot or a
+# receipt), canonical and readable.
+QUALITY_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
+                "JOIN media_class mc ON mc.file_id = f.id")
+QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
+
+# `eyes_open`/`has_subject` are `= 0` and never `IS NOT 1`: NULL there means "not asked"
+# (schema), and a frame nobody looked at must not be shown to a user as an answer.
+_QUALITY_MEMBER = {
+    "blurred": "fq.sharpness IS NOT NULL",
+    "eyes_closed": "fq.eyes_open = 0",
+    "no_subject": "fq.has_subject = 0",
+}
+
+
+def quality_slice_where(kind: str, blur_max: float | None) -> tuple[str, list[object]]:
+    """The WHERE of one quality slice + its parameters, against `QUALITY_FROM`.
+
+    `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
+    applies to that slice alone; None — no ceiling (the workspace's "show more", which
+    continues past the window). The window is a prefix of the same ordering, so
+    continuing past it neither repeats a frame nor skips one.
+
+    An album is ALWAYS gathered inside the window: the button collects what was shown,
+    and past the window sit thousands of frames nobody has looked at.
+    """
+    where = f"{QUALITY_POPULATION} AND {_QUALITY_MEMBER[kind]}"
+    params: list[object] = []
+    if kind == "blurred" and blur_max is not None:
+        where += " AND fq.sharpness < ?"
+        params.append(float(blur_max))
+    return where, params
 
 # --- F152: the face slices — three questions the `faces` table already answers ------
 #
@@ -1791,7 +1924,10 @@ ANIMAL_IDS_SQL = """SELECT af.id FROM files af
 # predicate that forgets to exclude it turns "photographs with people" into "every
 # photograph". This is F125's trap, spelled out again because it is the one way to get
 # this feature wrong.
-FACE_SLICES = ("people", "group", "portrait")
+# One tuple, two names: the album machinery needs the kinds before this section (they are
+# part of ALBUM_KINDS), and the slice rules need them here. An alias rather than a second
+# literal — two tuples of the same three strings drift the moment a fourth appears.
+FACE_SLICES = FACE_ALBUM_KINDS
 
 _REAL_FACE = "fa.bbox != '[]'"
 
@@ -1915,9 +2051,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     NULL) that have a face in a cluster whose merged_into chain root (F31, via the
     shared _CTE/_person_files) has label==selector (casefold).
     kind='event': selector — an event name OR id; the slice = the event(s)' event_files.
-    kind='animal' (F123): the slice = files with a `frame_quality.pet` verdict, corrected
-    by the user's own marks (F124, `ANIMAL_IDS_SQL` — the same expression the web app's
-    tab and counter read, never a second copy of it). The selector is not used — the
+    kind='animal' (F123): the slice = the files the frame-quality stage's stored scores
+    and answers make animals under the CURRENT thresholds (F137), corrected by the user's
+    own marks (F124, `animal_ids_sql` — the same expression the web app's tab and counter
+    read, never a second copy of it). The selector is not used — the
     collection has exactly one animal slice — and an empty string is accepted for it; the
     default album name is the localized `animals` folder.
     kind='query' (F129): selector — the words themselves; the slice = the top
@@ -1925,9 +2062,22 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     (search.py), and the default album name is the query. `encoder` is the CLIP text
     encoder and exists for the same reason `detect_landmarks` takes a classifier: the real
     one is loaded on demand, tests hand in a fake. It is ignored by every other kind.
-    kind='people'|'group'|'portrait' (F152): the slice = `face_slice_ids_sql` — a fact of
-    the `faces` table rather than an estimate. Like `animal` they take no selector (the
-    collection holds exactly one of each) and their default name is a localized folder.
+    kind in CLASS_ALBUM_KINDS (F139, `product`/`screenshot`/`meme`): the slice = the
+    frames the classifier filed under that verdict — `media_class.verdict = kind`, which
+    is what the bucket's counter counts, so the two cannot disagree. No selector; the
+    default album name is the class's folder from the catalog. A class listed in
+    `vlm.exclude_classes` is REFUSED here (ValueError): that key means "this class is
+    private" (F133) and a private bucket keeps its counter and gets neither a preview nor
+    an album — gathering somebody's passports into one folder in one click is exactly
+    what it exists to prevent.
+    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`/`no_subject`): the slice =
+    the "Review" workspace's flat list of that name (`quality_slice_where`, the shared
+    rule), blurred inside the `features.blur_review_max` window. No selector; the default
+    album name comes from the catalog.
+    kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
+    `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
+    fact that covers 77% of what a person would call a photo of people (measured). Like
+    `animal` they take no selector and their default name is a localized folder.
     where (opt.) reuses parse_where as an additional AND condition on top of the slice
     (person here is the subject, not a where field; --where can still carry its own
     city/country/event/year/person conditions). junk is NOT filtered (these are the
@@ -1965,15 +2115,33 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
                         "WHERE casefold(label) = casefold(?))")
         subject_params = [selector]
     elif kind == "animal":
-        # F123: `pet IS NOT NULL` — the same "NULL means NOT ASKED" rule the whole
-        # frame_quality table lives by: a row exists for every frame the stage touched,
-        # and only the ones whose pet score cleared `features.pet_threshold` carry a
-        # verdict. F124: with the user's own verdict on top of it, once, via
-        # ANIMAL_IDS_SQL. dup_of/error are excluded below, with the other kinds.
-        resolved_name = i18n.folder("animals", lang)
-        subject_cond = f"f.id IN ({ANIMAL_IDS_SQL})"
+        # F123/F124/F137: the one shared rule, and the thresholds it needs come off the
+        # config THIS call was handed — so a gather right after a threshold edit gathers
+        # what the tab is showing, with nothing re-run in between. dup_of/error are
+        # excluded below, with the other kinds.
+        resolved_name = i18n.folder(ALBUM_FOLDER_KEYS["animal"], lang)
+        subject_cond = f"f.id IN ({animal_ids_sql(cfg.features)})"
         subject_params = []
-    elif kind in FACE_SLICES:
+    elif kind in CLASS_ALBUM_KINDS:
+        # F139/F133: the privacy guard is here rather than in the web app, because a
+        # button hidden in the browser is not a rule — a request sent past the interface
+        # would gather the folder all the same.
+        if kind in set(cfg.vlm.exclude_classes):
+            raise ValueError(
+                f"альбом класса {kind!r} запрещён: класс указан в vlm.exclude_classes")
+        resolved_name = i18n.folder(ALBUM_FOLDER_KEYS[kind], lang)
+        subject_cond = "f.id IN (SELECT file_id FROM media_class WHERE verdict = ?)"
+        subject_params = [kind]
+    elif kind in QUALITY_ALBUM_KINDS:
+        # The inner query brings its own `f`/`fq`/`mc`, which shadow the outer `f` for
+        # the length of the subquery — it is a plain uncorrelated set of ids, and the
+        # outer WHERE keeps applying `dup_of`/`error` to the file being planned.
+        resolved_name = i18n.folder(ALBUM_FOLDER_KEYS[kind], lang)
+        quality_cond, quality_params = quality_slice_where(
+            kind, cfg.features.blur_review_max)
+        subject_cond = f"f.id IN (SELECT f.id {QUALITY_FROM} WHERE {quality_cond})"
+        subject_params = list(quality_params)
+    elif kind in FACE_ALBUM_KINDS:
         # F152: the marker row `bbox = '[]'` is excluded inside `face_slice_ids_sql` and
         # nowhere else, so this album, the slice panel and the "Overview" counter cannot
         # disagree about what a face is. dup_of/error are excluded below, as for every kind.

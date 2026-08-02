@@ -170,8 +170,10 @@ class TestEverythingThatWritesIsFrozenDuringARun(MarkupCase):
         self.assertIn('document.querySelectorAll(".album-gather-btn")',
                       self.body("updateBusyControlsDisabled"))
         # every one of the album buttons starts from the same state, because the box
-        # that holds it is rebuilt on demand and may well be rebuilt mid-run
-        # (F152 added the fifth: the face slices share one box, rebuilt per pin)
+        # that holds it is rebuilt on demand and may well be rebuilt mid-run. Five
+        # builders since F139: people, events, animals, a query — and the shared row the
+        # class buckets and the quality slices are drawn with. F152 draws its three face
+        # slices through that same shared row, rebuilt per pin.
         self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 5)
 
     def test_applying_the_layout_is_dead(self):

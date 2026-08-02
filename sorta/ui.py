@@ -240,8 +240,9 @@ the question the user opens this tab with ("what did the run just change?") with
 state from before it. Aggregates only: no file path and no file id is in the answer.
 
 (20) `GET /api/animals` + `POST /api/animals/mark` (F123/F124, the "Animals" tab) — one
-bounded page of the frames the frame-quality stage marked as holding an animal
-(`frame_quality.pet IS NOT NULL` over canonical, readable files), most confident FIRST:
+bounded page of the frames the frame-quality stage's stored scores and answers make
+animals under the thresholds in force (F137, over canonical, readable files), most
+confident FIRST:
 `pet_score DESC, id`. The score travels with every card, because the verdict is 92% right
 and the remaining 8% are found by reading the list down until the quality stops. The album
 this tab offers is the existing `POST /api/album` with the new `kind='animal'`.
@@ -252,9 +253,12 @@ Those wrong 8% are what the POST is for (F124): `{"file_ids": [int,...], "action
 every run, prompt fingerprint included (F120), so a correction written there would last
 until the next run and no longer. It is not an action of `manual_overrides` either: that
 column decides the LAYOUT, and "this is not a cat" must never drop a file out of it. The
-mark is applied WHEN READ — `sorter.ANIMAL_IDS_SQL`, the one expression the album slice,
+mark is applied WHEN READ — `sorter.animal_ids_sql`, the one expression the album slice,
 this tab and the "Overview" counter all read, so an edit survives any recompute and the
-three numbers cannot drift apart. `clear` deletes the row and hands the frame back to the
+three numbers cannot drift apart. F137: the automatic half of that expression is read at
+the same moment and from the same place, out of the stored `pet_score`/`pet_vlm` and the
+thresholds of the LIVE config — an edited threshold moves these three numbers at once,
+without a run. `clear` deletes the row and hands the frame back to the
 automatic verdict, which is why the column is two-valued rather than a presence flag: a
 person both takes a false mark OFF and puts a missing one ON. A frame with a manual mark
 stays IN the list (struck through, with the mark named on the card) instead of vanishing
@@ -360,7 +364,13 @@ from urllib.parse import parse_qs, urlsplit
 from send2trash import send2trash as send_to_trash
 
 from . import db, faces, i18n, imaging
-from .config import VLM_QUALITY_SCOPES, Config, save_language, save_setting
+from .config import (
+    VLM_QUALITY_SCOPES,
+    Config,
+    FeaturesConfig,
+    save_language,
+    save_setting,
+)
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
@@ -386,14 +396,18 @@ from .search import (
 from .sorter import (
     ALBUM_KINDS,
     ALBUM_MODES,
-    ANIMAL_IDS_SQL,
+    CLASS_ALBUM_KINDS,
     FACE_SLICES,
+    QUALITY_FROM,
     SELECTORLESS_ALBUM_KINDS,
     AlbumReport,
     PlanItem,
+    animal_auto_sql,
+    animal_ids_sql,
     face_slice_ids_sql,
     plan_album,
     plan_and_sort,
+    quality_slice_where,
     undo,
 )
 # F104: the pre-apply summary has to say what the apply will DO, so it asks the two
@@ -1421,6 +1435,13 @@ def _junk_payload(db_path: Path, bucket: str | None,
     from), independent of the current filter; `total` is the size of the CURRENT
     selection. An unknown bucket is an empty page, not an error — the same rule as an
     unknown category in `PlanCache.page`.
+
+    F139: `album_kind` is the album this bucket can be gathered into, or None — the
+    server decides, because the answer depends on `sensitive` and a client that worked it
+    out for itself would be a second copy of the privacy rule. It is None for the "all"
+    view (an album of "everything the classifier carried off" is not a slice anybody
+    asked for) and for a class in `vlm.exclude_classes`, which keeps its counter and gets
+    neither a preview nor an album.
     """
     conn = _connect(db_path)
     try:
@@ -1454,6 +1475,9 @@ def _junk_payload(db_path: Path, bucket: str | None,
     return {
         "bucket": bucket,
         "buckets": buckets,
+        "album_kind": (
+            bucket if (bucket in CLASS_ALBUM_KINDS and bucket not in sensitive)
+            else None),
         # The client draws the counter-only state from this — it must not have to guess
         # which classes came back empty on purpose and which are simply empty.
         "sensitive": sorted(sensitive),
@@ -1504,29 +1528,44 @@ def _animal_item_to_json(row: sqlite3.Row) -> dict:
     }
 
 
-# What the TAB LISTS: the model's marks plus every frame a person has touched. It is
-# deliberately wider than the slice — a frame marked "not an animal" is no longer in the
-# album and is still on this page, struck through, because a card that vanishes takes the
-# undo button with it.
-_ANIMALS_POPULATION = ("(fq.pet IS NOT NULL OR mp.file_id IS NOT NULL) "
-                       "AND f.dup_of IS NULL AND f.error IS NULL")
 _ANIMALS_JOIN = ("FROM files f LEFT JOIN frame_quality fq ON fq.file_id = f.id "
                  "LEFT JOIN manual_pet mp ON mp.file_id = f.id")
 
-# What COUNTS as an animal: `sorter.ANIMAL_IDS_SQL` and nothing else, over the canonical,
-# readable files every other counter in this file is built on. Used by this tab and by
-# the "Overview" number, so the two cannot disagree with the album or with each other.
-_ANIMALS_COUNT_SQL = f"""SELECT COUNT(*) FROM files f
-    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.id IN ({ANIMAL_IDS_SQL})"""
 
-# One card, one row shape — the page and the answer to a mark are the same SELECT, so a
-# card redrawn after an edit says exactly what the same card would say on a reload.
-_ANIMALS_SELECT = f"""SELECT f.id, f.path, f.taken_at, fq.pet_score,
-           mp.is_animal AS manual, f.id IN ({ANIMAL_IDS_SQL}) AS is_animal
+def _animals_population(features: FeaturesConfig) -> str:
+    """What the TAB LISTS: the model's marks plus every frame a person has touched.
+
+    Deliberately wider than the slice — a frame marked "not an animal" is no longer in the
+    album and is still on this page, struck through, because a card that vanishes takes the
+    undo button with it.
+
+    F137: "the model's marks" is the automatic half of the shared rule (`animal_auto_sql`),
+    not the `frame_quality.pet` cache — a threshold edit has to take frames OFF this page
+    too, or the list and the counter it carries would disagree about the same collection.
+    """
+    return (f"({animal_auto_sql(features, 'fq')} OR mp.file_id IS NOT NULL) "
+            "AND f.dup_of IS NULL AND f.error IS NULL")
+
+
+def _animals_count_sql(features: FeaturesConfig) -> str:
+    """What COUNTS as an animal: `sorter.animal_ids_sql` and nothing else, over the
+    canonical, readable files every other counter in this file is built on. Used by this
+    tab and by the "Overview" number, so the two cannot disagree with the album or with
+    each other."""
+    return f"""SELECT COUNT(*) FROM files f
+    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.id IN ({animal_ids_sql(features)})"""
+
+
+def _animals_select(features: FeaturesConfig) -> str:
+    """One card, one row shape — the page and the answer to a mark are the same SELECT, so
+    a card redrawn after an edit says exactly what the same card would say on a reload."""
+    return f"""SELECT f.id, f.path, f.taken_at, fq.pet_score,
+           mp.is_animal AS manual, f.id IN ({animal_ids_sql(features)}) AS is_animal
     {_ANIMALS_JOIN}"""
 
 
-def _animals_payload(db_path: Path, offset: int, limit: int) -> dict:
+def _animals_payload(db_path: Path, features: FeaturesConfig,
+                     offset: int, limit: int) -> dict:
     """`GET /api/animals` — one page of the animal slice, most confident first.
 
     Two numbers, because after F124 they are two different questions: `total` is the
@@ -1540,15 +1579,20 @@ def _animals_payload(db_path: Path, offset: int, limit: int) -> dict:
     (or never) as the reader pages down. A manual decision does NOT move a card: the
     reader is walking down a list sorted by confidence, and a list that reshuffles under
     the frame just marked is a list nobody can finish reading.
+
+    `features` is the LIVE config's, for the reason `/api/junk` reads its sensitive
+    classes off it: the thresholds this page is drawn with are the ones in force at the
+    moment of the request, not the ones some run wrote into the database (F137).
     """
+    population = _animals_population(features)
     conn = _connect(db_path)
     try:
         total = conn.execute(
-            f"SELECT COUNT(*) {_ANIMALS_JOIN} WHERE {_ANIMALS_POPULATION}").fetchone()[0]
-        animals = conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0]
+            f"SELECT COUNT(*) {_ANIMALS_JOIN} WHERE {population}").fetchone()[0]
+        animals = conn.execute(_animals_count_sql(features)).fetchone()[0]
         rows = conn.execute(
-            f"""{_ANIMALS_SELECT}
-                WHERE {_ANIMALS_POPULATION}
+            f"""{_animals_select(features)}
+                WHERE {population}
                 ORDER BY fq.pet_score DESC, f.id
                 LIMIT ? OFFSET ?""", (limit, offset)).fetchall()
     finally:
@@ -1587,13 +1631,14 @@ def _validate_animal_mark_payload(payload: object) -> tuple[list[int], str] | No
     return ids, action
 
 
-def _apply_animal_mark(db_path: Path, ids: list[int], action: str) -> dict:
+def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
+                       ids: list[int], action: str) -> dict:
     """Write the user's verdict into `manual_pet`; answer with the redrawn cards.
 
     One row per file (PRIMARY KEY file_id), so marking the same frame twice overwrites
     rather than piling up. Nothing here touches `frame_quality` — the whole point of the
     feature is that the model's own table keeps being recomputed from scratch and this
-    mark is read on top of it (`sorter.ANIMAL_IDS_SQL`).
+    mark is read on top of it (`sorter.animal_ids_sql`).
 
     An id outside the current index is skipped rather than written (the rule
     `_apply_review_mark`/`_trash_files` follow): a decision about a file the program does
@@ -1608,6 +1653,7 @@ def _apply_animal_mark(db_path: Path, ids: list[int], action: str) -> dict:
     altogether — and the client drops those cards.
     """
     now = datetime.now(timezone.utc).isoformat()
+    count_sql = _animals_count_sql(features)
     conn = _connect(db_path)
     try:
         placeholders = ",".join("?" * len(ids))
@@ -1615,7 +1661,7 @@ def _apply_animal_mark(db_path: Path, ids: list[int], action: str) -> dict:
             f"SELECT id FROM files WHERE id IN ({placeholders})", ids).fetchall()]
         if not known:
             return {"marked": 0, "items": [],
-                    "animals": int(conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0])}
+                    "animals": int(conn.execute(count_sql).fetchone()[0])}
         known_placeholders = ",".join("?" * len(known))
         with conn:
             if action == "clear":
@@ -1632,10 +1678,11 @@ def _apply_animal_mark(db_path: Path, ids: list[int], action: str) -> dict:
                            updated_at = excluded.updated_at""",
                     [(fid, is_animal, now) for fid in known])
         rows = conn.execute(
-            f"""{_ANIMALS_SELECT}
-                WHERE {_ANIMALS_POPULATION} AND f.id IN ({known_placeholders})""",
+            f"""{_animals_select(features)}
+                WHERE {_animals_population(features)}
+                  AND f.id IN ({known_placeholders})""",
             known).fetchall()
-        animals = conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0]
+        animals = conn.execute(count_sql).fetchone()[0]
     finally:
         conn.close()
     return {
@@ -1797,18 +1844,15 @@ def _parse_face_slice_query(query: dict[str, list[str]]) -> tuple[str, int, int]
 #   only photograph of a person or a place. Sharpness ranks the list; a human decides.
 _REVIEW_SLICES = ("dupes", "blurred", "eyes", "subject")
 
-# Photographs only (F120: the quality signals mean nothing on a screenshot or a receipt),
-# canonical and readable — the same population every other counter in this file uses.
-_REVIEW_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
+# F139: which album kind each flat slice gathers into — and, read the other way, the map
+# that keeps the list and the album on one rule. The names differ because the switcher's
+# are older than the album's (`eyes` is a chip label, `eyes_closed` is a folder), and
+# renaming either half would move an API parameter for nothing. Duplicates have no kind:
+# they are the grouped slice, the one where a keeper is chosen, and the one path in the
+# program that deletes files — collecting them into a folder is not what they are for.
+_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed",
+                      "subject": "no_subject"}
 
-# What makes a frame a member of its slice. `eyes_open`/`has_subject` are `= 0` and never
-# `IS NOT 1`: NULL there means "not asked" (schema), and a frame nobody looked at must not
-# be shown to a user as an answer.
-_REVIEW_SLICE_WHERE = {
-    "blurred": "fq.sharpness IS NOT NULL",
-    "eyes": "fq.eyes_open = 0",
-    "subject": "fq.has_subject = 0",
-}
 # Blurred is ranked by the number the slice exists for; the other two have no ranking of
 # their own, so they go in index order — stable between pages, which is what paging needs.
 _REVIEW_SLICE_ORDER = {
@@ -1817,24 +1861,20 @@ _REVIEW_SLICE_ORDER = {
     "subject": "f.id",
 }
 
-_REVIEW_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
-                "JOIN media_class mc ON mc.file_id = f.id")
+# The membership rule itself lives in sorter.py (`quality_slice_where`, `QUALITY_FROM`)
+# and is read from there rather than restated here: the album of a slice and the list of
+# it must be the same set of frames, and two spellings of one condition drift.
+_REVIEW_FROM = QUALITY_FROM
 
 
 def _review_where(slice_: str, blur_max: float | None) -> tuple[str, list[object]]:
-    """The WHERE of one flat slice + its parameters.
+    """The WHERE of one flat slice + its parameters — the shared rule, by slice name.
 
     `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
     applies to that slice alone; None — "show more" has been pressed and the list runs on
-    without a ceiling. The window is a prefix of the same ordering, so continuing past it
-    neither repeats a frame nor skips one.
+    without a ceiling.
     """
-    where = f"{_REVIEW_POPULATION} AND {_REVIEW_SLICE_WHERE[slice_]}"
-    params: list[object] = []
-    if slice_ == "blurred" and blur_max is not None:
-        where += " AND fq.sharpness < ?"
-        params.append(float(blur_max))
-    return where, params
+    return quality_slice_where(_REVIEW_SLICE_KIND[slice_], blur_max)
 
 
 def _review_count(conn: sqlite3.Connection, slice_: str,
@@ -1973,6 +2013,10 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     return {
         "slice": slice_,
         "grouped": slice_ == "dupes",
+        # F139: the album kind of the CURRENT slice, or None for the duplicates. The
+        # client draws its "gather into a folder" row from this and never from a table of
+        # its own — see `_REVIEW_SLICE_KIND`.
+        "album_kind": _REVIEW_SLICE_KIND.get(slice_),
         "counts": [{"slice": name, "count": counts[name]} for name in _REVIEW_SLICES],
         # F133: what the "Layout" tab warns about — the part of the workspace nobody has
         # answered yet. `pending_total` is the one number the warning shows; the per-slice
@@ -2498,17 +2542,21 @@ def _events_payload(db_path: Path,
     ]
 
 
-def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
+def _tabs_visibility_payload(db_path: Path, features: FeaturesConfig) -> dict[str, bool]:
     """F54: visibility of the "People"/"Events"/"Animals" tabs — by data presence
     (variant B, without a meta table). person ⇔ there is a faces row with a non-empty
     cluster_id (the same source as `_clusters_payload`); event ⇔ non-empty `events`;
-    animal (F123) ⇔ some `frame_quality` row carries a pet verdict, which is false for
+    animal (F123) ⇔ some `frame_quality` row counts as an animal, which is false for
     every collection processed with `features.pets` off. Light EXISTS queries, we do not
     build the full payload.
 
-    The animal question is deliberately asked of the MODEL's table and not of the F124
-    rule: a user who has taken the mark off every frame has emptied the slice but not the
-    tab, and the tab is where the undo button lives.
+    The animal question is deliberately asked of what the tab would LIST
+    (`_animals_population`) and not of what it would count: a user who has taken the mark
+    off every frame has emptied the slice but not the tab, and the tab is where the undo
+    button lives. F137 is the reason it is that expression rather than the older "some
+    `frame_quality.pet` is set" — the cache column can claim a verdict the thresholds in
+    force have withdrawn, and a tab shown for an empty page is exactly the drift this
+    feature is about.
 
     F152: `face` is the one that is NOT asked of its own data, and that is the whole
     point. The three face slices appear as soon as the index holds a photograph the faces
@@ -2531,7 +2579,8 @@ def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
             "SELECT EXISTS(SELECT 1 FROM events)"
         ).fetchone()[0])
         animal = bool(conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM frame_quality WHERE pet IS NOT NULL)"
+            f"SELECT EXISTS(SELECT 1 {_ANIMALS_JOIN} "
+            f"WHERE {_animals_population(features)})"
         ).fetchone()[0])
         face = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files WHERE dup_of IS NULL AND error IS NULL "
@@ -2664,7 +2713,7 @@ def _overview_layout(conn: sqlite3.Connection) -> dict:
     return payload
 
 
-def _overview_payload(cfg: Config, db_path: Path) -> dict:
+def _overview_payload(db_path: Path, cfg: Config) -> dict:
     """`GET /api/overview` — the four groups of numbers the tab draws.
 
     `empty` is the whole answer for a fresh index: the view then invites the user to pick
@@ -2678,12 +2727,15 @@ def _overview_payload(cfg: Config, db_path: Path) -> dict:
 
     F126: the three flat review slices are counted here too, by the SAME queries the
     workspace itself uses (`_review_flat_counts`) — a counter that disagrees with the
-    list it links to is worse than no counter. `blur_max` is `features.blur_review_max`,
-    the window the blurred list opens to, so this row and that list say one number. The
+    list it links to is worse than no counter. The blur window comes from the same
+    `features` (`blur_review_max`), so this row and that list say one number. The
     duplicates row above stays what it always was: exact copies found by hash, not the
     phash groups of the workspace, which cost seconds to build and have no place on a
     tab made of plain aggregates.
     """
+    # F137 needs the thresholds and F152 needs them too, so the whole config comes in and
+    # the features are unpacked once here rather than threaded as a second argument.
+    features = cfg.features
     conn = _connect(db_path)
     try:
         files = conn.execute(
@@ -2696,15 +2748,16 @@ def _overview_payload(cfg: Config, db_path: Path) -> dict:
         events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         # F123: counted over the same population as the "Animals" tab and the animal
         # album, so the three cannot disagree. F124: which now means the one shared rule
-        # (`_ANIMALS_COUNT_SQL` -> `sorter.ANIMAL_IDS_SQL`) — a frame the user unmarked
-        # leaves this number exactly as it leaves the album.
-        animals = conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0]
+        # (`_animals_count_sql` -> `sorter.animal_ids_sql`) — a frame the user unmarked
+        # leaves this number exactly as it leaves the album. F137: and a threshold the
+        # user edited moves it here, in the tab and in the album together.
+        animals = conn.execute(_animals_count_sql(features)).fetchone()[0]
         faces_ran = faces_stage_ran(conn)
         faces_counts: dict[str, int | None] = {
             name: (_face_slice_count(conn, cfg, name) if faces_ran else None)
             for name in FACE_SLICES
         }
-        review = _review_flat_counts(conn, cfg.features.blur_review_max)
+        review = _review_flat_counts(conn, features.blur_review_max)
         place = _overview_place(conn)
         classes_total = conn.execute(
             f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
@@ -2768,9 +2821,12 @@ def _validate_album_payload(
     F123: `kind='animal'` is the one kind with nothing to select — the collection has a
     single animal slice — so an empty selector is accepted there (and only there: for a
     person or an event an empty selector is a client that lost its subject, and
-    gathering "everything" would be the wrong answer to it). F152: the three face slices
-    are in the same position, and the list of which kinds those are lives once, in
-    `sorter.SELECTORLESS_ALBUM_KINDS`.
+    gathering "everything" would be the wrong answer to it).
+    F139: the class and quality slices join it, and F152 the three face slices, by the
+    same rule and through the same shared list (`SELECTORLESS_ALBUM_KINDS`).
+
+    Whether a KIND may be gathered at all is not decided here: that answer depends on
+    `vlm.exclude_classes` and is given by the route, which has the config (F133).
     """
     if not isinstance(payload, dict):
         return None
@@ -7326,6 +7382,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span id="review-status" class="override-status"></span>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
+<div id="review-album" class="album-controls"></div>
 <div id="review-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
 <button type="button" id="review-more-btn" class="btn btn-ghost" style="display:none">{{review_load_more}}</button>
@@ -7407,6 +7464,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
+<div id="junk-album" class="album-controls"></div>
 <div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
 <button type="button" id="junk-more-btn" class="btn btn-ghost" style="display:none">{{junk_load_more}}</button>
@@ -10726,6 +10784,44 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   }
 
+  // F139: the gather row of a slice that has no subject to choose inside it — a class
+  // bucket ("Products") or a quality slice ("Blurred"). The same three controls every
+  // other album has (mode, an optional folder name, a destination) and the same
+  // dry-run-then-confirm path; the only thing that varies is the `kind` the server was
+  // asked to gather, and `kind` = null takes the row away entirely, which is what a
+  // sensitive class and the duplicates look like.
+  //
+  // Rebuilt only when the kind CHANGES: the row is drawn from inside the paging render,
+  // and re-creating it per page would ask the server for a default destination again and
+  // wipe a path somebody had typed.
+  function renderSliceAlbumControls(boxId, kind) {
+    var box = document.getElementById(boxId);
+    if (box.getAttribute("data-kind") === (kind || "")) return;
+    box.setAttribute("data-kind", kind || "");
+    box.textContent = "";
+    if (!kind) return;
+    var modeSelect = albumModeSelect();
+    box.appendChild(modeSelect);
+    var nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "album-name-input";
+    nameInput.placeholder = I18N.album_name_placeholder;
+    box.appendChild(nameInput);
+    var destInput = appendAlbumDestControls(box);
+    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
+                           "btn-sm album-gather-btn");
+    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
+    var albumStatus = document.createElement("span");
+    albumStatus.className = "album-status";
+    albumBtn.addEventListener("click", function () {
+      gatherAlbum(kind, "", modeSelect.value, null, nameInput.value.trim() || null,
+          destInput.value.trim() || null, albumStatus);
+    });
+    box.appendChild(albumBtn);
+    box.appendChild(albumStatus);
+    appendAlbumBusyHint(box);
+  }
+
   // --- лайтбокс (F42): один переиспользуемый оверлей поверх /photo/<id> ---
   // Заполняется по клику (не N скрытых оверлеев). Клик по фону/Esc закрывает;
   // стрелки ←/→ листают переданный список sample-кадров (опц., F42).
@@ -11170,6 +11266,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function renderJunkPage(data, append) {
     var grid = document.getElementById("junk-grid");
+    // F139: the bucket is gathered into a folder like any other slice — or it is not,
+    // and the server says which (a sensitive class keeps its counter and gets neither a
+    // preview nor an album). The "back to photos" row above is untouched: one movement
+    // must not be able to both gather and delete.
+    renderSliceAlbumControls("junk-album", data.album_kind);
     if (!append) grid.textContent = "";
     var items = data.items || [];
     items.forEach(function (it) { grid.appendChild(renderJunkCard(it)); });
@@ -11702,6 +11803,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .then(function (data) {
         renderReviewCounts(data.counts || []);
         reviewWindowTotal = data.window_total || 0;
+        // F139: the flat slices are gathered into a folder like people and events are;
+        // the duplicates are not (`album_kind` is null there), and the marking row above
+        // stays exactly where it was — gathering and deleting are two movements.
+        renderSliceAlbumControls("review-album", data.album_kind);
         if (!flat) return;
         document.getElementById("review-hint").textContent = reviewHintText(data);
         renderReviewPage(data, append);
@@ -12114,11 +12219,11 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             elif path == "/api/sort/summary":
                 self._serve_sort_summary(parse_qs(parts.query))
             elif path == "/api/tabs/visibility":
-                self._send_json(_tabs_visibility_payload(db_path))
+                self._send_json(_tabs_visibility_payload(db_path, cfg.features))
             elif path == "/api/overview":
                 # F108: plain aggregates, computed per request. The plan cache is not
                 # touched on purpose — building a layout here would cost minutes.
-                self._send_json(_overview_payload(cfg, db_path))
+                self._send_json(_overview_payload(db_path, cfg))
             elif path == "/api/cache":
                 self._send_json(_cache_payload(db_path))
             elif path == "/api/source-tree":
@@ -12283,7 +12388,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                                 status=HTTPStatus.BAD_REQUEST)
                 return
             offset, limit = window
-            self._send_json(_animals_payload(db_path, offset, limit))
+            # F137: the thresholds off the LIVE config, for the reason `/api/junk` reads
+            # its sensitive classes off it — the settings panel edits `pet_threshold`
+            # without a restart, and a threshold that needs one is not a threshold.
+            self._send_json(_animals_payload(db_path, cfg.features, offset, limit))
 
         def _serve_face_slices(self, query: dict[str, list[str]]) -> None:
             # F152: read-only. Nothing about these slices is decided here — the rules are
@@ -12414,7 +12522,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
             ids, action = parsed
-            self._send_json({"ok": True, **_apply_animal_mark(db_path, ids, action)})
+            self._send_json({"ok": True,
+                             **_apply_animal_mark(db_path, cfg.features, ids, action)})
 
         def _handle_photo_trash(self) -> None:
             file_id = _validate_file_id_payload(self._read_json_body())
@@ -12510,6 +12619,16 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
             kind, selector, mode, where, name, apply_, dest_str = parsed
+            # F139/F133: a sensitive class has no album, and the refusal lives here
+            # rather than in the markup — a button the page does not draw is not a rule,
+            # and a request sent past the interface would gather the folder all the same.
+            # `plan_album` refuses it a second time, for the terminal; this end answers
+            # with a status instead of a traceback. The settings panel can change
+            # `vlm.exclude_classes` without a restart, so the key is read per request.
+            if kind in CLASS_ALBUM_KINDS and kind in frozenset(cfg.vlm.exclude_classes):
+                self._send_json({"error": "sensitive class"},
+                                status=HTTPStatus.FORBIDDEN)
+                return
             dest = Path(dest_str) if dest_str else _album_dest(cfg, db_path)
             conn = _connect(db_path)
             try:

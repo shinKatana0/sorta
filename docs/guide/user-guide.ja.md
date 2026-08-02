@@ -877,6 +877,16 @@ sorta album animal --dest /path/to/albums --apply
 # 言葉による検索からのアルバム（§23）。質問は英語で:
 sorta album query "cake" --dest /path/to/albums --apply
 
+# 分類のバケット（§14）— 商品・スクリーンショット・ミーム。セレクタは不要:
+sorta album product --dest /path/to/albums --name "商品" --apply
+sorta album screenshot --dest /path/to/albums --apply
+sorta album meme --dest /path/to/albums --apply
+
+# 「見直し」の画質スライス（§22）— こちらもセレクタは不要:
+sorta album blurred --dest /path/to/albums --apply
+sorta album eyes_closed --dest /path/to/albums --apply
+sorta album no_subject --dest /path/to/albums --apply
+
 # 顔によるスライス（§6）— これらもセレクタは不要です。コレクションにそれぞれ
 # ちょうど 1 つだけだからです。顔が見つかったコマすべて、集合写真、ポートレート:
 sorta album people --dest /path/to/albums --apply
@@ -884,20 +894,34 @@ sorta album group --dest /path/to/albums --apply
 sorta album portrait --dest /path/to/albums --apply
 ```
 
-- **`animal`・`people`・`group`・`portrait`** はセレクタを取らない種類です。それらの
-  スライスの中に選ぶものが無いので、`sorta album animal --dest …` がコマンドの
-  すべてです。
+- **セレクタを取らないスライス**: `animal`、`product`、`screenshot`、`meme`、
+  `blurred`、`eyes_closed`、`no_subject`、`people`、`group`、`portrait`。その中に選ぶ
+  ものが無い — 商品のバケットもぼやけた一覧もコレクションにちょうど 1 つ — ので、
+  `sorta album <kind> --dest …` がコマンドのすべてで、`--name` を付けなければ
+  フォルダ名はスライスの名前になります。
 - **`person` / `event` / `query`** はセレクタが必須です。セレクタこそがアルバムの主題
   （人物の名前、イベントの名前、言葉そのもの）だからです。省略は**エラー**であって
   「コレクション全体」ではありません: 黙って全体から集められたアルバムは、正しい
   アルバムと見分けが付きません。
+- **`document` はアルバムの種類ではありません**。`vlm.exclude_classes` に挙げた
+  どのクラスも同じです: そのバケットはパスポート、診断書、銀行の書類です。カウンタは
+  残りますが、プレビューもフォルダも作られません — ワンクリックでそれを一つにまとめ
+  させないことこそ、このキーの目的です。クラスを `vlm.exclude_classes` に*入れる*と、
+  プレビューと一緒にアルバムも無くなります。
+- **`blurred` は閾値ではなく窓です。**「見直し」が並べるもの、つまり
+  `features.blur_review_max` より下のコマだけを集め、その先の裾は決して集めません:
+  このスライスの要点は、見せられたものを目で見て決める、という一点にあります。
 
 - 既定モードは **link**（ハードリンク、追加容量ほぼゼロ。1 枚が複数アルバム*と*都市構成
   の両方に存在可）。
 - **`--copy`** は独立コピー。**`--move`** は*ファイルを共通プールから取り出します*
   （警告表示）。**2 人以上の名前付き人物**が写る写真は 1 つのアルバムへ move 不可
   （曖昧）— ブロックされます。link/copy を使ってください。
-- UI では 人物／イベント カードの **フォルダに集める** ボタン。
+- UI では **フォルダに集める** ボタン: 人物／イベントのカード、**動物**のスライス、
+  分類のバケット（商品・スクリーンショット・ミーム）、そして**見直し**の 3 つの画質
+  スライス（ぼやけ・目を閉じた・被写体なし）。どこでも同じ行です: モード、任意の
+  フォルダ名、保存先。印を付けるボタン（「写真に戻す」「ごみ箱へ」）は自分のブロック
+  に残ります — ひとつの操作が集めることと消すことを兼ねることは決してありません。
 
 実際の出力 — §12 のパリのイベントをコピーでアルバムに集める例:
 
@@ -1032,10 +1056,12 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
                                   振り分けのプラン／適用（--apply 無しはドライラン）
 sorta album person|event|query <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album animal --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album product|screenshot|meme --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album blurred|eyes_closed|no_subject --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album people|group|portrait --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   スライスを名前付きフォルダに集める（既定はハードリンク）;
-                                  `animal`・`people`・`group`・`portrait` はセレクタ不要、
-                                  他の種類は必須（§13、§6）
+                                  セレクタが要るのは person/event/query だけ、
+                                  他の種類はコレクションに 1 つのスライス（§13、§6）
 sorta undo [--batch ID]           直前（または指定）バッチを取り消し
 sorta reset [--yes|-y] [--clear-geo]
                                   インデックス（DB）を消去してやり直す — 写真や
