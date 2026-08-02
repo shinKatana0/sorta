@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Taking a false animal mark off a frame — and putting a missing one back** (F124):
+  the "Animals" tab gained the one action it was missing. The 0.70 threshold was
+  measured at 92% precision, so of the 805 marked frames of the live collection **about
+  64 are not animals**; the person who sees them in the list is the one who takes the
+  mark off, and until now there was nowhere to put that decision. It goes into a table
+  of its own, `manual_pet` (schema v17), and **not** into `frame_quality`: that table
+  has exactly one writer (`junk`) and every run recomputes it from scratch — after F120
+  a prompt fingerprint invalidates the rows outright — so a correction written there
+  would live until the next run and no longer. The precedent is F85c's `manual_places`
+  against `places`, word for word. It is not an action of `manual_overrides` either:
+  that column is about the **layout**, and folding "this is not a cat" into it is how a
+  file ends up dropped from the layout because of what is in the frame. The mark is
+  applied **when read, never when written** — `junk` is untouched, and the consumers
+  (the album slice, the tab, the "Overview" counter) read one shared expression,
+  `sorter.ANIMAL_IDS_SQL` = `COALESCE(manual_pet.is_animal, frame_quality.pet IS NOT
+  NULL)`. That is what makes an edit survive **any** recompute, a change of model, of
+  prompts or of the threshold included, and what keeps the three numbers from drifting
+  apart. The mark is two-way on purpose: a person takes a false one off and puts a
+  missing one on, which is also the only way a frame the threshold missed reaches the
+  album. A corrected frame **stays on the page**, dimmed, saying which way it was
+  decided and offering the way back to the automatic verdict — a card that vanishes
+  moves the counter for no visible reason and takes its own undo with it. There is
+  deliberately **no** "unmark everything below 0.75": the feature exists because
+  somebody looked at the frame, and a threshold is already there for the other case.
+  A `reset` wipes the table with every other manual decision.
 - **A workspace for going through frames** (F126): the "Duplicates" tab became
   "Review", and duplicates became the first of its four slices — **duplicates ·
   blurred · closed eyes · no subject**. Those are four names for one job (look at a

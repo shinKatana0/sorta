@@ -48,6 +48,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v14 (manual_places, F85c) — a new table, created by executescript below
     # v15 (frame_quality, F113) — a new table, created by executescript below
     # v16 (clip_embeddings, F128) — a new table, created by executescript below
+    # v17 (manual_pet, F124) — a new table, created by executescript below
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

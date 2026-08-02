@@ -228,14 +228,28 @@ SQL aggregates: no plan, no cache, nothing precomputed. Both properties are load
 the question the user opens this tab with ("what did the run just change?") with the
 state from before it. Aggregates only: no file path and no file id is in the answer.
 
-(20) `GET /api/animals` (F123, the "Animals" tab) — one bounded page of the frames the
-frame-quality stage marked as holding an animal (`frame_quality.pet IS NOT NULL` over
-canonical, readable files), most confident FIRST: `pet_score DESC, id`. The score
-travels with every card, because the verdict is 92% right and the remaining 8% are found
-by reading the list down until the quality stops. Read-only; the album this tab offers is
-the existing `POST /api/album` with the new `kind='animal'`, and taking a false mark off
-a frame is F124's job (`frame_quality` has one writer and every run recomputes it, so a
-correction written there would not survive).
+(20) `GET /api/animals` + `POST /api/animals/mark` (F123/F124, the "Animals" tab) — one
+bounded page of the frames the frame-quality stage marked as holding an animal
+(`frame_quality.pet IS NOT NULL` over canonical, readable files), most confident FIRST:
+`pet_score DESC, id`. The score travels with every card, because the verdict is 92% right
+and the remaining 8% are found by reading the list down until the quality stops. The album
+this tab offers is the existing `POST /api/album` with the new `kind='animal'`.
+
+Those wrong 8% are what the POST is for (F124): `{"file_ids": [int,...], "action":
+"animal"|"not_animal"|"clear"}` writes ONE row per file into `manual_pet` — never into
+`frame_quality`, which has a single writer (`junk`) and is recomputed from scratch on
+every run, prompt fingerprint included (F120), so a correction written there would last
+until the next run and no longer. It is not an action of `manual_overrides` either: that
+column decides the LAYOUT, and "this is not a cat" must never drop a file out of it. The
+mark is applied WHEN READ — `sorter.ANIMAL_IDS_SQL`, the one expression the album slice,
+this tab and the "Overview" counter all read, so an edit survives any recompute and the
+three numbers cannot drift apart. `clear` deletes the row and hands the frame back to the
+automatic verdict, which is why the column is two-valued rather than a presence flag: a
+person both takes a false mark OFF and puts a missing one ON. A frame with a manual mark
+stays IN the list (struck through, with the mark named on the card) instead of vanishing
+— a card that disappears takes its own undo button with it. There is deliberately no
+route that marks a whole band at once: the feature exists because somebody LOOKED at the
+frame, and a threshold is already there for the other case.
 
 (21) `GET /api/review` + `POST /api/review/mark` (F126, the "Review" tab, which replaces
 the "Duplicates" tab) — the four things a person looks at in order to decide what stays:
@@ -319,6 +333,7 @@ from .runlog import log_environment, stage_timer
 from .sorter import (
     ALBUM_KINDS,
     ALBUM_MODES,
+    ANIMAL_IDS_SQL,
     AlbumReport,
     PlanItem,
     plan_album,
@@ -1385,7 +1400,16 @@ def _junk_payload(db_path: Path, bucket: str | None,
 
 
 def _animal_item_to_json(row: sqlite3.Row) -> dict:
-    """One card of the animal view: a thumbnail, a name, a date and the pet score."""
+    """One card of the animal view: a thumbnail, a name, a date and the pet score.
+
+    F124: plus the two facts a card has to state about the mark itself — whether the
+    frame counts as an animal right now (`is_animal`, straight out of the shared rule,
+    never recomputed here in Python) and whether that answer came from a person
+    (`manual`, the value of the `manual_pet` row, or None if there is none). A frame the
+    user has taken the mark off stays on the card, struck through: it must be visible as
+    marked BY HAND, otherwise the counter moves for no reason anybody can see and the
+    decision cannot be taken back.
+    """
     path = Path(row["path"])
     return {
         "file_id": int(row["id"]),
@@ -1395,35 +1419,57 @@ def _animal_item_to_json(row: sqlite3.Row) -> dict:
         # alongside it) — but a payload that pretends 0.0 was measured would lie about
         # exactly the number this tab exists to show.
         "score": None if row["pet_score"] is None else float(row["pet_score"]),
+        "is_animal": bool(row["is_animal"]),
+        "manual": None if row["manual"] is None else bool(row["manual"]),
         "thumb_url": f"/thumb/{int(row['id'])}",
         "video": imaging.is_video_path(path),
     }
 
 
-_ANIMALS_POPULATION = "fq.pet IS NOT NULL AND f.dup_of IS NULL AND f.error IS NULL"
+# What the TAB LISTS: the model's marks plus every frame a person has touched. It is
+# deliberately wider than the slice — a frame marked "not an animal" is no longer in the
+# album and is still on this page, struck through, because a card that vanishes takes the
+# undo button with it.
+_ANIMALS_POPULATION = ("(fq.pet IS NOT NULL OR mp.file_id IS NOT NULL) "
+                       "AND f.dup_of IS NULL AND f.error IS NULL")
+_ANIMALS_JOIN = ("FROM files f LEFT JOIN frame_quality fq ON fq.file_id = f.id "
+                 "LEFT JOIN manual_pet mp ON mp.file_id = f.id")
+
+# What COUNTS as an animal: `sorter.ANIMAL_IDS_SQL` and nothing else, over the canonical,
+# readable files every other counter in this file is built on. Used by this tab and by
+# the "Overview" number, so the two cannot disagree with the album or with each other.
+_ANIMALS_COUNT_SQL = f"""SELECT COUNT(*) FROM files f
+    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.id IN ({ANIMAL_IDS_SQL})"""
+
+# One card, one row shape — the page and the answer to a mark are the same SELECT, so a
+# card redrawn after an edit says exactly what the same card would say on a reload.
+_ANIMALS_SELECT = f"""SELECT f.id, f.path, f.taken_at, fq.pet_score,
+           mp.is_animal AS manual, f.id IN ({ANIMAL_IDS_SQL}) AS is_animal
+    {_ANIMALS_JOIN}"""
 
 
 def _animals_payload(db_path: Path, offset: int, limit: int) -> dict:
     """`GET /api/animals` — one page of the animal slice, most confident first.
 
-    The population is `frame_quality.pet IS NOT NULL` over canonical, readable files —
-    the same `dup_of IS NULL AND error IS NULL` rule as everywhere else, so the counter
-    here, the number in "Overview" and the album `sorter.plan_album(kind='animal')`
-    gathers are the same number by construction.
+    Two numbers, because after F124 they are two different questions: `total` is the
+    length of the LIST (what the paging walks — model marks plus manual decisions), and
+    `animals` is how many frames actually count as animals, by the one shared rule. The
+    second is the number "Overview" shows and the album gathers; the first is what
+    "showing 200 of N" is about.
 
     `ORDER BY pet_score DESC, f.id` — the id breaks ties, so two frames with an equal
     score keep a stable place between pages instead of swapping and being shown twice
-    (or never) as the reader pages down.
+    (or never) as the reader pages down. A manual decision does NOT move a card: the
+    reader is walking down a list sorted by confidence, and a list that reshuffles under
+    the frame just marked is a list nobody can finish reading.
     """
     conn = _connect(db_path)
     try:
         total = conn.execute(
-            f"""SELECT COUNT(*) FROM files f
-                JOIN frame_quality fq ON fq.file_id = f.id
-                WHERE {_ANIMALS_POPULATION}""").fetchone()[0]
+            f"SELECT COUNT(*) {_ANIMALS_JOIN} WHERE {_ANIMALS_POPULATION}").fetchone()[0]
+        animals = conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0]
         rows = conn.execute(
-            f"""SELECT f.id, f.path, f.taken_at, fq.pet_score
-                FROM files f JOIN frame_quality fq ON fq.file_id = f.id
+            f"""{_ANIMALS_SELECT}
                 WHERE {_ANIMALS_POPULATION}
                 ORDER BY fq.pet_score DESC, f.id
                 LIMIT ? OFFSET ?""", (limit, offset)).fetchall()
@@ -1431,8 +1477,92 @@ def _animals_payload(db_path: Path, offset: int, limit: int) -> dict:
         conn.close()
     return {
         "total": int(total),
+        "animals": int(animals),
         "offset": offset,
         "limit": limit,
+        "items": [_animal_item_to_json(r) for r in rows],
+    }
+
+
+# F124: "the model is wrong about this frame", the only three answers there are. `clear`
+# drops the row and hands the frame back to the automatic verdict — which is not the same
+# as `not_animal`, and the difference is the reason the row is two-valued rather than a
+# presence flag.
+_ANIMAL_MARK_ACTIONS = ("animal", "not_animal", "clear")
+
+
+def _validate_animal_mark_payload(payload: object) -> tuple[list[int], str] | None:
+    """Parse the body `POST /api/animals/mark`:
+    `{"file_ids": [int,...], "action": "animal"|"not_animal"|"clear"}`.
+
+    None -> invalid (400). The ids go through the same `_validate_file_ids_payload` as
+    every other write route — ints only, never a path.
+    """
+    if not isinstance(payload, dict):
+        return None
+    ids = _validate_file_ids_payload(payload)
+    if ids is None:
+        return None
+    action = payload.get("action")
+    if action not in _ANIMAL_MARK_ACTIONS:
+        return None
+    return ids, action
+
+
+def _apply_animal_mark(db_path: Path, ids: list[int], action: str) -> dict:
+    """Write the user's verdict into `manual_pet`; answer with the redrawn cards.
+
+    One row per file (PRIMARY KEY file_id), so marking the same frame twice overwrites
+    rather than piling up. Nothing here touches `frame_quality` — the whole point of the
+    feature is that the model's own table keeps being recomputed from scratch and this
+    mark is read on top of it (`sorter.ANIMAL_IDS_SQL`).
+
+    An id outside the current index is skipped rather than written (the rule
+    `_apply_review_mark`/`_trash_files` follow): a decision about a file the program does
+    not know is not a decision about anything, and the FK would reject it anyway.
+
+    The answer carries `items` (the marked frames as the tab's own cards) and `animals`
+    (the fresh count by the shared rule) so the client can redraw one card and the
+    counter in place. It could reload the page instead, and that is exactly what it must
+    not do: this list is read top-down until the confidence runs out, and a reload sends
+    the reader back to the first screen after every decision. `items` may come back
+    SHORTER than the ids — a `clear` on a frame the model never marked leaves the list
+    altogether — and the client drops those cards.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(ids))
+        known = [int(r["id"]) for r in conn.execute(
+            f"SELECT id FROM files WHERE id IN ({placeholders})", ids).fetchall()]
+        if not known:
+            return {"marked": 0, "items": [],
+                    "animals": int(conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0])}
+        known_placeholders = ",".join("?" * len(known))
+        with conn:
+            if action == "clear":
+                conn.execute(
+                    f"DELETE FROM manual_pet WHERE file_id IN ({known_placeholders})",
+                    known)
+            else:
+                is_animal = 1 if action == "animal" else 0
+                conn.executemany(
+                    """INSERT INTO manual_pet (file_id, is_animal, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(file_id) DO UPDATE SET
+                           is_animal = excluded.is_animal,
+                           updated_at = excluded.updated_at""",
+                    [(fid, is_animal, now) for fid in known])
+        rows = conn.execute(
+            f"""{_ANIMALS_SELECT}
+                WHERE {_ANIMALS_POPULATION} AND f.id IN ({known_placeholders})""",
+            known).fetchall()
+        animals = conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0]
+    finally:
+        conn.close()
+    return {
+        "marked": len(known),
+        "animals": int(animals),
         "items": [_animal_item_to_json(r) for r in rows],
     }
 
@@ -2121,6 +2251,10 @@ def _tabs_visibility_payload(db_path: Path) -> dict[str, bool]:
     every collection processed with `features.pets` off. Light EXISTS queries, we do not
     build the full payload.
 
+    The animal question is deliberately asked of the MODEL's table and not of the F124
+    rule: a user who has taken the mark off every frame has emptied the slice but not the
+    tab, and the tab is where the undo button lives.
+
     `indexed` rides along for the same cost: "re-run the selected stage" only makes
     sense over files that exist. Right after "Start over" the index is empty and
     ticking "faces" used to light the button up — offering to catch up a stage on
@@ -2288,11 +2422,10 @@ def _overview_payload(db_path: Path, blur_max: float) -> dict:
                FROM files""").fetchone()
         events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         # F123: counted over the same population as the "Animals" tab and the animal
-        # album (`_ANIMALS_POPULATION`), so the three cannot disagree.
-        animals = conn.execute(
-            f"""SELECT COUNT(*) FROM files f
-                JOIN frame_quality fq ON fq.file_id = f.id
-                WHERE {_ANIMALS_POPULATION}""").fetchone()[0]
+        # album, so the three cannot disagree. F124: which now means the one shared rule
+        # (`_ANIMALS_COUNT_SQL` -> `sorter.ANIMAL_IDS_SQL`) — a frame the user unmarked
+        # leaves this number exactly as it leaves the album.
+        animals = conn.execute(_ANIMALS_COUNT_SQL).fetchone()[0]
         review = _review_flat_counts(conn, blur_max)
         place = _overview_place(conn)
         classes_total = conn.execute(
@@ -4826,6 +4959,32 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось загрузить животных: ", "en": "Could not load the animals: ",
         "ja": "動物を読み込めません: ",
     },
+    # --- F124: taking a false mark off a frame (and putting a missing one back) --------
+    # The two buttons are one toggle: the card offers the answer the frame does NOT have
+    # right now. The third string is the way back to the automatic verdict, which is a
+    # different thing from "not an animal" and therefore says so in words.
+    "animals_mark_not_animal": {
+        "ru": "Это не животное", "en": "Not an animal", "ja": "動物ではない",
+    },
+    "animals_mark_animal": {
+        "ru": "Это животное", "en": "This is an animal", "ja": "これは動物",
+    },
+    "animals_mark_clear": {
+        "ru": "Вернуть автоматически", "en": "Back to automatic", "ja": "自動判定に戻す",
+    },
+    "animals_manual_excluded": {
+        "ru": "снято вручную", "en": "unmarked by hand", "ja": "手動で解除",
+    },
+    "animals_manual_included": {
+        "ru": "отмечено вручную", "en": "marked by hand", "ja": "手動で設定",
+    },
+    "animals_counted_label": {
+        "ru": "Животных: {n}", "en": "Animals: {n}", "ja": "動物: {n} 件",
+    },
+    "animals_error_prefix": {
+        "ru": "Не удалось сохранить отметку: ", "en": "Could not save the mark: ",
+        "ja": "マークを保存できません: ",
+    },
     # --- F126: the "Review" workspace -------------------------------------------------
     # The switcher labels are the four slices; the duplicates one keeps the wording the
     # tab had, because that is what the user has been calling it since U3.
@@ -5382,6 +5541,14 @@ label { cursor: pointer; }
 .animal-card-meta { font-size: 0.75rem; color: var(--muted); }
 .animal-card-score { font-size: 0.75rem; color: var(--muted);
       font-variant-numeric: tabular-nums; }
+/* F124: a frame the user has taken the mark off stays on the page, dimmed, with its
+   verdict named and its way back one click away. Making it disappear would move the
+   counter for no visible reason and hide the undo inside the vanished card. */
+.animal-card.not-animal { opacity: 0.55; }
+.animal-card.not-animal img { filter: grayscale(1); }
+.animal-card-manual { font-size: 0.75rem; color: var(--muted); }
+.animal-card-actions { display: flex; gap: var(--space-xs); flex-wrap: wrap;
+      align-items: center; }
 
 /* --- F126: the "Review" workspace ---------------------------------------- */
 /* The switcher looks like the junk bucket chips, for the same reason: a row of
@@ -5954,6 +6121,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 <div class="process-actions">
 <button type="button" id="animals-more-btn" class="btn btn-ghost" style="display:none">{{animals_load_more}}</button>
 <span id="animals-shown" class="override-hint"></span>
+<span id="animals-counted" class="override-hint"></span>
+<span id="animals-mark-status" class="album-status"></span>
 </div>
 </section>
 
@@ -9187,10 +9356,21 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 
   var ANIMALS_PAGE_SIZE = 200;
   var animalsOffset = 0;
+  // The length of the LIST, kept so a card redrawn after a mark can restate "showing
+  // N of M" without asking the server for a page it already has.
+  var animalsTotal = 0;
+
+  function hasManualPet(item) {
+    return item.manual !== null && item.manual !== undefined;
+  }
 
   function renderAnimalCard(item) {
     var card = document.createElement("div");
-    card.className = "animal-card";
+    // F124: `is_animal` comes from the server (the one shared rule), it is never
+    // recomputed here — a second spelling of that rule in JS is exactly how the tab
+    // and the album start reporting different collections.
+    card.className = "animal-card" + (item.is_animal ? "" : " not-animal");
+    card.dataset.fileId = String(item.file_id);
     card.appendChild(
         clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
     var name = document.createElement("span");
@@ -9208,7 +9388,49 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
                               { score: Number(item.score).toFixed(2) });
       card.appendChild(score);
     }
+    // A frame decided by hand says so, and says which way: without it the counter
+    // moves for no visible reason and a dimmed card looks like a rendering fault.
+    if (hasManualPet(item)) {
+      var manual = document.createElement("span");
+      manual.className = "animal-card-manual";
+      manual.textContent = item.manual ? I18N.animals_manual_included
+                                       : I18N.animals_manual_excluded;
+      card.appendChild(manual);
+    }
+    var actions = document.createElement("div");
+    actions.className = "animal-card-actions";
+    // One toggle offering the answer the frame does NOT have right now, per card and
+    // never over a band: the whole feature is that somebody looked at this frame.
+    var toggle = makeBtn("ghost", null,
+        item.is_animal ? I18N.animals_mark_not_animal : I18N.animals_mark_animal,
+        "btn-sm animal-mark-btn");
+    toggle.addEventListener("click", function () {
+      markAnimal(item.file_id, item.is_animal ? "not_animal" : "animal");
+    });
+    actions.appendChild(toggle);
+    if (hasManualPet(item)) {
+      var back = makeBtn("ghost", null, I18N.animals_mark_clear,
+                         "btn-sm animal-clear-btn");
+      back.addEventListener("click", function () { markAnimal(item.file_id, "clear"); });
+      actions.appendChild(back);
+    }
+    card.appendChild(actions);
     return card;
+  }
+
+  function animalCardEl(fileId) {
+    return document.querySelector('#animals-grid .animal-card[data-file-id="' +
+                                 fileId + '"]');
+  }
+
+  // Both numbers of the page: how much of the LIST is on screen, and how many of it
+  // count as animals. After a manual mark those are different questions — the card
+  // stays in the list and leaves the count.
+  function renderAnimalsCounts(shown, total, animals) {
+    document.getElementById("animals-shown").textContent =
+        shown ? fmt(I18N.animals_shown_label, { shown: shown, total: total }) : "";
+    document.getElementById("animals-counted").textContent =
+        shown ? fmt(I18N.animals_counted_label, { n: animals }) : "";
   }
 
   function renderAnimalsPage(data, append) {
@@ -9219,11 +9441,41 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
     });
     var shown = grid.querySelectorAll(".animal-card").length;
     if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
-    document.getElementById("animals-shown").textContent =
-        shown ? fmt(I18N.animals_shown_label, { shown: shown, total: data.total }) : "";
+    animalsTotal = data.total;
+    renderAnimalsCounts(shown, data.total, data.animals);
     document.getElementById("animals-more-btn").style.display =
         shown && shown < data.total ? "" : "none";
     animalsOffset = shown;
+  }
+
+  // The answer redraws the card in place instead of reloading the page: this list is
+  // read top-down until the confidence runs out, and a reload after every decision
+  // would send the reader back to the first screen. The redrawn card comes from the
+  // server, so it says what a reload would say.
+  function markAnimal(fileId, action) {
+    var status = document.getElementById("animals-mark-status");
+    status.textContent = "";
+    return postJson("/api/animals/mark", { file_ids: [fileId], action: action })
+      .then(function (resp) {
+        if (!resp || !resp.ok) {
+          status.textContent = I18N.animals_error_prefix + ((resp && resp.error) || "");
+          return;
+        }
+        var card = animalCardEl(fileId);
+        var fresh = (resp.items || [])[0];
+        if (card && fresh) {
+          card.parentNode.replaceChild(renderAnimalCard(fresh), card);
+        } else if (card) {                    // it left the list entirely (a `clear`
+          card.parentNode.removeChild(card);  // on a frame the model never marked)
+          animalsTotal = Math.max(0, animalsTotal - 1);
+        }
+        var grid = document.getElementById("animals-grid");
+        var shown = grid.querySelectorAll(".animal-card").length;
+        if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
+        animalsOffset = shown;
+        renderAnimalsCounts(shown, animalsTotal, resp.animals);
+      })
+      .catch(function (err) { status.textContent = I18N.animals_error_prefix + err; });
   }
 
   function fetchAnimals(offset, append) {
@@ -9798,6 +10050,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_dupes_trash()
             elif path == "/api/review/mark":
                 self._handle_review_mark()
+            elif path == "/api/animals/mark":
+                self._handle_animal_mark()
             elif path == "/api/photo/trash":
                 self._handle_photo_trash()
             elif path == "/api/photos/trash":
@@ -9897,9 +10151,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             self._send_json(_junk_payload(db_path, bucket, offset, limit))
 
         def _serve_animals(self, query: dict[str, list[str]]) -> None:
-            # F123: read-only, like /api/junk. The action this tab offers (gather an
-            # album) is the existing POST /api/album with kind='animal'; taking a
-            # false mark off a frame is F124 and needs a table of its own.
+            # F123: read-only, like /api/junk. The actions this tab offers are elsewhere
+            # — gathering an album is the existing POST /api/album with kind='animal',
+            # and correcting a mark is POST /api/animals/mark (F124, `manual_pet`).
             window = _parse_page_window(query)
             if window is None:
                 self._send_json({"error": "invalid offset/limit"},
@@ -10000,6 +10254,16 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             ids, action = parsed
             marked = _apply_review_mark(db_path, ids, action)
             self._send_json({"ok": True, "marked": marked})
+
+        def _handle_animal_mark(self) -> None:
+            # F124: a row in `manual_pet` and nothing else — no file is touched, no
+            # `frame_quality` row is rewritten (that table has one writer, `junk`).
+            parsed = _validate_animal_mark_payload(self._read_json_body())
+            if parsed is None:
+                self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            ids, action = parsed
+            self._send_json({"ok": True, **_apply_animal_mark(db_path, ids, action)})
 
         def _handle_photo_trash(self) -> None:
             file_id = _validate_file_id_payload(self._read_json_body())
