@@ -1732,6 +1732,31 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 ALBUM_KINDS = ("person", "event", "animal")
 ALBUM_MODES = ("link", "copy", "move")
 
+# F124: THE rule for "is there an animal in this frame", written down once. The user's
+# verdict (`manual_pet`, they looked at the frame) outranks the model's
+# (`frame_quality.pet`, it looked at the frame), and COALESCE keeps the automatic answer
+# wherever no manual row exists — a file nobody has touched behaves exactly as it did
+# before this feature.
+#
+# The rule is applied WHEN READ, never when written: `junk` still recomputes
+# `frame_quality` from scratch on every run and knows nothing about this table, which is
+# precisely why a manual mark survives a change of model, of prompts or of the threshold.
+#
+# Both joins are LEFT joins, and that is not decoration: a frame the user marked as an
+# animal need not have a `frame_quality` row at all (the stage never reached it), and it
+# belongs in the slice all the same.
+#
+# A SELECT of ids rather than a CTE, because it has to compose in two places — the album
+# query already opens with the recursive `_CTE`, and the tab needs the same rule inside a
+# SELECT list. It takes no parameters, so it can be interpolated into either. The one
+# consumer outside this module is ui.py (the "Animals" tab and the Overview counter):
+# two independent spellings of this expression would drift, and the day they did the
+# counter, the tab and the album would each report a different collection.
+ANIMAL_IDS_SQL = """SELECT af.id FROM files af
+    LEFT JOIN frame_quality afq ON afq.file_id = af.id
+    LEFT JOIN manual_pet amp ON amp.file_id = af.id
+    WHERE COALESCE(amp.is_animal, afq.pet IS NOT NULL)"""
+
 
 @dataclass
 class AlbumPlanItem:
@@ -1796,9 +1821,11 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     NULL) that have a face in a cluster whose merged_into chain root (F31, via the
     shared _CTE/_person_files) has label==selector (casefold).
     kind='event': selector — an event name OR id; the slice = the event(s)' event_files.
-    kind='animal' (F123): the slice = files with a `frame_quality.pet` verdict. The
-    selector is not used — the collection has exactly one animal slice — and an empty
-    string is accepted for it; the default album name is the localized `animals` folder.
+    kind='animal' (F123): the slice = files with a `frame_quality.pet` verdict, corrected
+    by the user's own marks (F124, `ANIMAL_IDS_SQL` — the same expression the web app's
+    tab and counter read, never a second copy of it). The selector is not used — the
+    collection has exactly one animal slice — and an empty string is accepted for it; the
+    default album name is the localized `animals` folder.
     where (opt.) reuses parse_where as an additional AND condition on top of the slice
     (person here is the subject, not a where field; --where can still carry its own
     city/country/event/year/person conditions). junk is NOT filtered (these are the
@@ -1839,9 +1866,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         # F123: `pet IS NOT NULL` — the same "NULL means NOT ASKED" rule the whole
         # frame_quality table lives by: a row exists for every frame the stage touched,
         # and only the ones whose pet score cleared `features.pet_threshold` carry a
-        # verdict. dup_of/error are excluded below, with the other kinds.
+        # verdict. F124: with the user's own verdict on top of it, once, via
+        # ANIMAL_IDS_SQL. dup_of/error are excluded below, with the other kinds.
         resolved_name = i18n.folder("animals", lang)
-        subject_cond = "f.id IN (SELECT file_id FROM frame_quality WHERE pet IS NOT NULL)"
+        subject_cond = f"f.id IN ({ANIMAL_IDS_SQL})"
         subject_params = []
     else:
         event_ids, resolved_name = _resolve_event_ids_and_name(conn, selector)
