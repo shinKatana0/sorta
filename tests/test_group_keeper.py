@@ -29,8 +29,9 @@ from pathlib import Path
 
 from sorta import dedup, junk
 from sorta.config import DedupConfig, load_config
-from sorta.db import connect
+from sorta.db import SCHEMA_VERSION, connect
 from sorta.junk import classify, keeper_source, parse_keeper_answer
+from tests.schema_history import roll_back_before
 from tests.test_frame_quality import FrameQualityCase
 from tests.test_junk import NO_OCR, FakeClassifier
 
@@ -446,18 +447,17 @@ class TestStorage(unittest.TestCase):
         self.addCleanup(conn.close)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(group_keeper)")}
         self.assertEqual(cols, {"group_key", "keeper_id", "source", "updated_at"})
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 21)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
 
-    def test_a_v17_db_gains_the_table_and_keeps_its_rows(self):
+    def test_a_db_from_before_the_table_gains_it_and_keeps_its_rows(self):
         conn = connect(self.db)
         conn.execute(
             "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
             "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
-        conn.execute("DROP TABLE group_keeper")
-        # A real v17 DB predates F140's column too (v20) — leaving it in place would make
-        # that migration add a column that already exists and raise.
-        conn.execute("ALTER TABLE frame_quality DROP COLUMN junk_score")
-        conn.execute("PRAGMA user_version = 17")
+        # The whole database goes back, not only this table: a database that predates
+        # `group_keeper` predates F140's `frame_quality.junk_score` as well, and leaving
+        # that column in place would make its migration add one that already exists.
+        roll_back_before(conn, "group_keeper")
         conn.commit()
         conn.close()
 
@@ -465,7 +465,7 @@ class TestStorage(unittest.TestCase):
         self.addCleanup(conn.close)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0], 1)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM group_keeper").fetchone()[0], 0)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 21)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
 
     def test_a_stored_recommendation_is_overwritten_not_duplicated(self):
         conn = connect(self.db)
