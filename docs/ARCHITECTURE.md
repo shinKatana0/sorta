@@ -79,11 +79,20 @@ Switching the sort mode does not require re-running the pipelines.
   `places`. It is not an action of `manual_overrides` either: that column decides the
   layout, and "this is not a cat" must never drop a file out of it.
 - Applied WHEN READ, never when written: `junk` is untouched and keeps computing
-  `frame_quality.pet`, while the consumers (the album slice, the "Animals" tab, the
-  Overview counter) read `COALESCE(manual_pet.is_animal, frame_quality.pet IS NOT NULL)`
-  through the single expression `sorter.ANIMAL_IDS_SQL`. That is what makes the edit
-  survive a change of model, of prompts or of the threshold — it is not in what gets
-  recomputed — and what keeps the three numbers from drifting apart.
+  `frame_quality`, while the consumers (the album slice, the "Animals" tab, the
+  Overview counter) read `COALESCE(manual_pet.is_animal, <the automatic rule>)` through the
+  single expression `sorter.animal_ids_sql`. That is what makes the edit survive a change
+  of model, of prompts or of the threshold — it is not in what gets recomputed — and what
+  keeps the three numbers from drifting apart.
+- F137: the automatic half of that expression is derived at the same moment, out of
+  `frame_quality.pet_score`/`pet_vlm` and the thresholds the config holds right then
+  (`sorter.animal_auto_sql`) — the stored answer of the check where the current
+  `features.pet_candidate_threshold` would still ask for one, `pet_score >=
+  features.pet_threshold` otherwise. `frame_quality.pet` stays written as a cache and as
+  the column to query a database by, and nothing reads it to decide anything: the
+  thresholds are deliberately not part of `quality_prompt_fingerprint` (hashing them would
+  re-run the whole cascade on every edit), so a label read as a verdict froze the config of
+  whichever run last wrote it.
 - Wiped by `reset_index` like every other manual decision.
 
 ### geo_cache (written only by geo, online provider) — F93

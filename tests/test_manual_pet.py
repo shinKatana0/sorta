@@ -4,7 +4,7 @@ The point of the feature is WHERE the correction lives and WHEN it is applied. I
 in `manual_pet` and not in `frame_quality`, because that table has exactly one writer
 (`junk`) and every run recomputes it from scratch — F120 even invalidates rows by a
 fingerprint of the prompts — so a mark written there would last until the next run. And
-it is applied WHEN READ (`sorter.ANIMAL_IDS_SQL`), not when written, which is what makes
+it is applied WHEN READ (`sorter.animal_ids_sql`), not when written, which is what makes
 it survive a change of model, of prompts or of the threshold.
 
 Hence the shape of this file: the migration, then the slice under every combination of
