@@ -32,7 +32,7 @@ from PIL import Image
 
 from sorta import junk
 from sorta.config import Config, FeaturesConfig, VlmConfig, _naming_from
-from sorta.db import connect
+from sorta.db import SCHEMA_VERSION, connect
 from sorta.junk import (
     QualityFlags,
     classify,
@@ -43,6 +43,7 @@ from sorta.junk import (
     read_frame_quality,
     uncertain_band,
 )
+from tests.schema_history import roll_back_before
 from tests.test_junk import NO_OCR, FakeClassifier
 
 _PET_CLASSES = [cls for cls, _prompt in junk._PET_CLASSES]
@@ -187,17 +188,16 @@ class TestMigration(unittest.TestCase):
         self.assertEqual(cols, {"file_id", "sharpness", "pet", "pet_score", "pet_vlm",
                                 "eyes_open", "has_subject", "is_accidental",
                                 "junk_score", "source", "updated_at"})
-        self.assertEqual(version, 22)
+        self.assertEqual(version, SCHEMA_VERSION)
 
-    def test_v14_db_gains_the_table_without_touching_its_data(self):
+    def test_a_db_from_before_the_table_gains_it_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "v14.db"
+            db = Path(tmp) / "old.db"
             conn = connect(db)
             conn.execute(
                 "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
                 "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
-            conn.execute("DROP TABLE frame_quality")
-            conn.execute("PRAGMA user_version = 14")
+            roll_back_before(conn, "frame_quality")
             conn.commit()
             conn.close()
 
@@ -208,7 +208,7 @@ class TestMigration(unittest.TestCase):
             files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             conn.close()
         self.assertIn("frame_quality", tables)
-        self.assertEqual(version, 22)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(files, 1)
 
     def test_reopening_is_idempotent_and_keeps_the_rows(self):
@@ -229,7 +229,7 @@ class TestMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertAlmostEqual(row["sharpness"], 12.5)
-        self.assertEqual(version, 22)
+        self.assertEqual(version, SCHEMA_VERSION)
 
 
 class TestLaplacian(unittest.TestCase):

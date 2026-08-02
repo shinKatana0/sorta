@@ -354,7 +354,8 @@ happens to the files:
    slices of a single tab, described in §22.
 3. **Layout** tab → the canon: the proposed structure (`Country/City/Year/District`),
    where to lay it out, move or copy, and the button that starts it. Always visible.
-4. **Slices** tab → everything built **on top of** the canon: **People**, **Events**,
+4. **Slices** tab → everything built **on top of** the canon: **With people**, **Group
+   photos**, **Portraits**, **People** (the named face clusters), **Events**,
    **Animals** and the classifier's buckets — **Products**, **Documents**,
    **Screenshots**, **Memes**. At the top of it sits the **search line** (§23). Any
    slice is gathered into its own folder with **Collect into folder**, hardlinks by
@@ -366,6 +367,16 @@ happens to the files:
    rule, not an unfinished corner: this bucket holds passports, certificates and
    medical forms, and Sorta neither opens nor renders them even locally; the name and
    the date are enough to decide.
+   **The first three slices are different in kind from the rest** and their caption says
+   so. **With people** / **Group photos** / **Portraits** are read straight off the face
+   detection: a frame is there because a box was found on it, not because a score cleared
+   a line, so there is no confidence on the cards and nothing to tune. Their only two
+   numbers are geometric — `features.group_photo_faces` (3 faces or more make a group
+   photograph) and `features.portrait_face_share` (one face covering ≥ 8% of the frame
+   area makes a portrait), both in §21. Until the faces stage has run they say **so** —
+   "the faces stage has not run" — instead of showing a zero, because nothing was
+   measured and "you have no photographs with people in them" would be a claim about
+   your archive. From the terminal these are `sorta album people|group|portrait` (§13).
 5. **Moves** tab → after you apply a layout/album, see exactly what went where. This is
    also where a layout is **rolled back** (§15). Always visible.
 
@@ -872,21 +883,53 @@ sorta album animal --dest /path/to/albums --apply
 
 # An album from a query in words (§23) — ask in English:
 sorta album query "cake" --dest /path/to/albums --apply
+
+# A classifier bucket (§14) — products, screenshots or memes, no selector:
+sorta album product --dest /path/to/albums --name "Products" --apply
+sorta album screenshot --dest /path/to/albums --apply
+sorta album meme --dest /path/to/albums --apply
+
+# A quality slice of the Review workspace (§22) — no selector either:
+sorta album blurred --dest /path/to/albums --apply
+sorta album eyes_closed --dest /path/to/albums --apply
+sorta album no_subject --dest /path/to/albums --apply
+
+# The face slices (§6) — also without a selector: the collection has exactly one of
+# each. Every frame a face was found on, the group photographs, the portraits:
+sorta album people --dest /path/to/albums --apply
+sorta album group --dest /path/to/albums --apply
+sorta album portrait --dest /path/to/albums --apply
 ```
 
-- **`animal`** is the one album kind without a selector: there is nothing to choose
-  inside that slice, so `sorta album animal --dest …` is the whole command.
+- **Slices without a selector**: `animal`, `product`, `screenshot`, `meme`, `blurred`,
+  `eyes_closed`, `no_subject`, `people`, `group`, `portrait`. There is nothing to choose
+  inside them — the collection has exactly one products bucket and exactly one blurred
+  list — so `sorta album <kind> --dest …` is the whole command, and the folder is named
+  after the slice unless `--name` says otherwise.
 - **`person` / `event` / `query`** require the selector, because the selector *is* the
   subject of the album (a person's name, an event's name, the words themselves). A
   missing one is an **error**, not "the whole collection": an album quietly gathered
   from everything is indistinguishable from a correct one.
+- **`document` is not an album kind**, and no class listed in `vlm.exclude_classes` is:
+  that bucket is passports, medical forms and bank papers. It keeps its counter and gets
+  neither a preview nor a folder — assembling one in a single click is exactly what the
+  key exists to prevent. Move a class *into* `vlm.exclude_classes` and its album goes
+  with its preview.
+- **`blurred` is a window, not a threshold.** It gathers what the Review workspace lists
+  — the frames under `features.blur_review_max` — and never the whole tail below it: the
+  point of that slice is that the decision is taken by eye, on what was shown.
 
 - Default mode is **link** (hardlink, ~0 extra space; a photo can appear in several
   albums *and* in the city structure).
 - **`--copy`** makes independent copies; **`--move`** *removes the files from the
   general pool* (prints a warning). A photo with **2+ named people** cannot be moved
   into one album (ambiguous) — those are blocked; use link/copy.
-- In the UI, use **Collect into folder** on People/Events cards.
+- In the UI, use **Collect into folder** — on the People/Events cards, on the
+  **Animals** slice, on a classifier bucket (Products, Screenshots, Memes) and on the
+  three quality slices of **Review** (Blurred, Closed eyes, No subject). It is the same
+  row everywhere: mode, an optional folder name, a destination. The marking buttons
+  ("Return to photos", "To trash") stay in their own block — one movement never both
+  gathers and deletes.
 
 Real output — collecting the Paris event from §12 into an album, as copies:
 
@@ -1026,9 +1069,12 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
                                   Plan/apply a sort (dry-run without --apply)
 sorta album person|event|query <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album animal --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album product|screenshot|meme --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album blurred|eyes_closed|no_subject --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album people|group|portrait --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   Collect a slice into a named folder (hardlink by
-                                  default); `animal` takes no selector, the other kinds
-                                  require one (§13)
+                                  default); only person/event/query take a selector,
+                                  every other kind is a single slice (§13, §6)
 sorta undo [--batch ID]           Reverse the last (or a specific) batch
 sorta reset [--yes|-y] [--clear-geo]
                                   Wipe the index (DB) and start over — leaves your
@@ -1461,6 +1507,8 @@ entirely.
 | `features.junk_rescue_threshold` | `0.02` | Who is shown to the model. Reviewed by eye on a 19 753-photo collection: `+0.05` selects 93 frames (0.5%) and they are junk outright; `+0.02` selects 955 (4.8%), and the band between the two still holds about 17% real photographs; `0.00` selects 5 688 (28.8%), where junk is down to single figures. This is a **selection** threshold and not a verdict: at about 85% precision, reclassifying by it directly would take some 150 living photographs out of the layout, which is exactly the mistake measured for the animal label — so the model gets the last word. 955 frames is ~12 minutes at the measured 0.78 s per frame. Read it off your own collection first: `python scripts/measure_junk_rescue.py` prints the distribution and what every threshold would select, before anything is switched on. |
 | `features.landmarks_verify` | `false` | Whether to **check each landmark CLIP proposes with the local VLM** before the place is written: the model is asked what well-known place the frame shows, and only a proposal it names itself goes on. The order does not bend — CLIP proposes, the model checks, the corroboration behind `naming.landmark_threshold` decides; agreement between the two models never overrules a country named in the path. It exists because CLIP's failure here is not one of perception but of knowledge: the wrong cities scored 0.980 against 0.991 for the right one, and no threshold splits them. That is also why it was measured before it was built. On 104 frames with a known answer — 24 of them proposals CLIP believed and corroboration threw away — the model confirmed a wrong city zero times, at 92% accuracy; not because it knows every landmark but because it stays silent when it does not (71 of the 104 answers named nothing). Needs the `[vlm]` extra; if the weights will not load, the run behaves exactly as it does with this off, and with it off it is unchanged in every respect. |
 | `features.landmark_candidate_threshold` | `0.5` | Who is shown to the model when `features.landmarks_verify` is on — the second, much lower threshold, exactly like the pair above. `naming.landmark_threshold` is high because nothing was checking CLIP's proposal; once something is, the selection widens. Measured on the 7 619 place-less frames of a live collection: `0.85` gives 10 proposals (8 kept by corroboration, 2 dropped), `0.7` — 66 (52 / 14), `0.5` — 151 (127 / 24). 151 questions is a couple of minutes of VLM. Never set above `naming.landmark_threshold` — the check is there to widen the band, not to narrow it, and a higher value is clamped back down. Ignored when the check is off. |
+| `features.group_photo_faces` | `3` | How many detected faces make a photograph a **group photograph** — the second of the three face slices (§6). Not a confidence threshold: those slices are read straight off the `faces` table, so a frame is in one because the detector found a box on it. Three, because two people in a frame are a couple or a passer-by and the slice exists to find the gatherings. Raise it to keep only the crowds. |
+| `features.portrait_face_share` | `0.08` | What makes a frame a **portrait**: exactly one detected face, covering at least this share of the frame area (the face box over width × height). Geometry, not confidence — a box over 8% of the area is about 28% of each side, i.e. head‑and‑shoulders rather than a person standing in a landscape. This is a starting value and **not a measurement on a real collection**; the boxes are stored, so re‑choosing it costs a query and no new pass over any image. A frame whose dimensions the index never learned is not in this slice — the share cannot be computed for it. |
 | `features.sharpness_max_edge` | `512` | The size a preview is reduced to before sharpness is measured (the variance of a Laplacian). |
 | `features.sharpness_band_min` | `30` | Below this a frame is plainly blurred and there is nothing to ask a model about. |
 | `features.sharpness_band_max` | `300` | Above this it is plainly sharp. Between the two lies the band of uncertainty, and only that band reaches the VLM. |

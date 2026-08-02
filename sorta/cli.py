@@ -54,7 +54,7 @@ from .naming import name_events, naming_settings
 from .progress import progress_task
 from .runlog import default_log_path, log_environment, stage_timer
 from .search import REASON_OTHER_MODEL, EmbeddingsMissing, file_paths, search_text
-from .sorter import plan_album, plan_and_sort
+from .sorter import SELECTORLESS_ALBUM_KINDS, plan_album, plan_and_sort
 from .sorter import undo as undo_batch
 
 
@@ -1077,13 +1077,15 @@ def build_app(lang: Lang) -> typer.Typer:
         if copy and move:
             raise typer.BadParameter(
                 _t("cli.album.copy_move_exclusive", _lang_of(config)))
-        # F127: `animal` is the one slice with nothing to select INSIDE it — the
-        # collection has a single animal view — so there the selector is optional and
-        # `sorta album animal --dest ...` is the whole command. For a person and an
-        # event it is the subject itself — and for a query (F129) it is the words — so a
-        # missing one has to be an error here, said out loud, rather than an album
-        # quietly gathered from something else.
-        if kind != "animal" and not (selector or "").strip():
+        # F127: a slice with nothing to select INSIDE it takes no selector — the
+        # collection has a single animal view, and since F139 a single products bucket
+        # and a single blurred list — so there `sorta album <kind> --dest ...` is the
+        # whole command. For a person and an event the selector is the subject itself —
+        # and for a query (F129) it is the words — so a missing one has to be an error
+        # here, said out loud, rather than an album quietly gathered from something else.
+        # F152: the face slices join that list too, hence the shared constant — the rule
+        # is a property of the kinds and belongs where they are declared.
+        if kind not in SELECTORLESS_ALBUM_KINDS and not (selector or "").strip():
             raise typer.BadParameter(
                 _t("cli.album.selector_required", _lang_of(config)))
         _cmd_album(config, kind, selector or "", dest, copy=copy, move=move,

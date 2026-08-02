@@ -117,9 +117,15 @@ class TestEmptyIndex(OverviewTestBase):
         self.start_server()
         data = self.overview()
         self.assertTrue(data["empty"])
+        # F152: the three face rows are `null` and not 0 — without a faces run nothing
+        # was measured, and a zero would read as "no photograph of yours has a person
+        # on it". `faces_reason` is what the view shows in their place.
         self.assertEqual(data["collection"], {"files": 0, "photos": 0, "videos": 0,
                                               "duplicates": 0, "errors": 0, "events": 0,
-                                              "animals": 0, "blurred": 0,
+                                              "animals": 0, "with_people": None,
+                                              "group_photos": None, "portraits": None,
+                                              "faces_reason": "no_faces_run",
+                                              "blurred": 0,
                                               "eyes_closed": 0, "no_subject": 0})
         self.assertEqual(data["place"]["total"], 0)
         self.assertEqual(data["place"]["confidence"], [])
@@ -163,7 +169,10 @@ class TestCollectionCounts(OverviewTestBase):
         self.assertEqual(collection["events"], self.scalar("SELECT COUNT(*) FROM events"))
         self.assertEqual(collection, {"files": 7, "photos": 6, "videos": 1,
                                       "duplicates": 1, "errors": 1, "events": 1,
-                                      "animals": 0, "blurred": 0, "eyes_closed": 0,
+                                      "animals": 0, "with_people": None,
+                                      "group_photos": None, "portraits": None,
+                                      "faces_reason": "no_faces_run",
+                                      "blurred": 0, "eyes_closed": 0,
                                       "no_subject": 0})
 
     def test_photos_and_videos_add_up_to_the_whole_index(self):

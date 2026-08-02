@@ -1,10 +1,18 @@
-"""SQLite schema and migrations."""
+"""SQLite schema and migrations.
+
+The two v1 cases below write their database out of RAW SQL instead of taking the shared
+old-database fixture (`tests/schema_history.py`), and that is deliberate: a fixture built
+by rolling the current schema back can only be as right as the history it rolls back
+through, so at least one test has to state an old database independently. Hence the only
+version numbers still written by hand in the suite — historical SQL, which does not go
+stale when the schema moves on. Everything else reads `SCHEMA_VERSION` (F143).
+"""
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
-from sorta.db import connect
+from sorta.db import SCHEMA_VERSION, connect
 
 
 class TestMigrations(unittest.TestCase):
@@ -36,7 +44,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("landmark_checks", tbls)  # v20 (F131)
             self.assertIn("search_embeddings", tbls)  # v22 (F141)
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 22)
+            self.assertEqual(v, SCHEMA_VERSION)
             conn.close()
 
     def test_v1_db_migrates_to_v2(self):
@@ -90,7 +98,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("city_geonameid", pl_cols)  # added by the v6 migration
             self.assertIn("country_name", pl_cols)     # added by the v10 migration
             (v,) = conn.execute("PRAGMA user_version").fetchone()
-            self.assertEqual(v, 22)
+            self.assertEqual(v, SCHEMA_VERSION)
             row = conn.execute("SELECT * FROM files").fetchone()
             self.assertEqual(row["path"], "/a.jpg")
             self.assertIsNone(row["orientation"])
@@ -223,7 +231,8 @@ class TestReset(unittest.TestCase):
             reset_index(conn)
             # data wiped, schema alive (tables + user_version)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0], 0)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 22)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                             SCHEMA_VERSION)
             tables = {r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("media_class", tables)

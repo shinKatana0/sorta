@@ -33,7 +33,7 @@ import numpy as np
 
 from sorta import junk
 from sorta.config import FeaturesConfig, VlmConfig, _naming_from
-from sorta.db import connect
+from sorta.db import SCHEMA_VERSION, connect
 from sorta.junk import (
     PET_VLM_DEPICTION,
     PET_VLM_NONE,
@@ -43,6 +43,7 @@ from sorta.junk import (
     pet_label,
     read_frame_quality,
 )
+from tests.schema_history import roll_back_before
 from tests.test_frame_quality import FrameQualityCase
 from tests.test_junk import NO_OCR
 
@@ -513,21 +514,19 @@ class TestSettingsAndAsker(unittest.TestCase):
 class TestMigration(unittest.TestCase):
     """The column arrives on an existing index without disturbing what is in it."""
 
-    def test_a_v16_db_gains_the_column_and_keeps_its_rows(self):
+    def test_a_db_from_before_the_column_gains_it_and_keeps_its_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "v16.db"
+            db = Path(tmp) / "old.db"
             conn = connect(db)
             conn.execute(
                 "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
                 "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
-            conn.execute("ALTER TABLE frame_quality DROP COLUMN pet_vlm")
-            # A real v16 DB predates F140's column as well — see the note in
-            # test_manual_pet: a simulated old DB has to be old in every respect.
-            conn.execute("ALTER TABLE frame_quality DROP COLUMN junk_score")
+            # Old in every respect, F140's later column included — see the note in
+            # tests/schema_history.py.
+            roll_back_before(conn, "frame_quality.pet_vlm")
             conn.execute(
                 "INSERT INTO frame_quality (file_id, sharpness, pet, pet_score, source,"
                 " updated_at) VALUES (1, 12.5, 'animal', 0.9, 'clip#abcd1234', 'x')")
-            conn.execute("PRAGMA user_version = 16")
             conn.commit()
             conn.close()
 
@@ -537,7 +536,7 @@ class TestMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertIn("pet_vlm", cols)
-        self.assertEqual(version, 22)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(row["pet"], "animal")       # the label survived the migration
         self.assertIsNone(row["pet_vlm"])            # and means "never asked", not "no"
         self.assertAlmostEqual(row["pet_score"], 0.9)

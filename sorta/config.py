@@ -633,6 +633,24 @@ class FeaturesConfig:
     # then looks through — raise it to see further down the ranking, lower it for a shorter
     # list. 200 is a folder a human can actually go through in one sitting.
     search_limit: int = 200
+    # F152: the two numbers the face slices need, and the only two they have. Everything
+    # else about those slices is a FACT of the `faces` table — either the detector found
+    # a face on this frame or it did not — so these are not confidence thresholds and
+    # nothing here is being ranked. Both are GEOMETRIC: a count of boxes and a share of
+    # the frame.
+    #
+    # How many real faces make a photograph a GROUP photograph. Three, because two people
+    # in a frame are a couple or a passer-by and the slice exists to find the gatherings —
+    # and because the same number is what the keeper VLM was moved to on 2026-08-02 ("ask
+    # about groups of three or more, not about pairs").
+    group_photo_faces: int = 3
+    # A portrait is ONE face taking a noticeable share of the frame: the bbox area over
+    # `files.width * files.height`. 0.08 is the brief's starting value and is stated here
+    # as geometry rather than as a measurement — a face box covering 8% of the frame area
+    # is roughly 28% of each side, i.e. head-and-shoulders rather than a person standing
+    # in a landscape. It has NOT been calibrated on the live collection yet; the boxes are
+    # stored, so re-choosing it costs a query and no new pass over any image.
+    portrait_face_share: float = 0.08
     # F141: the SEARCH index — a second CLIP vector per photograph, computed by a
     # multilingual model and read by search alone (table `search_embeddings`). OFF by
     # default, and that is the deliberate half of this setting: unlike `store_embeddings`
@@ -680,6 +698,10 @@ def _features_from(raw: dict) -> FeaturesConfig:
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
         search_limit=_as_positive_int(raw.get("search_limit"), d.search_limit),
+        group_photo_faces=_as_positive_int(
+            raw.get("group_photo_faces"), d.group_photo_faces),
+        portrait_face_share=_as_float(
+            raw.get("portrait_face_share"), d.portrait_face_share),
         search_index=_as_bool(raw.get("search_index"), d.search_index),
         search_model=_as_model_name(raw.get("search_model"), d.search_model),
     )
