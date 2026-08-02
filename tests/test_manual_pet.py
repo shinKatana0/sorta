@@ -40,7 +40,7 @@ class TestManualPetMigration(unittest.TestCase):
             (version,) = conn.execute("PRAGMA user_version").fetchone()
             conn.close()
         self.assertEqual(cols, {"file_id", "is_animal", "updated_at"})
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
 
     def test_v16_db_gains_the_table_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -50,6 +50,13 @@ class TestManualPetMigration(unittest.TestCase):
                 "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
                 "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
             conn.execute("DROP TABLE manual_pet")
+            # A real v16 database predates F130 as well, so it has no `pet_vlm` either.
+            # Leaving the column in place would make the v17 migration ADD one that
+            # already exists and raise: a simulated old DB has to be old in EVERY
+            # respect, not only in the one this feature cares about. (This case is the
+            # first to hit it because F130 and F124 were written in parallel against the
+            # same v16 main — neither could see the other's column.)
+            conn.execute("ALTER TABLE frame_quality DROP COLUMN pet_vlm")
             conn.execute("PRAGMA user_version = 16")
             conn.commit()
             conn.close()
@@ -61,7 +68,7 @@ class TestManualPetMigration(unittest.TestCase):
             files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             conn.close()
         self.assertIn("manual_pet", tables)
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
         self.assertEqual(files, 1)
 
     def test_reopening_is_idempotent_and_keeps_the_rows(self):
@@ -81,7 +88,7 @@ class TestManualPetMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertEqual((row["file_id"], row["is_animal"]), (1, 0))
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
 
     def test_one_row_per_file(self):
         """The PK is what makes "the user's verdict" singular — a second mark on the

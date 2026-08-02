@@ -48,7 +48,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v14 (manual_places, F85c) — a new table, created by executescript below
     # v15 (frame_quality, F113) — a new table, created by executescript below
     # v16 (clip_embeddings, F128) — a new table, created by executescript below
-    # v17 (manual_pet, F124) — a new table, created by executescript below
+    # frame_quality itself only appeared in v15, so the range starts there: an older DB
+    # gets the column with the table from executescript below.
+    if 15 <= version <= 16:  # v17: frame_quality.pet_vlm (F130 — the pet check's answer)
+        conn.execute("ALTER TABLE frame_quality ADD COLUMN pet_vlm TEXT")
+    # v18 (manual_pet, F124) — a new table, created by executescript below.
+    # F124 was written against a main standing at v16 and took v17, exactly as its brief
+    # said to; F130 merged first and took that number. Renumbered here by the
+    # orchestrator — the version is the one thing two parallel workers cannot settle
+    # between themselves, because neither can see the other's worktree, and each branch
+    # is self-consistent right up until the second merge.
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

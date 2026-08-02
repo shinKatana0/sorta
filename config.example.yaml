@@ -306,6 +306,27 @@ features:
   # at 89% / 58%. Raising it further buys nothing — 0.85 has the same precision for nine
   # points less recall. Scores are stored, so a different threshold needs no new pass.
   pet_threshold: 0.7
+  # F130: check every candidate with the local VLM before the label is written — one
+  # question with three answers (a live animal / a picture of one / no animal). Needs
+  # `pets` above: it verifies what the CLIP group found, it does not search by itself, and
+  # it uses the same weights as everything else (see `vlm:`), not a second model.
+  # It exists because the errors CLIP has left at 92% precision are the ones no threshold
+  # removes: drawn cats, plush toys, fur coats, a hotdog. CLIP compares a picture to a text
+  # as a whole and cannot tell a cat from a picture of a cat; "is this animal alive" is a
+  # question about the scene, which is what the VLM answers.
+  # With it OFF the stage behaves exactly as before: the label is the threshold above and
+  # no frame is shown to a model.
+  pets_verify: false
+  # Who is shown to the model when `pets_verify` is on — the SECOND threshold, far below
+  # the first. 0.70 is high because nothing was checking CLIP's answer; once something is,
+  # the selection can be widened, and that is where the missing recall lives (~466 animals
+  # sit below 0.30). Counted on the stored scores of a 19 757-photo collection, at the
+  # measured 0.78 s per frame:
+  #   0.70  →   805 frames, 10.5 min      0.30 →  1 331 frames, 17.3 min  (the default)
+  #   0.50  →   993 frames, 12.9 min      0.20 →  1 679 frames, 21.8 min
+  #   everything → 19 757 frames, 4.3 hours
+  # Ignored when `pets_verify` is off.
+  pet_candidate_threshold: 0.3
   # The longer side the frame is scaled to before the laplacian. Fixed on purpose: the
   # variance of the laplacian is scale-dependent, so frames measured at different
   # resolutions are not comparable and every threshold below is tied to this number.

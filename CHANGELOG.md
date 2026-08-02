@@ -32,6 +32,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deliberately **no** "unmark everything below 0.75": the feature exists because
   somebody looked at the frame, and a threshold is already there for the other case.
   A `reset` wipes the table with every other manual decision.
+- **A cascade for animals: CLIP selects widely, the VLM checks** (F130):
+  `features.pets_verify`, off by default, with a second and much lower selection
+  threshold `features.pet_candidate_threshold` (0.30) next to the existing
+  `features.pet_threshold` (0.70). F122 measured where the CLIP-only answer stands — 92%
+  precision, 54% recall — and both halves of that have the same cause. The errors left at
+  92% are drawn cats, plush toys, fur coats and a hotdog: CLIP compares a picture to a
+  text **as a whole** and cannot tell a cat from a picture of a cat, which is not
+  something a threshold repairs. And the recall cannot be raised by lowering the cut,
+  because 0.70 was high precisely because nothing was checking the answer. Both change
+  once something does. The model is asked **one** question with three outcomes — a live
+  animal, a picture of one, no animal — and the species is deliberately not among them
+  (F122 retired those labels by measurement; bringing them back through another model
+  without a new one would be an unmeasured label that looks like data). The answer
+  **outranks** the score: 0.95 and "plush toy" is not an animal, 0.35 and "real" is. Every
+  way the expensive tier can fail — an unparsable answer, a raise on one frame, a model
+  that will not build — falls back to `pet_score >= pet_threshold` and **never** to "no".
+  The answer is stored in the new `frame_quality.pet_vlm` (schema v17) because "rejected"
+  and "never asked" are different facts: without the column every later run would pay
+  0.78 s again for each of the ~500 frames the model already turned down, and the
+  interface would have nothing to explain a removed label with. The prompt joins
+  `quality_prompt_fingerprint`, so editing it invalidates the rows it produced. Cost on
+  the live collection, counted on stored scores rather than estimated: 1 331 candidates,
+  ~17 minutes, against 4.3 hours for asking about everything. The expected 97-99% / 66%
+  is a **prediction** extrapolated from the F122 labelling, not a measurement of this
+  feature — `scripts/measure_frame_quality.py --features verify [--labels …]` is the tool
+  that will confirm or refute it, and the brief pre-commits to reporting whichever way it
+  goes.
 - **A workspace for going through frames** (F126): the "Duplicates" tab became
   "Review", and duplicates became the first of its four slices — **duplicates ·
   blurred · closed eyes · no subject**. Those are four names for one job (look at a

@@ -163,10 +163,10 @@ class TestMigration(unittest.TestCase):
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(frame_quality)")}
             (version,) = conn.execute("PRAGMA user_version").fetchone()
             conn.close()
-        self.assertEqual(cols, {"file_id", "sharpness", "pet", "pet_score",
+        self.assertEqual(cols, {"file_id", "sharpness", "pet", "pet_score", "pet_vlm",
                                 "eyes_open", "has_subject", "is_accidental",
                                 "source", "updated_at"})
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
 
     def test_v14_db_gains_the_table_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,7 +187,7 @@ class TestMigration(unittest.TestCase):
             files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             conn.close()
         self.assertIn("frame_quality", tables)
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
         self.assertEqual(files, 1)
 
     def test_reopening_is_idempotent_and_keeps_the_rows(self):
@@ -208,7 +208,7 @@ class TestMigration(unittest.TestCase):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
         self.assertAlmostEqual(row["sharpness"], 12.5)
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
 
 
 class TestLaplacian(unittest.TestCase):

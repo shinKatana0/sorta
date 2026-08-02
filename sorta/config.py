@@ -422,6 +422,13 @@ class FeaturesConfig:
     from, on the collection they will be applied to.
     """
     pets: bool = False
+    # F130: check every candidate with the local VLM before the label is written — one
+    # question with three answers (a live animal / a picture of one / no animal). Its own
+    # toggle by the rule above, and it additionally needs `pets`: it verifies what the
+    # CLIP group found, it does not look for animals by itself. With it off the stage
+    # behaves exactly as it did — the label is `pet_score >= pet_threshold` and no frame
+    # is shown to a model.
+    pets_verify: bool = False
     # F122: MEASURED, on 320 hand-labelled frames stratified by score and weighted back
     # to the collection:
     #
@@ -437,6 +444,14 @@ class FeaturesConfig:
     # band the interval is about ±8 points, so this is a justified preference rather than
     # a proven optimum; the scores are stored, so re-choosing needs no new pass.
     pet_threshold: float = 0.7
+    # F130: the OTHER threshold — who is shown to the model when `pets_verify` is on.
+    # Far below the one above, and deliberately so: 0.70 is high because nothing was
+    # checking CLIP's answer, and once something does, the selection can be widened. The
+    # arithmetic is counted on the stored `pet_score` of the live collection, not
+    # estimated — 0.70 selects 805 frames (10.5 min at 0.78 s/frame), 0.50 993 (12.9),
+    # 0.30 1 331 (17.3), 0.20 1 679 (21.8), everything 19 757 (4.3 h). 0.30 is where the
+    # recall left below the cut stops being worth the minutes.
+    pet_candidate_threshold: float = 0.3
     # The longer side the frame is scaled to before the laplacian. FIXED on purpose: the
     # variance of the laplacian is scale-dependent, so two frames measured at different
     # resolutions are not comparable and no threshold over them means anything.
@@ -478,7 +493,10 @@ def _features_from(raw: dict) -> FeaturesConfig:
     d = FeaturesConfig()
     return FeaturesConfig(
         pets=_as_bool(raw.get("pets"), d.pets),
+        pets_verify=_as_bool(raw.get("pets_verify"), d.pets_verify),
         pet_threshold=_as_float(raw.get("pet_threshold"), d.pet_threshold),
+        pet_candidate_threshold=_as_float(
+            raw.get("pet_candidate_threshold"), d.pet_candidate_threshold),
         sharpness_max_edge=_as_positive_int(
             raw.get("sharpness_max_edge"), d.sharpness_max_edge),
         sharpness_band_min=_as_float(raw.get("sharpness_band_min"), d.sharpness_band_min),

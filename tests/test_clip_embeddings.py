@@ -113,7 +113,7 @@ class TestMigration(unittest.TestCase):
             (version,) = conn.execute("PRAGMA user_version").fetchone()
             conn.close()
         self.assertEqual(cols, {"file_id", "model", "dim", "vec", "updated_at"})
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
 
     def test_v15_db_gains_the_table_without_touching_its_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,6 +123,11 @@ class TestMigration(unittest.TestCase):
                 "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
                 "VALUES ('/a.jpg', 1, 0.0, 'jpg', 'photo', 'x')")
             conn.execute("DROP TABLE clip_embeddings")
+            # F130: a v15 DB is one that predates every later column too, and the
+            # migration for the next version adds this one to a v15 table. Leaving it in
+            # place would make the fixture a shape no released version ever had, and the
+            # migration would fail on a duplicate column instead of on anything real.
+            conn.execute("ALTER TABLE frame_quality DROP COLUMN pet_vlm")
             conn.execute("PRAGMA user_version = 15")
             conn.commit()
             conn.close()
@@ -134,7 +139,7 @@ class TestMigration(unittest.TestCase):
             files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             conn.close()
         self.assertIn("clip_embeddings", tables)
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
         self.assertEqual(files, 1)
 
     def test_reopening_is_idempotent_and_keeps_the_rows(self):
@@ -156,7 +161,7 @@ class TestMigration(unittest.TestCase):
             conn.close()
         self.assertEqual(row["model"], "m")
         np.testing.assert_allclose(unpack_embedding(row["vec"]), [0.6, 0.8], atol=1e-3)
-        self.assertEqual(version, 17)
+        self.assertEqual(version, 18)
 
 
 def unit_sample(rng, n=256, dim=768):
