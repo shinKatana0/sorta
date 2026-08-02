@@ -40,6 +40,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unwidened — a wider band with nothing checking it is the one outcome worse than no
   feature. With the toggle off the stage is unchanged in every respect, down to the score
   its proposals are collected at.
+- **A search line in the "Slices" block** (F134): the field F133 drew and left disabled is
+  wired to the F129 engine — type "cake" and the collection comes back ranked, with the
+  score on every card and a "Gather into folder" button that is the existing album route
+  with `kind='query'` and the words as the selector. The engine is untouched; what this
+  feature is actually about is the state in which it cannot run. `clip_embeddings` is
+  filled by the junk stage of an ordinary run, so a fresh collection — and any collection
+  last processed before F128 — has nothing to rank, and an empty result list would read as
+  "you have no photographs like that": a conclusion about somebody's own archive drawn
+  from a table nobody filled. So the new `GET /api/search` carries the state of the index
+  in **every** answer (`state`, `available`, `indexed`, `total`, `index_model`), the line
+  stays **disabled** while there is nothing to search, and the reason stands next to it
+  with the way to fix it — a button to "Overview", where the run is started. The two
+  unavailable states are deliberately two sentences: an index that was never computed
+  ("this is an ordinary run, no separate model") and an index computed by **another
+  model**, which is named, because its vectors are not comparable with the query and
+  mixing them would produce a plausible ranking nothing marks as wrong. Partial coverage
+  does not block anything and says its denominator out loud ("searching 19 753 of 19 757
+  photographs") — an incremental run is the normal way to live with a growing archive, and
+  a person has to be able to tell "it is not in the collection" from "it is not in the
+  index yet". No threshold is introduced anywhere: the list ranks, the reader stops where
+  the resemblance runs out, and the interface promises no accuracy, since nobody has
+  measured it on a real collection yet. The privacy rule of F133 is carried over
+  unchanged — a frame whose class is in `vlm.exclude_classes` is ranked but hands out no
+  thumbnail, so a search cannot become the way around what the slices already close. An
+  empty query never reaches the model, in the browser or on the server.
 - **The best frame of a duplicate group, asked comparatively** (F132): `dedup.keeper_vlm`,
   off by default, next to `dedup.keeper_max_frames` (5) and `dedup.keeper_min_group_size`
   (2). Sharpness already ranks a near-duplicate group honestly — inside a group the frames
@@ -217,6 +242,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **One run button instead of two** (F135). The "Process" tab offered "Start" and
+  "Re-run selected" side by side, and the second one bought exactly three stages —
+  `index` (34 s), `geo` (3 s) and `landmarks` (139 s) on the 380 GB validation run,
+  about three minutes — in exchange for a permanent fork in the road: which of the two
+  is the right button this time. Everything else was already skipped by the stages
+  themselves (`junk` by the prompt fingerprint, `faces` by the marker, `events` by
+  composition). So "Start" is the whole pipeline again and the stages skip what is done,
+  which is what they were built to do. Two things make that an improvement rather than
+  three minutes saved for a worse tab. The **source comes back by itself**: the status
+  snapshot carries the path of the last run, and an empty field is filled from it — the
+  browser's own memory covers a page reload, this covers a fresh profile against a live
+  server, and between them a repeat run never means typing a path again. And the run now
+  **says what it skipped**: the stages that can tell new work from work they recognised
+  as already done — `index` and `junk` — report `processed`/`skipped` into the status,
+  and the finished run prints a line per stage, the same pair the CLI has always printed.
+  Without it a run that correctly skipped everything is indistinguishable from a run that
+  did nothing, which is the reading the second button existed to avoid. The checkboxes
+  are unchanged: unticked still means the stage does not run at all. `POST
+  /api/process/rerun-optional` **keeps working** and its tests are untouched — it is in
+  the API documentation and callable from outside, and retiring a public route is a
+  decision of its own, not a side effect of tidying up the markup.
 - **`sort`, `album`, `geo` and `ui` speak the configured language** (F118). F112 moved
   the CLI's output into the i18n catalog and reached `cli.py` only: `sorter.py` printed
   its plan summary, its in-place and `--move` warnings and its blocked-multi notice in

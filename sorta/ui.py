@@ -38,7 +38,11 @@ mutated. The thread opens its own sqlite connection (not transferable between
 ThreadingHTTPServer threads). One run per server — a repeated `POST` while running ->
 409 (`_ProcessState.try_start` is atomic under a shared lock). `GET /api/process/status`
 — a thread-safe progress snapshot (polling); `POST /api/process/cancel` sets a flag
-checked BETWEEN stages (not mid-stage). The pipeline moves no files — it only reads
+checked BETWEEN stages (not mid-stage). F135: the snapshot also carries `stage_stats`
+— `{stage: {"processed", "skipped"}}` for the stages whose own counters separate new
+work from work they recognised as already done (`index`, `junk`) — and it keeps
+`source_dir` after the run ends, which is what refills an empty source field: with one
+run button the path has to come back by itself. The pipeline moves no files — it only reads
 source_dir and writes the index, so the layout FS invariants (the moves.jsonl journal,
 hash verification) do not apply here.
 
@@ -274,6 +278,22 @@ decision, and `to_delete` is already understood by the sorter. There is delibera
 route that marks a whole slice at once: reviewed by eye, blurred frames turn up in every
 band up to 400, so sharpness ranks the list and a person decides each frame.
 
+(22) `GET /api/search` (F134, the query line of the "Slices" tab) — the F129 engine
+behind the field F133 drew and left disabled: `q` is the words, `limit` a SAMPLE SIZE
+(`features.search_limit` by default, clamped, never a similarity threshold — there is
+none and there will not be one), and the answer is the ranking as cards with a score on
+each. Every answer also carries the STATE of the index — `state` (empty / other_model /
+partial / ready), `available`, `indexed`, `total` and `index_model` — because the failure
+this route exists to avoid is answering "nothing was found" when the truth is "nothing was
+ever computed": the two are the same empty list on screen, and only one of them is a fact
+about the person's photographs. An empty `q` returns that state and nothing else, without
+loading a model, which is what the tab asks on open to decide whether the line may be
+used at all. Sensitive classes follow the F133 rule unchanged — a frame whose
+`media_class.verdict` is in `vlm.exclude_classes` is ranked but carries no `thumb_url`, so
+a search cannot become the way around a protection the slices already apply. The one
+action the results offer is the existing `POST /api/album` with `kind='query'` and the
+words as the selector; both routes share one lazily loaded text encoder.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -312,7 +332,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import parse_qs, urlsplit
 
 from send2trash import send2trash as send_to_trash
@@ -328,10 +348,19 @@ from .geodata import GeoDataMissing, GeoResolver
 from .indexer import excludes_path, index as run_index, load_excludes, normalize_exclude
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
-from .junk import faces_stage_ran
+from .junk import embedding_model, faces_stage_ran
 from .landmarks import Classifier, clip_classifier, detect_landmarks
+from .landmarks import batched
 from .naming import name_events, naming_settings
 from .runlog import log_environment, stage_timer
+from .search import (
+    REASON_EMPTY,
+    REASON_OTHER_MODEL,
+    EmbeddingsMissing,
+    TextEncoder,
+    search_text,
+    text_encoder,
+)
 from .sorter import (
     ALBUM_KINDS,
     ALBUM_MODES,
@@ -2613,6 +2642,227 @@ def _album_report_to_json(report: AlbumReport, applied: bool) -> dict:
     }
 
 
+# --- F134: the search line of the "Slices" tab (`GET /api/search`) ------------------
+# F129 built the engine and F133 left the line drawn but disabled; this is the wiring in
+# between. It carries one idea and everything else follows from it: an interface that
+# cannot search says WHY, and never by showing an empty result list.
+#
+# `clip_embeddings` is filled by the junk stage of an ordinary run, so a fresh collection
+# — and any collection last processed before F128 — has nothing to rank. "Nothing was
+# found for cake" and "nothing was ever encoded" are the same empty list on screen, and
+# only one of them is a fact about the archive. A person who reads the first when the
+# second is true concludes something false about their own photographs, which is the
+# single most expensive mistake this feature can make. So the state of the index travels
+# with every answer, the line is disabled while there is nothing to search, and the
+# reason stands next to it:
+#
+#   empty         no vectors at all           -> process the collection (an ordinary run)
+#   other_model   vectors of another model    -> process it again, that index is not
+#                                                comparable with this query
+#   partial       some of the collection      -> searchable, and it says N of M out loud
+#   ready         all of it                   -> an ordinary search line
+#
+# The two unavailable states are deliberately two: "run it" and "run it AGAIN because the
+# model changed" are different instructions, and a single sentence covering both teaches
+# the reader nothing. The partial state is not a warning but an honest denominator — an
+# incremental run is the normal way to live with a growing archive, and a person has to be
+# able to tell "it is not in the collection" from "it is not in the index yet".
+#
+# What this route does NOT do: introduce a similarity threshold. The score orders frames
+# against each other and means nothing in absolute terms (see search.py), so it travels to
+# the card and the reader stops where the quality runs out — the same arrangement the
+# animal slice and the sharpness list already use.
+
+_SEARCH_READY = "ready"
+_SEARCH_PARTIAL = "partial"
+# The unavailable states are the engine's own codes, not a second spelling of them: the
+# route can be reached before and after `search_text` raises, and the two paths must not
+# be able to disagree about which state the index is in.
+_SEARCH_AVAILABLE_STATES = (_SEARCH_READY, _SEARCH_PARTIAL)
+
+# The population a search ranks over and the denominator of "N of M" — the same
+# `dup_of IS NULL AND error IS NULL AND media_type = 'photo'` rule `search._CANDIDATES_SQL`
+# selects on, counted here rather than imported as SQL because this is a COUNT of it.
+_SEARCH_PHOTOS_SQL = """SELECT COUNT(*) FROM files
+    WHERE dup_of IS NULL AND error IS NULL AND media_type = 'photo'"""
+
+# How much of that population this model has a vector for. Joined to `files` on purpose:
+# a row whose frame has since become a duplicate or gone unreadable is not something a
+# search can return, so counting it would inflate the numerator of a fraction whose whole
+# job is to be honest.
+_SEARCH_COVERED_SQL = """SELECT COUNT(*) FROM clip_embeddings e
+    JOIN files f ON f.id = e.file_id
+    WHERE e.model = ? AND f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'"""
+
+# One card, and the same shape whichever state produced it. LEFT JOIN because a photograph
+# usually has no `media_class` row at all — the class is what the privacy rule below reads.
+_SEARCH_ROWS_SQL = """SELECT f.id, f.path, f.taken_at, mc.verdict
+    FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
+    WHERE f.id IN ({marks})"""
+
+# A limit is a SAMPLE SIZE (search.py), so a client asking for more than the server is
+# willing to render gets less rather than an error — the `_parse_page_window` rule.
+_SEARCH_MAX_LIMIT = 1000
+
+
+def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
+    """Which of the four states the index is in, plus the numbers that state it.
+
+    `index_model` is what a person is told when the answer is "another model": the name of
+    the model that actually produced the stored vectors, taken as the one with the most
+    rows. Naming it is the difference between a sentence somebody can act on and a shrug —
+    and the row count is how the name is chosen, because a table can hold leftovers of
+    several models and only the dominant one is worth putting in front of a reader.
+
+    `indexed` counts vectors of THIS model within the searchable population, `total` the
+    population itself. The pair is the "we are searching N of M photographs" line, and it
+    is computed here, once, so the line and the availability of the field cannot disagree.
+    """
+    counts = {str(r["model"]): int(r["n"]) for r in conn.execute(
+        "SELECT model, COUNT(*) AS n FROM clip_embeddings GROUP BY model")}
+    stored = counts.get(model, 0)
+    photos = int(conn.execute(_SEARCH_PHOTOS_SQL).fetchone()[0])
+    indexed = int(conn.execute(
+        _SEARCH_COVERED_SQL, (model,)).fetchone()[0]) if stored else 0
+    others = [(n, name) for name, n in counts.items() if name != model]
+    if not counts:
+        state = REASON_EMPTY
+    elif not stored:
+        state = REASON_OTHER_MODEL
+    elif not indexed:
+        # Vectors of this model exist and not one of them belongs to a frame a search may
+        # return. There is nothing to rank and running the stage again is the fix, so this
+        # is the empty state — exactly what `search._nothing_to_rank` calls it.
+        state = REASON_EMPTY
+    else:
+        state = _SEARCH_PARTIAL if indexed < photos else _SEARCH_READY
+    return {
+        "state": state,
+        "available": state in _SEARCH_AVAILABLE_STATES,
+        "model": model,
+        "index_model": model if stored else (max(others)[1] if others else None),
+        "indexed": indexed,
+        "total": photos,
+    }
+
+
+def _search_item_to_json(row: sqlite3.Row, score: float,
+                         sensitive: frozenset[str]) -> dict:
+    """One card of the ranking: the score is always on it, the thumbnail sometimes.
+
+    F133's rule, unchanged: a frame whose class sits in `vlm.exclude_classes` (documents
+    by default) gets no `thumb_url`, so the browser never asks `/thumb` for it and no
+    preview of a passport is ever decoded. The guard is here, on the server, for the
+    reason it is there — a search that answered with a link would turn this route into
+    the way around a protection the slices already apply.
+    """
+    path = Path(row["path"])
+    payload = {
+        "file_id": int(row["id"]),
+        "name": path.name,
+        "date": row["taken_at"],
+        # A ranking, not a filter: the number is what lets a reader see where the
+        # relevance ran out, and a card without it would hide exactly that.
+        "score": float(score),
+    }
+    verdict = row["verdict"]
+    if verdict is None or str(verdict) not in sensitive:
+        payload["thumb_url"] = f"/thumb/{int(row['id'])}"
+        payload["video"] = imaging.is_video_path(path)
+    return payload
+
+
+def _search_items(conn: sqlite3.Connection, hits: Sequence[tuple[int, float]],
+                  sensitive: frozenset[str]) -> list[dict]:
+    """The engine's (file_id, score) pairs -> cards, IN THE RANKING'S ORDER.
+
+    The rows are fetched in chunks (a limit is user-set and SQLite has a ceiling on bound
+    parameters — the `search.file_paths` reason) and then re-ordered by the ranking, never
+    by whatever order SQLite returned: the order is the answer here.
+    """
+    rows: dict[int, sqlite3.Row] = {}
+    for part in batched([fid for fid, _score in hits], 500):
+        marks = ",".join("?" * len(part))
+        rows.update({int(r["id"]): r for r in conn.execute(
+            _SEARCH_ROWS_SQL.format(marks=marks), tuple(part))})
+    return [_search_item_to_json(rows[fid], score, sensitive)
+            for fid, score in hits if fid in rows]
+
+
+def _search_payload(cfg: Config, db_path: Path, text: str, limit: int,
+                    encoder: TextEncoder | None = None) -> dict:
+    """`GET /api/search` — the state of the index always, the ranking when there is one.
+
+    The model is not asked anything unless there is a reason to: an empty query and an
+    unavailable index both return before `search_text`, which is what keeps a stray
+    keystroke from loading CLIP and what makes "the line is disabled" cheap to render.
+
+    `EmbeddingsMissing` is still caught, because the state was read a moment earlier and a
+    run can empty the table in between; the answer then carries the engine's own reason
+    rather than an empty `items` list, which is the one thing this route must never send.
+    """
+    conn = _connect(db_path)
+    try:
+        model = embedding_model(naming_settings(cfg))
+        payload = _search_index_state(conn, model)
+        payload.update({"query": text, "limit": limit, "items": []})
+        if not text.strip() or not payload["available"]:
+            return payload
+        try:
+            hits = search_text(cfg, conn, text, limit=limit, encoder=encoder)
+        except EmbeddingsMissing as exc:
+            payload["state"] = exc.reason
+            payload["available"] = False
+            return payload
+        payload["items"] = _search_items(
+            conn, hits, frozenset(cfg.vlm.exclude_classes))
+        return payload
+    finally:
+        conn.close()
+
+
+def _parse_search_query(query: dict[str, list[str]],
+                        default_limit: int) -> tuple[str, int] | None:
+    """(query text, limit) for `GET /api/search`, or None -> 400.
+
+    An absent/empty `q` is NOT an error: the client asks with one on purpose, to learn the
+    state of the index without spending a model on it. `limit` follows the
+    `_parse_page_window` rule — a non-integer or a negative one is rejected, an
+    over-eager one is clamped.
+    """
+    text = (query.get("q") or [""])[0]
+    raw_limit = (query.get("limit") or [str(default_limit)])[0].strip()
+    try:
+        limit = int(raw_limit or default_limit)
+    except ValueError:
+        return None
+    if limit < 0:
+        return None
+    return text, min(limit, _SEARCH_MAX_LIMIT)
+
+
+class _LazyTextEncoder:
+    """The CLIP text tower of this server: loaded on the first query, then reused.
+
+    The same arrangement as `_LazyClassifierHolder` and for the same two reasons — the
+    model must not be loaded by merely starting the UI (most sessions never search), and
+    it must not be loaded twice, since the search route and the album route both encode
+    text. Tests replace `ui.text_encoder`, so the whole feature runs without a model.
+    """
+
+    def __init__(self, cfg: Config) -> None:
+        self._cfg = cfg
+        self._encoder: TextEncoder | None = None
+        self._lock = threading.Lock()
+
+    def __call__(self, texts: Sequence[str]) -> Any:
+        with self._lock:
+            if self._encoder is None:
+                self._encoder = text_encoder(naming_settings(self._cfg))
+            encoder = self._encoder
+        return encoder(texts)
+
+
 # --- F36: "Process" — the background pipeline index→geo→landmarks→faces→events→
 # junk→phash from the web (POST /api/process), pollable progress (GET
 # /api/process/status), cancel (POST /api/process/cancel). NOT imported from cli.py
@@ -2627,6 +2877,32 @@ _PIPELINE_STAGE_NAMES = ("index", "geo", "landmarks", "faces", "events", "junk",
 # assert above by _PIPELINE_STAGE_NAMES) — filtering is up to the caller
 # (`_run_pipeline`), with the same name list as `cli._OPTIONAL_STAGES`.
 _OPTIONAL_STAGES = ("faces", "events")
+
+# F135: with one button the run always walks the whole pipeline, and a stage that
+# skipped everything looks exactly like a stage that did nothing. A step may report
+# `{"processed": n, "skipped": m}` — the same two numbers the CLI prints ("skipped as
+# already processed") — and the status snapshot carries them to the client. `None`
+# means the stage cannot tell the two apart, and then nothing is claimed about it.
+_StageStats = dict[str, int] | None
+_StageFn = Callable[[Config, sqlite3.Connection, "_ProgressCB"], _StageStats]
+
+
+def _stage_stats(stats: object, processed: tuple[str, ...], skipped: str) -> _StageStats:
+    """Sum the `processed` counters of a stage's stats object and read `skipped` off it.
+
+    None when any of the names is missing or does not hold a number. Stages are
+    replaceable (tests swap the whole leaf function, a future one may stop returning
+    stats at all), and a caption at the bottom of the page is worth neither an
+    exception in the pipeline thread nor a fabricated zero — "skipped: 0" would claim
+    a stage skipped nothing where in truth it said nothing.
+    """
+    values: list[int] = []
+    for name in (*processed, skipped):
+        value = getattr(stats, name, None)
+        if not isinstance(value, int):
+            return None
+        values.append(value)
+    return {"processed": sum(values[:-1]), "skipped": values[-1]}
 
 
 class _LazyClassifierHolder:
@@ -2647,11 +2923,16 @@ class _LazyClassifierHolder:
         return self._real(paths, prompts)
 
 
-def _pipeline_steps() -> list[tuple[str, Callable[[Config, sqlite3.Connection, _ProgressCB], None]]]:
+def _pipeline_steps() -> list[tuple[str, _StageFn]]:
     """Processing steps in dependency order — the same as `cli._pipeline_steps`, plus
     `phash` last (canonically from cli _pipeline_steps).
     A fresh holder per call — a separate run does not share the CLIP classifier with
     the previous/next run.
+
+    F135: a step returns `{"processed": n, "skipped": m}` where the stage's own stats
+    can separate new work from what it recognised as already done — `index` (unchanged
+    files) and `junk` (the F68 incremental skip). The rest return None: inventing a
+    zero for a stage that does not count skips would claim something untrue.
     """
     holder: dict[str, _LazyClassifierHolder] = {}
 
@@ -2662,30 +2943,39 @@ def _pipeline_steps() -> list[tuple[str, Callable[[Config, sqlite3.Connection, _
                 lambda: clip_classifier(naming_settings(cfg)))
         return clf
 
-    def _index(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
-        run_index(cfg, conn, progress=lambda s: cb(s.scanned, None))
+    def _index(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
+        stats = run_index(cfg, conn, progress=lambda s: cb(s.scanned, None))
         assign_duplicates(conn, cfg.dedup.canonical_strategy)
+        # `added + updated` is the work; `skipped` is what path+mtime+size recognised
+        # as unchanged — the same split `cli._summarize_index` prints.
+        return _stage_stats(stats, ("added", "updated"), "skipped")
 
-    def _geo(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _geo(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         resolve_places(cfg, conn, progress=cb)
+        return None
 
-    def _landmarks(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _landmarks(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         detect_landmarks(cfg, conn, classifier=_clip(cfg), progress=cb)
+        return None
 
-    def _faces(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _faces(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         detect_and_cluster(cfg, conn, progress=cb)
+        return None
 
-    def _events(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _events(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         build_events(cfg, conn, progress=cb)
         name_events(cfg, conn)
+        return None
 
-    def _junk(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
-        classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb)
+    def _junk(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
+        stats = classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb)
+        return _stage_stats(stats, ("processed",), "skipped_incremental")
 
-    def _phash(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> None:
+    def _phash(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         compute_phashes(cfg, conn, progress=cb)
+        return None
 
-    steps: list[tuple[str, Callable[[Config, sqlite3.Connection, _ProgressCB], None]]] = [
+    steps: list[tuple[str, _StageFn]] = [
         ("index", _index), ("geo", _geo), ("landmarks", _landmarks),
         ("faces", _faces), ("events", _events), ("junk", _junk), ("phash", _phash),
     ]
@@ -2727,6 +3017,8 @@ class _ProcessState:
         self.phase: str | None = None
         self._phase_started = 0.0
         self._cancel_requested = False
+        # F135: per-stage {"processed", "skipped"} of THIS run — see `_stage_stats`.
+        self.stage_stats: dict[str, dict[str, int]] = {}
 
     def try_start(self, source_dir: str) -> bool:
         """True and switches to running if nothing is going now; otherwise False (409)."""
@@ -2750,6 +3042,11 @@ class _ProcessState:
             self.total = 0
             self.phase = None
             self._phase_started = 0.0
+
+    def set_stage_stats(self, name: str, stats: dict[str, int]) -> None:
+        """F135: what the finished stage `name` processed and what it skipped."""
+        with self._lock:
+            self.stage_stats[name] = dict(stats)
 
     def set_progress(self, done: int, total: int | None = None) -> None:
         """A signature superset of all stage ProgressCB variants (done, total|None).
@@ -2810,7 +3107,14 @@ class _ProcessState:
                 "error": self.error,
                 "finished": self.finished,
                 "cancel_requested": self._cancel_requested,
+                # F135: also what puts the source of the last run back into an empty
+                # field — with one button the path has to come back by itself, and the
+                # browser's own memory is not there in a fresh profile.
                 "source_dir": self.source_dir,
+                # F135: {stage: {"processed", "skipped"}} for the stages that can tell
+                # new work from work recognised as already done.
+                "stage_stats": {name: dict(values)
+                                for name, values in self.stage_stats.items()},
                 # F84: the sub-phase of the current stage and how long it has been
                 # running. phase=None -> the stage reports no phases (every stage but
                 # faces), and the client draws exactly what it drew before.
@@ -3210,6 +3514,10 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     run: they are two settings of one stage. The other base ones
     (index/geo/landmarks/phash) are not run at all.
 
+    F135: a step that returns `{"processed", "skipped"}` has it recorded into the
+    state, so the finished run can say what it did and what it recognised as already
+    done instead of showing the same "Done." for both.
+
     Cancellation is checked BETWEEN stages (not mid-stage — MVP). After a successful
     finish (without an error/cancel) the plan cache (the Cities tab) is recomputed
     with the same conn so the tabs show the new data right away; Duplicates/People/
@@ -3249,7 +3557,9 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                 # nobody watching the console — the per-stage timing has to reach the
                 # run log, or "which stage ate the time" stays a guess.
                 with stage_timer(name):
-                    fn(run_cfg, conn, _StageProgress(state))
+                    stats = fn(run_cfg, conn, _StageProgress(state))
+                if stats is not None:
+                    state.set_stage_stats(name, stats)
             except _PipelineCancelled:
                 completed = False  # mid-stage cancellation via the progress callback
                 break
@@ -3927,20 +4237,17 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "size_units": {
         "ru": "Б КБ МБ ГБ ТБ", "en": "B KB MB GB TB", "ja": "B KB MB GB TB",
     },
-    "process_rerun_optional_button": {
-        "ru": "Дозапустить выбранное",
-        "en": "Re-run selected",
-        "ja": "選択項目を再実行",
+    # F135: one button, so the run has to say what it skipped. "Nothing happened" and
+    # "everything was already done" look identical without these two lines.
+    "process_summary_title": {
+        "ru": "Что сделал прогон:",
+        "en": "What the run did:",
+        "ja": "この実行の内容:",
     },
-    "process_rerun_optional_hint": {
-        "ru": "по активному индексу, без переиндексации/гео: лица (при «Разбор по "
-              "лицам»), события (при «Разбор по событиям»), VLM-классификация "
-              "(при «Глубокий анализ»)",
-        "en": "on the current index, without re-indexing/geo: faces (if «Detect "
-              "faces»), events (if «Detect events»), VLM classification (if «Deep "
-              "analysis»)",
-        "ja": "既存のインデックスに対して（再インデックス・位置情報なし）: 顔（「顔の"
-              "検出」時）、イベント（「イベントの検出」時）、VLM 分類（「詳細分析」時）",
+    "process_summary_stage": {
+        "ru": "{stage} — обработано: {processed}, пропущено как уже обработанные: {skipped}",
+        "en": "{stage} — processed: {processed}, skipped as already processed: {skipped}",
+        "ja": "{stage} — 処理: {processed} 件、処理済みのためスキップ: {skipped} 件",
     },
     "env_cpu_warning": {
         "ru": "Установлен CPU-профиль: обработка идёт на процессоре — распознавание "
@@ -5294,16 +5601,101 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "スクリーンショット・書類）。スライスのアルバムはハードリンクなので、"
               "何度でも作成・削除できます。",
     },
-    "slices_query_placeholder": {
-        "ru": "Найти срез…", "en": "Find a slice…", "ja": "スライスを検索…",
+    # --- F134: the search line itself. The place F133 reserved is wired now, so the
+    # placeholder names what actually goes in it — words, not the name of a slice.
+    "search_placeholder": {
+        "ru": "Найти словами: торт, снег, море…",
+        "en": "Search by words: cake, snow, the sea…",
+        "ja": "言葉で検索: ケーキ、雪、海…",
     },
-    # The search line is DRAWN and not wired: F129 turns the slice list from something a
-    # programmer writes into a query, and a fixed row of tabs would have to be redrawn a
-    # feature later. The place for it is reserved now; the field says so plainly.
-    "slices_query_hint": {
-        "ru": "Поиск по срезам появится позже — пока доступны закреплённые.",
-        "en": "Search over slices is coming later — the pinned ones are available now.",
-        "ja": "スライス検索は後日対応します。今は固定スライスのみ利用できます。",
+    "search_button": {"ru": "Найти", "en": "Search", "ja": "検索"},
+    # Shown until the first answer about the index arrives. Not "search is unavailable":
+    # the state is not known yet, and guessing it in either direction is a lie that lasts
+    # exactly as long as the request.
+    "search_state_checking": {
+        "ru": "Проверяем индекс поиска…", "en": "Checking the search index…",
+        "ja": "検索インデックスを確認しています…",
+    },
+    # THE state of this feature: nothing was ever encoded. An empty result list would read
+    # as "you have no photographs like that", which is a conclusion about somebody's own
+    # archive drawn from a table that was never filled.
+    "search_state_empty": {
+        "ru": "Искать пока не по чему: индекс поиска пуст. Он считается обычным "
+              "прогоном коллекции — отдельная модель и отдельная настройка не нужны.",
+        "en": "There is nothing to search yet: the search index is empty. It is built by "
+              "an ordinary run over the collection — no separate model, no extra setting.",
+        "ja": "検索できる対象がまだありません。検索インデックスが空です。通常の処理を"
+              "実行すると作成されます（専用モデルも追加設定も不要です）。",
+    },
+    # The other unavailable state, and deliberately a different sentence: the fix is the
+    # same run, but the reason is that the stored vectors belong to another model and are
+    # not comparable with this query. Mixing them silently would produce a plausible
+    # ranking that nothing on screen marks as wrong.
+    "search_state_other_model": {
+        "ru": "Индекс поиска посчитан другой моделью ({model}): её векторы несравнимы с "
+              "текущей, поэтому выдача была бы правдоподобной чушью. Нужен повторный "
+              "прогон коллекции.",
+        "en": "The search index was computed by another model ({model}): its vectors are "
+              "not comparable with the current one, so the ranking would be plausible "
+              "nonsense. The collection has to be processed again.",
+        "ja": "検索インデックスは別のモデル（{model}）で作成されています。ベクトルに"
+              "互換性がなく、もっともらしい誤った結果になります。コレクションを再度"
+              "処理してください。",
+    },
+    # Available, and honest about the denominator: an incremental run is the normal way to
+    # live with a growing archive, and a person must be able to tell "it is not in the
+    # collection" from "it is not in the index yet".
+    "search_state_partial": {
+        "ru": "Ищем по {n} из {all} фотографий: остальные попадут в индекс на следующем "
+              "прогоне.",
+        "en": "Searching {n} of {all} photographs: the rest join the index on the next "
+              "run.",
+        "ja": "{all} 枚中 {n} 枚を検索対象にしています。残りは次回の処理でインデックスに"
+              "追加されます。",
+    },
+    "search_state_ready": {
+        "ru": "Ищем по всем {all} фотографиям коллекции.",
+        "en": "Searching all {all} photographs of the collection.",
+        "ja": "コレクションの {all} 枚すべてを検索します。",
+    },
+    "search_goto_overview": {
+        "ru": "К «Обзору»", "en": "Go to Overview", "ja": "「概要」へ",
+    },
+    # No threshold exists and none will (search.py): the score orders frames against each
+    # other and says nothing in absolute terms. The line says so instead of promising an
+    # accuracy nobody has measured.
+    "search_ranking_hint": {
+        "ru": "Это ранжирование, а не фильтр: список отсортирован по близости к запросу, "
+              "порога «точно оно» нет. Смотрите сверху вниз и остановитесь, где кончится "
+              "похожее.",
+        "en": "This is a ranking, not a filter: the list is sorted by closeness to the "
+              "query and there is no “this really is it” threshold. Read top-down and "
+              "stop where the resemblance runs out.",
+        "ja": "これはフィルタではなくランキングです。クエリとの近さで並んでおり、"
+              "「確実に該当」というしきい値はありません。上から順に見て、似ていないと"
+              "感じたところで止めてください。",
+    },
+    "search_score_label": {
+        "ru": "близость {score}", "en": "closeness {score}", "ja": "近さ {score}",
+    },
+    "search_shown_label": {
+        "ru": "Запрос «{q}»: {n} кадров, от самого близкого",
+        "en": "Query “{q}”: {n} frames, closest first",
+        "ja": "クエリ「{q}」: {n} 件（近い順）",
+    },
+    # An available index always ranks everything it holds, so an empty list means the
+    # index itself is empty of frames a search may return — never "there are no such
+    # photographs".
+    "search_no_frames": {
+        "ru": "Ранжировать нечего: в индексе поиска нет ни одного кадра, который можно "
+              "показать.",
+        "en": "There is nothing to rank: the search index holds no frame that could be "
+              "shown.",
+        "ja": "並べ替える対象がありません。検索インデックスに表示できるコマがありません。",
+    },
+    "error_loading_search": {
+        "ru": "Не удалось выполнить поиск: ", "en": "Could not run the search: ",
+        "ja": "検索を実行できません: ",
     },
     "slices_pinned_label": {
         "ru": "Закреплённые срезы", "en": "Pinned slices", "ja": "固定スライス",
@@ -5564,6 +5956,24 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
 .slice-query-field svg { width: 15px; height: 15px; flex: none; }
 .slice-query-field input { flex: 1; min-width: 0; border: 0; background: transparent;
       color: inherit; padding: 2px 0; }
+/* --- F134: the line is a control now, and the two things beside it are the feature:
+   the reason it cannot be used, and the way to fix it. A disabled field with nothing
+   next to it is how a person concludes their archive is empty. --- */
+.slice-query-row { display: flex; align-items: center; gap: var(--space-sm); }
+.slice-query-row .slice-query-field { flex: 1; }
+.slice-query-field input:disabled { cursor: not-allowed; }
+#search-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.search-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.search-card img { width: 100%; height: 110px; margin: 0; }
+.search-card-name { font-size: 0.8rem; word-break: break-all; }
+.search-card-meta { font-size: 0.75rem; color: var(--muted); }
+/* The score is not decoration: it is the only thing that explains the order, and the
+   reader stops where it stops being convincing. */
+.search-card-score { font-size: 0.75rem; color: var(--muted);
+      font-variant-numeric: tabular-nums; }
 /* --- F133: the order warning. Loud enough to be read, and a hint and nothing more: the
    collection is alive, "gather" happens again and again, and a person coming back for one
    album must not be walked through steps. --- */
@@ -5810,8 +6220,6 @@ label { cursor: pointer; }
 .process-toggle-hint { font-size: 0.8rem; color: var(--muted); margin-left: 20px; }
 .process-toggle-warn { color: var(--danger); }
 .process-actions { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; }
-.process-rerun-block { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; margin-top: var(--space-sm); }
-.process-rerun-hint { font-size: 0.8rem; color: var(--muted); margin: 0; max-width: 40rem; }
 .process-progress { width: 100%; max-width: 40rem; display: block; margin: var(--space-sm) 0; height: 8px;
       appearance: none; border: none; border-radius: var(--radius-pill); overflow: hidden; background: var(--track); }
 .process-progress::-webkit-progress-bar { background: var(--track); border-radius: var(--radius-pill); }
@@ -5831,6 +6239,12 @@ label { cursor: pointer; }
 }
 @keyframes process-indeterminate { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 .process-status { margin: var(--space-sm) 0; color: var(--muted); }
+/* F135: what the finished run actually did — one line per stage that can tell
+   "processed" from "skipped as already done". Without it a run that skipped
+   everything is indistinguishable from a run that did nothing. */
+.process-summary { margin: var(--space-sm) 0; font-size: 0.85rem; color: var(--muted); }
+.process-summary-title { display: block; }
+.process-summary-line { display: block; margin-left: var(--space-sm); }
 /* F84: caption of the current sub-phase, right under the bar — on a phase without a
    percent (clustering) it is the only thing that says the run is alive. */
 .process-phase { margin: calc(-1 * var(--space-sm)) 0 var(--space-sm); font-size: 0.85rem;
@@ -5976,7 +6390,8 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 @media (max-width: 640px) {
   body { padding: var(--space-md); }
   #clusters-grid, #events-list { grid-template-columns: 1fr; }
-  #junk-grid, #animals-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  #junk-grid, #animals-grid, #search-grid {
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .process-path-row { flex-direction: column; align-items: stretch; }
   .process-path-row input[type="text"] { min-width: 100%; }
 }
@@ -6098,10 +6513,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" id="process-cancel-btn" class="btn btn-ghost process-cancel-btn" style="display:none">{{process_cancel_button}}</button>
 <button type="button" id="process-reset-btn" class="btn btn-danger">{{process_reset_button}}</button>
 </div>
-<div class="process-rerun-block">
-<button type="button" id="process-rerun-optional-btn" class="btn btn-ghost" disabled>{{process_rerun_optional_button}}</button>
-<span class="process-rerun-hint">{{process_rerun_optional_hint}}</span>
-</div>
 </div>
 </div>
 </div>
@@ -6109,6 +6520,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="process-phase" class="process-phase" style="display:none"></div>
 <div id="process-stages" class="stage-chips"></div>
 <div id="process-status" class="process-status"></div>
+<div id="process-summary" class="process-summary"></div>
 <div id="env-cpu-warning" class="env-warning" style="display:none">⚠ {{env_cpu_warning}}</div>
 <div class="cache-block" id="cache-block">
 <div class="cache-head">
@@ -6278,14 +6690,27 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <section id="tab-slices" class="tab-panel">
 <p class="process-intro">{{slices_intro}}</p>
 <div class="slice-search">
+<div class="slice-query-row">
 <label class="slice-query-field" for="slice-query">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
      stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.3-4.3"/></svg>
-<input type="search" id="slice-query" placeholder="{{slices_query_placeholder}}" disabled>
+<input type="search" id="slice-query" placeholder="{{search_placeholder}}" disabled>
 </label>
-<span class="process-toggle-hint">{{slices_query_hint}}</span>
+<button type="button" id="slice-query-btn" class="btn btn-primary btn-sm" disabled>{{search_button}}</button>
+<button type="button" id="slice-query-goto" class="btn btn-ghost btn-sm" style="display:none">{{search_goto_overview}}</button>
+</div>
+<span id="slice-query-hint" class="process-toggle-hint">{{search_state_checking}}</span>
 </div>
 <div id="slice-pins" class="review-slices" aria-label="{{slices_pinned_label}}"></div>
+
+<div id="tab-search" class="slice-panel">
+<p class="process-intro">{{search_ranking_hint}}</p>
+<div id="search-album" class="album-controls"></div>
+<div id="search-grid"></div>
+<div class="process-actions">
+<span id="search-shown" class="override-hint"></span>
+</div>
+</div>
 
 <div id="tab-person" class="slice-panel">
 <div class="cluster-controls">
@@ -7498,8 +7923,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       btn.addEventListener("click", function () { selectSlice(pin.key); });
       box.appendChild(btn);
     });
+    // F134: "no slices yet" must not sit under a search that is working — the search
+    // line is a slice of its own the moment it has results on screen.
     document.getElementById("slice-empty").style.display =
-        slicePins.length ? "none" : "";
+        (slicePins.length || searchActive) ? "none" : "";
   }
 
   function selectSlice(key) {
@@ -7507,8 +7934,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     slicePins.forEach(function (p) { if (p.key === key) pin = p; });
     if (!pin) return;
     sliceCurrent = key;
+    // F134: the search results are a panel of this tab like any other, so picking a pin
+    // puts them away — one panel is visible at a time, whichever one it is.
+    searchActive = false;
     var panelId = slicePanelId(key);
-    ["tab-person", "tab-event", "tab-animal", "tab-junk"].forEach(function (id) {
+    ["tab-person", "tab-event", "tab-animal", "tab-junk",
+     "tab-search"].forEach(function (id) {
       document.getElementById(id).classList.toggle("active", id === panelId);
     });
     slicePins.forEach(function (p) {
@@ -7535,6 +7966,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   function loadSlices() {
+    // F134: the state of the search index is asked for on every open, for the reason the
+    // numbers of "Overview" are — the person may have just come back from a run, and a
+    // line that stays disabled after the run that enabled it is the worst of both states.
+    fetchSearchState();
     // The counters of the class pins come from the route that already serves them, asked
     // for zero items: the counts are the whole answer here.
     return fetch("/api/junk?offset=0&limit=0")
@@ -7543,7 +7978,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .catch(function () {})
       .then(function () {
         renderSlicePins();
-        if (!slicePins.length) return;
+        if (!slicePins.length || searchActive) return;
         var want = slicePending;
         slicePending = null;
         var still = false;
@@ -7562,6 +7997,168 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     activateTab("slices");
   }
 
+  // --- F134: поиск словами в блоке «Срезы» -----------------------------------
+  // The line F133 drew and left disabled. Everything here is arranged around one state
+  // that is not a failure: an index nobody has computed yet. `/api/search` answers with
+  // the state of the index on EVERY request — including the empty query this tab asks on
+  // open, which never reaches the model — so the line can stay disabled with the reason
+  // beside it instead of ranking nothing. An empty list of results would read as "you
+  // have no photographs like that": a conclusion about somebody's own archive, drawn
+  // from a table that was never filled.
+
+  var searchState = null;
+  var searchActive = false;   // результаты на экране -> панель среза занята поиском
+
+  function searchStateText(state) {
+    if (!state) return I18N.search_state_checking;
+    // Two unavailable states, two sentences: "run it" and "run it AGAIN, that index was
+    // computed by another model" are different instructions, and the model is named
+    // because a reason nobody can act on is not a reason.
+    if (state.state === "other_model") {
+      return fmt(I18N.search_state_other_model, { model: state.index_model || "?" });
+    }
+    if (state.state === "empty") return I18N.search_state_empty;
+    if (state.state === "partial") {
+      return fmt(I18N.search_state_partial, { n: state.indexed, all: state.total });
+    }
+    return fmt(I18N.search_state_ready, { all: state.total });
+  }
+
+  function applySearchState(state) {
+    searchState = state;
+    var available = !!(state && state.available);
+    document.getElementById("slice-query").disabled = !available;
+    document.getElementById("slice-query-btn").disabled = !available;
+    document.getElementById("slice-query-hint").textContent = searchStateText(state);
+    // The way out of both unavailable states is a run of the collection, and the run
+    // lives on "Overview" — a reason without the way to it is a dead end.
+    document.getElementById("slice-query-goto").style.display =
+        (state && !available) ? "" : "none";
+  }
+
+  function fetchSearchState() {
+    // An empty `q`: the state of the index is the whole question here, and the server
+    // loads no model to answer it.
+    return fetch("/api/search?q=")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { applySearchState(data); })
+      .catch(function () {});
+  }
+
+  function showSearchPanel() {
+    searchActive = true;
+    ["tab-person", "tab-event", "tab-animal", "tab-junk"].forEach(function (id) {
+      document.getElementById(id).classList.remove("active");
+    });
+    document.getElementById("tab-search").classList.add("active");
+    slicePins.forEach(function (p) {
+      var btn = document.getElementById(sliceKeyId(p.key));
+      if (btn) btn.classList.remove("active");
+    });
+    sliceCurrent = null;
+    document.getElementById("slice-empty").style.display = "none";
+  }
+
+  function renderSearchCard(item) {
+    var card = document.createElement("div");
+    card.className = "search-card";
+    if (item.thumb_url) {
+      card.appendChild(
+          clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
+    } else {
+      // F133's rule, and the search must not become the way around it: a sensitive class
+      // is never decoded for display. The server sent no link, so nothing here asks
+      // /thumb for one.
+      var stub = document.createElement("div");
+      stub.className = "junk-doc-box";
+      stub.textContent = I18N.junk_document_no_preview;
+      card.appendChild(stub);
+    }
+    var name = document.createElement("span");
+    name.className = "search-card-name";
+    name.textContent = item.name;
+    card.appendChild(name);
+    var meta = document.createElement("span");
+    meta.className = "search-card-meta";
+    meta.textContent = item.date || "";
+    card.appendChild(meta);
+    // The score is on every card because it is the only thing that explains the order —
+    // this ranks, it does not classify, and the reader decides where the list stops
+    // being about their query.
+    var score = document.createElement("span");
+    score.className = "search-card-score";
+    score.textContent = fmt(I18N.search_score_label,
+                            { score: Number(item.score).toFixed(3) });
+    card.appendChild(score);
+    return card;
+  }
+
+  // The album of a query is the album route that already exists: kind='query' and the
+  // words themselves as the selector, through the same dry-run-then-confirm path every
+  // other album goes through.
+  function renderSearchAlbumControls(query) {
+    var box = document.getElementById("search-album");
+    box.textContent = "";
+    if (!query) return;
+    var modeSelect = albumModeSelect();
+    box.appendChild(modeSelect);
+    var destInput = appendAlbumDestControls(box);
+    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
+                           "btn-sm album-gather-btn");
+    var albumStatus = document.createElement("span");
+    albumStatus.className = "album-status";
+    albumBtn.addEventListener("click", function () {
+      gatherAlbum("query", query, modeSelect.value, null, null,
+          destInput.value.trim() || null, albumStatus);
+    });
+    box.appendChild(albumBtn);
+    box.appendChild(albumStatus);
+  }
+
+  function renderSearchResults(data) {
+    applySearchState(data);
+    var grid = document.getElementById("search-grid");
+    grid.textContent = "";
+    var items = data.items || [];
+    items.forEach(function (it) { grid.appendChild(renderSearchCard(it)); });
+    if (!items.length) {
+      // Never "nothing was found": a usable index ranks everything it holds, so an empty
+      // list is a fact about the index and the answer says which one.
+      grid.appendChild(stateEl("empty",
+          data.available ? I18N.search_no_frames : searchStateText(data)));
+    }
+    document.getElementById("search-shown").textContent = items.length
+        ? fmt(I18N.search_shown_label, { q: data.query, n: items.length }) : "";
+    renderSearchAlbumControls(items.length ? data.query : "");
+  }
+
+  function runSearch() {
+    var q = document.getElementById("slice-query").value.trim();
+    // An empty query goes nowhere near the model — not from here and not on the server.
+    if (!q || !(searchState && searchState.available)) return;
+    showSearchPanel();
+    var grid = document.getElementById("search-grid");
+    grid.textContent = "";
+    grid.appendChild(stateEl("loading", I18N.loading));
+    document.getElementById("search-shown").textContent = "";
+    renderSearchAlbumControls("");
+    return fetch("/api/search?q=" + encodeURIComponent(q))
+      .then(function (r) { return r.json(); })
+      .then(function (data) { renderSearchResults(data); })
+      .catch(function (err) {
+        grid.textContent = "";
+        grid.appendChild(stateEl("error", I18N.error_loading_search + err));
+      });
+  }
+
+  document.getElementById("slice-query-btn").addEventListener("click", runSearch);
+  document.getElementById("slice-query").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); runSearch(); }
+  });
+  document.getElementById("slice-query-goto").addEventListener("click", function () {
+    activateTab("overview");
+  });
+
   // F54: «Люди»/«События» скрыты по умолчанию (без мигания) и раскрываются
   // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
   // EXISTS-проверок, вызывается при инициализации и после каждого прогона
@@ -7572,8 +8169,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     fetch("/api/tabs/visibility")
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        indexHasFiles = !!data.indexed;
-        updateRerunSelectedDisabled();
         sliceVisibility = {
           person: !!data.person,
           event: !!data.event,
@@ -7964,44 +8559,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   }
 
-  // F62/F63: «Дозапустить выбранное» — в отличие от filterProcessStages
-  // (базовые + включённые опциональные), здесь ТОЛЬКО выбранное: faces/events
-  // по флагам + junk при deep (переклассификация с VLM). Базовые index/geo/
-  // landmarks/phash сервер не запускает. Порядок из ALL_PROCESS_STAGES.
-  //
-  // F123: pets asks for junk as well, and `deep || pets` is what keeps the two of them
-  // ONE stage here — the same set the server builds. Animals are not a stage: nothing
-  // is added to ALL_PROCESS_STAGES, so no phantom chip can appear.
-  function filterRerunStages(faces, events, deep, pets) {
-    var enabled = { faces: faces, events: events, junk: deep || pets };
-    return ALL_PROCESS_STAGES.filter(function (name) { return enabled[name]; });
-  }
+  // F135: there is no "Re-run selected" any more — one run button, and the stages
+  // skip what is already done by themselves. The /api/process/rerun-optional ROUTE is
+  // still there (it is public, see the API documentation): the button went, not it.
 
-  // Индекс пуст ⇒ догонять этап не на чем. Обновляется там же, где видимость
-  // вкладок: при загрузке, после прогона и сразу после «Начать заново» — то есть
-  // ровно в тот момент, когда индекс и обнуляется. До первого ответа считаем, что
-  // файлы есть: осторожная сторона тут — не гасить кнопку у того, у кого всё в
-  // порядке, а пустой индекс подтвердится через долю секунды.
-  var indexHasFiles = true;
-
-  function rerunSelectedAllowed() {
-    return indexHasFiles && (
-        document.getElementById("process-faces-checkbox").checked ||
-        document.getElementById("process-events-checkbox").checked ||
-        document.getElementById("process-deep-checkbox").checked ||
-        document.getElementById("process-pets-checkbox").checked);
-  }
-
-  // Последнее известное состояние пайплайна. Обработчик галочек срабатывает
-  // мгновенно, а опрос статуса — раз в тик: без этого флага отметка «faces» во
-  // время прогона включала кнопку «догнать этап» до следующего тика, и её можно
-  // было нажать, пока идёт индексация.
+  // The last known state of the pipeline. The status poll runs once a tick while the
+  // handlers on this tab fire instantly — without this flag they used to re-enable
+  // what the tick had just disabled for the duration of a run.
   var processRunning = false;
-
-  function updateRerunSelectedDisabled() {
-    document.getElementById("process-rerun-optional-btn").disabled =
-        processRunning || !rerunSelectedAllowed();
-  }
 
   // Всё, что задаёт вход пайплайна, на время прогона недоступно: менять источник
   // у уже идущей обработки бессмысленно, а диалог выбора папки ещё и открывает
@@ -8018,13 +8583,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       if (el) { el.disabled = processRunning; }
     });
   }
-
-  ["process-faces-checkbox", "process-events-checkbox", "process-deep-checkbox",
-   "process-pets-checkbox"]
-      .forEach(function (id) {
-        document.getElementById(id).addEventListener("change", updateRerunSelectedDisabled);
-      });
-  updateRerunSelectedDisabled();
 
   function renderStageChips(data) {
     var container = document.getElementById("process-stages");
@@ -8087,23 +8645,64 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     }
   }
 
+  // F135: the source of the last run comes back into the field by itself. The
+  // browser's own memory (SOURCE_DIR_KEY) covers a page reload but not a fresh profile
+  // or a second browser — and "Start" in one click is half of what merging the two
+  // buttons is for. A field that already has something in it is left alone: putting a
+  // path over what someone is typing is worse than not restoring it at all.
+  function adoptRememberedSource(data) {
+    var input = document.getElementById("process-source-dir");
+    if (!data.source_dir || input.value.trim()) return;
+    input.value = data.source_dir;
+    rememberSourceDir();
+    loadExcludesInfo();
+    updateStepLayout();
+  }
+
+  // F135: with one button the run walks the whole pipeline every time, and without
+  // this summary "everything was already done" reads exactly like "nothing happened".
+  // It shows what the CLI prints: how much the stage processed and how much it skipped
+  // as already processed. Stages without such a counter are not sent by the server and
+  // do not appear here — an invented zero would be a lie, not a line of a report.
+  function renderProcessSummary(data) {
+    var box = document.getElementById("process-summary");
+    box.textContent = "";
+    var stats = data.stage_stats || {};
+    var names = ALL_PROCESS_STAGES.filter(function (name) { return stats[name]; });
+    if (!names.length) return;
+    var title = document.createElement("span");
+    title.className = "process-summary-title";
+    title.textContent = I18N.process_summary_title;
+    box.appendChild(title);
+    names.forEach(function (name) {
+      var line = document.createElement("span");
+      line.className = "process-summary-line";
+      line.textContent = fmt(I18N.process_summary_stage, {
+        stage: processStageLabel(name),
+        processed: stats[name].processed || 0,
+        skipped: stats[name].skipped || 0,
+      });
+      box.appendChild(line);
+    });
+  }
+
   function renderProcessStatus(data) {
     var startBtn = document.getElementById("process-start-btn");
     var cancelBtn = document.getElementById("process-cancel-btn");
-    var rerunBtn = document.getElementById("process-rerun-optional-btn");
     var bar = document.getElementById("process-progress");
     var statusEl = document.getElementById("process-status");
     processRunning = !!data.running;
     startBtn.disabled = processRunning;
-    rerunBtn.disabled = processRunning || !rerunSelectedAllowed();
     updateProcessInputsDisabled();
     updateBusyControlsDisabled();  // раскладка и «начать заново» — пока идёт прогон
+    adoptRememberedSource(data);
     cancelBtn.style.display = data.running ? "" : "none";
     cancelBtn.disabled = !!data.cancel_requested;
     bar.style.display = data.running ? "" : "none";
     if (!data.running) bar.classList.remove("indeterminate");
     renderStageChips(data);
     renderProcessPhase(data);
+    renderProcessSummary(data);
     if (data.running) {
       if (data.cancel_requested) {
         // отмена запрошена — показываем фидбэк, пока стадия прерывается/дорабатывает
@@ -8181,25 +8780,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       source_dir: path, deep: deep, geo_online: geoOnline, faces: faces, events: events,
       pets: pets,
     }).then(function (resp) {
-      if (resp && resp.error) {
-        document.getElementById("process-status").textContent =
-            I18N.process_start_error_prefix + resp.error;
-        return;
-      }
-      if (processPollTimer) clearTimeout(processPollTimer);
-      pollProcessStatus();
-    });
-  });
-
-  document.getElementById("process-rerun-optional-btn").addEventListener("click", function () {
-    var faces = document.getElementById("process-faces-checkbox").checked;
-    var events = document.getElementById("process-events-checkbox").checked;
-    var deep = document.getElementById("process-deep-checkbox").checked;
-    var pets = document.getElementById("process-pets-checkbox").checked;
-    currentProcessStages = filterRerunStages(faces, events, deep, pets);
-    postJson("/api/process/rerun-optional",
-             { faces: faces, events: events, deep: deep, pets: pets })
-        .then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
             I18N.process_start_error_prefix + resp.error;
@@ -8587,6 +9167,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         return;
       }
       statusEl.textContent = clearGeo ? I18N.process_reset_done_geo : I18N.process_reset_done;
+      // F135: the summary of the last run counted files of an index that is gone now.
+      renderProcessSummary({});
       refreshTabsAfterProcess();
     });
   });
@@ -10318,6 +10900,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
     _index_html_cache: dict[i18n.Lang, bytes] = {
         default_lang: _render_index_html(default_lang).encode("utf-8"),
     }
+    # F134: one text encoder per server, shared by `/api/search` and the `kind='query'`
+    # album — loading CLIP twice for the two halves of the same feature would cost a
+    # minute and a gigabyte for nothing.
+    query_encoder = _LazyTextEncoder(cfg)
 
     def _resolve_query_lang(raw_values: list[str] | None) -> i18n.Lang:
         """`?lang=` from the query -> a valid code (ru/en/ja), otherwise `default_lang`
@@ -10361,6 +10947,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_animals(parse_qs(parts.query))
             elif path == "/api/review":
                 self._serve_review(parse_qs(parts.query))
+            elif path == "/api/search":
+                self._serve_search(parse_qs(parts.query))
             elif path == "/api/places/search":
                 self._serve_places_search(parse_qs(parts.query))
             elif path == "/api/process/status":
@@ -10551,6 +11139,19 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 blur_max=cfg.features.blur_review_max,
                 max_distance=cfg.index.phash_max_distance))
 
+        def _serve_search(self, query: dict[str, list[str]]) -> None:
+            # F134: read-only, and read-only in the strong sense — an empty `q` asks for
+            # the state of the index alone and never reaches the model. The sensitive
+            # classes come off the LIVE config for the reason `/api/junk` does that.
+            parsed = _parse_search_query(query, cfg.features.search_limit)
+            if parsed is None:
+                self._send_json({"error": "invalid limit"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            text, limit = parsed
+            self._send_json(_search_payload(cfg, db_path, text, limit,
+                                            encoder=query_encoder))
+
         def _serve_places_search(self, query: dict[str, list[str]]) -> None:
             # F85c: read-only, bundled data only. `?lang=` decides the language of the
             # LABELS; the search itself always tries all three, because a place is
@@ -10734,8 +11335,20 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             dest = Path(dest_str) if dest_str else _album_dest(cfg, db_path)
             conn = _connect(db_path)
             try:
+                # F134: `encoder` is the server's own text tower and is ignored by every
+                # kind but `query` — without it `plan_album` would load a second copy of
+                # CLIP for an album the search line has already ranked.
                 report = plan_album(cfg, conn, kind, selector, dest, mode=mode,
-                                    where=where, apply=apply_, album_name=name)
+                                    where=where, apply=apply_, album_name=name,
+                                    encoder=query_encoder)
+            except EmbeddingsMissing as exc:
+                # The button is only offered while the index is searchable, so this is a
+                # race (a run emptied the table in between) — and it answers with the
+                # REASON, never with an album of zero files, which would read as "your
+                # collection holds none of these" (F134).
+                self._send_json({"error": "search unavailable", "reason": exc.reason},
+                                status=HTTPStatus.CONFLICT)
+                return
             finally:
                 conn.close()
             self._send_json(_album_report_to_json(report, apply_))
@@ -10782,6 +11395,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # overridden (_run_pipeline(source_dir=None) leaves cfg.sources).
             # deep -> junk with the VLM (naming.vlm_enabled=deep); F123: pets -> the
             # same junk stage with features.pets, and both together are one run of it.
+            # F135: the web app no longer has a button for this — "Start" runs the
+            # whole pipeline and the stages skip what is done. The ROUTE stays: it is
+            # documented and callable from outside, and dropping a public endpoint is
+            # a decision of its own, not a side effect of tidying up the markup.
             parsed = _validate_rerun_optional_payload(self._read_json_body())
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
@@ -10789,9 +11406,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             faces, events, deep, pets = parsed
             # No "index is empty" guard here on purpose: re-running the optional
             # stages over nothing is a no-op, not a hazard — unlike a layout over a
-            # half-built index or a reset mid-run, which the server does refuse. The
-            # button is disabled for it (F54 payload carries `indexed`), and that is
-            # the right layer for "pointless", as opposed to "dangerous".
+            # half-built index or a reset mid-run, which the server does refuse.
+            # "Pointless" is not the same answer as "dangerous".
             with busy_lock:
                 if sort_state.snapshot()["running"]:
                     self._send_json({"error": "sort is running"}, status=HTTPStatus.CONFLICT)

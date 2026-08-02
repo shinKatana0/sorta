@@ -165,12 +165,33 @@ CREATE TABLE IF NOT EXISTS frame_quality (
 --
 -- `vec` is L2-NORMALIZED FLOAT32, little-endian (`dim` numbers, 4 bytes each) — the same
 -- wire format `faces.embedding` uses. Normalized so cosine similarity is a dot product and
--- no consumer has to renormalize per query. Half precision would halve the table (~30 MB
--- instead of ~60 for 19 757 photos, ~460 MB instead of ~920 for 300 000) and was rejected
--- by measurement, not by taste: over 256 unit vectors of the real width, 18 of 20 queries
--- rank differently in float16 (tests/test_clip_embeddings.py). The reordered pairs are
--- always within 3e-5 of a cosine of each other, but the ranking is what every consumer of
--- this table reads, so it is stored at the precision the encoder produced.
+-- no consumer has to renormalize per query.
+--
+-- FLOAT16 IS SETTLED: DO NOT CONVERT. It is the obvious saving — the table halves, ~30 MB
+-- instead of ~61 for 19 753 photos, ~461 MB instead of ~922 at 300 000 — and it has been
+-- measured twice, from both ends, and rejected both times.
+--
+-- (1) Ranking (F128, tests/test_clip_embeddings.py): over 256 unit vectors of the real
+--     width, 18 of 20 queries come back in a different order in half precision. Repeated
+--     on the 19 753 REAL vectors (which cluster far tighter than random ones): 137 of 200
+--     queries reorder inside the top 50 — but the first result never changed once, and
+--     every reordered pair sits within 2.1e-04 of a cosine of its neighbour, none above
+--     1e-3. So on its own this objection is weak: nothing a person would notice moves.
+--
+-- (2) SPEED, and this is the one that decides it. numpy has no native float16 matmul: it
+--     upcasts the whole matrix on EVERY query, so the saved memory is paid for by doing
+--     the work twice. Measured on this machine over 19 753 vectors:
+--
+--         float32   0.9 ms per query,  61 MB   ->  300 000 photos:   14 ms,  922 MB
+--         float16  70.2 ms per query,  30 MB   ->  300 000 photos: 1066 ms,  461 MB
+--
+--     78x slower. Half a gigabyte of RAM against a full second of latency on every
+--     keystroke of a search — and latency is the only reason this table exists at all.
+--
+-- The trap is that (1) alone reads like "a fifth-decimal reordering, who cares, put it
+-- back to float16". Whoever thinks that will be right about the ranking and will still
+-- make the search unusable. Storage is 38% of the database (61 MB of 160) — the cheapest
+-- of the three costs, not the one to optimise.
 --
 -- Population: canonical photographs, the same as `frame_quality` and for the F120 reason
 -- — the embedding of a screenshot is noise in a search over personal photos. A frame CLIP
