@@ -47,6 +47,7 @@ import numpy as np
 
 from .config import Config
 from .junk import embedding_model, read_clip_embeddings
+from .landmarks import batched
 from .naming import NamingSettings, naming_settings
 
 # Query strings -> their text features, one row per string, in the same order. Replaced in
@@ -162,8 +163,8 @@ def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
     The one entry point the CLI, the album and the measurement share, so that "which model
     are we comparing against" is answered in one place (`junk.embedding_model` — the
     architecture AND the weights) instead of three. `limit=None` means
-    `features.search_limit`; the encoder is built on demand, so a caller that never reaches
-    the model — an empty table, a bad query — does not pay for loading it.
+    `features.search_limit`. The encoder is loaded only when the caller does not bring one,
+    which is what keeps the CLIP import out of every module that merely imports this one.
     """
     if encoder is None:  # pragma: no cover — ML, smoke test
         encoder = text_encoder(naming_settings(cfg))
@@ -174,12 +175,17 @@ def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
 
 
 def file_paths(conn: sqlite3.Connection, file_ids: Sequence[int]) -> dict[int, str]:
-    """file_id -> path for a result list, in one query — the printing side of a search."""
-    if not file_ids:
-        return {}
-    marks = ",".join("?" * len(file_ids))
-    return {int(r["id"]): str(r["path"]) for r in conn.execute(
-        f"SELECT id, path FROM files WHERE id IN ({marks})", tuple(file_ids))}
+    """file_id -> path for a result list — the printing side of a search.
+
+    Chunked for the reason `read_clip_embeddings` gives: `features.search_limit` is a
+    user-set number and SQLite has a ceiling on bound parameters.
+    """
+    out: dict[int, str] = {}
+    for part in batched(list(file_ids), 500):
+        marks = ",".join("?" * len(part))
+        out.update({int(r["id"]): str(r["path"]) for r in conn.execute(
+            f"SELECT id, path FROM files WHERE id IN ({marks})", tuple(part))})
+    return out
 
 
 def _nothing_to_rank(conn: sqlite3.Connection, model: str) -> EmbeddingsMissing:

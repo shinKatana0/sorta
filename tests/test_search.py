@@ -224,6 +224,17 @@ class TestSearchText(SearchTestBase):
                                   encoder=encoder_for({}))
         self.assertEqual(len(hits), 4)
 
+    def test_file_paths_survives_more_ids_than_sqlite_binds_at_once(self):
+        # `features.search_limit` is a user-set number, so the result list can be longer
+        # than the parameter ceiling of a single statement.
+        self.conn.executemany(
+            "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
+            "VALUES (?, 10, 0, '.jpg', 'photo', '2026-01-01')",
+            [(str(self.root / f"bulk{i}.jpg"),) for i in range(1200)])
+        self.conn.commit()
+        ids = [int(r["id"]) for r in self.conn.execute("SELECT id FROM files")]
+        self.assertEqual(len(search.file_paths(self.conn, ids)), len(ids))
+
     def test_file_paths_answers_for_the_ids_of_a_result(self):
         first = self.add_photo(unit(1.0))
         second = self.add_photo(unit(1.0))
