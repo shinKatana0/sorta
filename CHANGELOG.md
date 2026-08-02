@@ -65,6 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **Any slice can be gathered into a folder, not only people and events** (F139). People,
+  events, animals and a query had "Collect into folder"; products, screenshots and memes
+  had only "back to photos", and blurred frames, closed eyes and "no subject" only the
+  trash. That was never a decision — the album engine (`sorter.plan_album`, link/copy/move,
+  `--name`) has been able to export any slice since F34, and the buttons simply grew where
+  each slice happened to appear first. Six kinds join it: `product`, `screenshot` and
+  `meme`, selected on `media_class.verdict`, and `blurred`, `eyes_closed` and `no_subject`,
+  selected on `frame_quality` through the SAME expression that draws the "Review" workspace
+  — the counter of a chip and the size of its album are now one number by construction, and
+  the schema does not move. Three things this deliberately does not do. `blurred` gathers
+  the **window** (`features.blur_review_max`), never the tail below it: past that ceiling
+  sit thousands of frames nobody has looked at, and the whole point of the slice is that
+  the decision is taken by eye. A class listed in `vlm.exclude_classes` (`document` by
+  default) gets **no album**, refused at both ends — the payload the page draws its button
+  from and the route itself, plus `plan_album` for the terminal — because a hidden button
+  is not a rule; and `document` is not an album kind at all, so emptying that key lifts the
+  preview rule and still does not assemble a folder of passports. And the destructive
+  actions stay where they were, in their own block: one movement never both gathers and
+  deletes. In the terminal the same six kinds take no selector —
+  `sorta album product --dest …` is the whole command — and the folder they default to
+  comes from the string catalog in all three languages.
 - **The screenshots and receipts the classifier took for photographs** (F140):
   `features.junk_rescue`, off by default, with `features.junk_rescue_threshold` (0.02) next
   to it and a new column `frame_quality.junk_score` (schema v20). The search by words (F134)

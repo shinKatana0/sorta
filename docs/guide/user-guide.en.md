@@ -872,21 +872,47 @@ sorta album animal --dest /path/to/albums --apply
 
 # An album from a query in words (§23) — ask in English:
 sorta album query "cake" --dest /path/to/albums --apply
+
+# A classifier bucket (§14) — products, screenshots or memes, no selector:
+sorta album product --dest /path/to/albums --name "Products" --apply
+sorta album screenshot --dest /path/to/albums --apply
+sorta album meme --dest /path/to/albums --apply
+
+# A quality slice of the Review workspace (§22) — no selector either:
+sorta album blurred --dest /path/to/albums --apply
+sorta album eyes_closed --dest /path/to/albums --apply
+sorta album no_subject --dest /path/to/albums --apply
 ```
 
-- **`animal`** is the one album kind without a selector: there is nothing to choose
-  inside that slice, so `sorta album animal --dest …` is the whole command.
+- **Slices without a selector**: `animal`, `product`, `screenshot`, `meme`, `blurred`,
+  `eyes_closed`, `no_subject`. There is nothing to choose inside them — the collection
+  has exactly one products bucket and exactly one blurred list — so
+  `sorta album <kind> --dest …` is the whole command, and the folder is named after the
+  slice unless `--name` says otherwise.
 - **`person` / `event` / `query`** require the selector, because the selector *is* the
   subject of the album (a person's name, an event's name, the words themselves). A
   missing one is an **error**, not "the whole collection": an album quietly gathered
   from everything is indistinguishable from a correct one.
+- **`document` is not an album kind**, and no class listed in `vlm.exclude_classes` is:
+  that bucket is passports, medical forms and bank papers. It keeps its counter and gets
+  neither a preview nor a folder — assembling one in a single click is exactly what the
+  key exists to prevent. Move a class *into* `vlm.exclude_classes` and its album goes
+  with its preview.
+- **`blurred` is a window, not a threshold.** It gathers what the Review workspace lists
+  — the frames under `features.blur_review_max` — and never the whole tail below it: the
+  point of that slice is that the decision is taken by eye, on what was shown.
 
 - Default mode is **link** (hardlink, ~0 extra space; a photo can appear in several
   albums *and* in the city structure).
 - **`--copy`** makes independent copies; **`--move`** *removes the files from the
   general pool* (prints a warning). A photo with **2+ named people** cannot be moved
   into one album (ambiguous) — those are blocked; use link/copy.
-- In the UI, use **Collect into folder** on People/Events cards.
+- In the UI, use **Collect into folder** — on the People/Events cards, on the
+  **Animals** slice, on a classifier bucket (Products, Screenshots, Memes) and on the
+  three quality slices of **Review** (Blurred, Closed eyes, No subject). It is the same
+  row everywhere: mode, an optional folder name, a destination. The marking buttons
+  ("Return to photos", "To trash") stay in their own block — one movement never both
+  gathers and deletes.
 
 Real output — collecting the Paris event from §12 into an album, as copies:
 
@@ -1026,9 +1052,11 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
                                   Plan/apply a sort (dry-run without --apply)
 sorta album person|event|query <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album animal --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album product|screenshot|meme --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album blurred|eyes_closed|no_subject --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   Collect a slice into a named folder (hardlink by
-                                  default); `animal` takes no selector, the other kinds
-                                  require one (§13)
+                                  default); only person/event/query take a selector,
+                                  every other kind is a single slice (§13)
 sorta undo [--batch ID]           Reverse the last (or a specific) batch
 sorta reset [--yes|-y] [--clear-geo]
                                   Wipe the index (DB) and start over — leaves your
