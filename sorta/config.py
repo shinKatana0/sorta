@@ -749,24 +749,54 @@ class FeaturesConfig:
     #     people    42% precision, 96% recall   against ~100% precision from faces (F152)
     #     food      20% precision, 15% recall   COCO has a banana and a pizza, not a meal
     #
+    # The animal row was re-measured on 500 frames (2026-08-03) and reads 78% / 69% at that
+    # same confidence — see the table at `detector_threshold` below for what the numbers are
+    # now and which row is the default. What did not move is the boundary this table draws,
+    # and that is what it is kept here for.
+    #
     # So animals only — see detect.ANIMAL_CLASSES, where the boundary is written down
     # again next to the classes it draws. With it off nothing is loaded and the label is
     # what F122/F130 make it.
     detector: bool = False
     # How deep into the query ranking the candidate list goes — the ONE number that decides
-    # what this feature costs, because the detector never sees anything else. 2 000 frames
-    # at the measured 83.8 ms is ~3 minutes, against 30.8 minutes for the 22 096-frame pass
-    # the same detector would need to reach the same animals. Recall is bounded by the
-    # query's own recall at this depth (87% on the measured sample), so raising it buys
-    # animals the query ranked lower and costs time linearly; lowering it does the reverse.
-    detector_candidates: int = 2000
+    # what this feature costs, because the detector never sees anything else. MEASURED
+    # (2026-08-03, 500 hand-labelled frames, 36 animals), where the last column is the share
+    # of the known animals the query put in front of the detector at all:
+    #
+    #     depth   candidates     time    recall ceiling
+    #       500          500   0.7 min        25%
+    #      1000         1000   1.4 min        50%
+    #      2000         2000   2.8 min        83%   <- the F154 default
+    #      4000         4000   5.6 min       100%   <- chosen
+    #     10000        10000  14.0 min       100%
+    #
+    # THE CEILING BOUNDS EVERY RECALL BELOW IT: a frame the query never showed is not found
+    # at any threshold, and at 2 000 candidates 17% of the animals were unreachable in
+    # principle. 4 000 frames is 5.6 minutes at the measured 83.8 ms per frame — 2.8 minutes
+    # more than the old default bought the whole remaining ceiling, against the ~19 minutes
+    # the animal stage already spends on the VLM and the 30.8 a pass over all 22 096 frames
+    # would cost. 10 000 buys nothing: the same ceiling for three times the time.
+    detector_candidates: int = 4000
     # The confidence at which a detected box counts. CHOSEN FROM A TABLE, not in advance:
-    # `python scripts/measure_detector.py` prints precision and recall at 0.3 / 0.5 / 0.7
-    # over a labelled sample, and 0.5 is the row that was measured (62% / 87%). The lower
-    # rows are where a detector's precision collapses — the F130 lesson about 0.30 being
-    # the worst row of its table — and the boxes are stored with their scores, so
-    # re-choosing this needs no new pass over any image.
-    detector_threshold: float = 0.5
+    # `python scripts/measure_detector.py` prints precision and recall over a labelled
+    # sample. The rows, on the same 500 frames:
+    #
+    #                            precision   recall
+    #     the CLIP label today       94%       47%
+    #     detector at 0.50           78%       69%   <- the F154 default
+    #     detector at 0.60           86%       69%   <- chosen
+    #     detector at 0.70           86%       67%
+    #
+    # 0.60 DOMINATES 0.50 WITH NOTHING TRADED AWAY: the same recall, 25 correct marks out of
+    # 29 instead of 25 out of 32 — three false ones gone for free, which is a clean win and
+    # not a trade. F154 shipped 62% / 87% here, read off 200 frames where fifteen animals
+    # made every one of them worth 6.7 points of recall; both figures moved by two dozen
+    # points on the larger sample. That spread is what a thin class does to a small sample,
+    # and it is the reason a row is not chosen off one. The lower rows are where a
+    # detector's precision collapses — the F130 lesson about 0.30 being the worst row of its
+    # table — and the boxes are stored with their scores, so re-choosing this needs no new
+    # pass over any image.
+    detector_threshold: float = 0.6
     # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
     # what place the frame shows, and only a proposal the model names itself goes on to
     # F75 corroboration. Its own toggle, default off, and with it off the stage is

@@ -189,6 +189,14 @@ class TestItPricesTheRealCascade(unittest.TestCase):
         for threshold in (0.3, 0.5, 0.7):
             self.assertIn(threshold, measure.DEFAULT_THRESHOLDS)
 
+    def test_the_default_grid_holds_the_configured_threshold(self):
+        """The starred row of table 2 is the one in force — a grid that skipped it would
+        print a table nobody can find the current setting in, which is how a number stops
+        being re-chosen from a measurement (F162)."""
+        from sorta.config import FeaturesConfig
+
+        self.assertIn(FeaturesConfig.detector_threshold, measure.DEFAULT_THRESHOLDS)
+
     def test_the_default_depths_bracket_the_configured_one(self):
         from sorta.config import FeaturesConfig
 
