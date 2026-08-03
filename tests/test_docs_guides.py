@@ -425,6 +425,23 @@ class TestGuidesAgreeWithTheCode(unittest.TestCase):
                 with self.subTest(lang=lang, key=legacy):
                     self.assertIn(legacy, read(path))
 
+    def test_the_detector_defaults_are_quoted_as_they_are_configured(self):
+        """The guides state each default in a column of its own, and a stale one there is
+        worse than none: F162 re-measured both detector numbers on 500 frames and moved
+        them (0.5 -> 0.6, 2 000 -> 4 000), so the column is read off the class that owns
+        them rather than trusted to have been edited along with the prose.
+        """
+        features = config.FeaturesConfig()
+        for key in ("detector_candidates", "detector_threshold"):
+            head = f"| `features.{key}` |"
+            for lang, path in GUIDES.items():
+                rows = [line for line in read(path).splitlines()
+                        if line.startswith(head)]
+                with self.subTest(lang=lang, key=key):
+                    self.assertEqual(len(rows), 1)
+                    self.assertTrue(rows[0].startswith(
+                        f"{head} `{getattr(features, key)}` |"), rows[0][:140])
+
     def test_the_superseded_timings_do_not_come_back(self):
         """The 6,298-photo reference run was replaced by the 24,196-photo measurement."""
         stale = re.compile(r"6[ ,]?298")

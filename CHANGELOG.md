@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The detector's threshold and depth are taken from the table it prints itself** (F162).
+  Two defaults move and nothing else does: `features.detector_threshold` 0.5 → **0.6** and
+  `features.detector_candidates` 2 000 → **4 000**. Both come off a re-measurement on
+  **500** hand-labelled frames (36 animals), because the numbers F154 shipped were read on
+  200, where fifteen animals made every one of them worth 6.7 points of recall. On the
+  larger sample both figures moved by two dozen points — the detector at 0.50 is **78%
+  precision / 69% recall**, not 62% / 87%, against **94% / 47%** for the CLIP label on the
+  same frames. That spread is what a thin class does to a small sample, and it is the whole
+  reason a row is chosen from a table and not in advance.
+  **0.60 dominates 0.50 with nothing traded away**: the same 69% recall, 25 correct marks
+  out of 29 instead of 25 out of 32. Three false ones go for free — a clean win rather than
+  a compromise, which is why this one needs no decision about what a user prefers. 0.70
+  buys no precision (86% again) and gives up two points of recall.
+  The depth is a **ceiling**, not a threshold: it decides which frames the detector is
+  shown at all, and an animal the query never ranked that high is not found at any
+  confidence. Measured, 500 candidates reach 25% of the known animals, 1 000 reach 50%,
+  2 000 reach 83% — so **17% of them were unreachable in principle** on the old default —
+  and 4 000 reach **100%**. The price is named honestly: 4 000 frames is **5.6 minutes** at
+  the measured 83.8 ms per frame, 2.8 minutes more than before, against the ~19 the animal
+  stage already spends on the VLM and the 30.8 a pass over all 22 096 frames would cost.
+  10 000 is pointless: the same ceiling for three times the time.
+  Both tables are now written beside the values themselves — in `sorta/config.py`,
+  `config.example.yaml` and the three user guides — so the numbers read as measured and
+  paid for rather than picked. **`detect.enabled` does not move**: the detector stays off
+  by default, and whether the cascade wants it is a decision for a live run, when the total
+  time is on the table next to the few points that separate it from F158.
+
 ### Removed
 - **The cloud naming provider is gone, and with it the only code that could send a
   photograph anywhere** (F170). `naming.provider: claude` named events by uploading a

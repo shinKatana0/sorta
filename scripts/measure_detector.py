@@ -67,14 +67,15 @@ from sorta import detect, junk  # noqa: E402
 from sorta.config import Config, load_config  # noqa: E402
 from sorta.naming import naming_settings, utcnow_iso  # noqa: E402
 
-# The grid the brief names, plus the ends of the useful range. The measured row (0.5) sits
-# inside it on purpose: a table you can find the reviewed number in is what makes the
-# other rows readable.
+# The grid the brief names, plus the ends of the useful range. The chosen row (0.6, F162)
+# sits inside it on purpose: a table you can find the configured number in is what makes
+# the other rows readable.
 DEFAULT_THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7)
 
-# The depths worth pricing. 2 000 is the default of `features.detector_candidates`; the
-# rest bracket it by a factor of five in each direction, because what this column shows is
-# a trade of minutes against the query's recall ceiling.
+# The depths worth pricing. 4 000 is the default of `features.detector_candidates` (F162);
+# the rest bracket it in both directions — down to where the recall ceiling collapses and
+# up to where it stops moving — because what this column shows is a trade of minutes
+# against the query's recall ceiling.
 DEFAULT_DEPTHS = (500, 1000, 2000, 4000, 10000)
 
 # Seconds per candidate frame, measured on 2026-08-02: 83.8 ms with the mobilenet backbone.
