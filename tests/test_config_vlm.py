@@ -151,7 +151,11 @@ class TestDefaults(VlmConfigCase):
         self.assertFalse(cfg.vlm.enabled)
         self.assertEqual(cfg.vlm.model, DEFAULT_VLM_MODEL)
         self.assertEqual(cfg.vlm.max_edge, 896)
-        self.assertEqual(cfg.vlm.workers, min(4, os.cpu_count() or 1))
+        # F164: the default itself, not a copy of its arithmetic — a literal here is a
+        # test that has to be edited every time a measurement moves the ceiling, which
+        # is how a default and its documentation drift apart.
+        self.assertEqual(cfg.vlm.workers, default_vlm_workers())
+        self.assertLessEqual(cfg.vlm.workers, os.cpu_count() or 1)
 
     def test_the_default_resolution_is_the_one_that_shipped(self):
         """896 is not a taste: measure_vlm_resolution.py compares against it."""

@@ -6,7 +6,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **The cloud naming provider is gone, and with it the only code that could send a
+  photograph anywhere** (F170). `naming.provider: claude` named events by uploading a
+  few sample frames of each one to a vendor API; it was opt-in and off by default, and
+  that was still the wrong shape for this product. What can be said about it changes:
+  not "your photos do not leave your machine **unless** you turn one key on" but **"the
+  product contains no code that sends images out"** — a sentence a reader checks with
+  `grep` over the package instead of taking on trust. The key was also a trap by name:
+  `naming.provider` reads as a choice of who invents the folder names, and nothing in it
+  says that choosing that value uploads the archive. Three providers remain and all three
+  run on the user's own hardware — `template` (the default), `vlm` (the local Qwen2.5-VL
+  the deep tier already loads) and `local_vlm` (an ollama endpoint the user runs). The
+  advantage that was deleted was never measured: nobody had compared the cloud model's
+  event names against the local one, so this trades an unverified benefit for a checkable
+  guarantee — the same trade this project already made for StreetCLIP, query translation
+  and the phrasing ensemble. The honest cost is stated rather than argued away: **a
+  machine with no GPU is now left with template names**, because the local model will
+  crawl there. That is the loss of an ornament, not of a function — `template` is the
+  default mode and the base of the product, and Qwen 3B does run on a CPU, slowly enough
+  to matter for thousands of calls and not for the few hundred that naming events takes.
+  An existing `config.yaml` that still selects the removed provider **keeps working**:
+  the run logs one line saying the provider was removed, names the three that are
+  available, and falls back to `template` — people upgrade with working files, and a
+  removal must not kill somebody's run on its first line. `geo.provider: online`
+  (Nominatim) is untouched and is a different conversation: it sends **coordinates**, not
+  pictures, its name says what it is, and the guides describe it.
+
 ### Fixed
+- **The detector's answer reaches the screen — and the rule is checked against itself**
+  (F160). F154 shipped the object detector: it ranked the candidates, ran the model, stored
+  `detections` and wrote `frame_quality.pet`. What it could not reach is the place the
+  verdict is actually READ: since F137 the album, the "Animals" tab and the Overview
+  counter derive it when they read, through `sorter.animal_auto_sql`, and that expression
+  knew nothing about the new table — so a run spent three minutes, the boxes went into the
+  database, and **not one number a user looks at moved**. The tier is now in that
+  expression, with the same order of precedence it has in the stage (the user over
+  everything, then the F130 answer — a box detector calls a drawn cat a cat — then the
+  detector, then the CLIP score), and it reads the stored BOXES rather than the label
+  column, so `features.detector_threshold` can be re-chosen in either direction without a
+  new pass over a single image, exactly as F137 made the other two thresholds. With
+  `detect.enabled` or `features.detector` off the expression is byte-for-byte the one that
+  shipped before, boxes left behind by an earlier run included.
+  **The real cause was wider than the missing branch.** "What counts as an animal" is
+  written twice on purpose — `junk.pet_label` labels the one frame a stage has just scored,
+  `animal_auto_sql` answers "which files" over a whole index — and by now four things
+  decide it (the CLIP score F122, the VLM answer F130, the user F124, the detector F154).
+  Every one of them had to be written into both halves and **nothing checked that it was**.
+  So the case table — every combination of score, answer, detection and manual mark, at
+  five sets of thresholds — is now run through **both** spellings and asserted equal row by
+  row. A fifth source that lands in only one of them fails a test instead of a slice.
+  The caption of the "Animals" tab states both measurements, because the switch chooses
+  between two different promises: 82% precision at 64% recall for the cascade, 62% at 87%
+  with the detector on. The default does not move — `detect.enabled` stays off, and trading
+  20 points of precision for 23 of recall is the user's decision, taken with the numbers of
+  a run in hand.
 - **One city, one name — and one alphabet per language** (F172). A `language: ru` layout
   came out in three alphabets at once: «Санкт-Петербург», «Москва» and «Серик» next to
   `Nizhny Novgorod` (382 files), `Samara` (179) and `Ryazan` (109), with a Thai village in
@@ -85,6 +139,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **The run log says what is happening now, not what happened** (F166). F147 gave the junk
+  stage a breakdown by phase, and the live run of 2026-08-03 showed what was still missing:
+  all four phase lines carried the **same timestamp**, printed in one batch just before the
+  stage summary, because `log_phase` was called for every phase at once at the end. An
+  instrument that answers "where did the time go" at the moment the time has gone answers
+  nothing about a two-hour stage — and if the run is cut short it answers **nothing at
+  all**: the orchestrator interrupted `junk` mid-run and lost the numbers of three phases
+  that had finished long before, along with everything the F159 estimate would have learned
+  from them. Every timed unit of a run — the stage, and each phase inside it — now writes
+  the same three kinds of line: `stage=<s>[ phase=<p>] started[ total=<n>]`, a periodic
+  `... progress elapsed=<sec> processed=<n>[ total=<n>] rate=<n>/s`, and its summary **the
+  moment that unit is over** rather than at the end of the stage. An interrupted or failed
+  run therefore keeps every phase that finished, and marks the one that did not as
+  `interrupted (...)`/`failed` with its seconds instead of silently dropping it. The
+  periodic line is a heartbeat and not a channel of its own: one line per
+  `logging.progress_interval_sec` (default **60 s**, `0` switches it off), through the same
+  logger and at the same level as the summaries, and silent while a phase of that stage is
+  open — the phase line already carries the same counters with a name on top of them. Those
+  counters are the very pair `/api/process/status` serves, read from the same call that
+  moves the progress bar, so the file and the interface cannot come to disagree about where
+  a run is — F147's rule for the phase names, applied to the numbers next to them. Stages
+  with no phases of their own (`index`, `geo`, `landmarks`, `faces`, `events`, `phash`) are
+  no less readable for it. The shape of the F147 summary line is untouched: `stage=` and
+  `elapsed=` are where they were, and every grep and estimate built on them keeps working.
 - **The junk stage says where its seconds went** (F147). On the run of 2026-08-02 the
   stage took **2 070 seconds** — more than half of the whole hour — and the log held one
   line about it: `stage=junk elapsed=2070.208`. Six different things work inside it (CLIP
@@ -188,6 +266,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pair from ever coming back as a duplicate to sort out: `dedup.near_duplicate_groups`
   leaves derived files out of its groups, so nobody spends the next run deciding about pairs
   they created themselves. Pressing the button twice returns the copy that exists.
+  One thing this did **not** reach when it shipped, stated rather than hidden: since F137
+  the album, the "Animals" tab and the Overview counter derive the verdict when they read,
+  out of `pet_score`/`pet_vlm` through `sorter.animal_auto_sql`, and that expression did
+  not know about `detections` — so the detector filled its table and wrote
+  `frame_quality.pet` while the slice a user saw was still the F130 answer. F160 (above)
+  closed that, and made the two spellings of the rule check each other.
 - **Three slices over what the faces stage already found** (F152): **With people**, **Group
   photos** and **Portraits** in the Slices tab, with counters on the Overview and albums of
   their own (`sorta album people|group|portrait`, no selector — the collection holds exactly
@@ -518,6 +602,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **Three cheap levers on the junk stage, and the measurement kept all three shut**
+  (F164). The phase table of F147 named where the 25,4 minutes of the stage go, and the
+  three obvious levers under it were: `junk_write` at 19,4 ms a frame (a commit per row?),
+  the OCR thread ceiling of 4 (set "so a weak card is not knocked over", never priced),
+  and the four VLM preparation threads on a 24-core machine with the card at 51%. Each
+  was measured before it was pulled, and none of them turned out to be a lever.
+  **`junk_write` is not writing.** The stage already wraps its whole pass in ONE
+  transaction, and this exact upsert costs **0,004–0,005 ms a row** across three runs —
+  0,1 s of the 470 s the phase was billed for. Committing per chunk or per row costs
+  between nothing and everything depending on whether the operating system really
+  flushes (0,003 vs 0,157 ms a row for chunks, 0,014 vs 2,271 for rows — two runs of
+  three never flushed, one paid 55 s for the same rows): batching would have been a
+  gamble on that, for 0,02%, and would have traded away the property that makes an
+  interrupted run safe (half of today's verdicts and half of yesterday's is a database
+  whose incrementality marker lies). What the phase really holds is the laplacian of the
+  quality half — **26,9 ms** a frame against 0,005 for the verdict and 0,06 for the
+  stored vector — which, over the 79% of frames that get a quality row, is the 19,4 ms
+  exactly. Recorded where the statement is, so the next person starts from the right
+  number. **More VLM threads are slower, not faster.** The case for raising
+  `vlm.workers` was F101's profile (~0,6 s of CPU per frame against ~0,19 s of GPU) and
+  it expired when F105 gave the runtime the fast image processor: preparing a frame now
+  takes ~0,12 s of about **seven cores**, so four threads on 24 cores already ask for
+  more than exists. Measured over 120 frames of the live collection with the model's
+  turn replaced by a sleep of its measured 0,19 s: 2 threads x1,26, 4 x1,16, 6 x1,06,
+  8 x0,98, 12 x0,87 — and the frames in flight grow the process from 551 MB to 2,6 GB
+  across that range. The 51% of the live run is what NO overlap looks like at those two
+  numbers, not a starving card. The default stays min(4, cores). **The OCR ceiling stays
+  unmeasured on purpose**: what it protects is VRAM (one easyocr Reader per thread), so
+  only a run on a free GPU can price it — the sweep now exists
+  (`scripts/measure_ocr_workers.py`) and the number waits for it. Nothing about a
+  verdict moves in any of this: `scripts/measure_junk_write.py` and
+  `scripts/measure_vlm_workers.py` are new measurement tools, and the two new test
+  modules pin what the seconds rest on — the pass writes in one transaction and an
+  interrupted run leaves the previous verdicts untouched, and 1 / 2 / 4 / 6 / 8 / 12
+  threads at either end of the stage produce byte-identical `media_class` rows with the
+  deep tier's labels still in candidate order (the F101 invariant).
 - **What costs time is on the run screen, and it says how much** (F138). Three knobs
   worth between a quarter of an hour and four hours of a run — `vlm.quality` +
   `vlm.quality_scope` (95 minutes by faces, 4.3 hours over everything),

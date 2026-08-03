@@ -100,6 +100,14 @@ Switching the sort mode does not require re-running the pipelines.
   thresholds are deliberately not part of `quality_prompt_fingerprint` (hashing them would
   re-run the whole cascade on every edit), so a label read as a verdict froze the config of
   whichever run last wrote it.
+- F160: the detector (F154) is a tier of that same expression — between the F130 answer and
+  the CLIP score, over the `detections` row this detector left, and read off the stored
+  BOXES so `features.detector_threshold` is re-chosen without a run like the two thresholds
+  above it. With `detect.enabled` or `features.detector` off the expression is byte-for-byte
+  the F137 one. The rule is written twice — `junk.pet_label` for the stage,
+  `sorter.animal_auto_sql` for every reader — and since F160 a case table is run through
+  both and asserted equal, because four sources decide this label and nothing was checking
+  that each reached both halves.
 - Wiped by `reset_index` like every other manual decision.
 
 ### geo_cache (written only by geo, online provider) — F93
