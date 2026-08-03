@@ -42,6 +42,7 @@ class TestMigrations(unittest.TestCase):
             self.assertIn("manual_pet", tbls)  # v17 (F124)
             self.assertIn("group_keeper", tbls)  # v19 (F132)
             self.assertIn("landmark_checks", tbls)  # v20 (F131)
+            self.assertIn("search_embeddings", tbls)  # v22 (F141)
             (v,) = conn.execute("PRAGMA user_version").fetchone()
             self.assertEqual(v, SCHEMA_VERSION)
             conn.close()

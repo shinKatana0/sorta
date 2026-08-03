@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 21;
+PRAGMA user_version = 22;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -215,6 +215,46 @@ CREATE TABLE IF NOT EXISTS clip_embeddings (
     file_id INTEGER PRIMARY KEY REFERENCES files(id),
     model TEXT NOT NULL,                  -- "<open_clip model>/<weights>" — see above
     dim INTEGER NOT NULL,                 -- numbers in `vec` (768 for ViT-L-14)
+    vec BLOB NOT NULL,                    -- dim x float32, little-endian, L2-normalized
+    updated_at TEXT NOT NULL
+);
+
+-- v22 (F141): the SEARCH index — a second vector per photograph, from a different model,
+-- and a table of its own rather than a second model in the one above.
+--
+-- Why the search side needs its own vector at all. `ViT-L-14` is accurate in English and
+-- useless in Russian: over 217 hand-labelled judgements on 8 concepts it gives 22% at
+-- top-5 against 98% for `xlm-roberta-base-ViT-B-32`, and four of the eight concepts
+-- (cake, food, mountains, children) return NOTHING — that is not "worse", it does not
+-- work. The multilingual model matches L14 in English too (95% against 98% at top-5,
+-- three points on forty judgements), so the smaller image tower costs nothing measurable.
+--
+-- Why not simply swap the model, which would be free. Because `clip_embeddings` is not a
+-- search index: the landmark threshold 0.85 with corroboration (F75), the animal threshold
+-- 0.70 (F122), the cascade selection at 0.50 (F130) and the junk classification are all
+-- CALIBRATED ON THAT MODEL'S NUMBERS. Changing it invalidates every one of those
+-- measurements at once — weeks of work and several labelled samples — to save one CLIP
+-- pass. So L14 stays the CLASSIFICATION model and search gets a vector of its own.
+--
+-- The price is stated rather than hidden: a second CLIP pass over the same previews
+-- (19 753 frames in 635 s on the machine this was measured on, ~10.5 minutes) and ~40 MB
+-- per 20 000 photographs — 512 dimensions against L14's 768. That is why
+-- `features.search_index` is OFF by default: an extra pass is something a person switches
+-- on knowingly.
+--
+-- Two tables and not one row per (file, model), because the two vectors have nothing in
+-- common but a file_id: they are written by different passes, they go stale for different
+-- reasons, and the classification side must not be able to lose a row to a search-side
+-- migration. Everything else here is `clip_embeddings`' own arrangement and for its own
+-- reasons: `model` written always (a vector that does not say what computed it is rubbish
+-- that looks like data — a mismatch means RECOMPUTE, never use), float32 little-endian
+-- L2-normalized (see the FLOAT16 IS SETTLED note above; the argument is about numpy and
+-- the wire format, not about which model filled the table), and the F120 population of
+-- canonical photographs only.
+CREATE TABLE IF NOT EXISTS search_embeddings (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),
+    model TEXT NOT NULL,                  -- "<open_clip model>/<weights>" — see above
+    dim INTEGER NOT NULL,                 -- numbers in `vec` (512 for ViT-B-32)
     vec BLOB NOT NULL,                    -- dim x float32, little-endian, L2-normalized
     updated_at TEXT NOT NULL
 );

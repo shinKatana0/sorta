@@ -23,8 +23,7 @@ import numpy as np
 
 from sorta import cli, i18n, search
 from sorta.config import FeaturesConfig
-from sorta.junk import embedding_model, pack_embedding
-from sorta.naming import naming_settings
+from sorta.junk import pack_embedding, search_index_model
 from sorta.sorter import plan_album
 
 from tests.test_search import encoder_for, unit
@@ -34,14 +33,16 @@ from tests.test_sorter import SorterTestBase
 class QueryAlbumTestBase(SorterTestBase):
     def setUp(self):
         super().setUp()
-        self.model = embedding_model(naming_settings(self.cfg))
+        # F141: the ranking reads the SEARCH index — a second vector, from a model of its
+        # own — so that is the table a fixture for this album has to fill.
+        self.model = search_index_model(self.cfg)
 
     def add_photo(self, rel: str, vec: np.ndarray, *, content: bytes = b"data",
                   model: str | None = None, **kwargs) -> int:
-        """An indexed file with the stored CLIP vector the junk stage would have left."""
+        """An indexed file with the stored search vector the junk stage would have left."""
         file_id = self.add_file(rel, content=content, **kwargs)
         self.conn.execute(
-            """INSERT INTO clip_embeddings (file_id, model, dim, vec, updated_at)
+            """INSERT INTO search_embeddings (file_id, model, dim, vec, updated_at)
                VALUES (?, ?, ?, ?, '2026-01-01')""",
             (file_id, model or self.model, int(vec.size), pack_embedding(vec)))
         self.conn.commit()

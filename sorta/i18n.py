@@ -676,15 +676,18 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": 'empty query: type a word — `sorta search "cake"`',
         "ja": '問い合わせが空です: 語を入力してください — `sorta search "ケーキ"`',
     },
+    # F141: the key named here is `features.search_index` and not `store_embeddings`.
+    # Search reads the multilingual index now, and a message that names the other toggle
+    # sends a person to switch on something that will not make this sentence go away.
     "cli.search.no_embeddings": {
-        "ru": "эмбеддинги не посчитаны — запустите `sorta junk` "
-              "(нужен features.store_embeddings: true). Пустая выдача здесь читалась бы "
+        "ru": "поисковый индекс не посчитан — запустите `sorta junk` "
+              "(нужен features.search_index: true). Пустая выдача здесь читалась бы "
               "как «ничего не нашлось», а это другое",
-        "en": "the embeddings have not been computed — run `sorta junk` (with "
-              "features.store_embeddings: true). An empty list here would read as "
+        "en": "the search index has not been computed — run `sorta junk` (with "
+              "features.search_index: true). An empty list here would read as "
               "“nothing matched”, which is a different thing",
-        "ja": "埋め込みがまだ計算されていません — `sorta junk` を実行してください"
-              "（features.store_embeddings: true が必要）。ここで空の一覧を返すと"
+        "ja": "検索インデックスがまだ計算されていません — `sorta junk` を実行してください"
+              "（features.search_index: true が必要）。ここで空の一覧を返すと"
               "「該当なし」と読めてしまいますが、それとは別のことです",
     },
     "cli.search.other_model": {

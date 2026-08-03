@@ -23,8 +23,7 @@ from unittest.mock import patch
 import numpy as np
 
 from sorta import ui
-from sorta.junk import embedding_model, pack_embedding
-from sorta.naming import naming_settings
+from sorta.junk import pack_embedding, search_index_model
 
 from tests.test_search import unit
 from tests.test_ui import UiServerTestBase
@@ -35,7 +34,8 @@ class SearchUiTestBase(UiServerTestBase):
 
     def setUp(self):
         super().setUp()
-        self.model = embedding_model(naming_settings(self.cfg))
+        # F141: the model the search side is configured with — `features.search_model`.
+        self.model = search_index_model(self.cfg)
         self.vectors: dict[str, np.ndarray] = {}
         self.encoded: list[str] = []
 
@@ -62,8 +62,14 @@ class SearchUiTestBase(UiServerTestBase):
 
     def store_vector(self, file_id: int, vec: np.ndarray,
                      model: str | None = None) -> None:
+        """F141: the SEARCH index — the table this route reports on and ranks out of.
+
+        Not `clip_embeddings`: those are the classification model's vectors, they cannot
+        answer a query, and a coverage line counting them would say "searching all 19 753
+        photographs" about an index the engine refuses to use.
+        """
         self.conn.execute(
-            """INSERT INTO clip_embeddings (file_id, model, dim, vec, updated_at)
+            """INSERT INTO search_embeddings (file_id, model, dim, vec, updated_at)
                VALUES (?, ?, ?, ?, '2026-01-01')""",
             (file_id, model or self.model, int(vec.size), pack_embedding(vec)))
         self.conn.commit()
@@ -132,6 +138,28 @@ class TestSearchIndexState(SearchUiTestBase):
         self.assertEqual(data["index_model"], "OtherNet-B/laion")
         self.assertEqual(data["model"], self.model)
         self.assertEqual(data["indexed"], 0)
+
+    def test_a_full_classification_index_is_still_nothing_to_search(self):
+        """F141: `clip_embeddings` is a different model and cannot answer a query.
+
+        The state line and the ranking have to agree about that, and this is the state a
+        real collection is in before `features.search_index` is switched on: every
+        classification vector present, not one search vector. A route that counted the
+        wrong table would say "searching all 1 photographs" and then refuse to search.
+        """
+        fid, _p, _c = self.add_photo_file("a.jpg")
+        self.conn.execute(
+            """INSERT INTO clip_embeddings (file_id, model, dim, vec, updated_at)
+               VALUES (?, 'ViT-L-14-quickgelu/openai', ?, ?, '2026-01-01')""",
+            (fid, int(unit(1.0).size), pack_embedding(unit(1.0))))
+        self.conn.commit()
+        self.start_server()
+        data = self.search("торт")
+        self.assertEqual(data["state"], "empty")
+        self.assertFalse(data["available"])
+        self.assertEqual(data["indexed"], 0)
+        self.assertIsNone(data["index_model"])
+        self.assertEqual(data["items"], [])
 
     def test_the_other_model_is_the_one_with_the_most_rows(self):
         for i in range(2):
