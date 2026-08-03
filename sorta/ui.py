@@ -367,6 +367,11 @@ from . import db, faces, i18n, imaging, restore
 from .config import (
     VLM_QUALITY_SCOPES,
     Config,
+    # F160 replaced its own uses of FeaturesConfig with Config and dropped the import;
+    # F149 landed `_restore_frame(db_path, features: FeaturesConfig, ...)` in main
+    # meanwhile. Different lines, so git merged both without a word and left a name with
+    # no import behind — the kind of break only a gate on the SUM can find.
+    FeaturesConfig,
     save_language,
     save_setting,
 )
