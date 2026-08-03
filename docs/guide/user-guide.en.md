@@ -1806,6 +1806,16 @@ on either by a flag for one run (§8) or by a key in `config.yaml` (§21).
   cascade at all. The wide gate buys recall with precision on purpose — expect about one
   wrong mark in five — and costs roughly 19 minutes against 12 on a collection of 20
   thousand photographs.
+- **The object detector, when it is on, changes what this slice is.** With
+  `features.detector` and `detect.enabled` on, a detection outranks the CLIP score in both
+  directions — an animal found where the score was too low is in the slice, a frame CLIP
+  called an animal with nothing detected on it leaves it — and the tab, the counter and
+  the album all move together, without a run, the moment either switch is flipped. The
+  trade is real and goes both ways: **62% precision at 87% recall** against the cascade's
+  **82% at 64%**, which is roughly a quarter more animals found and a fifth of the
+  confidence given up for them. The caption of the tab states both numbers. The F130
+  answer still outranks the detector where there is one (a box detector calls a drawn cat
+  a cat), and a frame the detector never examined keeps the verdict it had.
 - **A false mark can be taken off by hand.** The card offers **Not an animal** / **This
   is an animal** / **Back to automatic**. The correction is stored in the index and
   **survives any recompute**: the next run will not put back a mark you removed. The

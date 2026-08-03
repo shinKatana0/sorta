@@ -34,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **The detector's answer reaches the screen — and the rule is checked against itself**
+  (F160). F154 shipped the object detector: it ranked the candidates, ran the model, stored
+  `detections` and wrote `frame_quality.pet`. What it could not reach is the place the
+  verdict is actually READ: since F137 the album, the "Animals" tab and the Overview
+  counter derive it when they read, through `sorter.animal_auto_sql`, and that expression
+  knew nothing about the new table — so a run spent three minutes, the boxes went into the
+  database, and **not one number a user looks at moved**. The tier is now in that
+  expression, with the same order of precedence it has in the stage (the user over
+  everything, then the F130 answer — a box detector calls a drawn cat a cat — then the
+  detector, then the CLIP score), and it reads the stored BOXES rather than the label
+  column, so `features.detector_threshold` can be re-chosen in either direction without a
+  new pass over a single image, exactly as F137 made the other two thresholds. With
+  `detect.enabled` or `features.detector` off the expression is byte-for-byte the one that
+  shipped before, boxes left behind by an earlier run included.
+  **The real cause was wider than the missing branch.** "What counts as an animal" is
+  written twice on purpose — `junk.pet_label` labels the one frame a stage has just scored,
+  `animal_auto_sql` answers "which files" over a whole index — and by now four things
+  decide it (the CLIP score F122, the VLM answer F130, the user F124, the detector F154).
+  Every one of them had to be written into both halves and **nothing checked that it was**.
+  So the case table — every combination of score, answer, detection and manual mark, at
+  five sets of thresholds — is now run through **both** spellings and asserted equal row by
+  row. A fifth source that lands in only one of them fails a test instead of a slice.
+  The caption of the "Animals" tab states both measurements, because the switch chooses
+  between two different promises: 82% precision at 64% recall for the cascade, 62% at 87%
+  with the detector on. The default does not move — `detect.enabled` stays off, and trading
+  20 points of precision for 23 of recall is the user's decision, taken with the numbers of
+  a run in hand.
 - **"There is an animal here" is computed when read, not frozen when written** (F137).
   The thresholds of the animal cascade are deliberately **not** part of the prompt
   fingerprint — the scores and the model's answers are stored precisely so a threshold can
@@ -195,6 +222,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pair from ever coming back as a duplicate to sort out: `dedup.near_duplicate_groups`
   leaves derived files out of its groups, so nobody spends the next run deciding about pairs
   they created themselves. Pressing the button twice returns the copy that exists.
+  One thing this did **not** reach when it shipped, stated rather than hidden: since F137
+  the album, the "Animals" tab and the Overview counter derive the verdict when they read,
+  out of `pet_score`/`pet_vlm` through `sorter.animal_auto_sql`, and that expression did
+  not know about `detections` — so the detector filled its table and wrote
+  `frame_quality.pet` while the slice a user saw was still the F130 answer. F160 (above)
+  closed that, and made the two spellings of the rule check each other.
 - **Three slices over what the faces stage already found** (F152): **With people**, **Group
   photos** and **Portraits** in the Slices tab, with counters on the Overview and albums of
   their own (`sorta album people|group|portrait`, no selector — the collection holds exactly
