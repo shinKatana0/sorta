@@ -378,6 +378,30 @@ against 15% for the whole frame at 300, for a comparable number of frames flagge
   face at all. So `features.face_sharpness_max` orders the blur list and nothing in this
   stage reads it: no verdict, no threshold, no deletion. NULL means not measured, as
   everywhere in `frame_quality`.
+
+F164: the first three levers pulled with the phase table of F147 in hand, and the first
+lesson is that a phase NAME is not a bill of costs. `junk_write` looked like 19,4 ms of
+SQLite per frame and turned out to be the laplacian — the writes are one transaction and
+cost 0,005 ms a row, measured (scripts/measure_junk_write.py, the table is at
+_MEDIA_CLASS_UPSERT). Nothing was batched, because there was nothing left to batch; what
+the phase is really made of is written down instead, so the next person starts from the
+right number.
+
+The other two levers are the same lever at both ends of the stage — a THREAD CEILING
+chosen before anything was measured — and both keep their value, for two different
+reasons. `vlm.workers` was measured and 4 turns out to be past the knee already: one
+frame's preparation uses about seven cores since F105 gave the runtime the fast image
+processor, so 6, 8 and 12 threads came back SLOWER than 4 on the live collection, and
+the card's 51% is what NO overlap looks like at 0,12 s of CPU per 0,19 s of GPU rather
+than a queue that is too short (config.default_vlm_workers holds that table).
+`_DEFAULT_OCR_WORKERS_CAP` is unmeasured on purpose: what it protects is VRAM — one
+easyocr Reader per thread — and only a free card can price it, so the tool ships
+(scripts/measure_ocr_workers.py) and the number waits for the run that earns it.
+
+Neither ceiling touches a verdict, and that is what the tests are about rather than the
+seconds: the OCR pool has always written on the caller's thread in chunk order (F73),
+the deep tier has always applied its labels in the candidate order (F101), and
+tests/test_worker_ceilings.py pins both across every thread count the sweeps went up to.
 """
 from __future__ import annotations
 
@@ -776,6 +800,24 @@ _DEFAULT_TEXT_FRAC_DOCUMENT = 0.15
 # document-CLIP already "doubts whether it is a document" (doc_score in the zone
 # 0.3..document_threshold) — clear scenes (doc_score≈0) do not run OCR, which is
 # the perf win.
+#
+# F164 was asked to sweep this too — 28% of the collection behind the gate is generous
+# for "is there text on this frame", and `junk_ocr` is the most expensive phase of the
+# stage. It did not, and the reason is worth as much as a table would be. A sweep of this
+# number needs BOTH columns: how many frames a threshold cuts, and how many documents go
+# into the city folders with them. The first is a CLIP pass, the second is an OCR pass
+# over everything the LOWEST threshold of the grid gates — and with the card occupied
+# (see _DEFAULT_OCR_WORKERS_CAP below) only the first half could have been run. A sweep
+# with the coverage column and no benefit column is exactly the table that gets a
+# threshold raised for the wrong reason: F38 raised this number because a document
+# landing among the holiday photographs is the expensive error here.
+#
+# The tool is `scripts/measure_ocr_gate.py` (F90 built it, and it caches its per-frame
+# aggregates so a grid can be re-tried without paying for the models again), and it
+# already prints both columns plus `--probe-below`, an estimate of the documents the gate
+# misses at EVERY threshold of the grid. What must not happen is this constant moving
+# without that output: F90 states the rule in the module docstring — the threshold is a
+# decision for a person in front of the table, not something a worker changes quietly.
 _DEFAULT_TEXT_RESCUE_DOCSCORE_MIN = 0.3
 
 # F38: the detector decodes via imaging.decode_rgb and shrinks the frame before
@@ -796,6 +838,31 @@ OcrJob = tuple[int, str, int | None, int | None]
 # (i.e. its own model copy in VRAM), so the default stays deliberately conservative —
 # a higher value is a measurement on real hardware, not a default that may knock over
 # a weak card.
+#
+# F164 went looking for that measurement, because `junk_ocr` is the most expensive phase
+# of the stage — 614,6 s over 6 793 frames on the live run of 2026-08-03, i.e. 90,5 ms a
+# frame and 15% of the whole run — and because the one number that does exist says the
+# ceiling was chosen too low: F73 measured x3,7 going from 1 to 4 workers, which is still
+# almost linear where it was capped.
+#
+# It did not raise the ceiling, and the reason is not the result but WHAT MAY BE MEASURED
+# ON WHAT. The resource this number protects is VRAM — a Reader per thread, i.e. a copy
+# of the detector on the card — so 6 and 8 workers are priced only by a run on the GPU
+# profile, where those copies are real and where a pool that cannot build its N-th Reader
+# quietly shrinks to the ones it built (see _OcrPool: such a row measures a smaller pool
+# than its own label says). The card was occupied by another process throughout F164, a
+# CPU run prices a different machine, and a default that ships to other people's hardware
+# is not moved on a table about the wrong resource.
+#
+# So the tool ships instead and the number waits for the run that earns it:
+#
+#     python scripts/measure_ocr_workers.py --sample 500 --workers 1 4 6 8
+#
+# on a free card. It prints ms/frame, the speedup, the Readers actually built and the
+# VRAM peak per row, and it says in one line whether the ceiling moves: at least x1,15
+# over the current default with every Reader built. That is a one-line change here, with
+# its table under it. Lowering stays what it always was — a value in `naming.ocr_workers`,
+# which nothing here caps.
 _DEFAULT_OCR_WORKERS_CAP = 4
 
 
@@ -2383,6 +2450,46 @@ _DETECTIONS_UPSERT = """INSERT INTO detections (file_id, label, score, boxes, mo
 # an older tier), otherwise it is reclassified on every run. Lifted out of classify() by
 # F140 for the same reason F90 lifted the gate functions: a second writer of this row
 # (the rescue) must write it the same way, and a paraphrase would drift.
+#
+# HOW THIS ROW IS WRITTEN, AND WHY IT IS NOT BATCHED (F164). The F147 phase table read
+# `junk_write 470,3 s / 24 196 frames / 19,4 ms` and the obvious suspect was a commit per
+# row — 19,4 ms for one INSERT would be more than CLIP spends on a frame in the same
+# stage (11,7 ms on the GPU). It is not what happens. Every write of the fast pass goes
+# through ONE transaction: sqlite3 is left at its default isolation, so no statement
+# autocommits, `with conn:` sits OUTSIDE the chunk loop in classify(), and the single
+# COMMIT happens when that loop is done. The deep tier and every later pass have one
+# `with conn:` each, for the same reason.
+#
+# Measured on this machine (scripts/measure_junk_write.py, 24 196 rows, this exact
+# statement, a throwaway database on the same disk, three runs):
+#
+#     commit strategy            commits   ms/row, best run   ms/row, worst run
+#     one transaction (today)          1              0,004               0,005
+#     one commit per 16 rows       1 513              0,003               0,157
+#     one commit per row          24 196              0,014               2,271
+#
+# The spread on the two lower rows is not noise to be averaged away: it is the operating
+# system deciding whether a COMMIT really reaches the disk, and it is exactly what makes
+# committing often a gamble — two of three runs never flushed and one paid 55 s for the
+# same 24 196 rows. The row that matters has no spread at all: what the stage does today
+# costs 0,004-0,005 ms whatever the disk feels like, i.e. 0,1 s of the 470,3 s the phase
+# was billed for — 0,02%.
+#
+# So the lever the brief proposed was already pulled, and there is nothing left to batch.
+# A batch size in the config would buy those 0,02% back at best, would be slower whenever
+# the flush is real, and would break the property this shape gives for free: a run that
+# dies mid-pass leaves the whole collection with its PREVIOUS verdicts, never half of
+# today's and half of yesterday's.
+#
+# Where the phase's seconds actually are: `report.enter(CLASSIFY_PHASE_WRITE)` covers the
+# per-frame loop that also measures the laplacian (`_QualityPass.measure`) and stores the
+# CLIP vector (`_EmbeddingPass.store`). The same script prices those on real frames of the
+# live collection: 26,9 ms for the sharpness of one frame, 0,06 ms for its vector, 0,005
+# ms for its verdict. 79% of the frames of that run got a quality row (19 216 of 24 196),
+# and 0,79 x 26,9 = 21,3 ms against the 19,4 ms the phase was billed — the laplacian IS
+# the phase. Making it cheaper is a question about `features.sharpness_max_edge` and the
+# preview cache, not about SQLite; whoever picks it up should start from that number and
+# not from this statement.
 _MEDIA_CLASS_UPSERT = """INSERT INTO media_class (file_id, verdict, source, score,
                                                   updated_at, tier)
                          VALUES (?, ?, ?, ?, ?, ?)
@@ -2504,6 +2611,10 @@ def _quality_source(use_clip: bool, pets: bool, ask: QualityAskFn | None,
 CLASSIFY_PHASE_CLIP = "junk_clip"
 CLASSIFY_PHASE_OCR = "junk_ocr"
 CLASSIFY_PHASE_VLM = "junk_vlm"
+# F164: this phase is NOT the cost of writing. Its seconds are the per-frame loop the
+# writes share with the laplacian and the stored vector, and the laplacian is ~99% of
+# them — see the measured breakdown at _MEDIA_CLASS_UPSERT before reading a number under
+# this name as a number about SQLite.
 CLASSIFY_PHASE_WRITE = "junk_write"
 # F141: the search index — a phase of its own and not part of `junk_clip`, because it is
 # the one pass here that is a SECOND encode of the same frames rather than a use of the

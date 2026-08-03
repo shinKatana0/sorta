@@ -558,6 +558,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **Three cheap levers on the junk stage, and the measurement kept all three shut**
+  (F164). The phase table of F147 named where the 25,4 minutes of the stage go, and the
+  three obvious levers under it were: `junk_write` at 19,4 ms a frame (a commit per row?),
+  the OCR thread ceiling of 4 (set "so a weak card is not knocked over", never priced),
+  and the four VLM preparation threads on a 24-core machine with the card at 51%. Each
+  was measured before it was pulled, and none of them turned out to be a lever.
+  **`junk_write` is not writing.** The stage already wraps its whole pass in ONE
+  transaction, and this exact upsert costs **0,004–0,005 ms a row** across three runs —
+  0,1 s of the 470 s the phase was billed for. Committing per chunk or per row costs
+  between nothing and everything depending on whether the operating system really
+  flushes (0,003 vs 0,157 ms a row for chunks, 0,014 vs 2,271 for rows — two runs of
+  three never flushed, one paid 55 s for the same rows): batching would have been a
+  gamble on that, for 0,02%, and would have traded away the property that makes an
+  interrupted run safe (half of today's verdicts and half of yesterday's is a database
+  whose incrementality marker lies). What the phase really holds is the laplacian of the
+  quality half — **26,9 ms** a frame against 0,005 for the verdict and 0,06 for the
+  stored vector — which, over the 79% of frames that get a quality row, is the 19,4 ms
+  exactly. Recorded where the statement is, so the next person starts from the right
+  number. **More VLM threads are slower, not faster.** The case for raising
+  `vlm.workers` was F101's profile (~0,6 s of CPU per frame against ~0,19 s of GPU) and
+  it expired when F105 gave the runtime the fast image processor: preparing a frame now
+  takes ~0,12 s of about **seven cores**, so four threads on 24 cores already ask for
+  more than exists. Measured over 120 frames of the live collection with the model's
+  turn replaced by a sleep of its measured 0,19 s: 2 threads x1,26, 4 x1,16, 6 x1,06,
+  8 x0,98, 12 x0,87 — and the frames in flight grow the process from 551 MB to 2,6 GB
+  across that range. The 51% of the live run is what NO overlap looks like at those two
+  numbers, not a starving card. The default stays min(4, cores). **The OCR ceiling stays
+  unmeasured on purpose**: what it protects is VRAM (one easyocr Reader per thread), so
+  only a run on a free GPU can price it — the sweep now exists
+  (`scripts/measure_ocr_workers.py`) and the number waits for it. Nothing about a
+  verdict moves in any of this: `scripts/measure_junk_write.py` and
+  `scripts/measure_vlm_workers.py` are new measurement tools, and the two new test
+  modules pin what the seconds rest on — the pass writes in one transaction and an
+  interrupted run leaves the previous verdicts untouched, and 1 / 2 / 4 / 6 / 8 / 12
+  threads at either end of the stage produce byte-identical `media_class` rows with the
+  deep tier's labels still in candidate order (the F101 invariant).
 - **What costs time is on the run screen, and it says how much** (F138). Three knobs
   worth between a quarter of an hour and four hours of a run — `vlm.quality` +
   `vlm.quality_scope` (95 minutes by faces, 4.3 hours over everything),
