@@ -66,6 +66,9 @@ _CONFIG_SECTIONS: dict[str, object] = {
     "naming": config.NamingConfig,
     "features": config.FeaturesConfig,
     "vlm": config.VlmConfig,
+    # F154: the detector's runtime — a second section of the `vlm:` kind, and it joins the
+    # watchdog on the day it lands rather than at the next audit.
+    "detect": config.DetectConfig,
     "imaging": config._IMAGING_ENV,
 }
 
