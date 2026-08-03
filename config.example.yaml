@@ -314,6 +314,26 @@ vlm:
   # prints how many verdicts moved and in which direction.
   max_edge: 896
 
+# F154: the OBJECT DETECTOR, and its own master switch. A second kind of model, so a
+# section of its own next to `vlm:` — and the F145 rule applies to it unchanged: `enabled`
+# below says whether a detector may be loaded AT ALL, and `features.detector` says what it
+# is wanted for. Neither of them alone raises anything.
+#
+# Deliberately NOT under `vlm.enabled`: this is not a VLM. It costs 83.8 ms per frame and
+# a few hundred megabytes against 0.78 s and 20 GB, so wanting one says nothing about
+# wanting the other, and somebody who cleared the deep tier did not thereby ask for boxes.
+#
+# No new dependency: torchvision is already installed for the CLIP side, only the COCO
+# weights are downloaded — once, by torchvision itself, into the torch hub cache
+# (TORCH_HOME), which is not the Hugging Face cache the offline switches of §20 govern.
+detect:
+  enabled: false
+  # The torchvision detection model, by the name of its builder function. The mobilenet
+  # backbone is the measured one and the reason the cascade is affordable at all; a
+  # heavier checkpoint (fasterrcnn_resnet50_fpn) finds a little more and costs several
+  # times the 83.8 ms every number in `features.detector*` is counted from.
+  model: "fasterrcnn_mobilenet_v3_large_fpn"
+
 # F113: per-frame quality signals (table frame_quality), each taken with the cheapest
 # tool that can answer it. Sharpness is a laplacian over the preview every other stage has
 # already decoded — milliseconds, so it has no toggle and is always written. Pets are a
@@ -353,8 +373,18 @@ features:
   #   0.70  →   805 frames, 10.5 min      0.30 →  1 331 frames, 17.3 min  (the default)
   #   0.50  →   993 frames, 12.9 min      0.20 →  1 679 frames, 21.8 min
   #   everything → 19 757 frames, 4.3 hours
+  # F158: 0.30 is MEASURED on 500 random hand-labelled frames (36 animals), by the rule the
+  # product itself applies — the model's answer over the score:
+  #   threshold 0.70, no cascade  → 18 marked, 94% precision, 47% recall
+  #   gate 0.50 + check           → 20 marked, 90% precision, 50% recall  (F130 shipped)
+  #   gate 0.30 + check           → 28 marked, 82% precision, 64% recall  (the default)
+  # The cascade at 0.50 bought three points of recall for 21 model calls; at 0.30 it buys
+  # seventeen for twelve points of precision, and the check removed 6 of 11 false marks
+  # without losing a single correct one. Expect the wider gate to cost ~19 minutes against
+  # ~12 on a collection of this size — precision is LOWER than the bare threshold, on
+  # purpose, and it is the recall you are buying.
   # Ignored when `pets_verify` is off.
-  pet_candidate_threshold: 0.5
+  pet_candidate_threshold: 0.3
   # F140: find the screenshots, photographed screens and receipts this stage already
   # classified as photographs. A search by words put memes and screenshots at the top of
   # its results while every row of the embedding table said `photo` — so the frames were
@@ -379,6 +409,36 @@ features:
   # `python scripts/measure_junk_rescue.py` prints the distribution and what every
   # threshold would select, before anything is switched on.
   junk_rescue_threshold: 0.02
+  # F154: the animal label gets a THIRD tier — an object detector (see `detect:` above,
+  # whose `enabled` this needs). It exists for one measured slice out of three; on 200
+  # hand-labelled frames, at confidence 0.5:
+  #   animals  62% precision / 87% recall   against 71% / 33% for the CLIP label today
+  #   people   42% / 96%                    against ~100% precision from faces (F152)
+  #   food     20% / 15%                    COCO has no "food": a banana, a pizza, a bun
+  # So ANIMALS ONLY. People stay on the face boxes and food stays a query — adding either
+  # here is a claim that the measurement changed, and it needs a table of its own first.
+  #
+  # It is a CASCADE and never a pass: a zero-shot query over the vectors that
+  # `store_embeddings` already keeps ranks the collection, and only the top
+  # `detector_candidates` frames are shown to the detector — ~3 minutes instead of the ~31
+  # a full pass costs at 83.8 ms per frame.
+  # The answer overrides the CLIP label in both directions, and every refusal (no vectors,
+  # no weights, an error on a frame) falls back to the label you already have — never to
+  # "no animal". What was found is stored with its class, confidence and box (table
+  # `detections`), which is what makes a "cats" slice apart from a "dogs" one a query
+  # rather than another pass.
+  detector: false
+  # How deep into the query ranking the candidates go — the ONE number that decides what
+  # this costs, because the detector sees nothing else. 2 000 frames is ~3 minutes at the
+  # measured 83.8 ms. Recall is bounded by the query's own recall at this depth (87% on the
+  # labelled sample), so raising it buys the animals the query ranked lower, linearly.
+  detector_candidates: 2000
+  # The confidence at which a box counts. CHOSEN FROM A TABLE, not in advance: `python
+  # scripts/measure_detector.py` prints precision and recall at 0.3 / 0.5 / 0.7 on your own
+  # labelled sample, next to what the CLIP label scores on the same frames. 0.5 is the row
+  # that was measured (62% / 87%). Every box is stored with its score, so re-choosing this
+  # costs a query and no new pass over any image.
+  detector_threshold: 0.5
   # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
   # what place the frame shows, and only a proposal the model names itself goes on. The
   # order does not bend: CLIP proposes → the model checks → the corroboration of

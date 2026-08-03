@@ -136,6 +136,23 @@ class TestFeaturesSection(unittest.TestCase):
     def test_an_empty_section_is_not_a_crash(self):
         self.assertEqual(self._load("features:\n").features, FeaturesConfig())
 
+    def test_the_pet_thresholds_have_the_measured_defaults(self):
+        # F158: the gate of the cascade is 0.30 — measured on 500 random hand-labelled
+        # frames, where it marks 28 at 82% precision / 64% recall against 20 at 90% / 50%
+        # for the 0.50 F130 shipped. The display threshold answers a different question
+        # (who is labelled with no check at all) and did NOT move with it.
+        d = FeaturesConfig()
+        self.assertAlmostEqual(d.pet_candidate_threshold, 0.3)
+        self.assertAlmostEqual(d.pet_threshold, 0.7)
+
+    def test_the_pet_candidate_threshold_is_read_from_the_file(self):
+        cfg = self._load("features:\n  pet_candidate_threshold: 0.45\n")
+        self.assertAlmostEqual(cfg.features.pet_candidate_threshold, 0.45)
+        # and garbage in it must not open the gate to the whole collection
+        cfg = self._load("features:\n  pet_candidate_threshold: wide\n")
+        self.assertAlmostEqual(cfg.features.pet_candidate_threshold,
+                               FeaturesConfig().pet_candidate_threshold)
+
     def test_the_face_slice_numbers_have_the_documented_defaults(self):
         # F152: geometry, not confidence — a count of face boxes and a share of the frame.
         d = FeaturesConfig()

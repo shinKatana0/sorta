@@ -65,6 +65,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **The junk stage says where its seconds went** (F147). On the run of 2026-08-02 the
+  stage took **2 070 seconds** — more than half of the whole hour — and the log held one
+  line about it: `stage=junk elapsed=2070.208`. Six different things work inside it (CLIP
+  over every frame, OCR behind the gate, the laplacian, the quality model, the animal
+  cascade, the stored vectors), and which of them ate the 34 minutes was a guess — so
+  every lever from the backlog (narrow the quality scope, raise the rescue threshold,
+  change the batch size) was a guess too. Each phase that runs now writes its own
+  `stage=junk phase=<name> elapsed=<sec> processed=<n> rate=<n>/s` line, in the same
+  machine-readable shape, through the same logger and at the same level as the stage
+  summary it breaks down, so the breakdown exists at the settings a long run is actually
+  started with rather than only under DEBUG. The unit count is half the point: eighteen
+  minutes over 1 362 model calls and eighteen minutes over 22 096 frames read the same
+  without it. The phase names are the ones F100 already gave the progress bar
+  (`junk_clip`, `junk_ocr`, `junk_vlm`, `junk_write`) — one name for the caption and for
+  the stopwatch, so the two cannot drift — and a phase that did not run writes **nothing**
+  rather than a zero, because `elapsed=0` reads as "it happened instantly". Measurement
+  only: not one verdict, threshold or call count moves, which is the whole reason to build
+  the instrument before pulling any lever with it.
+- **An object detector as a second tier over a query, not a pass** (F154): the animal label
+  gets a third tier (`features.detector`, off by default, behind its own master switch
+  `detect.enabled`) — a COCO detector from torchvision, run over the candidates a zero-shot
+  query picks out of the CLIP vectors the junk stage already stores. **It exists for one
+  measured slice out of three.** On 200 hand-labelled frames at confidence 0.5 the detector
+  is 62% precision / 87% recall on animals against the 71% / 33% of the label the pipeline
+  writes today — it sees the cat in the corner of the frame, where CLIP compares the
+  picture to a text as a whole — but on people it is 42% precision against the ~100% of the
+  face boxes (F152), and on food 20% / 15%, because COCO has no `food` class at all (a
+  banana, a pizza, a sandwich). So people and food are **not** detected here, and the class
+  list says why where it draws the line. The shape follows from the price: a pass over the
+  collection is 83.8 ms × 22 096 = **30.8 minutes**, while the ~2 000 candidates of the
+  query (`features.detector_candidates`) are **~3 minutes** — the same cascade F130 and
+  F140 already pay for, with recall bounded by the query's own at that depth and precision
+  raised from 43% to 62%. The answer overrides the CLIP label in **both** directions, and
+  every refusal — no stored vectors, no weights, an error on one frame, an answer the F130
+  check already gave (a box detector calls a drawn cat a cat) — falls back to the label
+  that was there, never to "no animal". What was found is stored with its class, confidence
+  and box (`detections`, schema v23), which is also the incrementality marker: a row exists
+  for a frame the detector found **nothing** on, so a repeated run asks about nothing at
+  all. The threshold was not chosen in a brief: `scripts/measure_detector.py` prints
+  precision and recall at 0.3 / 0.5 / 0.7 and the recall ceiling per candidate depth, next
+  to what the current CLIP label scores on the same frames — the F130 lesson, where the
+  0.30 a brief proposed turned out to be the worst row of its table. **No new dependency:**
+  torchvision is installed with the CLIP side already and only the COCO weights are
+  downloaded, and there is no configuration in which the detector runs over everything.
+  One thing this does **not** yet reach, stated rather than hidden: since F137 the album,
+  the "Animals" tab and the Overview counter derive the verdict when they read, out of
+  `pet_score`/`pet_vlm` through `sorter.animal_auto_sql`, and that expression does not know
+  about `detections` yet — so the detector fills its table and writes `frame_quality.pet`,
+  while the slice a user sees is still the F130 answer until the read-time rule learns the
+  new tier (one branch, in a file this feature does not own).
 - **Three slices over what the faces stage already found** (F152): **With people**, **Group
   photos** and **Portraits** in the Slices tab, with counters on the Overview and albums of
   their own (`sorta album people|group|portrait`, no selector — the collection holds exactly
