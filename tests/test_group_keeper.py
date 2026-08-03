@@ -108,7 +108,8 @@ class KeeperCase(FrameQualityCase):
         scores = {self.screenshot: (1, 0.99)} if getattr(self, "screenshot", None) else {}
         clf = FakeClassifier(scores)
         return classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                        sharpness_detector=lambda p: self.sharpness.get(Path(p).name),
+                        sharpness_detector=lambda p, _faces: junk.Sharpness(
+                            self.sharpness.get(Path(p).name)),
                         keeper_vlm=asker, **kwargs)
 
     def keepers(self) -> dict[str, tuple[str, str]]:

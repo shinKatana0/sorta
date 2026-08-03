@@ -122,6 +122,17 @@ class TestFeaturesSection(unittest.TestCase):
         self.assertAlmostEqual(cfg.features.sharpness_band_max, 500.0)
         self.assertAlmostEqual(cfg.features.subject_score_min, 0.75)
 
+    def test_the_face_sharpness_threshold_is_read_and_defaults_to_the_measured_one(self):
+        # F155: 200 is the row of the measurement where recall quadruples (62% against 15%
+        # for the whole frame) at a comparable number of frames flagged. Provisional by
+        # construction — 13 blurred frames in the sample — so it has to be overridable.
+        self.assertAlmostEqual(FeaturesConfig().face_sharpness_max, 200.0)
+        cfg = self._load("features:\n  face_sharpness_max: 350\n")
+        self.assertAlmostEqual(cfg.features.face_sharpness_max, 350.0)
+        self.assertAlmostEqual(
+            self._load("features:\n  face_sharpness_max: sharp\n"
+                       ).features.face_sharpness_max, 200.0)
+
     def test_a_quoted_false_does_not_switch_the_feature_on(self):
         self.assertFalse(self._load('features:\n  pets: "false"\n').features.pets)
 

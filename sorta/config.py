@@ -388,6 +388,23 @@ def _as_scope(value: Any, default: str) -> str:
     return default
 
 
+def _as_repo_id(key: str, value: Any, default: str) -> str:
+    """A huggingface repo id (`owner/name`); anything else -> the default, with a warning.
+
+    Weaker than `_as_model_name` below and deliberately so: that one validates an
+    open_clip `<architecture>/<weights>` pair, where a missing half builds an untrained
+    tower and fills a table with rubbish. Here the string is handed to
+    `from_pretrained`, which fails loudly by itself — all this has to stop is an empty
+    or non-string value turning into a download attempt for "".
+    """
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if value is not None:
+        _log.warning("config: %s=%r — ожидался идентификатор модели, использую %r",
+                     key, value, default)
+    return default
+
+
 def _as_model_name(value: Any, default: str) -> str:
     """F141: `<open_clip architecture>/<weights>`; anything else -> the default.
 
@@ -689,6 +706,30 @@ class FeaturesConfig:
     # number: "almost everything is blurred and I would delete it, except a couple I keep
     # for the memory" — a frame this cannot know about is exactly why the human marks.
     blur_review_max: float = 90.0
+    # F155: the same laplacian measured INSIDE the face boxes of a frame, and the number
+    # below which such a frame is a blur candidate. A separate setting from
+    # `blur_review_max` because the two are not on one scale: one is a variance over a
+    # whole preview, the other over a 100-200 px crop of it, and no factor converts them.
+    #
+    # MEASURED (2026-08-02, the 68 frames of a 200-frame hand-checked sample that have a
+    # face; 13 of them blurred):
+    #
+    #     measured over    threshold  flagged  right  precision  recall
+    #     the whole frame        300       10      2       20%      15%
+    #     the face crop          100       17      5       29%      38%
+    #     the face crop          200       33      8       24%      62%
+    #     the face crop          400       44     10       23%      77%
+    #
+    # 200 is the row that quadruples recall for a comparable number of frames flagged, and
+    # it is where this starts rather than where it ends: the sample holds 13 blurred frames,
+    # so one frame is worth ~8 points of recall and the direction is what was measured, not
+    # the figure. `python scripts/measure_frame_quality.py --features sharpness` prints the
+    # sweep on a real collection — read it before moving this.
+    #
+    # NOT A VERDICT. Precision is ~25% at every row above: three of four flagged frames are
+    # not blurred. It orders the blur list; nothing in the pipeline deletes or reclassifies
+    # anything by it.
+    face_sharpness_max: float = 200.0
     # F128: keep the CLIP vector the junk stage already computes instead of discarding it
     # (table `clip_embeddings`). ON by default, which is the deliberate half of this
     # setting: the price is small — ~60 MB per 20 000 photos, written inside a pass that
@@ -745,6 +786,17 @@ class FeaturesConfig:
     # threshold (F122), the cascade selection (F130) and the junk classification are
     # calibrated on ITS numbers; changing it to fix search would invalidate all of them.
     search_model: str = "xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k"
+    # F149: the model behind "try to improve" — the button that makes a processed COPY of
+    # ONE frame a person opened and chose. No toggle, because there is nothing to switch
+    # on: nothing loads until the button is pressed, and pressing it is the opt-in. The
+    # price, for the same reason it is not hidden: ~400 MB of weights, downloaded once
+    # from the network, and ~1 second per frame on the card this was measured on.
+    #
+    # `realworld`, not `classical`, and that distinction is the whole measurement. The
+    # first comparison used `swin2SR-classical-sr-x2` and lost to a plain unsharp mask —
+    # "classical" is trained on clean bicubic downscaling, a degradation an archive of
+    # real photographs does not contain. Against `realworld-sr-x4` the mask lost outright.
+    restore_model: str = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -773,6 +825,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         sharpness_band_max=_as_float(raw.get("sharpness_band_max"), d.sharpness_band_max),
         subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
+        face_sharpness_max=_as_float(
+            raw.get("face_sharpness_max"), d.face_sharpness_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
         search_limit=_as_positive_int(raw.get("search_limit"), d.search_limit),
         group_photo_faces=_as_positive_int(
@@ -781,6 +835,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
             raw.get("portrait_face_share"), d.portrait_face_share),
         search_index=_as_bool(raw.get("search_index"), d.search_index),
         search_model=_as_model_name(raw.get("search_model"), d.search_model),
+        restore_model=_as_repo_id(
+            "features.restore_model", raw.get("restore_model"), d.restore_model),
     )
 
 

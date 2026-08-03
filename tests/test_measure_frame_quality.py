@@ -38,10 +38,10 @@ measure = _load_script()
 
 
 def frame(fid=1, pet_class=None, pet_score=0.0, sharpness=None, subject_score=0.99,
-          pet_vlm=None):
+          pet_vlm=None, face_sharpness=None):
     return measure.Frame(file_id=fid, pet_class=pet_class, pet_score=pet_score,
                          sharpness=sharpness, subject_score=subject_score,
-                         pet_vlm=pet_vlm)
+                         pet_vlm=pet_vlm, face_sharpness=face_sharpness)
 
 
 def settings(**kwargs):
@@ -117,6 +117,51 @@ class TestBandSummary(unittest.TestCase):
         self.assertRegex(text, r"итого в полосе.*\s2\s")
 
 
+class TestFaceSharpnessSweep(unittest.TestCase):
+    """F155: the sweep `features.face_sharpness_max` is read off before it is chosen.
+
+    Its population is the frames that HAVE the number — a third of a collection — and every
+    share printed is counted against that third. A sweep that divided by the whole sample
+    would report the coverage of a signal nobody measured.
+    """
+
+    def test_counts_the_frames_a_threshold_would_put_in_the_list(self):
+        frames = [frame(1, face_sharpness=50.0), frame(2, face_sharpness=150.0),
+                  frame(3, face_sharpness=900.0), frame(4, face_sharpness=None)]
+        rows = {r.threshold: r for r in measure.sweep_face(frames, [100.0, 200.0, 1000.0])}
+        self.assertEqual(rows[100.0].fired, 1)
+        self.assertEqual(rows[200.0].fired, 2)
+        self.assertEqual(rows[1000.0].fired, 3)
+
+    def test_a_frame_without_a_face_number_never_fires(self):
+        (row,) = measure.sweep_face([frame(1, face_sharpness=None)], [1e9])
+        self.assertEqual(row.fired, 0)
+
+    def test_the_share_is_of_the_frames_with_a_face_not_of_the_sample(self):
+        frames = [frame(1, face_sharpness=10.0)] + [frame(i) for i in range(2, 5)]
+        text = measure.format_face_sharpness(
+            frames, measure.sweep_face(frames, [100.0]), 200.0)
+        self.assertIn("1 кадров с лицом из 4", text)
+        self.assertIn("100.0%", text)   # the one measured frame, not 25% of the sample
+
+    def test_the_configured_threshold_is_marked(self):
+        frames = [frame(1, face_sharpness=10.0)]
+        text = measure.format_face_sharpness(
+            frames, measure.sweep_face(frames, [100.0, 200.0]), 200.0)
+        self.assertIn("200.0*", text)
+
+    def test_a_collection_without_a_faces_run_says_so_instead_of_printing_zeros(self):
+        text = measure.format_face_sharpness([frame(1), frame(2)], [], 200.0)
+        self.assertIn("ни одного кадра с лицом", text)
+
+    def test_no_identifier_reaches_the_block(self):
+        frames = [frame(101, face_sharpness=10.0), frame(102, face_sharpness=900.0)]
+        text = measure.format_face_sharpness(
+            frames, measure.sweep_face(frames, [100.0]), 200.0)
+        for forbidden in ("/photos", ".jpg", "101", "102"):
+            self.assertNotIn(forbidden, text)
+
+
 class TestFormattingIsAnonymous(unittest.TestCase):
     """Privacy: the tables are aggregates. No path, no basename, ever."""
 
@@ -149,6 +194,16 @@ class TestCache(unittest.TestCase):
             path = Path(tmp) / "c.json"
             measure.save_cache(path, frames)
             self.assertEqual(measure.load_cache(path), frames)
+
+    def test_the_face_number_round_trips_too(self):
+        """F155: a column added to `Frame` that the cache drops is a silently empty sweep."""
+        frames = [frame(1, face_sharpness=123.5), frame(2, face_sharpness=None)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.json"
+            measure.save_cache(path, frames)
+            loaded = measure.load_cache(path)
+        self.assertEqual(loaded[0].face_sharpness, 123.5)
+        self.assertIsNone(loaded[1].face_sharpness)
 
     def test_the_cache_holds_no_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

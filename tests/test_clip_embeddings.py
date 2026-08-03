@@ -327,7 +327,7 @@ class EmbeddingCase(unittest.TestCase):
     def run_classify(self, classifier, **kwargs):
         return classify(self.cfg, self.conn, classifier=classifier,
                         text_detector=NO_OCR,
-                        sharpness_detector=lambda _path: 100.0, **kwargs)
+                        sharpness_detector=lambda _path, _faces: junk.Sharpness(100.0), **kwargs)
 
     def embedding(self, fid):
         return self.conn.execute(

@@ -92,6 +92,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **The junk stage says where its seconds went** (F147). On the run of 2026-08-02 the
+  stage took **2 070 seconds** — more than half of the whole hour — and the log held one
+  line about it: `stage=junk elapsed=2070.208`. Six different things work inside it (CLIP
+  over every frame, OCR behind the gate, the laplacian, the quality model, the animal
+  cascade, the stored vectors), and which of them ate the 34 minutes was a guess — so
+  every lever from the backlog (narrow the quality scope, raise the rescue threshold,
+  change the batch size) was a guess too. Each phase that runs now writes its own
+  `stage=junk phase=<name> elapsed=<sec> processed=<n> rate=<n>/s` line, in the same
+  machine-readable shape, through the same logger and at the same level as the stage
+  summary it breaks down, so the breakdown exists at the settings a long run is actually
+  started with rather than only under DEBUG. The unit count is half the point: eighteen
+  minutes over 1 362 model calls and eighteen minutes over 22 096 frames read the same
+  without it. The phase names are the ones F100 already gave the progress bar
+  (`junk_clip`, `junk_ocr`, `junk_vlm`, `junk_write`) — one name for the caption and for
+  the stopwatch, so the two cannot drift — and a phase that did not run writes **nothing**
+  rather than a zero, because `elapsed=0` reads as "it happened instantly". Measurement
+  only: not one verdict, threshold or call count moves, which is the whole reason to build
+  the instrument before pulling any lever with it.
+- **Sharpness measured inside the face** (F155): a new column `frame_quality.face_sharpness`
+  (schema v24) — the same laplacian the stage already computes, taken over the face boxes of
+  the frame instead of over the whole of it. **The blur filter needed it because its recall
+  was 6%**: on a hand-checked sample of 200 frames it caught 2 of the 33 blurred ones, and
+  the reason is not the threshold. The variance of the laplacian over a whole frame answers
+  "how much detail is in this picture", which is a different question from "is it in focus"
+  — a detailed sharp street and a smooth blurred face give the same number, and blurred
+  frames sit in every band up to 400. A face is the one object comparable across frames, so
+  the same measure taken inside it means the same thing twice: on the 68 frames of that
+  sample that have a face (13 of them blurred), **62% recall at a threshold of 200 against
+  15% for the whole frame at 300**, for a comparable number of frames flagged. It costs no
+  new pass — the preview is decoded once and the second variance comes off a crop of the
+  same array — and **the coordinates are rescaled** from the original into preview pixels,
+  which is the one thing that had to be right: `faces.bbox` is written in pixels of the full
+  frame, and the measurement this feature came from used them as written, lost 39 of its 68
+  crops off the edge and reported 100% recall over the survivors instead of the real 62%. A
+  broken crop flatters the result rather than failing, so the suite pins the rescaling
+  directly. Several faces give the sharpest one (if any face is in focus, the shot worked);
+  the `bbox = '[]'` marker is not a face; a crop too small to measure is NULL, not zero.
+  **It ranks and does not judge**: precision is ~25% at every threshold measured, and only
+  the third of a collection that has a face is covered at all, so `features.face_sharpness_max`
+  (`200.0`, provisional — `python scripts/measure_frame_quality.py --features sharpness`
+  prints the sweep) orders the blur list and nothing in the pipeline acts on it.
 - **An object detector as a second tier over a query, not a pass** (F154): the animal label
   gets a third tier (`features.detector`, off by default, behind its own master switch
   `detect.enabled`) — a COCO detector from torchvision, run over the candidates a zero-shot
@@ -118,6 +159,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.30 a brief proposed turned out to be the worst row of its table. **No new dependency:**
   torchvision is installed with the CLIP side already and only the COCO weights are
   downloaded, and there is no configuration in which the detector runs over everything.
+  One thing this does **not** yet reach, stated rather than hidden: since F137 the album,
+  the "Animals" tab and the Overview counter derive the verdict when they read, out of
+  `pet_score`/`pet_vlm` through `sorter.animal_auto_sql`, and that expression does not know
+  about `detections` yet — so the detector fills its table and writes `frame_quality.pet`,
+  while the slice a user sees is still the F130 answer until the read-time rule learns the
+  new tier (one branch, in a file this feature does not own).
+- **"Try to improve" — one frame, by request, a processed copy beside it** (F149). A third
+  action in the **Review** tab next to "mark for deletion" and "keep": press it on ONE frame
+  you opened and chose, and a model-processed copy appears **as a second card beside the
+  original**, marked as processed, with the same actions on it — so the comparison is two
+  pictures next to each other rather than a message saying a file was saved. Keep either,
+  both or neither; choosing the copy marks nothing about the original, which is the same
+  line between advice and action F148 drew. The model is `features.restore_model`
+  (`caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr`, ~400 MB of weights and ~1 second per
+  frame), loaded on the **first press** and never at startup, and it is `realworld` and not
+  `classical` because that is what the measurement said: `swin2SR-classical` is trained on
+  clean bicubic downscaling — a degradation a real archive does not contain — and lost to a
+  plain unsharp mask, while `realworld-sr-x4` beat the mask outright.
+  **The model does not bring back what was lost, it draws something plausible**, and for an
+  archive that is more dangerous than the blur: a smeared frame is honestly smeared, a
+  redrawn face looks real and is not. So the original is never touched (byte for byte, and
+  that is the first test of the feature), the copy says what it is in its name
+  (`<name>_restored.jpg`, beside the original, never over an existing file) and on its card,
+  and **there is no bulk anything** — no stage, no CLI command, and a route that takes a
+  single `file_id` and refuses a list. The input is scaled to 1024 px first (x4 over a full
+  4000 px frame is 16000 px and a memory failure), and when there is no copy there is a
+  **reason** instead — the weights come off the network, and being offline is an ordinary
+  state for this program.
+  The copy is an **ordinary member of the collection**: it gets its own `files` row, so it
+  goes into the layout, the slices and albums, and it inherits the capture facts of its
+  source rather than being re-read off a re-encoded JPEG (which would date it today and
+  file it under this year instead of the year in the picture). Its link to the original is
+  **stored** (`restored_files`, schema v23) and not guessed from a name, which is what keeps
+  the pair from ever coming back as a duplicate to sort out: `dedup.near_duplicate_groups`
+  leaves derived files out of its groups, so nobody spends the next run deciding about pairs
+  they created themselves. Pressing the button twice returns the copy that exists.
   One thing this did **not** reach when it shipped, stated rather than hidden: since F137
   the album, the "Animals" tab and the Overview counter derive the verdict when they read,
   out of `pet_score`/`pet_vlm` through `sorter.animal_auto_sql`, and that expression did

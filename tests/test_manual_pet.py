@@ -151,8 +151,9 @@ class ManualPetTestBase(AnimalAlbumTestBase):
         with self.conn:
             self.conn.execute("DELETE FROM frame_quality")
             for file_id, (pet, score) in rows.items():
+                # (file_id, sharpness, face_sharpness, pet, pet_score, source, updated_at)
                 self.conn.execute(_QUALITY_UPSERT,
-                                  (file_id, 100.0, pet, score, source, now))
+                                  (file_id, 100.0, None, pet, score, source, now))
 
     def slice_ids(self) -> list[int]:
         return [it.file_id for it in self.gather(apply=False).plan]

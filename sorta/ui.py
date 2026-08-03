@@ -363,7 +363,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from send2trash import send2trash as send_to_trash
 
-from . import db, faces, i18n, imaging
+from . import db, faces, i18n, imaging, restore
 from .config import (
     VLM_QUALITY_SCOPES,
     Config,
@@ -1280,6 +1280,15 @@ def _trash_files(db_path: Path, ids: list[int]) -> list[dict]:
             ph2 = ",".join("?" * len(found_ids))
             with conn:
                 conn.execute(f"DELETE FROM dedup_choice WHERE file_id IN ({ph2})", found_ids)
+                # F149: both directions. Trashing a processed copy has to forget that it
+                # existed (otherwise the button keeps answering "you already have one" for
+                # a file that is gone), and trashing an ORIGINAL leaves its copy an
+                # ordinary photograph — the derivation is a fact about a pair, and one half
+                # of it is no longer there.
+                conn.execute(
+                    f"DELETE FROM restored_files "
+                    f"WHERE file_id IN ({ph2}) OR source_file_id IN ({ph2})",
+                    found_ids + found_ids)
                 conn.execute(f"DELETE FROM files WHERE id IN ({ph2})", found_ids)
     finally:
         conn.close()
@@ -1452,14 +1461,17 @@ def _junk_payload(db_path: Path, bucket: str | None,
 
     F133: `sensitive` is `vlm.exclude_classes` — the config list that already means
     "handle this class as private", and whose default is `["document"]`. A class in it
-    keeps its COUNTER and loses its CONTENT: no paths, no rows, and therefore no
-    thumbnails, because a thumbnail is fetched by a path this route hands out. The guard
-    lives here rather than in the markup for exactly that reason — hiding a button in
-    the browser is not privacy when the data has already been sent to it.
+    keeps its counter, its cards and the way back to the photos, and loses exactly one
+    thing: `thumb_url`. That is the whole of the rule, and it has to be enforced HERE
+    rather than in the markup — a card the browser was given a preview link for is a
+    card whose contents have already been decoded and sent, whatever the page then
+    chooses to draw. The card still carries a name and a date, which is what "open the
+    documents in the common grid, do not enlarge them" (the brief) asks for.
 
     Reusing the VLM key instead of adding a second one is a deliberate trade: one
     visible list of sensitive classes beats two, of which the second gets forgotten.
-    Emptying it therefore lifts both protections at once, which the guide says out loud.
+    Emptying it therefore lifts both protections at once — the guide entry for the key
+    is what has to say so.
 
     The selection is `media_class.verdict <> 'photo'` over canonical, readable files —
     the same `dup_of IS NULL AND error IS NULL` population `junk.classify` writes and
@@ -1516,8 +1528,9 @@ def _junk_payload(db_path: Path, bucket: str | None,
         "album_kind": (
             bucket if (bucket in CLASS_ALBUM_KINDS and bucket not in sensitive)
             else None),
-        # The client draws the counter-only state from this — it must not have to guess
-        # which classes came back empty on purpose and which are simply empty.
+        # Said out loud rather than inferred from a missing field: a card without
+        # `thumb_url` is a class the server refuses to render, not a preview that failed
+        # to build, and the two need different words on the screen.
         "sensitive": sorted(sensitive),
         "total": int(total),
         "offset": offset,
@@ -2160,6 +2173,88 @@ def _apply_review_mark(db_path: Path, ids: list[int], action: str) -> int:
     finally:
         conn.close()
     return len(known)
+
+
+# --- F149: "try to improve" — one frame, by request, a copy beside it -----------------
+# The third action of the Review tab, next to the two it has had ("mark for deletion",
+# "keep"). What it does NOT do is most of the design (see `restore` for the measurement
+# and the reasoning):
+#
+# * ONE frame per press. `{"file_id": int}` and no list shape at all — a body carrying
+#   `file_ids` is refused by the validator like any other malformed one. There is no CLI
+#   command either. A model that draws plausible detail, applied in bulk, turns an archive
+#   into a collection of convincing forgeries;
+# * the original is never opened for writing, and the copy carries `_restored` in its name;
+# * a repeat press returns the copy that already exists (`restore.existing_copy`) instead
+#   of making a second one;
+# * keeping the copy does NOT mark the original for deletion. Two decisions, and the
+#   second one is the person's — the same line between advice and action as F148. Nothing
+#   on this path writes `dedup_choice`; the copy simply becomes a frame the existing
+#   marking route can be used on, exactly like its source.
+
+
+def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
+    """One card for the processed copy — the shape of a review card, plus what it is.
+
+    `restored` and `source_file_id` are what the client draws the badge from and where it
+    inserts the card: beside the original, not at the end of the list and not in a dialog
+    of its own. `action` is always None: the copy has just been created, so nobody has
+    decided anything about it yet, and it must not arrive with a decision attached.
+    """
+    item = _review_item_to_json(row, None)
+    item["restored"] = True
+    item["source_file_id"] = int(source_file_id)
+    return item
+
+
+def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dict:
+    """`POST /api/review/restore` for ONE id -> the card of the copy, or the reason.
+
+    Reads the source's path from the index (never from the request — the same rule every
+    other route follows), hands it to `restore.restore_frame`, then indexes the result. A
+    reason travels as a CODE (`restore.ERROR_*`), which the client translates: the weights
+    come from the network and offline is an ordinary state for this product, so "the model
+    is not here" has to be an answer a person can read rather than an empty result.
+    """
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("SELECT id, path FROM files WHERE id = ?", (file_id,)).fetchone()
+        if row is None:
+            return {"ok": False, "error": "file not found"}
+        model = features.restore_model
+        existing = restore.existing_copy(conn, file_id, model)
+        if existing is not None:
+            copy_id, copy_path = existing
+            if Path(copy_path).exists():
+                return {"ok": True, "reused": True,
+                        "item": _restored_item_to_json(_restored_row(conn, copy_id), file_id)}
+            # The person deleted it in their file manager. Answering "you already have one"
+            # and drawing a card for a file that is gone is worse than doing the work again.
+            restore.forget_copy(conn, copy_id)
+        result = restore.restore_frame(Path(row["path"]), model)
+        if not result.ok or result.path is None:
+            return {"ok": False, "reason": result.error, "detail": result.detail}
+        copy_id = restore.record_restored(conn, file_id, result.path, model=model)
+        item = _restored_item_to_json(_restored_row(conn, copy_id), file_id)
+    finally:
+        conn.close()
+    # The copy is a new canonical file, so the cached duplicate payload and the cached
+    # layout no longer describe the collection. It is never a duplicate of its source
+    # (`dedup`), which is a statement about the GROUPS and not about the cache.
+    _dupes_cache_clear()
+    return {"ok": True, "reused": False, "item": item}
+
+
+def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
+    """The copy's row in the shape `_review_item_to_json` reads.
+
+    `sharpness` is selected as NULL rather than joined: the copy has no `frame_quality`
+    row and will not have one until the next run measures it, and a card that printed a
+    zero would be claiming a measurement nobody made.
+    """
+    return conn.execute(
+        "SELECT id, path, taken_at, NULL AS sharpness FROM files WHERE id = ?",
+        (file_id,)).fetchone()
 
 
 def _parse_junk_query(query: dict[str, list[str]]) -> tuple[str | None, int, int] | None:
@@ -6112,6 +6207,81 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "review_mark_clear": {
         "ru": "Снять отметку", "en": "Clear the mark", "ja": "印を外す",
     },
+    # --- F149: "try to improve" — the third action, on one frame ----------------------
+    # Every string here says PROCESSED, never "improved". The model draws something
+    # plausible instead of bringing back what was lost, and an interface that calls that
+    # an improvement is the one thing this feature must not do: a person has to know at
+    # every moment which of the two pictures in front of them is the photograph.
+    "review_restore": {
+        "ru": "Попробовать улучшить", "en": "Try to improve", "ja": "補正を試す",
+    },
+    "review_restore_hint": {
+        "ru": "Один кадр за раз: выберите ровно один. Модель НЕ возвращает утраченное — "
+              "она дорисовывает правдоподобное, поэтому рядом появится помеченная "
+              "копия, а оригинал останется как есть. Первое нажатие качает веса "
+              "(~400 МБ), дальше — около секунды на кадр.",
+        "en": "One frame at a time: select exactly one. The model does NOT bring back "
+              "what was lost — it draws something plausible — so what appears beside the "
+              "original is a marked copy, and the original stays as it is. The first "
+              "press downloads the weights (~400 MB), after that it is about a second "
+              "per frame.",
+        "ja": "一度に 1 枚だけです。ちょうど 1 枚を選んでください。モデルは失われた情報を"
+              "復元するのではなく、それらしく描き足します。そのため元の写真の隣には印の"
+              "付いた複製が現れ、元の写真はそのまま残ります。初回は重み (約 400 MB) を"
+              "取得し、その後は 1 枚あたり約 1 秒です。",
+    },
+    "review_restore_running": {
+        "ru": "Обрабатываем кадр…", "en": "Processing the frame…", "ja": "処理中…",
+    },
+    "review_restore_badge": {
+        "ru": "обработано моделью", "en": "processed by a model", "ja": "モデルによる処理",
+    },
+    "review_restore_badge_hint": {
+        "ru": "Это НЕ фотография, а копия, дорисованная моделью: детали на ней "
+              "правдоподобные, но выдуманные. Оригинал не изменён и лежит рядом. "
+              "Оставить можно любую, обе или ни одной — выбор копии сам по себе ничего "
+              "не помечает на удаление.",
+        "en": "This is NOT a photograph but a copy a model drew over: its detail is "
+              "plausible and invented. The original is unchanged and lies beside it. Keep "
+              "either, both or neither — choosing the copy marks nothing for deletion by "
+              "itself.",
+        "ja": "これは写真ではなく、モデルが描き足した複製です。細部はそれらしく見えますが"
+              "作られたものです。元の写真は変更されず隣にあります。どちらを残しても、"
+              "両方でも、どちらも残さなくても構いません。複製を選んでも、それだけでは"
+              "何も削除対象になりません。",
+    },
+    "review_restore_done": {
+        "ru": "Готово: обработанная копия рядом с оригиналом. Оригинал не изменён.",
+        "en": "Done: the processed copy is beside the original. The original is unchanged.",
+        "ja": "完了しました。処理済みの複製が元の写真の隣にあります。元の写真は変更されて"
+              "いません。",
+    },
+    "review_restore_reused": {
+        "ru": "Такая копия уже была — показываем её, второй не делаем.",
+        "en": "That copy already existed — here it is; a second one is not made.",
+        "ja": "その複製はすでに存在します。既存のものを表示し、二つ目は作りません。",
+    },
+    "review_restore_error_model_unavailable": {
+        "ru": "Модель не загрузилась. Веса качаются из сети и нужен дополнительный "
+              "набор пакетов ([vlm]); офлайн и без скачанных весов эта кнопка работать "
+              "не будет. Ничего не создано.",
+        "en": "The model did not load. The weights come from the network and need the "
+              "extra package set ([vlm]); offline and without cached weights this button "
+              "cannot work. Nothing was created.",
+        "ja": "モデルを読み込めませんでした。重みはネットワークから取得され、追加の"
+              "パッケージ ([vlm]) が必要です。オフラインで重みが未取得の場合、この"
+              "ボタンは動作しません。何も作成されていません。",
+    },
+    "review_restore_error_decode_failed": {
+        "ru": "Кадр не читается — обрабатывать нечего. Ничего не создано.",
+        "en": "The frame will not read — there is nothing to process. Nothing was created.",
+        "ja": "このコマを読み込めないため、処理できません。何も作成されていません。",
+    },
+    "review_restore_error_write_failed": {
+        "ru": "Копию не удалось записать рядом с оригиналом. Оригинал не изменён.",
+        "en": "The copy could not be written beside the original. The original is unchanged.",
+        "ja": "元の写真の隣に複製を書き込めませんでした。元の写真は変更されていません。",
+    },
     "review_select_label": {"ru": "выбрать", "en": "select", "ja": "選択"},
     "review_select_all": {"ru": "Выбрать всё на странице",
                           "en": "Select everything on this page",
@@ -6927,6 +7097,11 @@ label { cursor: pointer; }
 .review-card-meta { font-size: 0.75rem; color: var(--muted);
       font-variant-numeric: tabular-nums; }
 .review-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
+/* F149: the processed copy stands next to the original and must never be mistaken for
+   it. A dashed border rather than another coloured outline: the two outlines above mean
+   a DECISION, and "this one was drawn over" is not one. */
+.review-card.processed { border-style: dashed; border-color: var(--accent); }
+.review-card-processed { font-size: 0.75rem; color: var(--accent); cursor: help; }
 
 /* --- F108: вкладка «Обзор» ---------------------------------------------- */
 /* Четыре группы рядом, а не одна длинная простыня: вопрос «что с архивом»
@@ -7496,12 +7671,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div class="override-controls">
 <button type="button" id="review-delete-btn" class="btn btn-danger" disabled>{{review_mark_delete}}<span id="review-selected-count"></span></button>
 <button type="button" id="review-keep-btn" class="btn btn-primary" disabled>{{review_mark_keep}}</button>
+<button type="button" id="review-restore-btn" class="btn" disabled title="{{review_restore_hint}}">{{review_restore}}</button>
 <button type="button" id="review-clear-btn" class="btn btn-ghost" disabled>{{review_mark_clear}}</button>
 <button type="button" id="review-select-all-btn" class="btn btn-ghost">{{review_select_all}}</button>
 <button type="button" id="review-select-none-btn" class="btn btn-ghost">{{review_select_none}}</button>
 <span id="review-status" class="override-status"></span>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
+<p id="review-restore-hint" class="override-hint">{{review_restore_hint}}</p>
 <div id="review-album" class="album-controls"></div>
 <div id="review-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
@@ -8720,7 +8897,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   });
 
-  // --- F133: срезы -----------------------------------------------------------
+  // --- F133: the slices ------------------------------------------------------
   // The pin row is BUILT, never written out in the markup: F129 replaces the fixed list
   // with a query, and a row of hand-written buttons would have to be thrown away then.
   // Three of the pins (people/events/animals) show a panel that used to be a tab; the
@@ -9053,8 +9230,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
   // EXISTS-проверок, вызывается при инициализации и после каждого прогона
   // (refreshTabsAfterProcess), т.к. прогон мог впервые породить кластеры/события.
-  // F133: эти три больше не вкладки, а закреплённые срезы, и правило то же —
-  // среза нет, пока в базе нечего показать.
+  // F133: these three are pinned slices rather than tabs now, and the rule has not
+  // moved — there is no slice while the database has nothing to show in it.
   function applyTabVisibility() {
     fetch("/api/tabs/visibility")
       .then(function (r) { return r.json(); })
@@ -9091,14 +9268,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   applyTabVisibility();
 
-  // --- F133: предупреждение о порядке на «Раскладке» -------------------------
-  // Отмеченные к удалению кадры уезжают в «_delete» ВО ВРЕМЯ sort --apply, тогда же,
-  // когда строится канон, а альбомы — hardlink'и ИЗ канона. Собрав альбомы раньше, чем
-  // выкинут мусор, человек получит ссылки на то, что решил выбросить.
+  // --- F133: the order warning of the "Layout" tab ---------------------------
+  // Frames marked for deletion leave for "_delete" DURING `sort --apply`, at the same
+  // moment the canon is built, and albums are hardlinks OUT of the canon. Gather the
+  // albums before the junk is thrown out and you get links to what you decided to throw.
   //
-  // Подсказка, и только: ни одна кнопка раскладки здесь не трогается. Коллекция живая,
-  // «собрать» происходит снова и снова, и вернувшемуся за одним альбомом шаги мешают —
-  // запертая вкладка стоила бы дороже, чем ошибка, от которой она защищает.
+  // A hint and nothing else: not one layout control is touched here. The collection is
+  // alive, "gather" happens again and again, and steps get in the way of somebody who
+  // came back for a single album — a locked tab would cost more than the mistake it
+  // guards against.
   function renderLayoutWarning(data) {
     var box = document.getElementById("layout-review-warning");
     var pending = data ? Number(data.pending_total || 0) : 0;
@@ -9119,10 +9297,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     activateTab("review");
   });
 
-  // --- F133: настройки за шестерёнкой ---------------------------------------
-  // Ровно та же панель и те же /api/settings — переехало только место, откуда её
-  // открывают. Тринадцать ключей, к которым возвращаются раз в месяц, больше не держат
-  // треть экрана постоянно.
+  // --- F133: the settings behind the gear ------------------------------------
+  // The very same column and the very same /api/settings — only the place it is opened
+  // from has moved. Thirteen keys people come back to about once a month no longer hold
+  // a third of the screen at all times.
   function toggleSettingsPanel(open) {
     var panel = document.getElementById("settings-panel");
     panel.hidden = !open;
@@ -9323,8 +9501,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       return card;
     }
     cl.verdicts.forEach(function (row) {
-      // F133: всё, что не «личное фото», — закреплённый срез своего класса; ведём
-      // прямо в него, а не в общий список.
+      // F133: everything that is not a personal photograph is a pinned slice of its own
+      // class — the number leads straight into it rather than into the whole list.
       card.appendChild(overviewRow(
           overviewVerdictLabel(row.key),
           overviewCount(row.count, row.key === "photo" ? null : "slices",
@@ -11816,6 +11994,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return Object.keys(reviewSelected).map(Number);
   }
 
+  // F149: true while the model is working on a frame. It is about a second per frame and
+  // the first press also downloads ~400 MB, so the button has to say that something is
+  // happening — and stay dead until it is over, in both cases.
+  var reviewRestoring = false;
+
   function refreshReviewControls() {
     var n = reviewSelectedIds().length;
     document.getElementById("review-selected-count").textContent = n ? " (" + n + ")" : "";
@@ -11823,6 +12006,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     ["review-delete-btn", "review-keep-btn", "review-clear-btn"].forEach(function (id) {
       document.getElementById(id).disabled = dead;
     });
+    // F149: exactly ONE frame, and the button says so by being dead for anything else.
+    // There is no bulk shape behind it to reach even by hand — the route takes a single
+    // `file_id` and refuses a list.
+    var restoreBtn = document.getElementById("review-restore-btn");
+    restoreBtn.disabled = uiBusy() || reviewRestoring || n !== 1;
+    restoreBtn.textContent = reviewRestoring ? I18N.review_restore_running
+                                             : I18N.review_restore;
   }
 
   registerBusyRefresh(refreshReviewControls);
@@ -11852,9 +12042,23 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var card = document.createElement("div");
     card.className = "review-card" +
         (item.action === "to_delete" ? " marked-delete" : "") +
-        (item.action === "keep" ? " marked-keep" : "");
+        (item.action === "keep" ? " marked-keep" : "") +
+        (item.restored ? " processed" : "");
+    // F149: the copy is inserted next to its original, so a card has to be findable by
+    // the id it is about — hence the attribute rather than a lookup by position.
+    card.setAttribute("data-file-id", String(item.file_id));
     card.appendChild(
         clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
+    if (item.restored) {
+      // Says PROCESSED, never "improved": the model draws plausible detail instead of
+      // recovering what was lost, and the person comparing the two pictures has to know
+      // which one is the photograph.
+      var badge = document.createElement("span");
+      badge.className = "review-card-processed";
+      badge.textContent = I18N.review_restore_badge;
+      badge.title = I18N.review_restore_badge_hint;
+      card.appendChild(badge);
+    }
     var name = document.createElement("span");
     name.className = "review-card-name";
     name.textContent = item.name;
@@ -11889,7 +12093,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var grid = document.getElementById("review-grid");
     if (!append) grid.textContent = "";
     (data.items || []).forEach(function (it) { grid.appendChild(renderReviewCard(it)); });
-    var shown = grid.querySelectorAll(".review-card").length;
+    // F149: `:not(.processed)` — a processed copy is not a frame of the slice and must
+    // not shift the paging window or the "showing N of M" line it is counted into.
+    var shown = grid.querySelectorAll(".review-card:not(.processed)").length;
     if (!shown) {
       grid.appendChild(stateEl("empty",
           data.eyes_reason === "no_faces_run" && reviewSlice === "eyes"
@@ -11907,6 +12113,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     moreBtn.textContent = beyondNext ? I18N.review_load_more_beyond : I18N.review_load_more;
     moreBtn.style.display = more ? "" : "none";
     reviewOffset = shown;
+    reinsertRestoredCards();
   }
 
   function fetchReview(offset, append) {
@@ -11943,6 +12150,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     reviewSlice = slice;
     reviewBeyond = false;
     reviewSelected = {};
+    reviewRestoredItems = [];   // F149: the comparison belongs to the slice it was made in
     refreshReviewControls();
     document.getElementById("review-status").textContent = "";
     REVIEW_SLICES.forEach(function (name) {
@@ -11968,6 +12176,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .then(function (resp) {
         if (resp && resp.ok) {
           status.textContent = fmt(I18N.review_marked_status, { n: resp.marked });
+          // F149: a processed copy is in no slice, so the redraw below cannot bring its
+          // decision back from the server — it is carried on the remembered card instead.
+          reviewRestoredItems.forEach(function (item) {
+            if (ids.indexOf(item.file_id) >= 0) {
+              item.action = action === "clear" ? null : action;
+            }
+          });
           reviewSelected = {};
           refreshReviewControls();
           fetchReview(0, false);
@@ -11976,6 +12191,70 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         }
       })
       .catch(function (err) { status.textContent = I18N.review_error_prefix + err; });
+  }
+
+  // F149: the copy appears WHERE THE ORIGINAL IS and takes part in the same choice. Not
+  // "the file was saved" — a second card beside the first, marked as processed, with the
+  // same actions on it, so the person compares two pictures and decides what to keep.
+  // Both, either or neither: choosing the copy marks nothing about the original, which is
+  // why nothing below writes a decision anywhere.
+  function insertRestoredCard(item) {
+    var grid = document.getElementById("review-grid");
+    var already = grid.querySelector('[data-file-id="' + item.file_id + '"]');
+    if (already) already.parentNode.removeChild(already);   // idempotent: one card per id
+    var source = grid.querySelector('[data-file-id="' + item.source_file_id + '"]');
+    var card = renderReviewCard(item);
+    if (source && source.nextSibling) grid.insertBefore(card, source.nextSibling);
+    else if (source) grid.appendChild(card);
+    else grid.insertBefore(card, grid.firstChild);
+    return card;
+  }
+
+  // The copy has no `frame_quality` row until the next run measures it, so it is in no
+  // slice and the server cannot hand it back on the next page load. It is remembered for
+  // as long as the slice is open — otherwise marking either frame would redraw the grid
+  // and the picture being compared against would simply vanish mid-comparison.
+  var reviewRestoredItems = [];
+
+  function reinsertRestoredCards() {
+    reviewRestoredItems.forEach(insertRestoredCard);
+  }
+
+  function rememberRestored(item) {
+    reviewRestoredItems = reviewRestoredItems.filter(function (kept) {
+      return kept.file_id !== item.file_id;
+    });
+    reviewRestoredItems.push(item);
+  }
+
+  function restoreSelectedFrame() {
+    var ids = reviewSelectedIds();
+    if (ids.length !== 1 || reviewRestoring) return;
+    var status = document.getElementById("review-status");
+    status.textContent = I18N.review_restore_running;
+    reviewRestoring = true;
+    refreshReviewControls();
+    return postJson("/api/review/restore", { file_id: ids[0] })
+      .then(function (resp) {
+        if (resp && resp.ok && resp.item) {
+          rememberRestored(resp.item);
+          insertRestoredCard(resp.item);
+          status.textContent = resp.reused ? I18N.review_restore_reused
+                                           : I18N.review_restore_done;
+        } else {
+          // A reason, never an empty result: the weights come off the network and being
+          // offline is an ordinary state for this program.
+          var reason = resp && resp.reason
+              ? I18N["review_restore_error_" + resp.reason] : null;
+          status.textContent = reason
+              || (I18N.review_error_prefix + ((resp && (resp.detail || resp.error)) || ""));
+        }
+      })
+      .catch(function (err) { status.textContent = I18N.review_error_prefix + err; })
+      .then(function () {
+        reviewRestoring = false;
+        refreshReviewControls();
+      });
   }
 
   function loadReview() {
@@ -11998,6 +12277,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   });
   document.getElementById("review-keep-btn").addEventListener("click", function () {
     applyReviewMark("keep");
+  });
+  document.getElementById("review-restore-btn").addEventListener("click", function () {
+    restoreSelectedFrame();
   });
   document.getElementById("review-clear-btn").addEventListener("click", function () {
     applyReviewMark("clear");
@@ -12250,6 +12532,14 @@ _BUSY_GUARDED_ROUTES = frozenset({
     # Marks and choices in the index...
     "/api/dupes/choice", "/api/dupes/choices", "/api/dupes/skip",
     "/api/review/mark", "/api/animals/mark", "/api/overrides", "/api/place",
+    # F149: writes a new file beside the original AND its row in the index — both halves
+    # of what the busy guard exists for, and the run it would race with rewrites the very
+    # tables the new row will need. The price of guarding it the ordinary way is that the
+    # lock is held for the model call (~1 s, and the one-off weights download on the first
+    # press), so another mark waits instead of being refused. That is the right way round:
+    # a mark that arrives a second late is a slow click, a `files` row written into the
+    # middle of a run is somebody's index.
+    "/api/review/restore",
     "/api/clusters/label", "/api/clusters/merge",
     # ...files moved on disk...
     "/api/dupes/trash", "/api/photo/trash", "/api/photos/trash", "/api/album",
@@ -12403,6 +12693,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_dupes_trash()
             elif path == "/api/review/mark":
                 self._handle_review_mark()
+            elif path == "/api/review/restore":
+                self._handle_review_restore()
             elif path == "/api/animals/mark":
                 self._handle_animal_mark()
             elif path == "/api/photo/trash":
@@ -12643,6 +12935,22 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             ids, action = parsed
             marked = _apply_review_mark(db_path, ids, action)
             self._send_json({"ok": True, "marked": marked})
+
+        def _handle_review_restore(self) -> None:
+            # F149: ONE id, and the validator is where that is enforced — a body carrying
+            # a list has no shape here at all, so there is no bulk route to find.
+            file_id = _validate_file_id_payload(self._read_json_body())
+            if file_id is None:
+                self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            payload = _restore_frame(db_path, cfg.features, file_id)
+            if payload.get("error") == "file not found":
+                self._send_json(payload, status=HTTPStatus.NOT_FOUND)
+                return
+            # A model that will not load is not a bad request: the answer is 200 with a
+            # reason the interface can say out loud, which is the whole point of it being
+            # a code and not a stack trace.
+            self._send_json(payload)
 
         def _handle_animal_mark(self) -> None:
             # F124: a row in `manual_pet` and nothing else — no file is touched, no
