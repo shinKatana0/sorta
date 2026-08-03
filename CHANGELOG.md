@@ -65,6 +65,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **Sharpness measured inside the face** (F155): a new column `frame_quality.face_sharpness`
+  (schema v24) — the same laplacian the stage already computes, taken over the face boxes of
+  the frame instead of over the whole of it. **The blur filter needed it because its recall
+  was 6%**: on a hand-checked sample of 200 frames it caught 2 of the 33 blurred ones, and
+  the reason is not the threshold. The variance of the laplacian over a whole frame answers
+  "how much detail is in this picture", which is a different question from "is it in focus"
+  — a detailed sharp street and a smooth blurred face give the same number, and blurred
+  frames sit in every band up to 400. A face is the one object comparable across frames, so
+  the same measure taken inside it means the same thing twice: on the 68 frames of that
+  sample that have a face (13 of them blurred), **62% recall at a threshold of 200 against
+  15% for the whole frame at 300**, for a comparable number of frames flagged. It costs no
+  new pass — the preview is decoded once and the second variance comes off a crop of the
+  same array — and **the coordinates are rescaled** from the original into preview pixels,
+  which is the one thing that had to be right: `faces.bbox` is written in pixels of the full
+  frame, and the measurement this feature came from used them as written, lost 39 of its 68
+  crops off the edge and reported 100% recall over the survivors instead of the real 62%. A
+  broken crop flatters the result rather than failing, so the suite pins the rescaling
+  directly. Several faces give the sharpest one (if any face is in focus, the shot worked);
+  the `bbox = '[]'` marker is not a face; a crop too small to measure is NULL, not zero.
+  **It ranks and does not judge**: precision is ~25% at every threshold measured, and only
+  the third of a collection that has a face is covered at all, so `features.face_sharpness_max`
+  (`200.0`, provisional — `python scripts/measure_frame_quality.py --features sharpness`
+  prints the sweep) orders the blur list and nothing in the pipeline acts on it.
 - **An object detector as a second tier over a query, not a pass** (F154): the animal label
   gets a third tier (`features.detector`, off by default, behind its own master switch
   `detect.enabled`) — a COCO detector from torchvision, run over the candidates a zero-shot

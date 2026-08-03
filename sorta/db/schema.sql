@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 23;
+PRAGMA user_version = 24;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -156,6 +156,25 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     -- real verdict rather than a resemblance. NULL = not computed (features.junk_rescue
     -- off, or no row in clip_embeddings for this frame).
     junk_score REAL,
+    -- v24 (F155): the same laplacian, measured INSIDE the face boxes of this frame — the
+    -- one signal that moved the blur filter. `sharpness` above answers "how much detail is
+    -- in this frame", which is not the same question as "is it in focus": a detailed sharp
+    -- street and a smooth blurred face give the same number, and the filter built on it
+    -- caught 2 of 33 blurred frames on a hand-checked sample of 200 (6% recall). Measured
+    -- on a face — an object whose content is CONSTANT across frames, so the number IS
+    -- comparable — the same 200-frame sample gives 62% at a threshold of 200 against 15%
+    -- for the whole frame at 300, for a comparable count of frames flagged.
+    --
+    -- IT RANKS, IT DOES NOT JUDGE. Precision is ~25% at every threshold measured: three of
+    -- four flagged frames are not blurred. It is there to lift candidates to the top of
+    -- the blur list, and there is no threshold in this stage that acts on it.
+    --
+    -- NULL = not measured, as everywhere in this table: no face on the frame (two thirds
+    -- of the collection — landscapes and objects are not covered by this signal at all),
+    -- the faces stage never ran, or the crop came out below the minimum size the laplacian
+    -- is worth computing over. Several faces -> the SHARPEST one: if any face in the frame
+    -- is in focus, the shot was taken properly.
+    face_sharpness REAL,
     source TEXT NOT NULL,                 -- classic | clip | vlm — WHICH TIER processed the
     --                                       row, and with it the incrementality marker (the
     --                                       F68 lesson, one column that means the tier)
