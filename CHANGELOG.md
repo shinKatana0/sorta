@@ -89,6 +89,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the detector on. The default does not move — `detect.enabled` stays off, and trading
   20 points of precision for 23 of recall is the user's decision, taken with the numbers of
   a run in hand.
+- **One city, one name — and one alphabet per language** (F172). A `language: ru` layout
+  came out in three alphabets at once: «Санкт-Петербург», «Москва» and «Серик» next to
+  `Nizhny Novgorod` (382 files), `Samara` (179) and `Ryazan` (109), with a Thai village in
+  its own script between them. Worse, one city was filed twice — «Сочи» (385 frames) and
+  `Sochi` (29) share a geonameid and are the same place. The bundled data was never the
+  problem: `names.tsv` holds a Russian name for every one of those cities. The NAME had two
+  sources that did not agree about the language. The bundled base was asked for the English
+  anchor (`geo._CANONICAL_LANG`), the online provider answered in the language of the
+  request — so whether a city came out Russian depended on whether Nominatim happened to
+  name a suburb for it: the answers that stopped at the region were completed from the
+  offline base, in English, and landed beside their own Russian twins. The rule is now
+  written down once, in `geo._place_name`, and every source goes through it: `language` →
+  `en` → the native name the source knew (the asciiname of `places.tsv` offline, the
+  provider's own text online). A geonameid outranks text, so two files of one city cannot
+  be named differently again; where there is no Russian name, the English one is used
+  rather than an invented transliteration, and a place with no alternatives at all keeps
+  its own script. Nothing about WHERE a file goes changed — only what the place is called.
+  No schema change: the geonameid is still written next to the name, so the sorter keeps
+  choosing the folder language when it READS the row (F99) and a change of `language`
+  still costs no geo run at all.
 - **"There is an animal here" is computed when read, not frozen when written** (F137).
   The thresholds of the animal cascade are deliberately **not** part of the prompt
   fingerprint — the scores and the model's answers are stored precisely so a threshold can
