@@ -4955,6 +4955,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "поисковый индекс (CLIP)", "en": "search index (CLIP)",
         "ja": "検索インデックス (CLIP)",
     },
+    # F154: the object detector over the candidates of the animal query. A caption of its
+    # own for the reason the search index has one: it is a second model over a short list,
+    # neither the fast CLIP pass nor the VLM tier, and its minutes are what
+    # `features.detector` costs. (The only line this feature adds to this file — a phase
+    # without a string surfaces as a raw identifier, which tests/test_ui_junk_phase.py
+    # requires it not to.)
+    "process_phase_junk_detect": {
+        "ru": "детектор объектов", "en": "object detector",
+        "ja": "物体検出",
+    },
     "process_phase_elapsed": {  # a phase with no percent — the clock is the sign of life
         "ru": "{phase} — идёт {seconds} с",
         "en": "{phase} — {seconds}s so far",

@@ -473,6 +473,46 @@ def _vlm_from(data: dict) -> VlmConfig:
     )
 
 
+# F154: the object detector's weights. torchvision's own COCO checkpoint, resolved by
+# name — NO NEW DEPENDENCY (torchvision 0.28 is installed for the CLIP side already),
+# only the weights are downloaded. The mobilenet backbone and not a ResNet one because
+# the whole shape of the feature rests on the detector being cheap: 83.8 ms per frame is
+# 30.8 minutes over 22 096 photographs as a pass, and ~3 minutes over the ~2 000
+# candidates a query selects.
+DEFAULT_DETECT_MODEL = "fasterrcnn_mobilenet_v3_large_fpn"
+
+
+@dataclass(frozen=True)
+class DetectConfig:
+    """`detect:` — the runtime of the object detector (F154), and its master switch.
+
+    A section of its own for the reason `vlm:` is one: what describes a MODEL RUNTIME
+    lives with the runtime, what describes a QUESTION stays with the consumer — here
+    `features.detector*`, which says whether the animal cascade wants a detector at all,
+    how deep the candidate list goes and which confidence counts.
+
+    `enabled` is the F145 rule applied to a second kind of model. That rule was written
+    about the VLM and it is not ABOUT the VLM: nothing modelled may be raised because one
+    subordinate key happens to be true in a config file. The master switch here is
+    deliberately NOT `vlm.enabled` — this is not a VLM, and somebody who cleared the deep
+    tier did not thereby ask for a detector — but the hierarchy is the same, and
+    `detector_allowed()` below is where it is written down.
+    """
+    enabled: bool = False
+    model: str = DEFAULT_DETECT_MODEL
+
+
+def _detect_from(data: dict) -> DetectConfig:
+    """The `detect:` section of the whole YAML — garbage-tolerant like `vlm:` above."""
+    raw = _mapping(data.get("detect"))
+    d = DetectConfig()
+    model = raw.get("model")
+    return DetectConfig(
+        enabled=_as_bool(raw.get("enabled"), d.enabled),
+        model=model.strip() if isinstance(model, str) and model.strip() else d.model,
+    )
+
+
 @dataclass(frozen=True)
 class FeaturesConfig:
     """`features:` — the F113 frame-quality cascade: one toggle, then its thresholds.
@@ -559,6 +599,37 @@ class FeaturesConfig:
     # by it directly would throw ~150 living photographs out of the city layout, which is
     # the mistake F130 measured for animals. 955 frames is ~12 minutes of the deep tier.
     junk_rescue_threshold: float = 0.02
+    # F154: the animal label gets a THIRD tier — an object detector, over the candidates a
+    # query picks out of the stored vectors. Its own toggle by the rule above, and it needs
+    # `detect.enabled` (the master switch, see DetectConfig): this key says the cascade
+    # wants a detector, that one says a detector may be loaded at all.
+    #
+    # It exists for exactly one of the three slices a detector was measured on, and the
+    # other two are the reason it is not a pass over everything (200 hand-labelled frames,
+    # 2026-08-02, at confidence 0.5):
+    #
+    #     animals   62% precision, 87% recall   against the CLIP label's 71% / 33%
+    #     people    42% precision, 96% recall   against ~100% precision from faces (F152)
+    #     food      20% precision, 15% recall   COCO has a banana and a pizza, not a meal
+    #
+    # So animals only — see detect.ANIMAL_CLASSES, where the boundary is written down
+    # again next to the classes it draws. With it off nothing is loaded and the label is
+    # what F122/F130 make it.
+    detector: bool = False
+    # How deep into the query ranking the candidate list goes — the ONE number that decides
+    # what this feature costs, because the detector never sees anything else. 2 000 frames
+    # at the measured 83.8 ms is ~3 minutes, against 30.8 minutes for the 22 096-frame pass
+    # the same detector would need to reach the same animals. Recall is bounded by the
+    # query's own recall at this depth (87% on the measured sample), so raising it buys
+    # animals the query ranked lower and costs time linearly; lowering it does the reverse.
+    detector_candidates: int = 2000
+    # The confidence at which a detected box counts. CHOSEN FROM A TABLE, not in advance:
+    # `python scripts/measure_detector.py` prints precision and recall at 0.3 / 0.5 / 0.7
+    # over a labelled sample, and 0.5 is the row that was measured (62% / 87%). The lower
+    # rows are where a detector's precision collapses — the F130 lesson about 0.30 being
+    # the worst row of its table — and the boxes are stored with their scores, so
+    # re-choosing this needs no new pass over any image.
+    detector_threshold: float = 0.5
     # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
     # what place the frame shows, and only a proposal the model names itself goes on to
     # F75 corroboration. Its own toggle, default off, and with it off the stage is
@@ -687,6 +758,11 @@ def _features_from(raw: dict) -> FeaturesConfig:
         junk_rescue=_as_bool(raw.get("junk_rescue"), d.junk_rescue),
         junk_rescue_threshold=_as_float(
             raw.get("junk_rescue_threshold"), d.junk_rescue_threshold),
+        detector=_as_bool(raw.get("detector"), d.detector),
+        detector_candidates=_as_positive_int(
+            raw.get("detector_candidates"), d.detector_candidates),
+        detector_threshold=_as_float(
+            raw.get("detector_threshold"), d.detector_threshold),
         landmarks_verify=_as_bool(raw.get("landmarks_verify"), d.landmarks_verify),
         landmark_candidate_threshold=_as_float(
             raw.get("landmark_candidate_threshold"), d.landmark_candidate_threshold),
@@ -821,6 +897,7 @@ class Config:
     sort: SortConfig = field(default_factory=SortConfig)
     naming: NamingConfig = field(default_factory=NamingConfig)
     vlm: VlmConfig = field(default_factory=VlmConfig)  # F102: the shared VLM runtime
+    detect: DetectConfig = field(default_factory=DetectConfig)  # F154: the detector runtime
     features: FeaturesConfig = field(default_factory=FeaturesConfig)  # F113: frame quality
     language: str = "en"  # folder/name language (ru|en|ja), normalized in load_config (F25/F27)
     log_level: str = "WARNING"  # DEBUG|INFO|WARNING|ERROR; validated in configure_logging (F52)
@@ -844,6 +921,19 @@ def vlm_allowed(cfg: Config) -> bool:
     config, so it is the effective per-run toggle.
     """
     return bool(getattr(getattr(cfg, "naming", None), "vlm_enabled", False))
+
+
+def detector_allowed(cfg: Config) -> bool:
+    """F154: may this run load the object detector at all? — `detect.enabled`.
+
+    The F145 hierarchy, applied to the second kind of model this project runs.
+    `features.detector` says WHAT the detector is wanted for (the animal cascade); this
+    one says whether there is anybody to ask. Its own switch and not `vlm_allowed` on
+    purpose: a detector is not a VLM, it costs 83.8 ms and no VRAM to speak of rather than
+    0.78 s and 20 GB, and the two decisions belong to the user separately. What must not
+    differ is the RULE — a subordinate key never raises a model by itself.
+    """
+    return bool(getattr(getattr(cfg, "detect", None), "enabled", False))
 
 
 def _known(cls, raw: dict) -> dict:
@@ -877,6 +967,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         sort=SortConfig(**_known(SortConfig, data.get("sort") or {})),
         naming=_legacy_naming_view(_naming_from(data.get("naming") or {}), vlm),
         vlm=vlm,
+        detect=_detect_from(data),
         features=_features_from(_mapping(data.get("features"))),
         language=i18n.normalize_lang(data.get("language")),
         log_level=str(data.get("log_level", "WARNING")),
