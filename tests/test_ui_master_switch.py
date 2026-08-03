@@ -283,6 +283,7 @@ _BODIES: dict[str, object] = {
     "/api/dupes/skip": {"group": [1]},
     "/api/dupes/trash": {"group": [1], "keep_file_id": 1},
     "/api/review/mark": {"file_ids": [1], "action": "delete"},
+    "/api/review/restore": {"file_id": 1},
     "/api/animals/mark": {"file_ids": [1], "action": "add"},
     "/api/photo/trash": {"file_id": 1},
     "/api/photos/trash": {"file_ids": [1]},

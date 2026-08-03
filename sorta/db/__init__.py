@@ -97,7 +97,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v20 (landmark_checks, F131) — a new table, created by executescript below.
     # v22 (search_embeddings, F141) — a new table, created by executescript below.
     # v23 (detections, F154) — a new table, created by executescript below.
-    if 15 <= version <= 23:  # v24: frame_quality.face_sharpness (F155 — inside the face)
+    # v24 (restored_files, F149) — a new table, created by executescript below.
+    if 15 <= version <= 24:  # v25: frame_quality.face_sharpness (F155 — inside the face)
         conn.execute("ALTER TABLE frame_quality ADD COLUMN face_sharpness REAL")
 
 

@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 24;
+PRAGMA user_version = 25;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -367,6 +367,38 @@ CREATE TABLE IF NOT EXISTS landmark_checks (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (file_id, landmark)
 );
+
+-- v23 (F149): a frame the user asked a model to redraw, and the frame it was made from.
+--
+-- The copy is an ORDINARY MEMBER OF THE COLLECTION — it has its own `files` row, it goes
+-- into the layout, into the slices and into albums. That was the decision (2026-08-02)
+-- over the cheaper alternative of a service folder known only to one tab: the moment a
+-- copy "appears right there and can be kept", keeping it has to mean the same thing it
+-- means for every other photograph, or a person looks for it in the album where they put
+-- it and does not find it.
+--
+-- Which is exactly why this table exists. A restored frame is a near-duplicate of its
+-- source BY CONSTRUCTION: without a record of that, the next `phash` run would show the
+-- pair as a new duplicate to sort out, and a person would keep sorting out pairs they
+-- created themselves. `dedup.near_duplicate_groups` leaves every file_id listed here out
+-- of its groups — a derived file is not a duplicate to decide about, the decision was
+-- taken when it was made. The other option offered (put it in a group with the decision
+-- already taken) would mean writing `dedup_choice` from a stage, and that table is the
+-- user's own hand alone.
+--
+-- The link is STORED and not guessed from the name: `…_restored.jpg` is what the file is
+-- called today, and a name is the first thing a person changes.
+--
+-- `model` is part of the identity of a copy, not decoration: it is what makes pressing
+-- the button twice return the copy that exists instead of making a second one, and what
+-- keeps a copy from a different model distinguishable from it.
+CREATE TABLE IF NOT EXISTS restored_files (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),      -- the COPY
+    source_file_id INTEGER NOT NULL REFERENCES files(id),  -- the frame it was made from
+    model TEXT NOT NULL,                  -- `features.restore_model` as it stood then
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_restored_source ON restored_files(source_file_id);
 
 -- v7 (U3): user decisions on near-duplicates from the web app (sorta ui).
 -- action='to_delete' — the sorter (U3b) moves the file into the _delete folder on sort --apply;
