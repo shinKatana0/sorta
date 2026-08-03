@@ -517,27 +517,28 @@ class FeaturesConfig:
     # estimated — 0.70 selects 805 frames (10.5 min at 0.78 s/frame), 0.50 993 (12.9),
     # 0.30 1 331 (17.3), 0.20 1 679 (21.8), everything 19 757 (4.3 h).
     #
-    # 0.50 is MEASURED, not chosen. The cascade was run on the live collection and
-    # replayed against the 312 labels F122 was scored on (the answers are stored, so
-    # every gate above 0.30 is a replay rather than another pass):
+    # F158: 0.30 is MEASURED, and it replaces the 0.50 F130 shipped. F130 read its gate
+    # off a REPLAY against the F122 labels — a set stratified by score band, which counts
+    # the confident frames the gate is not about and leaves the low band resting on a
+    # handful of labels. Re-measured on 500 RANDOM frames labelled by hand (36 animals
+    # among them), scored by the product's own rule — `pet_label`, where the answer
+    # outranks the score and an unreadable answer falls back to the threshold:
     #
-    #     gate    asked  marked  precision  recall   min
-    #     none        0     805        92%     36%   0.0
-    #     0.70      797     748        97%     36%  10.4
-    #     0.60      886     804        97%     38%  11.5
-    #     0.50      982     848        96%     40%  12.8
-    #     0.40     1108     899        95%     41%  14.4
-    #     0.30     1308     966        90%     43%  17.0
+    #     way                             marked  correct  precision  recall
+    #     threshold 0.70 (before F130)        18       17        94%     47%
+    #     gate 0.30, no check                 34       23        68%     64%
+    #     cascade 0.30 + VLM                  28       23        82%     64%
+    #     gate 0.50, no check                 21       18        86%     50%
+    #     cascade 0.50 + VLM (F130 shipped)   20       18        90%     50%
     #
-    # The brief predicted 97-99% precision and it is real — but only down to 0.60. At
-    # 0.30 precision falls BELOW the CLIP-only baseline: the frames added there are 80%
-    # correct against a 92% baseline, so each one dilutes. 0.30 was the worst row of the
-    # table, buying three points of recall with two of precision; 0.50 keeps four points
-    # of precision over the baseline and still adds four of recall. Recall is quoted for
-    # comparison WITHIN this table only — its denominator (how many animals the archive
-    # holds) rests on 7 labelled animals in the 18 426-frame tail, where one frame moves
-    # the estimate by hundreds.
-    pet_candidate_threshold: float = 0.5
+    # At 0.50 the cascade is close to pointless: three points of recall over the bare
+    # 0.70 threshold, for 21 model calls. The point of it appears at 0.30 — SEVENTEEN
+    # points of recall (47% -> 64%) for twelve of precision (94% -> 82%). The check is
+    # weaker than the F130 brief promised but it is what makes the wider gate payable: at
+    # 0.30 it removed 6 of the 11 false marks and lost not one correct one. The price on
+    # the live collection is ~1 500 frames against ~930, i.e. ~19 minutes against ~12 at
+    # the measured 0.77 s/frame.
+    pet_candidate_threshold: float = 0.3
     # F140: score every photograph on how much it looks like a screenshot, a photographed
     # screen or a receipt, and show the ones above `junk_rescue_threshold` to the VLM. Its
     # own toggle by the rule above; the score itself costs no model pass (it is a matmul

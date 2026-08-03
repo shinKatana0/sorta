@@ -353,8 +353,18 @@ features:
   #   0.70  →   805 frames, 10.5 min      0.30 →  1 331 frames, 17.3 min  (the default)
   #   0.50  →   993 frames, 12.9 min      0.20 →  1 679 frames, 21.8 min
   #   everything → 19 757 frames, 4.3 hours
+  # F158: 0.30 is MEASURED on 500 random hand-labelled frames (36 animals), by the rule the
+  # product itself applies — the model's answer over the score:
+  #   threshold 0.70, no cascade  → 18 marked, 94% precision, 47% recall
+  #   gate 0.50 + check           → 20 marked, 90% precision, 50% recall  (F130 shipped)
+  #   gate 0.30 + check           → 28 marked, 82% precision, 64% recall  (the default)
+  # The cascade at 0.50 bought three points of recall for 21 model calls; at 0.30 it buys
+  # seventeen for twelve points of precision, and the check removed 6 of 11 false marks
+  # without losing a single correct one. Expect the wider gate to cost ~19 minutes against
+  # ~12 on a collection of this size — precision is LOWER than the bare threshold, on
+  # purpose, and it is the recall you are buying.
   # Ignored when `pets_verify` is off.
-  pet_candidate_threshold: 0.5
+  pet_candidate_threshold: 0.3
   # F140: find the screenshots, photographed screens and receipts this stage already
   # classified as photographs. A search by words put memes and screenshots at the top of
   # its results while every row of the embedding table said `photo` — so the frames were
