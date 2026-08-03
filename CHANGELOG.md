@@ -6,6 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **The cloud naming provider is gone, and with it the only code that could send a
+  photograph anywhere** (F170). `naming.provider: claude` named events by uploading a
+  few sample frames of each one to a vendor API; it was opt-in and off by default, and
+  that was still the wrong shape for this product. What can be said about it changes:
+  not "your photos do not leave your machine **unless** you turn one key on" but **"the
+  product contains no code that sends images out"** — a sentence a reader checks with
+  `grep` over the package instead of taking on trust. The key was also a trap by name:
+  `naming.provider` reads as a choice of who invents the folder names, and nothing in it
+  says that choosing that value uploads the archive. Three providers remain and all three
+  run on the user's own hardware — `template` (the default), `vlm` (the local Qwen2.5-VL
+  the deep tier already loads) and `local_vlm` (an ollama endpoint the user runs). The
+  advantage that was deleted was never measured: nobody had compared the cloud model's
+  event names against the local one, so this trades an unverified benefit for a checkable
+  guarantee — the same trade this project already made for StreetCLIP, query translation
+  and the phrasing ensemble. The honest cost is stated rather than argued away: **a
+  machine with no GPU is now left with template names**, because the local model will
+  crawl there. That is the loss of an ornament, not of a function — `template` is the
+  default mode and the base of the product, and Qwen 3B does run on a CPU, slowly enough
+  to matter for thousands of calls and not for the few hundred that naming events takes.
+  An existing `config.yaml` that still selects the removed provider **keeps working**:
+  the run logs one line saying the provider was removed, names the three that are
+  available, and falls back to `template` — people upgrade with working files, and a
+  removal must not kill somebody's run on its first line. `geo.provider: online`
+  (Nominatim) is untouched and is a different conversation: it sends **coordinates**, not
+  pictures, its name says what it is, and the guides describe it.
+
 ### Fixed
 - **"There is an animal here" is computed when read, not frozen when written** (F137).
   The thresholds of the animal cascade are deliberately **not** part of the prompt
