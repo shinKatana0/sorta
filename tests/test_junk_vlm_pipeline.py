@@ -20,6 +20,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from sorta import config as config_mod
 from sorta.config import Config, VlmConfig, _naming_from
 from sorta.db import connect
 from sorta.junk import (
@@ -188,8 +189,10 @@ class TestResolveVlmWorkers(unittest.TestCase):
         self.assertEqual(resolve_vlm_workers({}), default)
         self.assertEqual(resolve_vlm_workers({"naming": {}}), default)
         self.assertEqual(resolve_vlm_workers({"naming": None}), default)
-        # modest on purpose: the machine running this may have two cores
-        self.assertLessEqual(default, 4)
+        # modest on purpose: the machine running this may have two cores. F164: the
+        # ceiling itself rather than a copy of its value — what the ceiling IS belongs
+        # to config.py, where the measurement that chose it is written down.
+        self.assertLessEqual(default, config_mod._VLM_WORKERS_CAP)
         self.assertGreaterEqual(default, 1)
 
     def test_zero_and_negative_fall_back_to_default(self):

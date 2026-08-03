@@ -60,6 +60,19 @@ def configure_logging(level: str) -> None:
 
 
 @dataclass
+class LoggingConfig:
+    """F166: the `logging:` section — how the run log paces itself.
+
+    Separate from the top-level `log_level`, which decides WHAT gets written; this
+    decides how often a stage that is still running repeats where it has got to.
+    """
+
+    # Seconds between the periodic `stage=... progress ...` lines. 0 switches them off;
+    # the start and summary lines are not affected either way.
+    progress_interval_sec: float = 60.0
+
+
+@dataclass
 class IndexConfig:
     extensions: dict[str, list[str]] = field(default_factory=lambda: {
         "photo": ["jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff", "bmp"],
@@ -221,6 +234,48 @@ DEFAULT_VLM_MAX_EDGE = 896
 # The workers cap is deliberately modest and NOT "all your cores": the machine that runs
 # this may well have two, the GPU half is a single consumer that only needs to be kept
 # fed, and every worker in flight holds a preprocessed frame in RAM (F101).
+#
+# F164 was sent to raise it and MEASURED THAT IT MUST NOT BE RAISED. The case for more
+# threads was arithmetic from the F101 profile — ~0.6 s of CPU to prepare a frame against
+# ~0.19 s of GPU to answer about it, so a card needs three preparing threads to stay fed —
+# plus the live run of 2026-08-03, where `junk_vlm` held the card at 51% on a machine with
+# 24 cores and four threads. Both are true and the conclusion drawn from them is not,
+# because the premise expired: F105 gave the runtime the FAST image processor, and the
+# 0.6 s of one core became ~0.12 s of about seven. Four threads on a 24-core machine
+# therefore already ask for more cores than exist.
+#
+# Measured with scripts/measure_vlm_workers.py (120 frames of the live collection, the
+# real decode and the real processor, the model's turn replaced by a sleep of the measured
+# 0.19 s — see the script for what that mode can and cannot say):
+#
+#     threads   ms/frame   frames/s   vs 1 thread   model half busy   peak RSS
+#           1        290       3,45         x1,00               66%      551 MB
+#           2        230       4,35         x1,26               83%      954 MB
+#           4        249       4,01         x1,16               79%     1299 MB
+#           6        274       3,66         x1,06               70%     1645 MB
+#           8        295       3,39         x0,98               66%     2061 MB
+#          12        334       2,99         x0,87               57%     2599 MB
+#
+# More threads are SLOWER from two on, monotonically, and a second run of the sweep gives
+# the same curve to within 2%. Nothing here is a queue that grew too long: it is ONE
+# preparation saturating the machine on its own (the row's own CPU column reads 7.6 cores
+# busy with a single worker), so the next thread takes cores from the previous one. The
+# 51% of the live run has the same cause and is not a starving card — 0.12 s of
+# preparation against 0.19 s of generation is 66% busy with NO overlap at all, which is
+# exactly what the one-thread row measures.
+#
+# The last column is the brief's third question, answered: the frames in flight are real
+# memory (~2 per worker, CPU tensors), and the pool costs ~170 MB per thread — 2.6 GB at
+# twelve of them, next to a model that already holds 20.5 GB of VRAM.
+#
+# So the default stays min(4, cores) — a function of the machine, as it always was, and
+# four is inside 8% of the best row of a curve whose peak was measured against a STUBBED
+# model half. Moving it to two on that evidence would be the same mistake in the other
+# direction: a sleep releases the interpreter lock for its whole duration and a real
+# `generate()` does not, so where the peak sits is a question for
+# `scripts/measure_vlm_workers.py --full` on a free card. What would actually make this
+# pass faster is a CHEAPER preparation, not a wider one. `vlm.workers` remains the way to
+# say otherwise: it is the default that is capped here, never what a user may ask for.
 _VLM_WORKERS_CAP = 4
 
 
@@ -1023,6 +1078,7 @@ class Config:
     features: FeaturesConfig = field(default_factory=FeaturesConfig)  # F113: frame quality
     language: str = "en"  # folder/name language (ru|en|ja), normalized in load_config (F25/F27)
     log_level: str = "WARNING"  # DEBUG|INFO|WARNING|ERROR; validated in configure_logging (F52)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)  # F166: run-log pacing
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
 
 
@@ -1056,6 +1112,21 @@ def detector_allowed(cfg: Config) -> bool:
     differ is the RULE — a subordinate key never raises a model by itself.
     """
     return bool(getattr(getattr(cfg, "detect", None), "enabled", False))
+
+
+def _apply_logging_config(cfg: LoggingConfig) -> None:
+    """Hand the `logging:` section to the run log (F166).
+
+    Pushed the same way `_apply_imaging_config` pushes the imaging keys, and for the
+    same reason: `runlog` is a leaf module that everything else imports, so it cannot
+    read the config back. Never fatal — pacing a log is not worth a crash.
+    """
+    try:
+        from .runlog import set_progress_interval
+
+        set_progress_interval(cfg.progress_interval_sec)
+    except Exception as exc:  # noqa: BLE001 — logging is never worth crashing over
+        _log.warning("config: не удалось применить logging: %s", exc)
 
 
 def _known(cls, raw: dict) -> dict:
@@ -1093,9 +1164,11 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         features=_features_from(_mapping(data.get("features"))),
         language=i18n.normalize_lang(data.get("language")),
         log_level=str(data.get("log_level", "WARNING")),
+        logging=LoggingConfig(**_known(LoggingConfig, data.get("logging") or {})),
         raw=data,
     )
     _apply_imaging_config(data.get("imaging") or {})
+    _apply_logging_config(cfg.logging)
     # sources may be empty: the source is given positionally (sorta index <dir>).
     # The non-empty requirement is at the point of use (index / in-place sort).
     return cfg

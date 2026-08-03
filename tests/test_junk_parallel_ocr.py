@@ -197,7 +197,9 @@ class TestResolveOcrWorkers(unittest.TestCase):
         self.assertEqual(resolve_ocr_workers({}), default)
         self.assertEqual(resolve_ocr_workers({"naming": {}}), default)
         self.assertEqual(resolve_ocr_workers({"naming": None}), default)
-        self.assertLessEqual(default, 4)  # conservative: every worker holds a Reader
+        # conservative: every worker holds a Reader. F164: the ceiling itself rather
+        # than a copy of its value — the number lives next to the reasoning for it.
+        self.assertLessEqual(default, junk_mod._DEFAULT_OCR_WORKERS_CAP)
         self.assertGreaterEqual(default, 1)
 
     def test_zero_and_negative_fall_back_to_default(self):

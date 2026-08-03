@@ -89,6 +89,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the detector on. The default does not move — `detect.enabled` stays off, and trading
   20 points of precision for 23 of recall is the user's decision, taken with the numbers of
   a run in hand.
+- **One city, one name — and one alphabet per language** (F172). A `language: ru` layout
+  came out in three alphabets at once: «Санкт-Петербург», «Москва» and «Серик» next to
+  `Nizhny Novgorod` (382 files), `Samara` (179) and `Ryazan` (109), with a Thai village in
+  its own script between them. Worse, one city was filed twice — «Сочи» (385 frames) and
+  `Sochi` (29) share a geonameid and are the same place. The bundled data was never the
+  problem: `names.tsv` holds a Russian name for every one of those cities. The NAME had two
+  sources that did not agree about the language. The bundled base was asked for the English
+  anchor (`geo._CANONICAL_LANG`), the online provider answered in the language of the
+  request — so whether a city came out Russian depended on whether Nominatim happened to
+  name a suburb for it: the answers that stopped at the region were completed from the
+  offline base, in English, and landed beside their own Russian twins. The rule is now
+  written down once, in `geo._place_name`, and every source goes through it: `language` →
+  `en` → the native name the source knew (the asciiname of `places.tsv` offline, the
+  provider's own text online). A geonameid outranks text, so two files of one city cannot
+  be named differently again; where there is no Russian name, the English one is used
+  rather than an invented transliteration, and a place with no alternatives at all keeps
+  its own script. Nothing about WHERE a file goes changed — only what the place is called.
+  No schema change: the geonameid is still written next to the name, so the sorter keeps
+  choosing the folder language when it READS the row (F99) and a change of `language`
+  still costs no geo run at all.
 - **"There is an animal here" is computed when read, not frozen when written** (F137).
   The thresholds of the animal cascade are deliberately **not** part of the prompt
   fingerprint — the scores and the model's answers are stored precisely so a threshold can
@@ -147,6 +167,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **The run log says what is happening now, not what happened** (F166). F147 gave the junk
+  stage a breakdown by phase, and the live run of 2026-08-03 showed what was still missing:
+  all four phase lines carried the **same timestamp**, printed in one batch just before the
+  stage summary, because `log_phase` was called for every phase at once at the end. An
+  instrument that answers "where did the time go" at the moment the time has gone answers
+  nothing about a two-hour stage — and if the run is cut short it answers **nothing at
+  all**: the orchestrator interrupted `junk` mid-run and lost the numbers of three phases
+  that had finished long before, along with everything the F159 estimate would have learned
+  from them. Every timed unit of a run — the stage, and each phase inside it — now writes
+  the same three kinds of line: `stage=<s>[ phase=<p>] started[ total=<n>]`, a periodic
+  `... progress elapsed=<sec> processed=<n>[ total=<n>] rate=<n>/s`, and its summary **the
+  moment that unit is over** rather than at the end of the stage. An interrupted or failed
+  run therefore keeps every phase that finished, and marks the one that did not as
+  `interrupted (...)`/`failed` with its seconds instead of silently dropping it. The
+  periodic line is a heartbeat and not a channel of its own: one line per
+  `logging.progress_interval_sec` (default **60 s**, `0` switches it off), through the same
+  logger and at the same level as the summaries, and silent while a phase of that stage is
+  open — the phase line already carries the same counters with a name on top of them. Those
+  counters are the very pair `/api/process/status` serves, read from the same call that
+  moves the progress bar, so the file and the interface cannot come to disagree about where
+  a run is — F147's rule for the phase names, applied to the numbers next to them. Stages
+  with no phases of their own (`index`, `geo`, `landmarks`, `faces`, `events`, `phash`) are
+  no less readable for it. The shape of the F147 summary line is untouched: `stage=` and
+  `elapsed=` are where they were, and every grep and estimate built on them keeps working.
 - **The junk stage says where its seconds went** (F147). On the run of 2026-08-02 the
   stage took **2 070 seconds** — more than half of the whole hour — and the log held one
   line about it: `stage=junk elapsed=2070.208`. Six different things work inside it (CLIP
@@ -586,6 +630,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **Three cheap levers on the junk stage, and the measurement kept all three shut**
+  (F164). The phase table of F147 named where the 25,4 minutes of the stage go, and the
+  three obvious levers under it were: `junk_write` at 19,4 ms a frame (a commit per row?),
+  the OCR thread ceiling of 4 (set "so a weak card is not knocked over", never priced),
+  and the four VLM preparation threads on a 24-core machine with the card at 51%. Each
+  was measured before it was pulled, and none of them turned out to be a lever.
+  **`junk_write` is not writing.** The stage already wraps its whole pass in ONE
+  transaction, and this exact upsert costs **0,004–0,005 ms a row** across three runs —
+  0,1 s of the 470 s the phase was billed for. Committing per chunk or per row costs
+  between nothing and everything depending on whether the operating system really
+  flushes (0,003 vs 0,157 ms a row for chunks, 0,014 vs 2,271 for rows — two runs of
+  three never flushed, one paid 55 s for the same rows): batching would have been a
+  gamble on that, for 0,02%, and would have traded away the property that makes an
+  interrupted run safe (half of today's verdicts and half of yesterday's is a database
+  whose incrementality marker lies). What the phase really holds is the laplacian of the
+  quality half — **26,9 ms** a frame against 0,005 for the verdict and 0,06 for the
+  stored vector — which, over the 79% of frames that get a quality row, is the 19,4 ms
+  exactly. Recorded where the statement is, so the next person starts from the right
+  number. **More VLM threads are slower, not faster.** The case for raising
+  `vlm.workers` was F101's profile (~0,6 s of CPU per frame against ~0,19 s of GPU) and
+  it expired when F105 gave the runtime the fast image processor: preparing a frame now
+  takes ~0,12 s of about **seven cores**, so four threads on 24 cores already ask for
+  more than exists. Measured over 120 frames of the live collection with the model's
+  turn replaced by a sleep of its measured 0,19 s: 2 threads x1,26, 4 x1,16, 6 x1,06,
+  8 x0,98, 12 x0,87 — and the frames in flight grow the process from 551 MB to 2,6 GB
+  across that range. The 51% of the live run is what NO overlap looks like at those two
+  numbers, not a starving card. The default stays min(4, cores). **The OCR ceiling stays
+  unmeasured on purpose**: what it protects is VRAM (one easyocr Reader per thread), so
+  only a run on a free GPU can price it — the sweep now exists
+  (`scripts/measure_ocr_workers.py`) and the number waits for it. Nothing about a
+  verdict moves in any of this: `scripts/measure_junk_write.py` and
+  `scripts/measure_vlm_workers.py` are new measurement tools, and the two new test
+  modules pin what the seconds rest on — the pass writes in one transaction and an
+  interrupted run leaves the previous verdicts untouched, and 1 / 2 / 4 / 6 / 8 / 12
+  threads at either end of the stage produce byte-identical `media_class` rows with the
+  deep tier's labels still in candidate order (the F101 invariant).
 - **What costs time is on the run screen, and it says how much** (F138). Three knobs
   worth between a quarter of an hour and four hours of a run — `vlm.quality` +
   `vlm.quality_scope` (95 minutes by faces, 4.3 hours over everything),
