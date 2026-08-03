@@ -211,6 +211,17 @@ class TestAnimalsTabHtml(AnimalsTestBase):
             self.assertIn("{shown}", ui._UI_STRINGS["animals_shown_label"][lang])
             self.assertIn("{total}", ui._UI_STRINGS["animals_shown_label"][lang])
 
+    def test_the_intro_names_the_measured_precision(self):
+        """F158: the caption promised "about 92%" — a number from the score-stratified
+        F122 sample, which the 500-frame random re-measurement did not support and which
+        the wider gate makes wronger still. It has to state what the shipped cascade was
+        measured at (82%), in all three languages, or the slice oversells itself."""
+        for lang in ("ru", "en", "ja"):
+            with self.subTest(lang=lang):
+                intro = ui._UI_STRINGS["animals_intro"][lang]
+                self.assertIn("82", intro)
+                self.assertNotIn("92", intro)
+
 
 class TestApiAlbumAnimal(AnimalsTestBase):
     def post(self, path: str, data: object) -> tuple[int, dict]:

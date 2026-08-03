@@ -371,7 +371,8 @@ from .config import (
     save_language,
     save_setting,
 )
-from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
+from .dedup import (KEEPER_SOURCE_SHARPNESS, assign_duplicates, compute_phashes,
+                    group_key, near_duplicate_groups, read_group_keepers)
 from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
 from .faces import detect_and_cluster
@@ -940,6 +941,13 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
     recommended (F14): the best frame of the group by (width*height, then size) desc.
     action — the current decision from dedup_choice (keep/to_delete/None).
 
+    keeper_id/keeper_source (F148): the STORED recommendation of the group, if it has
+    one — the row `group_keeper` has been getting since F132 and which nothing read.
+    Where it exists it names the recommended frame (the star and the preselected radio
+    follow it), and `keeper_source` says who chose: `model` or `sharpness`. A group
+    without a row — a pair, or one whose membership changed since it was asked about —
+    carries `None` in both and is ranked here exactly as it was before.
+
     Cached (F66) under (db path, max_distance, _db_fingerprint): any write to the
     index changes the fingerprint and the payload is recomputed.
     """
@@ -992,6 +1000,13 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
                 all_ids,
             ).fetchall()
         }
+        # F148: a group is addressed by a hash of its membership (dedup.group_key), so a
+        # key that is missing here means the group has never been asked about (a pair
+        # under `keeper_min_group_size`) or has gained/lost a frame since it was. Both
+        # readings lead to the same behaviour: no stored recommendation, the ranking
+        # below decides, and the tab looks like it did before this feature.
+        keepers = read_group_keepers(
+            conn, [group_key([r["id"] for r in g]) for g in groups])
     finally:
         conn.close()
 
@@ -1031,11 +1046,29 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
                 f["file_id"],
             ),
         )
+        # F148: the stored recommendation wins over the local ranking when the group has
+        # one — that is the whole point of having computed it. It never widens what is
+        # marked: it moves the star and the preselected keeper radio from one frame to
+        # another, and `dedup_choice` is still written by the user's hand alone.
+        keeper = keepers.get(group_key([f["file_id"] for f in frames]))
+        keeper_source = None
+        if keeper is not None:
+            named = next((f for f in frames if f["file_id"] == keeper.keeper_id), None)
+            if named is not None:
+                best = named
+                # Two words, not the prompt fingerprint the row carries: the user needs
+                # to know WHO advises (trust in the advice depends on it), not which
+                # revision of the question was asked.
+                keeper_source = ("sharpness" if keeper.source == KEEPER_SOURCE_SHARPNESS
+                                 else "model")
         best["recommended"] = True
         result.append({"group": idx, "frames": frames,
                        # Why this one — so the tab can say it instead of asking the user
-                       # to trust a star.
-                       "recommended_by": "sharpness" if by_sharpness else "resolution"})
+                       # to trust a star. This is the LOCAL ranking's basis; when
+                       # `keeper_source` is set, that is who named the starred frame.
+                       "recommended_by": "sharpness" if by_sharpness else "resolution",
+                       "keeper_id": best["file_id"] if keeper_source else None,
+                       "keeper_source": keeper_source})
     return remember(result)
 
 
@@ -5217,6 +5250,31 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "recommended_badge": {
         "ru": "★ рекомендовано", "en": "★ recommended", "ja": "★ おすすめ",
     },
+    # F148: what the group's STORED recommendation says under the frame it names. The
+    # source is part of the caption and not a detail: how much an advice is worth
+    # depends on who gives it, and these two are given by different judges.
+    "keeper_badge_model": {
+        "ru": "рекомендуем оставить · по модели",
+        "en": "recommended to keep · by the model",
+        "ja": "残すのがおすすめ · モデルの判断",
+    },
+    "keeper_badge_sharpness": {
+        "ru": "рекомендуем оставить · по резкости",
+        "en": "recommended to keep · by sharpness",
+        "ja": "残すのがおすすめ · 鮮明さで判定",
+    },
+    # What the recommendation does NOT say, in the one place it can be read: there is
+    # always exactly one per group, and a burst of six can hold two moments both worth
+    # keeping. Keeping several frames is allowed and normal — advising several is what
+    # the program cannot do.
+    "keeper_badge_hint": {
+        "ru": "Рекомендация одна на группу. В серии может быть несколько удачных "
+              "кадров — оставить можно любой из них и не один.",
+        "en": "One recommendation per group. A burst can hold more than one frame worth "
+              "keeping — you may keep any of them, and more than one.",
+        "ja": "推奨はグループにつき1件です。連写には残す価値のあるコマが複数ある"
+              "こともあり、どれでも、また複数でも残せます。",
+    },
     "action_keep": {"ru": "оставить", "en": "keep", "ja": "保持"},
     "action_to_delete": {"ru": "к удалению", "en": "to delete", "ja": "削除予定"},
     "skip_group_label": {
@@ -5908,12 +5966,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # --- F123: the "Animals" tab -----------------------------------------------------
     "animals_intro": {
         "ru": "Кадры с животными, сверху — те, в которых модель уверена больше. "
-              "Точность около 92%: ниже по списку начинают попадаться шубы и игрушки, "
+              "Точность около 82%: ниже по списку начинают попадаться шубы и игрушки, "
               "и видно, где проходит граница.",
         "en": "Frames with animals, the ones the model is most confident about first. "
-              "Precision is about 92%: fur coats and plush toys start showing up "
+              "Precision is about 82%: fur coats and plush toys start showing up "
               "further down, which is where the border of confidence is.",
-        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 92% "
+        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 82% "
               "で、下に行くほど毛皮のコートやぬいぐるみが混じり始め、そこが確信度の"
               "境目です。",
     },
@@ -12009,7 +12067,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         var badge = document.createElement("span");
         badge.className = "badge";
         badge.appendChild(icon("check"));
-        badge.appendChild(document.createTextNode(I18N.recommended_badge));
+        // F148: a group with a recommendation OF ITS OWN (`group_keeper`) says so under
+        // the frame it names, and says who advises. A pair — and any group without a
+        // stored row — keeps the plain star it has always had: naming a source where
+        // none was asked for invites the user to look for meaning that is not there.
+        var isKeeper = !!g.keeper_source && f.file_id === g.keeper_id;
+        badge.appendChild(document.createTextNode(
+            isKeeper
+              ? (g.keeper_source === "model"
+                   ? I18N.keeper_badge_model : I18N.keeper_badge_sharpness)
+              : I18N.recommended_badge));
+        if (isKeeper) { badge.title = I18N.keeper_badge_hint; }
         tdThumb.appendChild(badge);
       }
       tr.appendChild(tdThumb);

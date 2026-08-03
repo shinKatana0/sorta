@@ -113,7 +113,14 @@ class Asker:
 
 
 class PetCascadeCase(FrameQualityCase):
-    """The fixture of the whole file: animals on, the check on, nothing else."""
+    """The fixture of the whole file: animals on, the check on, nothing else.
+
+    Both thresholds are PINNED rather than left at their defaults, and they stay pinned
+    even while the numbers happen to agree with the product's (F158): the cases below are
+    about the mechanism — who is asked, whose answer wins — and a mechanism that follows
+    a default breaks the day the default moves, in a file that is not about the value.
+    `TestTheShippedGate` is the one place that reads the default on purpose.
+    """
 
     def setUp(self):
         super().setUp()
@@ -257,6 +264,43 @@ class TestCandidateGate(PetCascadeCase):
         asker = Asker({}, default="real")
         self.run_stage({"low.jpg": 0.1}, asker=asker)
         self.assertEqual(asker.asked, [])
+
+
+class TestTheShippedGate(PetCascadeCase):
+    """F158: the band the PRODUCT selects, with nothing set by the test.
+
+    Every other case in this file pins its threshold, which is right for a case about
+    the mechanism and blind to the one thing a user actually gets. Here the config is
+    left at its defaults, so 0.35 is asked about and 0.25 is not because
+    `FeaturesConfig.pet_candidate_threshold` says so — and a future move of that default
+    fails HERE, where the value is the subject, rather than in a case about arithmetic.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.features(pets=True, pets_verify=True)  # the defaults, deliberately
+
+    def test_a_frame_inside_the_default_band_is_asked_about_and_one_below_is_not(self):
+        asker = Asker({}, default="real")
+        stats, _clf = self.run_stage({"inside.jpg": 0.35, "below.jpg": 0.25}, asker=asker)
+        self.assertEqual(asker.asked, ["inside.jpg"])
+        self.assertEqual(stats.pet_candidates, 1)
+
+    def test_the_band_is_the_one_the_config_names(self):
+        gate = self.cfg.features.pet_candidate_threshold
+        asker = Asker({}, default="real")
+        scores = {"over.jpg": gate + 0.01, "at.jpg": gate, "under.jpg": gate - 0.01}
+        self.run_stage(scores, asker=asker)
+        self.assertEqual(sorted(asker.asked), ["at.jpg", "over.jpg"])
+
+    def test_the_wide_gate_finds_animals_the_display_threshold_would_miss(self):
+        """The recall the widening was bought for: a frame at 0.35 is far below
+        `pet_threshold` (0.70), so without the cascade it carries no label at all."""
+        asker = Asker({"cat.jpg": "real"})
+        self.run_stage({"cat.jpg": 0.35}, asker=asker)
+        row = self.label("cat.jpg")
+        self.assertEqual(row["pet"], junk.PET_CLASS)
+        self.assertEqual(row["pet_vlm"], PET_VLM_REAL)
 
 
 class TestTheAnswerDecides(PetCascadeCase):
@@ -475,12 +519,12 @@ class TestSettingsAndAsker(unittest.TestCase):
     def test_the_defaults_are_the_measured_ones(self):
         d = FeaturesConfig()
         self.assertFalse(d.pets_verify)
-        # 0.30 was the brief's guess; 0.50 is what the run measured. Replayed against the
-        # F122 labels, 0.30 turned out to be the WORST gate of the sweep — 90% precision
-        # against a 92% CLIP-only baseline — because the frames it adds down there are
-        # only 80% correct and dilute what is already better. The table is in config.py
-        # next to the value.
-        self.assertAlmostEqual(d.pet_candidate_threshold, 0.5)
+        # F158: 0.30, re-measured on 500 RANDOM hand-labelled frames after F130 had read
+        # its 0.50 off a replay against the score-stratified F122 labels. On the random
+        # set the wide gate is what the cascade is for — 64% recall against 50%, for 82%
+        # precision against 90% — and the check lost no correct mark widening it. The
+        # table is in config.py next to the value.
+        self.assertAlmostEqual(d.pet_candidate_threshold, 0.3)
 
     def test_the_asker_decodes_the_frame_and_asks_one_question(self):
         from PIL import Image
