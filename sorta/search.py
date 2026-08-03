@@ -31,8 +31,12 @@ implementation detail:
   running `sorta junk`.
 * **This ranks, it does not classify.** There is no "this really is a cake" threshold and
   there will not be one, for the same reason sharpness has none: the score orders frames
-  against each other and says nothing in absolute terms. `features.search_limit` is
-  therefore a SAMPLE SIZE, not a cutoff.
+  against each other and says nothing in absolute terms. `features.search_page` is
+  therefore a SAMPLE SIZE, not a cutoff — and since F173 it is not even the end of the
+  sample: `rank` returns a WINDOW of the ranking together with the length of the whole of
+  it, so a caller can walk down the list instead of being cut off at the first page. Depth
+  is the one lever of completeness the measurements found (the query «дети» goes from 61%
+  to 89% when the list is doubled), so it is the last thing this engine may take away.
 
 Known limits, measured elsewhere and repeated here so a caller does not have to guess:
 compound queries ("a cake with candles on a table by the window") are weak — CLIP takes a
@@ -57,6 +61,7 @@ as an argument, which is what lets the tests run the whole engine without a mode
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from typing import Callable, Sequence
 
 import numpy as np
@@ -152,15 +157,44 @@ def encode_query(text: str, encoder: TextEncoder) -> np.ndarray:
     return vec / norm if norm > 0 else vec
 
 
-def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
-           limit: int) -> list[tuple[int, float]]:
-    """The ranking: (file_id, score) for the `limit` nearest photographs, best first.
+@dataclass(frozen=True)
+class Page:
+    """One window of a ranking, and how long the ranking it came out of is.
+
+    F173: `total` is the point. A list of exactly `limit` frames says nothing about whether
+    the ranking ended there or was cut there, and those are different facts — for a query
+    the second is almost always the true one. Everything a caller needs to draw «показано
+    N из M» and to decide whether a "show more" button belongs on the screen is here, so
+    that neither of the two can be recomputed slightly differently somewhere else.
+    """
+
+    hits: list[tuple[int, float]]
+    total: int
+    offset: int
+    limit: int
+
+    @property
+    def has_more(self) -> bool:
+        """Whether anything is left below this window — the button's whole condition."""
+        return self.offset + len(self.hits) < self.total
+
+
+def rank(conn: sqlite3.Connection, query: np.ndarray, model: str, *,
+         limit: int, offset: int = 0) -> Page:
+    """The ranking: (file_id, score), best first, windowed to [offset, offset+limit).
 
     The score is a dot product — both sides are unit vectors, so it IS the cosine, and no
     normalization happens per row. Ties are broken by file_id (the ids are sorted before the
     stable argsort), which is what makes a repeated search return the same list rather than
     whatever order the dict happened to have: a ranking that reshuffles between runs cannot
     be measured, and measuring it is a condition of this feature.
+
+    That same determinism is what makes PAGING honest here (F173). The whole list is scored
+    and ordered on every call, and a window is taken out of it afterwards, so the second
+    page is the continuation of the first and not a second opinion about the collection: no
+    frame is shown twice and none is skipped between the pages. Only the window is turned
+    into Python objects — the argsort ran over everything either way, and materializing
+    300 000 tuples to hand back 200 of them would be the one part of this that scales badly.
 
     Vectors of another model are absent by construction — `read_search_embeddings` filters
     on `model` — and a row whose width does not match the query is dropped as well: a
@@ -176,20 +210,34 @@ def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
         raise _nothing_to_rank(conn, model)
     matrix = np.stack([vectors[fid] for fid in ids])
     scores = matrix @ q
-    order = np.argsort(-scores, kind="stable")[:max(0, limit)]
-    return [(ids[i], float(scores[i])) for i in order]
+    start = max(0, offset)
+    order = np.argsort(-scores, kind="stable")[start:start + max(0, limit)]
+    return Page(hits=[(ids[i], float(scores[i])) for i in order],
+                total=len(ids), offset=start, limit=max(0, limit))
 
 
-def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
-                limit: int | None = None,
-                encoder: TextEncoder | None = None) -> list[tuple[int, float]]:
-    """`encode_query` + `search` with everything the config already knows.
+def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
+           limit: int, offset: int = 0) -> list[tuple[int, float]]:
+    """`rank` for a caller that wants the frames and not the length of the list.
 
-    The one entry point the CLI, the album and the measurement share, so that "which model
-    are we comparing against" is answered in one place (`junk.search_index_model` — the
-    architecture AND the weights) instead of three. `limit=None` means
-    `features.search_limit`. The encoder is loaded only when the caller does not bring one,
-    which is what keeps the CLIP import out of every module that merely imports this one.
+    What `sorta search` and the measurement script both do with a ranking: print it. Kept
+    as its own name so that the CLI is not made to unpack a page it has no use for.
+    """
+    return rank(conn, query, model, limit=limit, offset=offset).hits
+
+
+def rank_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
+              limit: int | None = None, offset: int = 0,
+              encoder: TextEncoder | None = None) -> Page:
+    """`encode_query` + `rank` with everything the config already knows.
+
+    The one entry point the CLI, the album, the interface and the measurement share, so
+    that "which model are we comparing against" is answered in one place
+    (`junk.search_index_model` — the architecture AND the weights) instead of four.
+    `limit=None` means `features.search_page` — a PAGE since F173, and the config comment
+    is where the difference between that and a ceiling is written down. The encoder is
+    loaded only when the caller does not bring one, which is what keeps the CLIP import out
+    of every module that merely imports this one.
 
     F141: that model is `features.search_model` and NOT `naming.clip.*`. The two are
     different on purpose — the classification model is the one every threshold in the
@@ -203,14 +251,25 @@ def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
     if encoder is None:  # pragma: no cover — ML, smoke test
         encoder = text_encoder(search_index_settings(naming_settings(cfg), model))
     vector = encode_query(text, encoder)
-    return search(conn, vector, model,
-                  int(limit if limit is not None else cfg.features.search_limit))
+    return rank(conn, vector, model, offset=offset,
+                limit=int(limit if limit is not None else cfg.features.search_page))
+
+
+def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
+                limit: int | None = None, offset: int = 0,
+                encoder: TextEncoder | None = None) -> list[tuple[int, float]]:
+    """`rank_text` for a caller that wants the frames alone — the CLI and the album.
+
+    Neither of those two draws a "show more" button, so neither has anything to do with
+    the length of the ranking; they get the list they asked for and nothing to unpack.
+    """
+    return rank_text(cfg, conn, text, limit=limit, offset=offset, encoder=encoder).hits
 
 
 def file_paths(conn: sqlite3.Connection, file_ids: Sequence[int]) -> dict[int, str]:
     """file_id -> path for a result list — the printing side of a search.
 
-    Chunked for the reason `read_clip_embeddings` gives: `features.search_limit` is a
+    Chunked for the reason `read_clip_embeddings` gives: `features.search_page` is a
     user-set number and SQLite has a ceiling on bound parameters.
     """
     out: dict[int, str] = {}
