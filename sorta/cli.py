@@ -52,7 +52,7 @@ from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
 from .progress import progress_task
-from .runlog import default_log_path, log_environment, stage_timer
+from .runlog import default_log_path, log_environment, observe, stage_timer
 from .search import REASON_OTHER_MODEL, EmbeddingsMissing, file_paths, search_text
 from .sorter import SELECTORLESS_ALBUM_KINDS, plan_album, plan_and_sort
 from .sorter import undo as undo_batch
@@ -276,9 +276,9 @@ def _cmd_refresh_exif(config_path: str) -> None:
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
     conn = connect(cfg.database)
-    with stage_timer("refresh-exif"), progress_task(
+    with stage_timer("refresh-exif") as stage, progress_task(
             _t("cli.progress.refresh_exif", lang)) as cb:
-        stats = refresh_exif(cfg, conn, progress=cb)
+        stats = refresh_exif(cfg, conn, progress=observe(stage, cb))
     print(_summarize_refresh(stats, lang))
     if stats.recovered_gps:
         print(_t("cli.refresh.rerun_geo", lang))
@@ -542,11 +542,14 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
             # F100: one map for the whole pipeline — the keys of the two stages that
             # report phases do not overlap (cluster_* vs junk_*), and the loop does not
             # know which stage it is about to run.
-            with stage_timer(name), progress_task(
+            with stage_timer(name) as stage, progress_task(
                     name,
                     phase_labels={**_cluster_phase_labels(lang),
                                   **_junk_phase_labels(lang)}) as cb:
-                summary = fn(cfg, conn, cb)  # type: ignore[operator]
+                # F166: the run log reads the same callback the bar does, so a stage
+                # with no phases of its own (index, geo, faces, ...) also says where it
+                # is while it runs instead of only where it ended.
+                summary = fn(cfg, conn, observe(stage, cb))  # type: ignore[operator]
             for line in str(summary).splitlines():
                 print(f"  {line}")
         if by:
