@@ -65,6 +65,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **"Try to improve" — one frame, by request, a processed copy beside it** (F149). A third
+  action in the **Review** tab next to "mark for deletion" and "keep": press it on ONE frame
+  you opened and chose, and a model-processed copy appears **as a second card beside the
+  original**, marked as processed, with the same actions on it — so the comparison is two
+  pictures next to each other rather than a message saying a file was saved. Keep either,
+  both or neither; choosing the copy marks nothing about the original, which is the same
+  line between advice and action F148 drew. The model is `features.restore_model`
+  (`caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr`, ~400 MB of weights and ~1 second per
+  frame), loaded on the **first press** and never at startup, and it is `realworld` and not
+  `classical` because that is what the measurement said: `swin2SR-classical` is trained on
+  clean bicubic downscaling — a degradation a real archive does not contain — and lost to a
+  plain unsharp mask, while `realworld-sr-x4` beat the mask outright.
+  **The model does not bring back what was lost, it draws something plausible**, and for an
+  archive that is more dangerous than the blur: a smeared frame is honestly smeared, a
+  redrawn face looks real and is not. So the original is never touched (byte for byte, and
+  that is the first test of the feature), the copy says what it is in its name
+  (`<name>_restored.jpg`, beside the original, never over an existing file) and on its card,
+  and **there is no bulk anything** — no stage, no CLI command, and a route that takes a
+  single `file_id` and refuses a list. The input is scaled to 1024 px first (x4 over a full
+  4000 px frame is 16000 px and a memory failure), and when there is no copy there is a
+  **reason** instead — the weights come off the network, and being offline is an ordinary
+  state for this program.
+  The copy is an **ordinary member of the collection**: it gets its own `files` row, so it
+  goes into the layout, the slices and albums, and it inherits the capture facts of its
+  source rather than being re-read off a re-encoded JPEG (which would date it today and
+  file it under this year instead of the year in the picture). Its link to the original is
+  **stored** (`restored_files`, schema v23) and not guessed from a name, which is what keeps
+  the pair from ever coming back as a duplicate to sort out: `dedup.near_duplicate_groups`
+  leaves derived files out of its groups, so nobody spends the next run deciding about pairs
+  they created themselves. Pressing the button twice returns the copy that exists.
 - **Three slices over what the faces stage already found** (F152): **With people**, **Group
   photos** and **Portraits** in the Slices tab, with counters on the Overview and albums of
   their own (`sorta album people|group|portrait`, no selector — the collection holds exactly

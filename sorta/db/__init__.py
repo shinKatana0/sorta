@@ -96,6 +96,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE frame_quality ADD COLUMN junk_score REAL")
     # v20 (landmark_checks, F131) — a new table, created by executescript below.
     # v22 (search_embeddings, F141) — a new table, created by executescript below.
+    # v23 (restored_files, F149) — a new table, created by executescript below.
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

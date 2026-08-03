@@ -388,6 +388,23 @@ def _as_scope(value: Any, default: str) -> str:
     return default
 
 
+def _as_repo_id(key: str, value: Any, default: str) -> str:
+    """A huggingface repo id (`owner/name`); anything else -> the default, with a warning.
+
+    Weaker than `_as_model_name` below and deliberately so: that one validates an
+    open_clip `<architecture>/<weights>` pair, where a missing half builds an untrained
+    tower and fills a table with rubbish. Here the string is handed to
+    `from_pretrained`, which fails loudly by itself — all this has to stop is an empty
+    or non-string value turning into a download attempt for "".
+    """
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if value is not None:
+        _log.warning("config: %s=%r — ожидался идентификатор модели, использую %r",
+                     key, value, default)
+    return default
+
+
 def _as_model_name(value: Any, default: str) -> str:
     """F141: `<open_clip architecture>/<weights>`; anything else -> the default.
 
@@ -673,6 +690,17 @@ class FeaturesConfig:
     # threshold (F122), the cascade selection (F130) and the junk classification are
     # calibrated on ITS numbers; changing it to fix search would invalidate all of them.
     search_model: str = "xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k"
+    # F149: the model behind "try to improve" — the button that makes a processed COPY of
+    # ONE frame a person opened and chose. No toggle, because there is nothing to switch
+    # on: nothing loads until the button is pressed, and pressing it is the opt-in. The
+    # price, for the same reason it is not hidden: ~400 MB of weights, downloaded once
+    # from the network, and ~1 second per frame on the card this was measured on.
+    #
+    # `realworld`, not `classical`, and that distinction is the whole measurement. The
+    # first comparison used `swin2SR-classical-sr-x2` and lost to a plain unsharp mask —
+    # "classical" is trained on clean bicubic downscaling, a degradation an archive of
+    # real photographs does not contain. Against `realworld-sr-x4` the mask lost outright.
+    restore_model: str = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -704,6 +732,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
             raw.get("portrait_face_share"), d.portrait_face_share),
         search_index=_as_bool(raw.get("search_index"), d.search_index),
         search_model=_as_model_name(raw.get("search_model"), d.search_model),
+        restore_model=_as_repo_id(
+            "features.restore_model", raw.get("restore_model"), d.restore_model),
     )
 
 

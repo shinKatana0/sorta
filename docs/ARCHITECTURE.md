@@ -29,6 +29,7 @@ Switching the sort mode does not require re-running the pipelines.
 | faces | `faces.py` | `files` | `faces`, `face_clusters` |
 | events | `events.py` | `files`, `places` | `events`, `event_files` |
 | naming | `naming.py`, `landmarks.py`, `junk.py` | `files`, `places`, `events` | `places` (unknown only), `media_class`, `events.name` (name_is_manual=0 only) |
+| restore | `restore.py` | `files` | `restored_files`, the copy's own `files` row, FS |
 | sorter | `sorter.py` | all | `move_batches`, `moves`, FS |
 | ui/cli | `cli.py`, `ui.py` | everything (read) | `manual_overrides`, `manual_places`, `manual_pet`, `dedup_choice` — the user's OWN decisions; otherwise orchestrate module calls |
 
@@ -134,6 +135,30 @@ Switching the sort mode does not require re-running the pipelines.
   from the one it is running (so a repeated run with the same tier processes
   nothing, and the deep tier is paid for once).
 - A missing row = "not classified" — the sorter treats it as photo.
+
+### restored_files (written only by restore) — F149
+- One frame the user asked a model to redraw (`file_id`, the COPY) and the frame it was
+  made from (`source_file_id`), plus the `model` that did it. Never written by a stage and
+  never in bulk: the only caller is the "try to improve" button of the Review tab, on ONE
+  frame a person opened and chose.
+- **The copy is an ordinary member of the collection.** It gets its own `files` row, so it
+  goes into the layout, into the slices and into albums — the decision (2026-08-02) over
+  the cheaper "keep it in a service folder this one tab knows about", which would have made
+  "keep" mean only "the file was not deleted".
+- That row is written by `restore` and not by `indexer`, and the reason is the capture
+  date: the copy is not SCANNED but DERIVED. It carries the same photograph as its source,
+  and metadata read off a re-encoded JPEG would date it by mtime — filing it under this
+  year instead of the year in the picture. So the frame's facts (`taken_at*`, GPS, camera)
+  are cloned from the source row, and every downstream stage computes its own tables for it
+  on the next run like for any other file.
+- **The pair is not a near-duplicate.** A restored frame resembles its source by
+  construction, so `dedup.near_duplicate_groups` leaves every `restored_files.file_id` out
+  of its groups — otherwise the next `phash` run would hand the person back a pair they
+  created themselves, every run. The alternative (a group with the answer already filled
+  in) would mean writing `dedup_choice` from a stage, and that table is the user's hand
+  alone.
+- `model` is part of the identity: it is what makes a second press return the existing copy
+  instead of making another one.
 
 ### move_batches / moves (written only by sorter)
 - A row in `moves` with `status='planned'` is created BEFORE the FS operation;
