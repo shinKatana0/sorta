@@ -5956,12 +5956,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # --- F123: the "Animals" tab -----------------------------------------------------
     "animals_intro": {
         "ru": "Кадры с животными, сверху — те, в которых модель уверена больше. "
-              "Точность около 92%: ниже по списку начинают попадаться шубы и игрушки, "
+              "Точность около 82%: ниже по списку начинают попадаться шубы и игрушки, "
               "и видно, где проходит граница.",
         "en": "Frames with animals, the ones the model is most confident about first. "
-              "Precision is about 92%: fur coats and plush toys start showing up "
+              "Precision is about 82%: fur coats and plush toys start showing up "
               "further down, which is where the border of confidence is.",
-        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 92% "
+        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 82% "
               "で、下に行くほど毛皮のコートやぬいぐるみが混じり始め、そこが確信度の"
               "境目です。",
     },
