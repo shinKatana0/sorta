@@ -338,15 +338,15 @@ Three properties are the feature rather than its implementation:
   CLIP, which could not tell the species apart; a detector can, and the table is what makes
   that a query rather than another pass.
 
-WHAT THIS FEATURE DOES NOT REACH, stated here so nobody has to discover it: since F137 the
-CONSUMERS of the animal slice — the album, the "Animals" tab, the Overview counter — do not
-read `frame_quality.pet` at all. They derive the verdict when they read, out of `pet_score`
-and `pet_vlm`, through `sorter.animal_auto_sql`, so that a threshold moved in the config
-moves the slice without a run. That expression knows nothing about `detections`, and it
-lives in a file outside this feature's ownership. Until it learns this tier (one branch: a
-stored detection of this model at or above `features.detector_threshold` outranks the
-score, exactly as `detect.cascade_label` has it), the detector fills its table and writes
-its label, and the slice a user sees is still F130's answer.
+WHERE THE ANSWER IS ACTUALLY READ, because it is not here: since F137 the CONSUMERS of the
+animal slice — the album, the "Animals" tab, the Overview counter — do not read
+`frame_quality.pet` at all. They derive the verdict when they read, out of `pet_score`,
+`pet_vlm` and (F160) the `detections` row, through `sorter.animal_auto_sql`, so that a
+threshold moved in the config moves the slice without a run. F154 shipped without that
+branch and the gap was the worst kind: the stage ran, the boxes were in the database, and
+nothing a user looks at moved. F160 wrote the tier into that expression and made the two
+spellings of the rule — `pet_label` here, `animal_auto_sql` there — a case table that is
+run through both, so the fifth source of this label cannot repeat the silence.
 
 F155: the blur filter this stage feeds catches 6% of what a person calls blurred — 2 of 33
 on a hand-checked sample of 200 frames — and the reason is not the threshold. The variance
@@ -740,9 +740,10 @@ def pet_verdict(probs_row: np.ndarray, threshold: float) -> tuple[str | None, fl
     return (PET_CLASS if score >= threshold else None), score
 
 
-def pet_label(pet_vlm: str | None, pet_score: float | None,
-              threshold: float) -> str | None:
-    """The animal label of one frame — the whole F130 cascade, in one place.
+def pet_label(pet_vlm: str | None, pet_score: float | None, threshold: float, *,
+              candidate_threshold: float | None = None,
+              detected: bool | None = None) -> str | None:
+    """The animal label of one frame — the whole cascade, in one place.
 
     The model OUTRANKS the score, which is the reason the cascade exists: a frame scored
     0.95 and answered `depiction` is a plush toy, and no threshold over a CLIP score ever
@@ -753,9 +754,36 @@ def pet_label(pet_vlm: str | None, pet_score: float | None,
     optional in the strong sense: with it off, and on every frame it could not answer, the
     label is byte-for-byte the one the stage wrote yesterday. Never a guess in either
     direction (brief item 3.2).
+
+    THIS FUNCTION AND `sorter.animal_auto_sql` ARE ONE RULE IN TWO SPELLINGS. It is written
+    twice because the two questions have different shapes — this one labels the single
+    frame a stage has just scored, that one answers "which files" over a whole index — and
+    the price of the second spelling is that every new source of the label has to reach
+    both. F160 is the feature that found the detector reaching only one of them, so the
+    case table in `tests/test_detector_reaches_the_screen.py` now runs both side by side
+    and a source that lands in only one fails a test instead of a slice.
+
+    The two keyword arguments are what a READER knows and the stage does not:
+
+    `detected` is the F154 tier — True: this detector examined the frame and found an
+    animal at or above `features.detector_threshold`; False: it examined the frame and
+    found none; None: it never examined it (below the candidate depth, switched off, the
+    model unavailable, an error on that frame, or boxes from another detector). None falls
+    through to the score, never to "no animal" — the same order `detect.cascade_label`
+    states, VLM answer above the detector included, because a box detector cannot be asked
+    whether the cat it sees is alive.
+
+    `candidate_threshold` is the F137 gate on a STORED answer: it counts only for a frame
+    the current `features.pet_candidate_threshold` would still show the model, and a frame
+    whose gate has since risen falls back to the tiers below it. None — the caller has a
+    fresh answer to a question it has just asked, and there is nothing to re-gate.
     """
-    if pet_vlm is not None:
+    if pet_vlm is not None and (candidate_threshold is None
+                                or (pet_score is not None
+                                    and pet_score >= candidate_threshold)):
         return PET_CLASS if pet_vlm == PET_VLM_REAL else None
+    if detected is not None:
+        return PET_CLASS if detected else None
     if pet_score is None:
         return None
     return PET_CLASS if pet_score >= threshold else None
