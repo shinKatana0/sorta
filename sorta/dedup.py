@@ -200,10 +200,22 @@ def near_duplicate_groups(
     Exact duplicates (dup_of IS NOT NULL) and errored files are excluded.
     Writes nothing to the DB. Groups are sorted by the path of the first file,
     and within a group — by descending size.
+
+    F149 excludes one more population: DERIVED files, i.e. the model-processed copies
+    listed in `restored_files`. Such a copy is a near-duplicate of its source by
+    construction, so without this it would come back as a new pair to sort out on every
+    run — a person forever deciding about pairs they made themselves. Leaving it out of
+    the groups is the exclusion half of that decision; the alternative (put it in a group
+    with the answer already filled in) would mean writing `dedup_choice` from here, and
+    that table is the user's own hand alone. The cost is that a restored frame is never
+    offered as a duplicate of some THIRD file either, which is the same statement read
+    the other way: it is not a frame to decide about, the decision was taken when it was
+    made.
     """
     rows = conn.execute(
         """SELECT id, path, size, phash FROM files
-           WHERE phash IS NOT NULL AND error IS NULL AND dup_of IS NULL"""
+           WHERE phash IS NOT NULL AND error IS NULL AND dup_of IS NULL
+             AND id NOT IN (SELECT file_id FROM restored_files)"""
     ).fetchall()
 
     parent = {r["id"]: r["id"] for r in rows}

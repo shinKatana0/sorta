@@ -546,6 +546,27 @@ features:
   # every stored search vector stale (they are recomputed, never mixed), and it does NOT
   # touch classification — that model is `naming.clip.*` and is calibrated on separately.
   search_model: "xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k"
+  # F149: the model behind "try to improve" in the Review tab — the button that makes a
+  # model-processed COPY of ONE frame you opened and chose. There is no on/off key for it
+  # because there is nothing to switch on: nothing is loaded until you press the button,
+  # and pressing it is the opt-in. Stated because it is not free: ~400 MB of weights,
+  # downloaded from the network once (needs the [vlm] extra for `transformers`), and ~1
+  # second per frame on the card this was measured on. Offline with no weights cached, the
+  # button says so instead of returning an empty result.
+  # `realworld` and not `classical`, which is the whole measurement: `swin2SR-classical`
+  # is trained on clean bicubic downscaling — a degradation a real archive does not
+  # contain — and lost to a plain unsharp mask; `realworld-sr-x4` beat the mask outright.
+  # READ THIS BEFORE USING IT: the model does NOT bring back what was lost, it draws
+  # something plausible. That is why the result is always a NEW file marked as processed
+  # (`<name>_restored.jpg`, beside the original), why the original is never touched, and
+  # why there is no way to run this over more than one frame at a time.
+  # WHERE THE COPY GOES: beside the original, with the `_restored` suffix, and never over
+  # an existing file (`_1`, `_2`, as everywhere else). Not into a folder of its own,
+  # because the copy is an ordinary member of the collection — it is indexed, it goes into
+  # the layout and into albums — so a service folder would be a second place to look for a
+  # photograph. Its link to the original is stored, and the pair is never shown as a
+  # duplicate to sort out.
+  restore_model: "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding
