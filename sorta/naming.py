@@ -8,9 +8,15 @@ naming.provider in config.yaml):
 - template  — a local template "YYYY-MM-DD <City>" (events.py is not imported here — modules talk only through the DB);
 - vlm       — the local Qwen2.5-VL through transformers, in this process, 3–5 sample
   frames of the event in ONE call (F95);
-- local_vlm — the ollama HTTP API, 3–5 sample frames of the event;
-- claude    — the Anthropic Messages API, key from env; a network call is possible
-  ONLY if provider='claude' is explicitly chosen in the config.
+- local_vlm — the ollama HTTP API, 3–5 sample frames of the event.
+
+F170: every provider here runs on the user's own machine, and that is now a property of
+the code rather than a default. The cloud provider that lived here uploaded the sample
+frames of an event to a vendor API — the ONE place in the product that put photographs
+on the network — and it is deleted, not switched off. `local_vlm` still speaks HTTP,
+but to an endpoint its owner runs (ollama, localhost by default). A config.yaml that
+still names the removed provider gets a message and the template, not a traceback:
+people upgrade with a working config, and their run must not die on its first line.
 
 F95: the template name ("2025-04-24..05-06 Тайланд") carries exactly the information
 the folder path already shows — a year later a trip is looked for by "Пхукет с
@@ -27,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -40,17 +47,24 @@ from typing import Any, Callable, Protocol, Sequence
 from PIL import Image
 
 from . import imaging
-from .config import DEFAULT_VLM_MAX_EDGE, DEFAULT_VLM_MODEL, Config, VlmConfig
+from .config import (
+    DEFAULT_VLM_MAX_EDGE,
+    DEFAULT_VLM_MODEL,
+    NAMING_PROVIDERS,
+    REMOVED_NAMING_PROVIDERS,
+    Config,
+    VlmConfig,
+    removed_provider_message,
+)
 from .config import NamingConfig as NamingSettings  # flat phase-5 settings
 
+_log = logging.getLogger(__name__)
+
 _MAX_NAME_LEN = 80
-# The Anthropic API supports only these image types; HEIC/RAW are skipped
-_IMAGE_MEDIA_TYPES = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-    ".webp": "image/webp", ".gif": "image/gif",
-}
-_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-_ANTHROPIC_VERSION = "2023-06-01"
+# The formats an HTTP model API is handed as raw bytes; HEIC/RAW are skipped. The limit
+# belongs to that transport alone — the in-process `vlm` provider decodes through the
+# preview cache instead and reads everything the project reads (see _sample_frames).
+_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 
 _DESCRIBE_PROMPT = (
     "Это несколько фотографий с одного события из семейного фотоархива. "
@@ -127,10 +141,10 @@ class TemplateNamer:
 
 
 def _http_post_json(url: str, payload: dict[str, Any],
-                    headers: dict[str, str], timeout: float) -> dict[str, Any]:
+                    timeout: float) -> dict[str, Any]:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers}, method="POST",
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         result = json.loads(resp.read().decode("utf-8"))
@@ -149,18 +163,17 @@ def _evenly_picked(paths: list[str], max_n: int) -> list[str]:
     return [paths[round(i * step)] for i in range(max_n)]
 
 
-def _encode_images(paths: tuple[str, ...], max_n: int) -> list[tuple[str, str]]:
-    """Up to max_n evenly picked frames → [(media_type, base64), ...]."""
+def _encode_images(paths: tuple[str, ...], max_n: int) -> list[str]:
+    """Up to max_n evenly picked frames, base64-encoded as they lie on disk."""
     usable = _evenly_picked(
-        [p for p in paths if Path(p).suffix.lower() in _IMAGE_MEDIA_TYPES], max_n)
-    out: list[tuple[str, str]] = []
+        [p for p in paths if Path(p).suffix.lower() in _IMAGE_SUFFIXES], max_n)
+    out: list[str] = []
     for p in usable:
         try:
             data = Path(p).read_bytes()
         except OSError:
             continue
-        out.append((_IMAGE_MEDIA_TYPES[Path(p).suffix.lower()],
-                    base64.standard_b64encode(data).decode("ascii")))
+        out.append(base64.standard_b64encode(data).decode("ascii"))
     return out
 
 
@@ -583,7 +596,12 @@ def reset_shared_vlm() -> None:
 
 
 class LocalVLMNamer:
-    """A local VLM via the ollama HTTP API (no external network)."""
+    """A local VLM via the ollama HTTP API (no external network).
+
+    The frames go to `naming.vlm_base_url`, which is localhost by default and is
+    whatever machine its owner points it at — a request that never leaves the process's
+    own host unless somebody deliberately moves the endpoint.
+    """
 
     def __init__(self, settings: NamingSettings) -> None:
         self._s = settings
@@ -599,10 +617,10 @@ class LocalVLMNamer:
                 {
                     "model": self._s.vlm_model,
                     "prompt": _DESCRIBE_PROMPT,
-                    "images": [b64 for _mt, b64 in images],
+                    "images": images,
                     "stream": False,
                 },
-                headers={}, timeout=self._s.vlm_timeout,
+                timeout=self._s.vlm_timeout,
             )
             described = _sanitize(str(resp["response"]))
         except (OSError, ValueError, KeyError):
@@ -699,57 +717,18 @@ class VlmNamer:
         return f"{template} {described}" if described else template
 
 
-class ClaudeNamer:
-    """The Anthropic Messages API. Called ONLY when naming.provider='claude'."""
-
-    def __init__(self, settings: NamingSettings) -> None:
-        self._s = settings
-        self._api_key = os.environ.get(settings.claude_api_key_env, "")
-        if not self._api_key:
-            raise RuntimeError(
-                f"naming.provider=claude требует API-ключ в переменной окружения "
-                f"{settings.claude_api_key_env}"
-            )
-
-    def name(self, ctx: EventContext) -> str | None:
-        base = _date_base(ctx)
-        images = _encode_images(ctx.sample_paths, self._s.max_samples)
-        if base is None or not images:
-            return TemplateNamer().name(ctx)
-        content: list[dict[str, Any]] = [
-            {"type": "image",
-             "source": {"type": "base64", "media_type": mt, "data": b64}}
-            for mt, b64 in images
-        ]
-        content.append({"type": "text", "text": _DESCRIBE_PROMPT})
-        try:
-            resp = _http_post_json(
-                _ANTHROPIC_URL,
-                {
-                    "model": self._s.claude_model,
-                    "max_tokens": 100,
-                    "messages": [{"role": "user", "content": content}],
-                },
-                headers={
-                    "x-api-key": self._api_key,
-                    "anthropic-version": _ANTHROPIC_VERSION,
-                },
-                timeout=self._s.claude_timeout,
-            )
-            blocks = resp.get("content") or []
-            text = next(b["text"] for b in blocks if b.get("type") == "text")
-            described = _sanitize(str(text))
-        except (OSError, ValueError, KeyError, StopIteration):
-            return None  # network/response invalid — leave the name untouched
-        return f"{base} {described}" if described else None
-
-
 def make_namer(settings: NamingSettings, vlm: VlmConfig | None = None) -> EventNamer:
     """Pick the provider from config (naming.provider).
 
     `vlm` is the `vlm:` section (F102) — only the local `vlm` provider has any use for
     it, and only for the model and its input size; omitting it falls back to the legacy
     `naming.*` keys on `settings`.
+
+    A provider that was REMOVED (F170) is not a misspelling and is not treated as one:
+    it names a feature that existed, so the answer is a sentence saying it is gone and
+    the template name, not the exception a typo gets. load_config normalizes the value
+    on its way in, so in a normal run this branch never fires — it is here because a
+    NamingConfig can also be built in code, and the removal must hold there too.
     """
     if settings.provider == "template":
         return TemplateNamer()
@@ -757,11 +736,12 @@ def make_namer(settings: NamingSettings, vlm: VlmConfig | None = None) -> EventN
         return VlmNamer(settings, vlm=vlm)
     if settings.provider == "local_vlm":
         return LocalVLMNamer(settings)
-    if settings.provider == "claude":
-        return ClaudeNamer(settings)
+    if settings.provider in REMOVED_NAMING_PROVIDERS:
+        _log.warning("%s", removed_provider_message(settings.provider))
+        return TemplateNamer()
     raise ValueError(
         f"naming.provider={settings.provider!r}: "
-        f"ожидается template | vlm | local_vlm | claude"
+        f"ожидается {' | '.join(NAMING_PROVIDERS)}"
     )
 
 
@@ -780,15 +760,15 @@ def _sample_paths(conn: sqlite3.Connection, event_id: int, max_n: int) -> tuple[
     """Frames of the event a provider may look at: canonical photos, junk excluded.
 
     F95: the media_class filter sits HERE, before the provider is chosen, and not
-    inside the local VLM namer. Two reasons, in this order:
+    inside the local VLM namer, because whatever the frames show becomes the name of a
+    physical folder ("2024-05-01..05-03 медицинская справка"), which then travels into
+    backups, reports and screenshots. The photo of the passport leaks nowhere; the fact
+    that it is a passport does. See the confidential-documents rule.
 
-    * `claude` reaches the CLOUD through this very function — a filter inside the
-      local provider would mean that switching the provider sends documents over the
-      network;
-    * whatever the frames show becomes the name of a physical folder ("2024-05-01..
-      05-03 медицинская справка"), which then travels into backups, reports and
-      screenshots. The photo of the passport leaks nowhere; the fact that it is a
-      passport does. See the confidential-documents rule.
+    Until F170 this function also fed the cloud provider, and the filter's first reason
+    was that a filter living inside one provider would have meant switching the provider
+    sent documents over the network. That provider is gone; the place of the filter is
+    not, because the folder name outlives any provider.
 
     An empty media_class does NOT block naming: junk is the sixth pipeline stage and
     events the fifth, so on the first run there is nothing to filter by yet. The
