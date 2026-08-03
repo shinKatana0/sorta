@@ -58,6 +58,12 @@ Switching the sort mode does not require re-running the pipelines.
   reports, the CSV plan and the UI show how confidently a place was determined (F85a),
   and `path_inferred` (F85c) is country-only by construction — it comes from a folder
   NAME, not from geometry.
+- `city` — the name of the place in `language`, by ONE rule for every source that can
+  find one (`geo._place_name`, F172): `language` → `en` → the native name the source
+  knew. `city_geonameid` is written next to it whenever the bundled base found the
+  place, and it is what the sorter names the FOLDER by (F99) — so a change of
+  `language` renames the layout without a geo run, and one geonameid can never answer
+  to two spellings.
 - Idempotency: re-running geo fully recomputes the rows. A place the USER assigned is
   therefore not stored here at all — see `manual_places`.
 

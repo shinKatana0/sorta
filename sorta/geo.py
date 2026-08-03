@@ -25,11 +25,29 @@ the online provider stays the primary source for NAMES; the offline base is aske
 for every coordinate anyway since F93 — it supplies the cache key — and only
 completes a city the provider did not give.
 
-Canonically we write geonameid (city_geonameid/district_geonameid) + the English/
-asciiname anchor `city` (for --where/CSV/landmark fallback). Localizing names into
-the target language is sort's job (G3), not this module's. `region` — DEPRECATED, no
-longer written (stays NULL). `district_name` — online only (district name as text,
-offline leaves it NULL and writes geonameid into district_geonameid).
+Canonically we write geonameid (city_geonameid/district_geonameid) + the city NAME in
+`cfg.language` (for --where/CSV/landmark fallback and for every source that carries no
+geonameid). The folder segment is still localized by sort (G3) out of the geonameid —
+that is what makes a change of `language` cost no geo run at all for a place the
+bundled base knows. `region` — DEPRECATED, no longer written (stays NULL).
+`district_name` — online only (district name as text, offline leaves it NULL and
+writes geonameid into district_geonameid).
+
+F172: the name of a place is decided in ONE function (`_place_name`) and by one
+explicit chain — `cfg.language` -> en -> the native name the source gave. Before that
+the two sources disagreed about the language of `places.city`: the bundled base was
+asked for the English anchor while the online provider answered in the language of the
+request, so a live ru collection held «Сочи» (the provider named the suburb too) and
+«Sochi» (the provider gave no city and the base completed it) for one and the same
+geonameid — one city in two folders, and its 179 Samara / 382 Nizhny Novgorod
+neighbours filed in Latin under a Russian country folder. Nothing about WHERE a file
+is placed changed with it; only what the place is called.
+
+One asymmetry stays and is deliberate. A place the BASE knows is renamed by the reader
+out of its geonameid, so a change of `language` costs nothing at all; a place only the
+provider named has no id to translate by, and its row has to be recomputed — but the
+network is not asked again for it, because the cache of F93 holds all three languages
+of every answer.
 
 F85a: inheritance has a second level. A time session is six hours wide, and 1 758 files
 of the live collection sat in a session where nobody had GPS while the TRIP around them
@@ -85,7 +103,7 @@ _log = logging.getLogger(__name__)
 
 _PROGRESS_EVERY = 1000
 _INHERIT_CONFIDENCE = ("high", "medium")
-_CANONICAL_LANG: Lang = "en"  # the city anchor is always English/asciiname — not localized here
+_NAME_FALLBACK_LANG: Lang = "en"  # F172: the second step of the naming chain, after cfg.language
 _NOMINATIM_MIN_INTERVAL = 1.0  # OSM policy: no more than 1 request/sec
 # coordinate rounding for the grid fallback key — from cfg.geo.cache_coord_digits
 # F93: a cached answer holds every interface language at once. Language is a property
@@ -175,16 +193,46 @@ def _is_null_island(lat: float, lon: float) -> bool:
     return lat == 0.0 and lon == 0.0
 
 
+def _place_name(lang: Lang, *, geonameid: int | None = None,
+                resolver: GeoResolver | None = None,
+                provider_name: str | None = None) -> str | None:
+    """F172: the ONE rule for what a place is called, whichever source found it.
+
+    The chain is written down here and nowhere else: `lang` -> en -> the native name.
+    Its first two steps live in `GeoResolver.name` (names.tsv holds ru/en/ja per
+    geonameid), the third is whatever the source knew — the asciiname of places.tsv for
+    the bundled base, the provider's own text for an online answer.
+
+    A geonameid outranks the text: two files of the same city must not end up in two
+    folders because one of them was named by a different source. `GeoResolver.name`
+    ends its chain with the geonameid itself, and a folder called `498817` explains
+    nothing — that answer is refused in favour of the text (sorter._city_display_name
+    refuses it the same way, for the same reason).
+
+    The online provider passes through here WITHOUT a geonameid on purpose. It has
+    none, and the id the local base gives for the same coordinates is not its id: the
+    base answers with the nearest city of cities1000 while Nominatim names the hamlet
+    the photo was actually taken in (F86/F93). Substituting one for the other would
+    move the file to another place — this feature only renames.
+    """
+    if geonameid is not None and resolver is not None:
+        name = resolver.name(geonameid, lang)
+        if name and name != str(geonameid):
+            return name
+    return provider_name
+
+
 class _OfflineBatchResolver:
-    """A wrapper over geodata.GeoResolver: resolve coordinates + the canonical (en) city anchor.
+    """A wrapper over geodata.GeoResolver: resolve coordinates + name the city (F172).
 
     A geonameid → name cache — on a batch of photos of the same city/district we do
     not call name() repeatedly.
     """
 
-    def __init__(self, resolver: GeoResolver) -> None:
+    def __init__(self, resolver: GeoResolver, lang: Lang) -> None:
         self._resolver = resolver
-        self._name_cache: dict[int, str] = {}
+        self._lang = lang
+        self._name_cache: dict[int, str | None] = {}
 
     @property
     def data_dir(self) -> Path | None:
@@ -195,7 +243,8 @@ class _OfflineBatchResolver:
         if geonameid is None:
             return None
         if geonameid not in self._name_cache:
-            self._name_cache[geonameid] = self._resolver.name(geonameid, _CANONICAL_LANG)
+            self._name_cache[geonameid] = _place_name(
+                self._lang, geonameid=geonameid, resolver=self._resolver)
         return self._name_cache[geonameid]
 
     def resolve_places(
@@ -288,11 +337,13 @@ class _NominatimClient:
 def _pick_lang(values: dict[str, str | None], lang: str) -> str | None:
     """The variant for `lang`, falling back to en and then to any language present.
 
-    An honest fallback, not a substitution: OSM has no `name:ja` for a Balinese
-    village, so its ja answer is the local latin name — which is exactly the string the
-    sorter used to write anyway. Returning nothing instead would hide a resolved place.
+    The provider's half of the chain of `_place_name`, over the three answers the cache
+    holds instead of over names.tsv. An honest fallback, not a substitution: OSM has no
+    `name:ja` for a Balinese village, so its ja answer is the local latin name — which
+    is exactly the string the sorter used to write anyway. Returning nothing instead
+    would hide a resolved place.
     """
-    for candidate in (lang, _CANONICAL_LANG, *_CACHE_LANGS):
+    for candidate in (lang, _NAME_FALLBACK_LANG, *_CACHE_LANGS):
         value = values.get(candidate)
         if value:
             return value
@@ -318,13 +369,18 @@ class _CachedAnswer:
             district={lang: p.district_name for lang, p in places.items()},
         )
 
-    def place(self, lang: str) -> _Place:
-        """The place as the current run needs it — the variant for `lang`."""
+    def place(self, lang: Lang) -> _Place:
+        """The place as the current run needs it — the variant for `lang`.
+
+        F172: the city goes through `_place_name` like every other source, so the rule
+        for naming a place stays in one function even though the provider answers with
+        text and no geonameid to translate by.
+        """
         return _Place(
             country=self.country,
             city_geonameid=None,
             district_geonameid=None,
-            city=_pick_lang(self.city, lang),
+            city=_place_name(lang, provider_name=_pick_lang(self.city, lang)),
             district_name=_pick_lang(self.district, lang),
             country_name=_pick_lang(self.country_name, lang),
         )
@@ -478,7 +534,7 @@ class _CachedOnlineResolver:
                  client: _NominatimClient, local: GeoResolver | None) -> None:
         self._client = client
         self._local = local
-        self._language = cfg.language
+        self._language = i18n.normalize_lang(cfg.language)
         self._grid_digits = cfg.geo.cache_coord_digits
         self._cache = _GeoCacheTable(conn, _PROVIDER_ONLINE, cfg.geo.cache_max_age_days)
 
@@ -617,8 +673,9 @@ def _resolver_for(cfg: Config, conn: sqlite3.Connection,
     passed in rather than created here so the path hint of F85c shares one loaded base.
     """
     provider = cfg.geo.provider
+    lang = i18n.normalize_lang(cfg.language)
     if provider == "offline":
-        return _OfflineBatchResolver(offline)
+        return _OfflineBatchResolver(offline, lang)
     if provider == "online":
         available = offline.data_available()
         if not available:
@@ -632,7 +689,7 @@ def _resolver_for(cfg: Config, conn: sqlite3.Connection,
                                       offline if available else None)
         if not available:
             return online
-        return _CityFallbackResolver(online, _OfflineBatchResolver(offline))
+        return _CityFallbackResolver(online, _OfflineBatchResolver(offline, lang))
     raise ValueError(f"geo: неизвестный geo.provider={provider!r} (ожидается offline|online)")
 
 
