@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Every ordered slice can be walked past its first page — search included** (F173). A
+  query for «дети» came back with **exactly 200 frames** and no way further:
+  `features.search_limit` was 200, and search had no paging at all, only a caption saying
+  "200 frames". Animals, faces, screenshots and the Review each had a "show more" button;
+  the one slice built by a QUERY rather than by a model's marks did not. That is the
+  expensive one to miss, because the measurements of 2026-08-02/03 found exactly one
+  confirmed lever of completeness — **the depth of the list**. Doubling it adds ~25 points
+  on average, and on children it goes from **61% to 89%**: the second half of the ranking
+  held nearly a third of all the frames the person was looking for, and the handle for it
+  did not turn. `features.search_limit` is therefore **`features.search_page`** now — a
+  ceiling cuts the answer off, a page only decides how much of it arrives first — and the
+  old key keeps working, so an existing `config.yaml` loses nothing to the rename (it logs
+  one line and reads the value). The counter says how many there are **in total** rather
+  than how many are on screen: "showing 200" and "there are exactly 200" read identically,
+  and for a ranking the second is almost never true. Beside the button there is one line
+  about what depth costs — further down the list means more found **and** more missed —
+  because that trade is measured and the person pressing the button is the one making it.
+  There is no infinite scroll on purpose: a portion arrives when somebody asks for one.
+  **The button is one mechanism now, not a fifth copy of one.** The server answers every
+  paged slice through `ui._page_payload` (`items`/`total`/`offset`/`limit`/`has_more`, with
+  `has_more` computed from the window actually served), the browser draws every one of them
+  through a single `makePager`, and the caption is one catalog entry in the three languages
+  instead of one per slice. The animal and face slices were moved onto it; the slices still
+  ahead of this one in the queue (query slices, pinned queries, low resolution, blurred as
+  a list) inherit the button by calling it rather than by copying it. The ranking order is
+  untouched: this feature is about reaching the tail, not about how the tail is sorted.
+
 ### Removed
 - **The cloud naming provider is gone, and with it the only code that could send a
   photograph anywhere** (F170). `naming.provider: claude` named events by uploading a
