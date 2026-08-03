@@ -401,6 +401,42 @@ def _as_scope(value: Any, default: str) -> str:
     return default
 
 
+# F170: who may name an event — and every one of them runs on this machine. The cloud
+# provider that used to be the fourth name here uploaded the sample frames of an event to
+# a vendor API, which made it the only code in the product capable of putting a photograph
+# on the network; it is deleted rather than defaulted off, so "no code sends images
+# anywhere" is a property of the sources instead of a promise about a setting.
+NAMING_PROVIDERS = ("template", "vlm", "local_vlm")
+# A value that named a REAL feature until it was removed. Not a typo and not treated as
+# one: a config.yaml carrying it is somebody's working file, so it earns a sentence
+# saying what happened and a fallback, never a crash on the first line of a run.
+REMOVED_NAMING_PROVIDERS = ("claude",)
+
+
+def removed_provider_message(provider: str) -> str:
+    """What a run says about a `naming.provider` that no longer exists."""
+    return (
+        f"config: naming.provider={provider!r} удалён — этот провайдер отправлял "
+        f"фотографии в облако, теперь в продукте нет кода, отправляющего изображения "
+        f"наружу. Доступны {' | '.join(NAMING_PROVIDERS)}; использую 'template'"
+    )
+
+
+def _as_provider(value: Any, default: str) -> str:
+    """`naming.provider`, with a removed provider answered rather than obeyed.
+
+    Anything else — including a typo — is passed through untouched: `make_namer` is the
+    one place that decides what a provider name means, and an unknown one is still an
+    error there. Only the values this feature deleted are answered here, because only
+    they used to work.
+    """
+    name = value.strip().lower() if isinstance(value, str) else value
+    if name in REMOVED_NAMING_PROVIDERS:
+        _log.warning("%s", removed_provider_message(str(name)))
+        return default
+    return str(value)
+
+
 def _as_repo_id(key: str, value: Any, default: str) -> str:
     """A huggingface repo id (`owner/name`); anything else -> the default, with a warning.
 
@@ -856,8 +892,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
 @dataclass(frozen=True)
 class NamingConfig:
     """Phase 5 (F6): places without GPS, event names, junk. A flat view of the
-    nested naming section of config.yaml (clip.*/local_vlm.*/claude.* — see load_config)."""
-    provider: str = "template"           # template | vlm | local_vlm | claude
+    nested naming section of config.yaml (clip.*/local_vlm.* — see load_config)."""
+    provider: str = "template"           # template | vlm | local_vlm (NAMING_PROVIDERS)
     #                                      F95: `vlm` describes the event with the local
     #                                      Qwen2.5-VL of classify_vlm_model (the junk model,
     #                                      one copy per run); opt-in, template stays the default
@@ -900,18 +936,14 @@ class NamingConfig:
     vlm_base_url: str = "http://localhost:11434"
     vlm_model: str = "llava"
     vlm_timeout: float = 120.0
-    claude_model: str = "claude-opus-5"
-    claude_api_key_env: str = "ANTHROPIC_API_KEY"
-    claude_timeout: float = 60.0
 
 
 def _naming_from(raw: dict) -> NamingConfig:
     clip = raw.get("clip") or {}
     vlm = raw.get("local_vlm") or {}
-    claude = raw.get("claude") or {}
     d = NamingConfig()
     return NamingConfig(
-        provider=str(raw.get("provider", d.provider)),
+        provider=_as_provider(raw.get("provider", d.provider), d.provider),
         landmark_threshold=float(raw.get("landmark_threshold", d.landmark_threshold)),
         landmark_group_min=int(raw.get("landmark_group_min", d.landmark_group_min)),
         landmark_group_dominance=float(
@@ -935,9 +967,6 @@ def _naming_from(raw: dict) -> NamingConfig:
         vlm_base_url=str(vlm.get("base_url", d.vlm_base_url)).rstrip("/"),
         vlm_model=str(vlm.get("model", d.vlm_model)),
         vlm_timeout=float(vlm.get("timeout", d.vlm_timeout)),
-        claude_model=str(claude.get("model", d.claude_model)),
-        claude_api_key_env=str(claude.get("api_key_env", d.claude_api_key_env)),
-        claude_timeout=float(claude.get("timeout", d.claude_timeout)),
     )
 
 

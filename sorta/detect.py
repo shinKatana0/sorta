@@ -238,12 +238,12 @@ def cascade_label(found: Detection | None, examined: bool, verified: bool,
     `junk.PET_CLASS`, the column's one meaning (F122), and two spellings of one fact is how
     a consumer ends up with a slice that misses half its frames.
 
-    This is the rule the STAGE writes with. The readers of the animal slice have derived
-    their own since F137 (`sorter.animal_auto_sql`, over `pet_score`/`pet_vlm`, so that a
-    threshold moved in the config moves the slice without a run) — and that expression does
-    not know about `detections` yet. The two are meant to be the same rule in two shapes,
-    the way `junk.pet_label` and `animal_auto_sql` already are; until the SQL side learns
-    this tier, what a user sees is the F130 answer. See the junk module docstring.
+    This is the rule the STAGE writes with. The readers of the animal slice derive their
+    own since F137 (`sorter.animal_auto_sql`, over `pet_score`/`pet_vlm`, so that a
+    threshold moved in the config moves the slice without a run), and F160 wrote this tier
+    into it — with the same order, the boxes re-read at the threshold in force now, and a
+    case table run through both spellings so they cannot drift apart again. See the junk
+    module docstring.
     """
     if not examined or verified:
         return previous
