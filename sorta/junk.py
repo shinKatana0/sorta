@@ -309,6 +309,44 @@ not judge:
 
 It is the same device as the OCR rescue gate (F38): a cheap signal decides who is worth an
 expensive check. Cheaper, in fact — this one is a matmul over a table that already exists.
+
+F154: the animal label gets a third tier — an OBJECT DETECTOR (`detect.py`), and the shape
+it takes is the whole decision. Measured on 200 hand-labelled frames (2026-08-02, at
+confidence 0.5), a COCO detector is 62% precision / 87% recall on animals against the CLIP
+label's 71% / 33% — but 42% precision on people where the face boxes are ~100% (F152), and
+20% / 15% on food, which COCO has no class for at all. It earns its keep on one slice of
+three, and a pass over the collection to get it is 83.8 ms x 22 096 = 30.8 minutes.
+
+So it is a CASCADE, the same device F130 and F140 already pay for: a zero-shot query over
+the stored vectors ranks the collection, the top `features.detector_candidates` (2 000)
+frames go to the detector, and ~3 minutes replace ~31. Recall is then bounded by the
+query's own at that depth, and precision rises from the query's 43% to the detector's 62%.
+`_DetectorPass` below is that pass; `detect.py` holds the model, the classes and the rule.
+
+Three properties are the feature rather than its implementation:
+
+* it is subordinate to a master switch of its own — `detect.enabled`, NOT `vlm.enabled`
+  (this is not a VLM), under the F145 rule that no subordinate key raises a model by
+  itself. Without stored vectors there are no candidates, and the stage says so instead of
+  falling back to a pass over everything;
+* the answer OVERRIDES the CLIP label in both directions, and falls back to the previous
+  rule — never to "no animal" — whenever the detector says nothing (see
+  `detect.cascade_label`, which also states why a frame the F130 check has answered about
+  keeps that answer: a box detector calls a drawn cat a cat);
+* what it found is stored with the class, the confidence and the box (`detections`),
+  because there is nowhere else those could come from. F122 closed the cat/dog split for
+  CLIP, which could not tell the species apart; a detector can, and the table is what makes
+  that a query rather than another pass.
+
+WHAT THIS FEATURE DOES NOT REACH, stated here so nobody has to discover it: since F137 the
+CONSUMERS of the animal slice — the album, the "Animals" tab, the Overview counter — do not
+read `frame_quality.pet` at all. They derive the verdict when they read, out of `pet_score`
+and `pet_vlm`, through `sorter.animal_auto_sql`, so that a threshold moved in the config
+moves the slice without a run. That expression knows nothing about `detections`, and it
+lives in a file outside this feature's ownership. Until it learns this tier (one branch: a
+stored detection of this model at or above `features.detector_threshold` outranks the
+score, exactly as `detect.cascade_label` has it), the detector fills its table and writes
+its label, and the slice a user sees is still F130's answer.
 """
 from __future__ import annotations
 
@@ -330,6 +368,21 @@ from PIL import Image
 
 from . import imaging
 from .config import Config, FeaturesConfig, vlm_allowed
+from .detect import (
+    ANIMAL_QUERY_PROMPTS,
+    STORE_FLOOR,
+    Detection,
+    DetectFn,
+    DetectorSettings,
+    animal_boxes,
+    best_animal,
+    cascade_label,
+    detector_settings,
+    pack_boxes,
+    rank_candidates,
+    torchvision_detector,
+    unpack_boxes,
+)
 
 # F102 moved the workers knob to `vlm.workers` and this resolver along with it (the old
 # `naming.vlm_workers` address is still honoured there) — but this module is where it was
@@ -2065,6 +2118,24 @@ _PET_ANSWER_UPDATE = """UPDATE frame_quality
 _JUNK_SCORE_UPDATE = """UPDATE frame_quality
                         SET junk_score = ?, updated_at = ?
                         WHERE file_id = ?"""
+# F154: the animal label after the detector has spoken. `pet_vlm` is untouched — the two
+# tiers answer different questions (which object is in the frame; whether the animal in it
+# is alive) and overwriting one with the other would lose the fact that the model was
+# asked. `pet_score` is untouched for the same reason it survives the F130 check: it is
+# what a threshold is re-chosen from.
+_PET_DETECTOR_UPDATE = """UPDATE frame_quality
+                          SET pet = ?, updated_at = ?
+                          WHERE file_id = ?"""
+# F154: what the detector saw on one frame. The row IS the "already examined" marker, so
+# it is written for a frame with NO animal on it too (`label` NULL, `boxes` an empty list)
+# — otherwise every later run pays 83.8 ms again for each frame the detector turned down.
+_DETECTIONS_UPSERT = """INSERT INTO detections (file_id, label, score, boxes, model,
+                                                updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(file_id) DO UPDATE SET
+                            label = excluded.label, score = excluded.score,
+                            boxes = excluded.boxes, model = excluded.model,
+                            updated_at = excluded.updated_at"""
 
 # The verdict of one frame. F68: `tier` is written on every path and always equals the
 # run's active tier — a row the active tier touched must never stay unmarked (or marked by
@@ -2198,6 +2269,11 @@ CLASSIFY_PHASE_WRITE = "junk_write"
 # first. Its seconds are the price of `features.search_index` and nothing else, and that
 # is exactly the number somebody deciding whether to switch it on needs to read.
 CLASSIFY_PHASE_SEARCH = "junk_search"
+# F154: the object detector over the candidates of the animal query — its own phase for
+# the reason the search index has one. It is neither the fast CLIP pass (it is a second
+# model over a short list) nor the VLM tier (it is not a VLM, and it costs 83.8 ms where
+# that one costs 0.78 s), so its seconds price `features.detector` and nothing else.
+CLASSIFY_PHASE_DETECT = "junk_detect"
 
 # F147: the name this stage is timed under in the run log — the same one the pipeline
 # calls it by (`cli._pipeline_steps`), because the phase lines are read next to the
@@ -2763,6 +2839,14 @@ class JunkStats:
     junk_scored: int = 0
     junk_candidates: int = 0
     junk_rescued: int = 0
+    # F154: the animal detector — frames the query selected, how many of them the model
+    # actually looked at (the rest already had an answer from an earlier run, which is what
+    # makes a repeated run cost nothing), and on how many an animal was found. The first
+    # two price the cascade the way pet_candidates/pet_verified price the F130 check; the
+    # last is the population of the animal slice this feature exists to widen.
+    detector_candidates: int = 0
+    detector_examined: int = 0
+    detector_found: int = 0
 
 
 def _non_photo_ids(conn: sqlite3.Connection, file_ids: Sequence[int]) -> set[int]:
@@ -3121,6 +3205,234 @@ class _JunkRescuePass:
                 report.step(i + 1)
 
 
+# F154: who the animal query may rank at all. Canonical photographs the stage calls a
+# photograph, plus the ones it has not classified yet (a first run has settled nothing, and
+# that is not a reason to withhold a frame) — the F120 population, spelled the way
+# `quality_scope_ids` spells it. The detector never sees anything outside this list, and
+# the ranking then cuts it down to `features.detector_candidates`.
+_DETECTOR_POPULATION_SQL = """SELECT f.id, f.path FROM files f
+    LEFT JOIN media_class mc ON mc.file_id = f.id
+    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'
+      AND (mc.verdict IS NULL OR mc.verdict = ?)
+    ORDER BY f.id"""
+
+
+class _DetectorPass:
+    """F154: the object detector, over the candidates a query selects — never over a pass.
+
+    The pipeline half of `detect.py`, and it owns the three things every other pass here
+    owns: who the candidates are (the top `features.detector_candidates` frames of a
+    zero-shot animal query over the vectors F128 already stores, inside the F120 population
+    of personal photographs), which of them still need the model (its own incrementality —
+    a row in `detections` written by the same detector means "already examined", and that
+    covers a frame it found nothing on), and what the answer then decides
+    (`frame_quality.pet`, through `detect.cascade_label`). It writes on the caller's thread
+    inside its own transactions — SQLite stays single-writer, as everywhere in this stage.
+
+    THERE IS NO CODE PATH THAT RUNS THE DETECTOR OVER EVERYTHING. That is the feature, not
+    a safeguard: 83.8 ms per frame is 30.8 minutes over 22 096 photographs, for a signal
+    that beats what the pipeline already has on exactly one slice out of three. Without
+    stored vectors there are no candidates and the stage says so instead of falling back to
+    a pass — a fallback nobody asked for is how three minutes become thirty-one.
+
+    Three failures leave every label exactly as the cheaper tiers wrote it, and none of
+    them is ever read as "no animal": no vectors to query (the reason is logged), an
+    encoder or a detector that will not build (the graceful fallback every optional half of
+    this stage has), and an error on one frame (that frame keeps its label and is examined
+    again next run, because no row is written for it).
+
+    Both the encoder and the detector are built LAZILY, inside `run`, and only when there
+    is work: each loads a model, and a run with nothing to ask must not pay for one.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, s: DetectorSettings, model: str,
+                 encoder: Callable[[], TextEncoder], detector: Callable[[], DetectFn],
+                 pet_threshold: float, now: str, stats: JunkStats) -> None:
+        self._conn = conn
+        self._s = s
+        self._model = model
+        self._encoder = encoder
+        self._detector = detector
+        self._pet_threshold = pet_threshold
+        self._now = now
+        self._stats = stats
+
+    def run(self, report: _PhaseProgress) -> None:
+        """Select the candidates, examine the ones nobody has, apply the label rule."""
+        if not self._s.enabled:
+            return
+        candidates = self._candidates()
+        if not candidates:
+            return
+        self._stats.detector_candidates = len(candidates)
+        stored = self._stored(candidates)
+        todo = [(file_id, path) for file_id, path in candidates if file_id not in stored]
+        found = dict(stored)
+        found.update(self._examine(todo, report))
+        # Counted over the candidates that HAVE an answer, this run's and the stored ones
+        # alike: the number a user compares against the folder they get does not depend on
+        # which run happened to ask the question.
+        self._stats.detector_found = sum(
+            1 for boxes in found.values()
+            if best_animal(boxes, self._s.threshold) is not None)
+        self._relabel(candidates, found)
+
+    def _candidates(self) -> list[tuple[int, str]]:
+        """The frames the animal query ranks highest — (file_id, path), best first.
+
+        The query runs over `clip_embeddings`, the CLASSIFICATION vectors: those are the
+        rows this pipeline's prompts live in the space of, and the model filter inside
+        `read_clip_embeddings` is what keeps a vector of another model out of the ranking.
+
+        An empty table is a REASON and not an empty list (the F134 rule): "no candidates"
+        and "nobody has ever computed a vector here" read identically in a count of zero,
+        and only one of them is fixed by running the junk stage with
+        `features.store_embeddings` on. So it is said, in the log, and nothing is asked.
+        """
+        rows = self._conn.execute(_DETECTOR_POPULATION_SQL, (QUALITY_VERDICT,)).fetchall()
+        paths = {int(r["id"]): str(r["path"]) for r in rows}
+        vectors = read_clip_embeddings(self._conn, self._model, list(paths))
+        if not vectors:
+            _log.warning(
+                "junk: детектор объектов не запускается — в clip_embeddings нет векторов "
+                "модели %s (нужен прогон junk с features.store_embeddings). Кандидатов "
+                "нет, сплошного прохода по коллекции у этой стадии не бывает", self._model)
+            return []
+        features = self._text_features()
+        if features is None:
+            return []
+        return [(file_id, paths[file_id])
+                for file_id in rank_candidates(vectors, features, self._s.candidates)]
+
+    def _text_features(self) -> np.ndarray | None:
+        """The animal prompts as unit rows; None — the encoder could not be had.
+
+        The same graceful fallback the model halves of this stage have, and for the same
+        reason: an optional signal that cannot be computed must cost the run nothing.
+        """
+        try:
+            rows = np.asarray(self._encoder()(list(ANIMAL_QUERY_PROMPTS)),
+                              dtype=np.float32)
+        except Exception as exc:  # noqa: BLE001 — the stage must survive it
+            _log.warning(
+                "junk: текстовый энкодер для отбора кандидатов детектора недоступен "
+                "(%s) — детектор не запускается, метки животных остаются прежними", exc)
+            return None
+        return unit_rows(rows)
+
+    def _stored(self, candidates: Sequence[tuple[int, str]]) -> dict[int, list[Detection]]:
+        """What THIS detector already answered about these frames — incrementality.
+
+        Keyed by the model, like every other marker in this stage: boxes from another
+        detector are not this one's answer, so such a frame is examined again rather than
+        trusted. A row that exists with no boxes in it is an answer too — "looked, found
+        nothing" — and it is the reason a repeated run asks nothing at all.
+        """
+        out: dict[int, list[Detection]] = {}
+        for part in batched([file_id for file_id, _path in candidates], 500):
+            out.update({int(r["file_id"]): unpack_boxes(r["boxes"])
+                        for r in self._conn.execute(
+                            "SELECT file_id, boxes FROM detections WHERE model = ?"
+                            f" AND file_id IN ({','.join('?' * len(part))})",
+                            (self._s.model, *part))})
+        return out
+
+    def _examine(self, todo: Sequence[tuple[int, str]],
+                 report: _PhaseProgress) -> dict[int, list[Detection]]:
+        """Run the detector over the frames that have no answer yet, and store what it saw.
+
+        A frame the model raises on gets NO ROW: it keeps whatever label it had and is
+        examined again next run. That is the same "no row rather than a wrong row" rule
+        `_EmbeddingPass.store` states, and here it also keeps one bad frame from being
+        recorded as a frame with no animal on it.
+        """
+        if not todo:
+            return {}
+        try:
+            examine = self._detector()
+        except Exception as exc:  # noqa: BLE001 — the cascade is optional, must not crash
+            _log.warning(
+                "junk: детектор объектов недоступен (%s) — метки животных остаются "
+                "за CLIP и F130-каскадом", exc)
+            return {}
+        report.start(CLASSIFY_PHASE_DETECT, len(todo))
+        report.count(CLASSIFY_PHASE_DETECT, len(todo))
+        seen: dict[int, list[Detection]] = {}
+        with self._conn:
+            for i, (file_id, path) in enumerate(todo):
+                try:
+                    boxes = list(examine(path))
+                except Exception as exc:  # noqa: BLE001 — one frame, not the stage
+                    _log.warning(
+                        "junk: детектор не ответил по file_id=%s (%s) — кадр остаётся "
+                        "с прежней меткой и попадёт в следующий прогон", file_id, exc)
+                    # Outside the `else` for the F100 reason: a frame the model failed on
+                    # is a frame this pass is done with, and a bar one short of its total
+                    # for good is worse than an honest step.
+                    report.step(i + 1)
+                    continue
+                kept = animal_boxes(boxes, STORE_FLOOR)
+                best = best_animal(kept, self._s.threshold)
+                self._conn.execute(_DETECTIONS_UPSERT, (
+                    file_id, None if best is None else best.label,
+                    None if best is None else float(best.score),
+                    pack_boxes(kept), self._s.model, self._now))
+                self._stats.detector_examined += 1
+                seen[file_id] = kept
+                report.step(i + 1)
+        return seen
+
+    def _relabel(self, candidates: Sequence[tuple[int, str]],
+                 found: dict[int, list[Detection]]) -> None:
+        """Write the label the cascade decides — for the frames the detector examined.
+
+        Read before written, and only the rows that change are touched: this pass runs over
+        candidates the earlier tiers have already labelled, and the great majority of them
+        keep exactly what they had. `stats.pets_found` follows every change, so the number
+        a run reports is the one the cascade ended on and not the fast tier's (see the
+        counter's own note below for the one case where that difference is floored).
+
+        A candidate with no `frame_quality` row is skipped rather than given one: that
+        table's population is written by the quality half, under its own incrementality,
+        and a detection is not a reason to invent a row with no sharpness in it. The boxes
+        are stored either way — they are a fact about the frame, not about the label.
+        """
+        ids = [file_id for file_id, _path in candidates if file_id in found]
+        rows = read_frame_quality(self._conn, ids)
+        with self._conn:
+            for file_id, row in rows.items():
+                previous = pet_label(row.pet_vlm, row.pet_score, self._pet_threshold)
+                after = cascade_label(
+                    best_animal(found[file_id], self._s.threshold), examined=True,
+                    verified=row.pet_vlm is not None, previous=previous,
+                    animal=PET_CLASS)
+                if after == row.pet:
+                    continue
+                self._conn.execute(_PET_DETECTOR_UPDATE, (after, self._now, file_id))
+                # `pets_found` counts the animals THIS RUN ended up marking, and unlike
+                # the F130 check this pass does not select from the frames the run
+                # measured: on a collection that is otherwise up to date it has none. So a
+                # label taken off such a frame cannot push the count below zero — there
+                # was nothing there to subtract from.
+                self._stats.pets_found = max(
+                    0, self._stats.pets_found
+                    + (after is not None) - (row.pet is not None))
+
+    def purge(self) -> None:
+        """Drop the boxes of everything this run decided is not a personal photograph.
+
+        The same statement and the same reason as `_EmbeddingPass.purge`: incrementality
+        skips a frame whose row already looks current, so a frame examined before its
+        verdict moved to `document` would keep its boxes PRECISELY because they are up to
+        date — and a document is the one class this project takes care not to describe.
+        """
+        if not self._s.enabled:
+            return  # the detector is off: the table is not this run's business
+        self._conn.execute(
+            "DELETE FROM detections WHERE file_id IN"
+            " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
+
+
 class _KeeperPass:
     """F132: the keeper of each near-duplicate group — computed and stored, never applied.
 
@@ -3254,6 +3566,9 @@ def classify(
     junk_text_encoder_factory: Callable[[NamingSettings], TextEncoder] | None = None,
     search_encoder: FeatureSource | None = None,
     search_encoder_factory: Callable[[NamingSettings], FeatureSource] | None = None,
+    detector: DetectFn | None = None,
+    detector_factory: Callable[[str], DetectFn] | None = None,
+    detector_text_encoder: TextEncoder | None = None,
     progress: ProgressCB | None = None,
 ) -> JunkStats:
     """Classify canonical photos into media_class.
@@ -3346,6 +3661,16 @@ def classify(
     calibrated on, which is the entire reason it exists next to `naming.clip.*` instead of
     replacing it. Injectable and built lazily for the same reasons the rescue encoder is:
     the suite must not load a model, and a run with nothing left to encode must not either.
+
+    detector / detector_factory / detector_text_encoder (F154): the animal cascade's third
+    tier — an object detector over the candidates a zero-shot query picks out of the stored
+    CLIP vectors, behind `features.detector` AND `detect.enabled` (its own master switch,
+    see config.detector_allowed: a detector is not a VLM and is not raised by `vlm.enabled`
+    either way). Injectable and built lazily exactly like the encoders above, and for the
+    same two reasons: the suite must not load a model, and a run with no candidate to
+    examine must not either. Same graceful fallback as everything else here — an encoder or
+    a detector that will not build leaves every animal label as F122/F130 wrote it, and
+    there is no configuration in which the detector runs over the whole collection.
 
     F145: every one of the four askers above is subordinate to `vlm.enabled`. Their own
     keys say WHAT to ask, not whether a model is raised — a run without deep analysis
@@ -3572,7 +3897,25 @@ def classify(
             search_index_settings(s, index_model))),
         s.clip_batch_size, now, stats,
         use_clip and search_index_enabled(cfg))
+    # F154: the animal detector — a third pass that can have work when every other half of
+    # the stage is up to date, and for the same reason the keeper and the search index can:
+    # the toggle is switched on for a collection that is already classified. Both of its
+    # models are closures so that a run with no candidate builds neither. A heuristics-only
+    # run has no vectors to query and no CLIP tier to correct, so `use_clip` gates it too.
+    d = detector_settings(cfg)
+    if not use_clip:
+        d = replace(d, enabled=False)
+    detect_pass = _DetectorPass(
+        conn, d, embedding_model(s),
+        (lambda: detector_text_encoder) if detector_text_encoder is not None
+        else (lambda: clip_text_encoder(s)),
+        (lambda: detector) if detector is not None
+        else (lambda: (detector_factory or torchvision_detector)(d.model)),
+        float(q.pet_threshold), now, stats)
     if not work:
+        detect_pass.run(report)
+        with conn:
+            detect_pass.purge()
         keeper.run(report)
         search_index.run(report)
         report.log_timings()
@@ -3878,6 +4221,13 @@ def classify(
     # It runs after the deep tier for a plain reason: both want the same GPU, and the
     # verdict is what the rest of the pipeline depends on.
     quality.ask_model(report)
+    # F154: the detector, last of the three tiers that can move an animal label. After the
+    # VLM check because it reads what that check wrote — a frame the model has already
+    # judged keeps its answer, since "is this animal alive" is not a question a box
+    # detector can be asked (`detect.cascade_label`) — and after the deep tier because that
+    # is what settles which frames are personal photographs at all. Its candidates come out
+    # of `clip_embeddings`, which the loop above has just filled.
+    detect_pass.run(report)
     # F120: enforce "only a personal photograph has a quality row" DIRECTLY, and do it
     # LAST, when every verdict of this run is written — the deep tier above reclassifies
     # frames, so a purge any earlier would judge them by the fast tier's answer.
@@ -3895,6 +4245,9 @@ def classify(
         # _EmbeddingPass.purge) — and after the deep tier, whose reclassifications it has
         # to see.
         embeddings.purge()
+        # F154: and the boxes, under the same rule and in the same transaction — a frame
+        # this run decided is a document must not keep a description of what is on it.
+        detect_pass.purge()
     # F132: last of all, because it reads what everything above has just written — the
     # verdicts (a group with a screenshot in it is not shown to the model) and the
     # sharpness of each frame (the ranking that decides which frames go into the question

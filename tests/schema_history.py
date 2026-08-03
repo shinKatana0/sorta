@@ -52,7 +52,8 @@ SCHEMA_HISTORY: dict[int, tuple[str, ...]] = {
     20: ("landmark_checks",),
     21: ("frame_quality.junk_score",),
     22: ("search_embeddings",),
-    23: ("restored_files",),
+    23: ("detections",),
+    24: ("restored_files",),
 }
 
 

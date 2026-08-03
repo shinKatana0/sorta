@@ -1461,14 +1461,17 @@ def _junk_payload(db_path: Path, bucket: str | None,
 
     F133: `sensitive` is `vlm.exclude_classes` — the config list that already means
     "handle this class as private", and whose default is `["document"]`. A class in it
-    keeps its COUNTER and loses its CONTENT: no paths, no rows, and therefore no
-    thumbnails, because a thumbnail is fetched by a path this route hands out. The guard
-    lives here rather than in the markup for exactly that reason — hiding a button in
-    the browser is not privacy when the data has already been sent to it.
+    keeps its counter, its cards and the way back to the photos, and loses exactly one
+    thing: `thumb_url`. That is the whole of the rule, and it has to be enforced HERE
+    rather than in the markup — a card the browser was given a preview link for is a
+    card whose contents have already been decoded and sent, whatever the page then
+    chooses to draw. The card still carries a name and a date, which is what "open the
+    documents in the common grid, do not enlarge them" (the brief) asks for.
 
     Reusing the VLM key instead of adding a second one is a deliberate trade: one
     visible list of sensitive classes beats two, of which the second gets forgotten.
-    Emptying it therefore lifts both protections at once, which the guide says out loud.
+    Emptying it therefore lifts both protections at once — the guide entry for the key
+    is what has to say so.
 
     The selection is `media_class.verdict <> 'photo'` over canonical, readable files —
     the same `dup_of IS NULL AND error IS NULL` population `junk.classify` writes and
@@ -1525,8 +1528,9 @@ def _junk_payload(db_path: Path, bucket: str | None,
         "album_kind": (
             bucket if (bucket in CLASS_ALBUM_KINDS and bucket not in sensitive)
             else None),
-        # The client draws the counter-only state from this — it must not have to guess
-        # which classes came back empty on purpose and which are simply empty.
+        # Said out loud rather than inferred from a missing field: a card without
+        # `thumb_url` is a class the server refuses to render, not a preview that failed
+        # to build, and the two need different words on the screen.
         "sensitive": sorted(sensitive),
         "total": int(total),
         "offset": offset,
@@ -5079,6 +5083,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "поисковый индекс (CLIP)", "en": "search index (CLIP)",
         "ja": "検索インデックス (CLIP)",
     },
+    # F154: the object detector over the candidates of the animal query. A caption of its
+    # own for the reason the search index has one: it is a second model over a short list,
+    # neither the fast CLIP pass nor the VLM tier, and its minutes are what
+    # `features.detector` costs. (The only line this feature adds to this file — a phase
+    # without a string surfaces as a raw identifier, which tests/test_ui_junk_phase.py
+    # requires it not to.)
+    "process_phase_junk_detect": {
+        "ru": "детектор объектов", "en": "object detector",
+        "ja": "物体検出",
+    },
     "process_phase_elapsed": {  # a phase with no percent — the clock is the sign of life
         "ru": "{phase} — идёт {seconds} с",
         "en": "{phase} — {seconds}s so far",
@@ -6047,12 +6061,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # --- F123: the "Animals" tab -----------------------------------------------------
     "animals_intro": {
         "ru": "Кадры с животными, сверху — те, в которых модель уверена больше. "
-              "Точность около 92%: ниже по списку начинают попадаться шубы и игрушки, "
+              "Точность около 82%: ниже по списку начинают попадаться шубы и игрушки, "
               "и видно, где проходит граница.",
         "en": "Frames with animals, the ones the model is most confident about first. "
-              "Precision is about 92%: fur coats and plush toys start showing up "
+              "Precision is about 82%: fur coats and plush toys start showing up "
               "further down, which is where the border of confidence is.",
-        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 92% "
+        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 82% "
               "で、下に行くほど毛皮のコートやぬいぐるみが混じり始め、そこが確信度の"
               "境目です。",
     },
@@ -8860,7 +8874,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   });
 
-  // --- F133: срезы -----------------------------------------------------------
+  // --- F133: the slices ------------------------------------------------------
   // The pin row is BUILT, never written out in the markup: F129 replaces the fixed list
   // with a query, and a row of hand-written buttons would have to be thrown away then.
   // Three of the pins (people/events/animals) show a panel that used to be a tab; the
@@ -9193,8 +9207,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
   // EXISTS-проверок, вызывается при инициализации и после каждого прогона
   // (refreshTabsAfterProcess), т.к. прогон мог впервые породить кластеры/события.
-  // F133: эти три больше не вкладки, а закреплённые срезы, и правило то же —
-  // среза нет, пока в базе нечего показать.
+  // F133: these three are pinned slices rather than tabs now, and the rule has not
+  // moved — there is no slice while the database has nothing to show in it.
   function applyTabVisibility() {
     fetch("/api/tabs/visibility")
       .then(function (r) { return r.json(); })
@@ -9231,14 +9245,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   applyTabVisibility();
 
-  // --- F133: предупреждение о порядке на «Раскладке» -------------------------
-  // Отмеченные к удалению кадры уезжают в «_delete» ВО ВРЕМЯ sort --apply, тогда же,
-  // когда строится канон, а альбомы — hardlink'и ИЗ канона. Собрав альбомы раньше, чем
-  // выкинут мусор, человек получит ссылки на то, что решил выбросить.
+  // --- F133: the order warning of the "Layout" tab ---------------------------
+  // Frames marked for deletion leave for "_delete" DURING `sort --apply`, at the same
+  // moment the canon is built, and albums are hardlinks OUT of the canon. Gather the
+  // albums before the junk is thrown out and you get links to what you decided to throw.
   //
-  // Подсказка, и только: ни одна кнопка раскладки здесь не трогается. Коллекция живая,
-  // «собрать» происходит снова и снова, и вернувшемуся за одним альбомом шаги мешают —
-  // запертая вкладка стоила бы дороже, чем ошибка, от которой она защищает.
+  // A hint and nothing else: not one layout control is touched here. The collection is
+  // alive, "gather" happens again and again, and steps get in the way of somebody who
+  // came back for a single album — a locked tab would cost more than the mistake it
+  // guards against.
   function renderLayoutWarning(data) {
     var box = document.getElementById("layout-review-warning");
     var pending = data ? Number(data.pending_total || 0) : 0;
@@ -9259,10 +9274,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     activateTab("review");
   });
 
-  // --- F133: настройки за шестерёнкой ---------------------------------------
-  // Ровно та же панель и те же /api/settings — переехало только место, откуда её
-  // открывают. Тринадцать ключей, к которым возвращаются раз в месяц, больше не держат
-  // треть экрана постоянно.
+  // --- F133: the settings behind the gear ------------------------------------
+  // The very same column and the very same /api/settings — only the place it is opened
+  // from has moved. Thirteen keys people come back to about once a month no longer hold
+  // a third of the screen at all times.
   function toggleSettingsPanel(open) {
     var panel = document.getElementById("settings-panel");
     panel.hidden = !open;
@@ -9463,8 +9478,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       return card;
     }
     cl.verdicts.forEach(function (row) {
-      // F133: всё, что не «личное фото», — закреплённый срез своего класса; ведём
-      // прямо в него, а не в общий список.
+      // F133: everything that is not a personal photograph is a pinned slice of its own
+      // class — the number leads straight into it rather than into the whole list.
       card.appendChild(overviewRow(
           overviewVerdictLabel(row.key),
           overviewCount(row.count, row.key === "photo" ? null : "slices",

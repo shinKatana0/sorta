@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 23;
+PRAGMA user_version = 24;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -256,6 +256,41 @@ CREATE TABLE IF NOT EXISTS search_embeddings (
     model TEXT NOT NULL,                  -- "<open_clip model>/<weights>" — see above
     dim INTEGER NOT NULL,                 -- numbers in `vec` (512 for ViT-B-32)
     vec BLOB NOT NULL,                    -- dim x float32, little-endian, L2-normalized
+    updated_at TEXT NOT NULL
+);
+
+-- v23 (F154): what the OBJECT DETECTOR saw on a frame — the classes, their confidence and
+-- their boxes. One row per frame the detector was actually run on, and the row IS the
+-- incrementality marker: no row means "never examined", a row with `label` NULL means
+-- "examined, nothing found". Those two are different facts, and conflating them would
+-- have every later run pay 83.8 ms again for each frame the detector already turned down.
+--
+-- WHY THE CLASSES AND THE BOXES ARE KEPT AND NOT JUST "AN ANIMAL". `frame_quality.pet`
+-- holds one value on purpose (F122: the binary call was 92% right on a labelled sample and
+-- the species assignment was not — for CLIP). A detector is the other way round: it
+-- answers WHICH animal and WHERE, and that is the only place either fact could come from.
+-- Slices like "cats" apart from "dogs" — closed by F122 because CLIP could not tell them
+-- apart — are a query over this table, and re-choosing `features.detector_threshold`
+-- is a query over it too, because every box is stored with the score that produced it.
+--
+-- POPULATION: the candidates a query over `clip_embeddings` selects (the top
+-- `features.detector_candidates` by resemblance to the animal prompts), inside the F120
+-- population of canonical photographs. There is no code path that runs the detector over
+-- the whole collection: at 83.8 ms per frame that is 30.8 minutes over 22 096 photographs
+-- for a signal that earns its keep on one slice, and the candidate list is what turns it
+-- into ~3 minutes.
+--
+-- `label` is the BEST animal class of the frame (the highest-scoring box at or above the
+-- threshold in force when it ran); `boxes` holds every animal box above the storage floor,
+-- JSON, best first, so a threshold can be re-chosen without a new pass. `model` is the
+-- detector that produced them — a mismatch with the current config means RE-EXAMINE, never
+-- use, the same rule `clip_embeddings.model` follows.
+CREATE TABLE IF NOT EXISTS detections (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id),
+    label TEXT,                           -- cat | dog | bird | ... ; NULL = nothing found
+    score REAL,                           -- the confidence of that box; NULL with the label
+    boxes TEXT NOT NULL,                  -- JSON [[label, score, x1, y1, x2, y2], ...]
+    model TEXT NOT NULL,                  -- the detector — the incrementality marker
     updated_at TEXT NOT NULL
 );
 
