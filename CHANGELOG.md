@@ -119,6 +119,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **The run log says what is happening now, not what happened** (F166). F147 gave the junk
+  stage a breakdown by phase, and the live run of 2026-08-03 showed what was still missing:
+  all four phase lines carried the **same timestamp**, printed in one batch just before the
+  stage summary, because `log_phase` was called for every phase at once at the end. An
+  instrument that answers "where did the time go" at the moment the time has gone answers
+  nothing about a two-hour stage — and if the run is cut short it answers **nothing at
+  all**: the orchestrator interrupted `junk` mid-run and lost the numbers of three phases
+  that had finished long before, along with everything the F159 estimate would have learned
+  from them. Every timed unit of a run — the stage, and each phase inside it — now writes
+  the same three kinds of line: `stage=<s>[ phase=<p>] started[ total=<n>]`, a periodic
+  `... progress elapsed=<sec> processed=<n>[ total=<n>] rate=<n>/s`, and its summary **the
+  moment that unit is over** rather than at the end of the stage. An interrupted or failed
+  run therefore keeps every phase that finished, and marks the one that did not as
+  `interrupted (...)`/`failed` with its seconds instead of silently dropping it. The
+  periodic line is a heartbeat and not a channel of its own: one line per
+  `logging.progress_interval_sec` (default **60 s**, `0` switches it off), through the same
+  logger and at the same level as the summaries, and silent while a phase of that stage is
+  open — the phase line already carries the same counters with a name on top of them. Those
+  counters are the very pair `/api/process/status` serves, read from the same call that
+  moves the progress bar, so the file and the interface cannot come to disagree about where
+  a run is — F147's rule for the phase names, applied to the numbers next to them. Stages
+  with no phases of their own (`index`, `geo`, `landmarks`, `faces`, `events`, `phash`) are
+  no less readable for it. The shape of the F147 summary line is untouched: `stage=` and
+  `elapsed=` are where they were, and every grep and estimate built on them keeps working.
 - **The junk stage says where its seconds went** (F147). On the run of 2026-08-02 the
   stage took **2 070 seconds** — more than half of the whole hour — and the log held one
   line about it: `stage=junk elapsed=2070.208`. Six different things work inside it (CLIP

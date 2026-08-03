@@ -60,6 +60,19 @@ def configure_logging(level: str) -> None:
 
 
 @dataclass
+class LoggingConfig:
+    """F166: the `logging:` section — how the run log paces itself.
+
+    Separate from the top-level `log_level`, which decides WHAT gets written; this
+    decides how often a stage that is still running repeats where it has got to.
+    """
+
+    # Seconds between the periodic `stage=... progress ...` lines. 0 switches them off;
+    # the start and summary lines are not affected either way.
+    progress_interval_sec: float = 60.0
+
+
+@dataclass
 class IndexConfig:
     extensions: dict[str, list[str]] = field(default_factory=lambda: {
         "photo": ["jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff", "bmp"],
@@ -1029,6 +1042,7 @@ class Config:
     features: FeaturesConfig = field(default_factory=FeaturesConfig)  # F113: frame quality
     language: str = "en"  # folder/name language (ru|en|ja), normalized in load_config (F25/F27)
     log_level: str = "WARNING"  # DEBUG|INFO|WARNING|ERROR; validated in configure_logging (F52)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)  # F166: run-log pacing
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
 
 
@@ -1062,6 +1076,21 @@ def detector_allowed(cfg: Config) -> bool:
     differ is the RULE — a subordinate key never raises a model by itself.
     """
     return bool(getattr(getattr(cfg, "detect", None), "enabled", False))
+
+
+def _apply_logging_config(cfg: LoggingConfig) -> None:
+    """Hand the `logging:` section to the run log (F166).
+
+    Pushed the same way `_apply_imaging_config` pushes the imaging keys, and for the
+    same reason: `runlog` is a leaf module that everything else imports, so it cannot
+    read the config back. Never fatal — pacing a log is not worth a crash.
+    """
+    try:
+        from .runlog import set_progress_interval
+
+        set_progress_interval(cfg.progress_interval_sec)
+    except Exception as exc:  # noqa: BLE001 — logging is never worth crashing over
+        _log.warning("config: не удалось применить logging: %s", exc)
 
 
 def _known(cls, raw: dict) -> dict:
@@ -1099,9 +1128,11 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         features=_features_from(_mapping(data.get("features"))),
         language=i18n.normalize_lang(data.get("language")),
         log_level=str(data.get("log_level", "WARNING")),
+        logging=LoggingConfig(**_known(LoggingConfig, data.get("logging") or {})),
         raw=data,
     )
     _apply_imaging_config(data.get("imaging") or {})
+    _apply_logging_config(cfg.logging)
     # sources may be empty: the source is given positionally (sorta index <dir>).
     # The non-empty requirement is at the point of use (index / in-place sort).
     return cfg

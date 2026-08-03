@@ -412,7 +412,6 @@ import os
 import re
 import sqlite3
 import threading
-import time
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -455,7 +454,7 @@ from .naming import (
     utcnow_iso,
 )
 from .progress import PhaseCB, ProgressCB
-from .runlog import log_phase
+from .runlog import track_phases
 
 if TYPE_CHECKING:  # F132: the group shape only, for the annotations of _KeeperPass —
     from .dedup import GroupFrame  # the module itself is imported where it is used
@@ -2634,20 +2633,6 @@ CLASSIFY_PHASE_DETECT = "junk_detect"
 CLASSIFY_STAGE = "junk"
 
 
-@dataclass
-class _PhaseTiming:
-    """F147: how long one phase of `classify` ran, and over how many units.
-
-    Both halves are needed to price a phase. Seconds alone cannot tell an expensive
-    question asked rarely from a cheap one asked of every frame — eighteen minutes over
-    1 362 model calls and eighteen minutes over 22 096 frames look identical until the
-    denominator is written down next to them.
-    """
-
-    seconds: float = 0.0
-    processed: int = 0
-
-
 class _PhaseProgress:
     """Phase + `(done, total)` reporting for `classify` (F100).
 
@@ -2672,6 +2657,12 @@ class _PhaseProgress:
     happens with no callback at all — every method here already works that way — and
     that the deep passes, which re-`start` CLASSIFY_PHASE_VLM over three different
     candidate lists, share one bucket instead of inventing three.
+
+    F166 moved the stopwatch itself into `runlog.StagePhases` and kept that design
+    intact: the same `enter`/`start` call still drives both the caption and the clock,
+    one after the other. What changed is WHEN the clock is read out — as the stage
+    goes rather than at its end — and that the object is registered under the stage
+    name, so a run cut short in the middle still leaves the phases that finished.
     """
 
     def __init__(self, progress: ProgressCB | None) -> None:
@@ -2680,27 +2671,7 @@ class _PhaseProgress:
         self._phase: PhaseCB | None = phase if callable(phase) else None
         self._current: str | None = None
         self._total: int | None = None
-        # F147. Insertion-ordered: the log lines come out in the order the stage first
-        # entered each phase, which is the order somebody reading them expects.
-        self._timings: dict[str, _PhaseTiming] = {}
-        self._timed: str | None = None
-        self._since = 0.0
-
-    def _switch(self, name: str) -> None:
-        """Stop the clock of the phase being timed and start `name`'s (F147).
-
-        Kept apart from the caption bookkeeping above because the two have different
-        rules: `start` deliberately forgets the current caption so the UI re-reads it,
-        while the clock must NOT be restarted for that — the same phase re-entered is
-        the same phase, and its seconds keep adding up.
-        """
-        if name == self._timed:
-            return
-        now = time.perf_counter()
-        if self._timed is not None:
-            self._timings[self._timed].seconds += now - self._since
-        self._timings.setdefault(name, _PhaseTiming())
-        self._timed, self._since = name, now
+        self._log = track_phases(CLASSIFY_STAGE)
 
     def count(self, name: str, units: int) -> None:
         """Add `units` to what phase `name` has processed (F147).
@@ -2711,25 +2682,22 @@ class _PhaseProgress:
         stage has entered — a counter alone must not conjure a line for work that did
         not happen.
         """
-        self._timings.setdefault(name, _PhaseTiming()).processed += units
+        self._log.count(name, units)
 
-    def log_timings(self, stage: str = CLASSIFY_STAGE) -> None:
-        """Write one `stage=... phase=... elapsed=...` line per phase that ran (F147).
+    def log_timings(self) -> None:
+        """Write out whatever the phases still hold (F147/F166).
 
-        Closes the phase still on the clock first — the last one of the stage is never
-        followed by another `enter` — and then forgets everything, so a second call on
-        the same object (the stage has several exits) cannot double the report.
+        Most of the breakdown has been written on the way already; what is left here is
+        the pass that was running when the stage reached its end. Still called at the
+        exits rather than from a `finally`, because the broken paths are not this
+        object's business any more: `stage_timer` closes the phases it registered, and
+        it is the one that knows whether the stage failed, was cancelled or finished.
         """
-        if self._timed is not None:
-            self._timings[self._timed].seconds += time.perf_counter() - self._since
-            self._timed = None
-        for name, timing in self._timings.items():
-            log_phase(stage, name, timing.seconds, timing.processed)
-        self._timings.clear()
+        self._log.close()
 
     def enter(self, name: str) -> None:
         """Relabel to phase `name`, keeping the counter as it is."""
-        self._switch(name)
+        self._log.enter(name)
         if name == self._current:
             return
         self._current = name
@@ -2740,10 +2708,12 @@ class _PhaseProgress:
         """Enter a phase that counts its OWN items: caption and denominator together."""
         self._total = total
         self._current = None
+        self._log.start(name, total)
         self.enter(name)
         self.step(0)
 
     def step(self, done: int) -> None:
+        self._log.step(done, self._total)
         if self._progress is not None:
             self._progress(done, self._total)
 
@@ -4632,8 +4602,9 @@ def classify(
     # deleted a moment later.
     search_index.run(report)
     # F147: the breakdown of the seconds the caller's `stage_timer` is about to report as
-    # a single number. Written at the exits rather than from a `finally`: a stage that
-    # raised or was cancelled has its own line from `stage_timer`, and half-measured
-    # phases would be read as a profile of a whole run that never happened.
+    # a single number — by now all of it is written except the pass that was running when
+    # the stage reached its end. F166: a stage that raised or was cancelled no longer
+    # loses its phases either; `stage_timer` closes them, and marks the unfinished one as
+    # unfinished instead of letting it read as a profile of a run that never happened.
     report.log_timings()
     return stats

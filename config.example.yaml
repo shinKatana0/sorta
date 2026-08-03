@@ -17,6 +17,15 @@ language: en
 # Does not affect folder/name language — only the verbosity of technical messages.
 log_level: WARNING
 
+# F166: how the run log paces itself. `log_level` above decides what is written; this
+# decides how often a stage that is STILL RUNNING repeats where it has got to, so the
+# file answers "what is happening now" and not only "what happened".
+logging:
+  # Seconds between the `stage=... progress elapsed=... processed=...` lines a running
+  # stage (and each phase inside it) writes. 0 switches them off; the `started` lines
+  # and the summaries of finished stages/phases are written either way.
+  progress_interval_sec: 60
+
 index:
   # F81: folders that must not be SCANNED at all — no stat, no hash, no later
   # stage. Different from sort.exclude_dirs, which indexes the files and only
