@@ -273,12 +273,18 @@ vlm:
   enabled: false
   model: "Qwen/Qwen2.5-VL-3B-Instruct"
   # F101: threads that prepare frames (decode + image preprocessing) for the deep tier
-  # while the GPU classifies the previous one. The pass was not heavy but sequential —
-  # ~0.6 s of CPU then ~0.19 s of GPU per frame, one core busy out of 24 and the card
-  # idle three quarters of the time. Verdicts do not depend on this number: the labels
-  # are applied in the candidate order whatever it is set to. Default min(4, cores) —
-  # modest on purpose (a two-core machine is a real machine), and the frames in flight
-  # (~2 per worker) are held in RAM, not in VRAM.
+  # while the GPU classifies the previous one — the pass is not heavy but sequential,
+  # a frame is prepared and only then answered about. Verdicts do not depend on this
+  # number: the labels are applied in the candidate order whatever it is set to, and
+  # the frames in flight (~2 per worker) are held in RAM, not in VRAM.
+  # Default min(4, cores) — modest on purpose (a two-core machine is a real machine).
+  # F164 measured whether it should be more, on the machine that asked the question
+  # (24 cores, the card at 51% during the pass): it should not. Preparing one frame
+  # already uses about seven cores since the fast image processor arrived (F105), so a
+  # second thread takes them from the first — 6, 8 and 12 threads all came out SLOWER
+  # than 4 on the live collection, and each of them holds ~170 MB more of prepared
+  # frames (scripts/measure_vlm_workers.py). Raise it only against a sweep of your own;
+  # the value written here is respected whatever a sweep says.
   # workers: 4
   # F113: the second consumer of these weights — the frame-quality questions no cheap
   # tool answers (are the eyes open, is there a subject at all, is this a pocket shot).
