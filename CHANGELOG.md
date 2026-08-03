@@ -65,6 +65,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **The junk stage says where its seconds went** (F147). On the run of 2026-08-02 the
+  stage took **2 070 seconds** — more than half of the whole hour — and the log held one
+  line about it: `stage=junk elapsed=2070.208`. Six different things work inside it (CLIP
+  over every frame, OCR behind the gate, the laplacian, the quality model, the animal
+  cascade, the stored vectors), and which of them ate the 34 minutes was a guess — so
+  every lever from the backlog (narrow the quality scope, raise the rescue threshold,
+  change the batch size) was a guess too. Each phase that runs now writes its own
+  `stage=junk phase=<name> elapsed=<sec> processed=<n> rate=<n>/s` line, in the same
+  machine-readable shape, through the same logger and at the same level as the stage
+  summary it breaks down, so the breakdown exists at the settings a long run is actually
+  started with rather than only under DEBUG. The unit count is half the point: eighteen
+  minutes over 1 362 model calls and eighteen minutes over 22 096 frames read the same
+  without it. The phase names are the ones F100 already gave the progress bar
+  (`junk_clip`, `junk_ocr`, `junk_vlm`, `junk_write`) — one name for the caption and for
+  the stopwatch, so the two cannot drift — and a phase that did not run writes **nothing**
+  rather than a zero, because `elapsed=0` reads as "it happened instantly". Measurement
+  only: not one verdict, threshold or call count moves, which is the whole reason to build
+  the instrument before pulling any lever with it.
 - **An object detector as a second tier over a query, not a pass** (F154): the animal label
   gets a third tier (`features.detector`, off by default, behind its own master switch
   `detect.enabled`) — a COCO detector from torchvision, run over the candidates a zero-shot
