@@ -112,7 +112,7 @@ class TestSearchIndexState(SearchUiTestBase):
         self.assertEqual(data["state"], "empty")
         self.assertFalse(data["available"])
         self.assertEqual(data["indexed"], 0)
-        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["photos"], 1)
         self.assertIsNone(data["index_model"])
         self.assertEqual(data["items"], [])
 
@@ -178,7 +178,7 @@ class TestSearchIndexState(SearchUiTestBase):
         self.assertEqual(data["state"], "partial")
         self.assertTrue(data["available"])
         self.assertEqual(data["indexed"], 1)
-        self.assertEqual(data["total"], 2)
+        self.assertEqual(data["photos"], 2)
 
     def test_full_coverage_carries_no_warning(self):
         self.add_indexed_photo("a.jpg", unit(1.0))
@@ -188,7 +188,7 @@ class TestSearchIndexState(SearchUiTestBase):
         self.assertEqual(data["state"], "ready")
         self.assertTrue(data["available"])
         self.assertEqual(data["indexed"], 2)
-        self.assertEqual(data["total"], 2)
+        self.assertEqual(data["photos"], 2)
         self.assertEqual(data["index_model"], self.model)
 
     def test_a_vector_of_a_frame_that_left_the_population_counts_for_neither(self):
@@ -201,7 +201,7 @@ class TestSearchIndexState(SearchUiTestBase):
         self.start_server()
         data = self.search()
         self.assertEqual(data["indexed"], 1)
-        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["photos"], 1)
         self.assertEqual(data["state"], "ready")
 
     def test_vectors_only_for_frames_outside_the_population_is_the_empty_state(self):
@@ -268,7 +268,7 @@ class TestSearchRanking(SearchUiTestBase):
         self.add_indexed_photo("a.jpg", unit(1.0))
         self.start_server()
         self.assertEqual(self.search("торт", extra="&limit=99999")["limit"],
-                         ui._SEARCH_MAX_LIMIT)
+                         ui._PLAN_PAGE_MAX_LIMIT)
 
     def test_a_broken_limit_is_a_400(self):
         self.start_server()
@@ -402,7 +402,7 @@ class TestSearchMarkup(SearchUiTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn('fetch("/api/search?q=")', html)
-        self.assertIn('fetch("/api/search?q=" + encodeURIComponent(q))', html)
+        self.assertIn('"/api/search?q=" + encodeURIComponent(searchQuery)', html)
         # the reason and the way to fix it are both driven by `available`
         self.assertIn('document.getElementById("slice-query").disabled = !available;',
                       html)

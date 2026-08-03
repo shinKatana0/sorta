@@ -564,18 +564,25 @@ features:
   # naming.clip.model or naming.clip.pretrained and the stored rows are recomputed rather
   # than used, because vectors of different models are not comparable.
   store_embeddings: true
-  # F129: how many frames a search by words takes — `sorta search "торт"` prints this many
-  # and `sorta album query "торт"` gathers this many.
+  # F129: how many frames a search by words takes at a time — `sorta search "торт"` prints
+  # this many and `sorta album query "торт"` gathers this many.
   # This is NOT a similarity threshold, and there will not be one, for the same reason
   # sharpness has none: a CLIP score orders frames against each other and means nothing in
   # absolute terms, so "this really is a cake" is not a line anybody can draw. What this
   # number chooses is the size of the SAMPLE a person then looks through — raise it to see
   # further down the ranking, lower it for a shorter list.
+  # F173 renamed this from `search_limit`, because a ceiling and a page are different
+  # things: in the interface the list continues past this number by pressing "show more",
+  # and it does not continue past a ceiling. Depth is the one measured lever of
+  # completeness there is — doubling the list adds ~25 points on average, and the query
+  # "дети" goes from 61% to 89% — so the number decides where the FIRST portion ends, not
+  # where the answer does. The old spelling still works and still means this; renaming it
+  # in your own file only silences a warning in the log.
   # Two limits of the method worth knowing before choosing it: compound queries ("a cake
   # with candles on a table by the window") are weak, single subjects are what CLIP does
   # well; and the population is personal photographs only (screenshots and documents have
   # no vector at all).
-  search_limit: 200
+  search_page: 200
   # F152: the two numbers the FACE SLICES need — "photographs with people", "group
   # photographs", "portraits" in the Slices tab, and `sorta album people|group|portrait`.
   # Nothing here is a confidence threshold: those slices are read off the `faces` table,

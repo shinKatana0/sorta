@@ -357,6 +357,11 @@ class VlmConfig:
 #
 # vlm.max_edge has no old address: it was a constant in the code.
 #
+# F173 put a second rename through the same set, inside one section this time
+# (`features.search_page` <- `features.search_limit`, see `_renamed_value`); it registers
+# its alias by the full `section.key` address, so two sections can retire a key of the
+# same name without silencing each other's warning.
+#
 # Process-wide on purpose — "once per run", not once per load_config call (the web app
 # reloads the config on every request). Tests clear it.
 _ALIAS_WARNED: set[str] = set()
@@ -379,6 +384,29 @@ def _vlm_value(new: dict, old: dict, new_key: str, old_key: str) -> Any:
             "config: ключ naming.%s устарел — переименуйте его в vlm.%s "
             "(пока читается по-старому)", old_key, new_key)
     return old[old_key]
+
+
+def _renamed_value(raw: dict, section: str, new_key: str, old_key: str) -> Any:
+    """The raw value of a knob that was renamed INSIDE one section: new spelling wins.
+
+    The `_vlm_value` rule with one section instead of two, and it exists for the same
+    reason: a key that moved must not take somebody's setting with it. A live config.yaml
+    holds the old name, silently ignoring it would hand that machine the default, and a
+    default is exactly what the person edited the file to get away from. The warning is
+    once per process (`_ALIAS_WARNED`) — this is read at startup, and the web app reloads
+    the config on every request.
+    """
+    if new_key in raw:
+        return raw[new_key]
+    if old_key not in raw:
+        return None
+    alias = f"{section}.{old_key}"
+    if alias not in _ALIAS_WARNED:
+        _ALIAS_WARNED.add(alias)
+        _log.warning(
+            "config: ключ %s.%s устарел — переименуйте его в %s.%s "
+            "(пока читается по-старому)", section, old_key, section, new_key)
+    return raw[old_key]
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -859,14 +887,21 @@ class FeaturesConfig:
     # full CLIP pass over the collection. The switch is for very large collections, where
     # 300 000 photos mean ~920 MB.
     store_embeddings: bool = True
-    # F129: how many frames a search by words takes — `sorta search` prints this many and
-    # an album from a query gathers this many. NOT a similarity threshold, and there will
-    # not be one, for the same reason sharpness has none: a CLIP score orders frames against
-    # each other and means nothing in absolute terms, so "this really is a cake" is not a
-    # line anybody can draw. What this number chooses is the SIZE OF THE SAMPLE a person
-    # then looks through — raise it to see further down the ranking, lower it for a shorter
-    # list. 200 is a folder a human can actually go through in one sitting.
-    search_limit: int = 200
+    # F129: how many frames a search by words takes at a time — `sorta search` prints this
+    # many and an album from a query gathers this many. NOT a similarity threshold, and
+    # there will not be one, for the same reason sharpness has none: a CLIP score orders
+    # frames against each other and means nothing in absolute terms, so "this really is a
+    # cake" is not a line anybody can draw.
+    #
+    # F173 renamed it from `search_limit`, and the name is the fix. A CEILING cuts the
+    # result off; a PAGE only decides how much arrives first, and the rest is one press
+    # away. That difference is the whole feature: depth is the single measured lever of
+    # completeness (2026-08-02/03 — doubling the list adds ~25 points on average, and the
+    # query «дети» goes from 61% to 89%), so a number that quietly ended the list was
+    # taking away the one handle that works. The old spelling keeps working (see
+    # `_features_from`): a config file on somebody's machine must not lose its setting to
+    # a rename. 200 is a screenful a human can actually go through in one sitting.
+    search_page: int = 200
     # F152: the two numbers the face slices need, and the only two they have. Everything
     # else about those slices is a FACT of the `faces` table — either the detector found
     # a face on this frame or it did not — so these are not confidence thresholds and
@@ -949,7 +984,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         face_sharpness_max=_as_float(
             raw.get("face_sharpness_max"), d.face_sharpness_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
-        search_limit=_as_positive_int(raw.get("search_limit"), d.search_limit),
+        search_page=_as_positive_int(
+            _renamed_value(raw, "features", "search_page", "search_limit"), d.search_page),
         group_photo_faces=_as_positive_int(
             raw.get("group_photo_faces"), d.group_photo_faces),
         portrait_face_share=_as_float(
