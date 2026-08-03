@@ -1,5 +1,10 @@
 """F129: search by words — the engine, and the CLI that prints it.
 
+F141 moved the table this reads from: the ranking comes out of `search_embeddings`, the
+multilingual index, and not out of the classification vectors of `clip_embeddings`. That
+is the one change here — every property below is F129's and holds unchanged, which is the
+point of pinning them.
+
 The properties under test are the ones the feature is worth nothing without:
 
 * a query lands in the same space as the stored vectors, with a norm of 1;
@@ -29,8 +34,7 @@ import numpy as np
 from sorta import cli, i18n, search
 from sorta.config import Config, FeaturesConfig
 from sorta.db import connect
-from sorta.junk import embedding_model, pack_embedding
-from sorta.naming import naming_settings
+from sorta.junk import pack_embedding, search_index_model
 
 _DIM = 8
 
@@ -62,7 +66,10 @@ class SearchTestBase(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.cfg = Config(database=self.root / "test.db", raw={"language": "en"})
         self.conn = connect(self.cfg.database)
-        self.model = embedding_model(naming_settings(self.cfg))
+        # F141: the model of the SEARCH side — `features.search_model`, not
+        # `naming.clip.*`. The engine reads `search_embeddings` and nothing else, which is
+        # what the fixture below writes.
+        self.model = search_index_model(self.cfg)
         self._n = 0
 
     def tearDown(self):
@@ -82,7 +89,7 @@ class SearchTestBase(unittest.TestCase):
         file_id = int(cur.lastrowid or 0)
         if vec is not None:
             self.conn.execute(
-                """INSERT INTO clip_embeddings (file_id, model, dim, vec, updated_at)
+                """INSERT INTO search_embeddings (file_id, model, dim, vec, updated_at)
                    VALUES (?, ?, ?, ?, '2026-01-01')""",
                 (file_id, model or self.model, int(vec.size), pack_embedding(vec)))
         self.conn.commit()

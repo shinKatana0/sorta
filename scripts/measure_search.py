@@ -1,9 +1,12 @@
 """How good is search by words on THIS collection? A measurement, not a feature (F129).
 
-The engine ranks photographs against a query by cosine over the CLIP vectors F128 stored.
-Nobody has ever measured what that ranking is worth here — and F121/F122 is the reason a
-guess is not allowed to stand in for the measurement: the animal class looked like it
-worked until 320 hand-labelled frames showed that only half of the question was right.
+The engine ranks photographs against a query by cosine over the vectors of the search
+index (F141: `search_embeddings`, filled by `sorta junk` with `features.search_index: true`
+— NOT the classification vectors of `clip_embeddings`, which are a different model). What
+that ranking is worth has to be measured rather than assumed, and F121/F122 is the reason:
+the animal class looked like it worked until 320 hand-labelled frames showed that only
+half of the question was right. This script is what measured the 22%-against-98% gap
+between the two models on Russian queries in the first place.
 
 So this script prints the numbers a person needs BEFORE anybody names an accuracy:
 
@@ -44,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sorta import search  # noqa: E402
 from sorta.config import Config, load_config  # noqa: E402
 from sorta.db import connect  # noqa: E402
-from sorta.junk import embedding_model  # noqa: E402
+from sorta.junk import search_index_model, search_index_settings  # noqa: E402
 from sorta.naming import naming_settings  # noqa: E402
 
 # The bands the collection is spread over. Uneven on purpose: a CLIP cosine between a short
@@ -217,9 +220,9 @@ def rank_all(cfg: Config, conn, queries: list[str],
     The whole collection is ranked, not just the top: the band table is about the
     distribution the top was drawn from, and a top-N alone cannot show it.
     """
-    encoder = search.text_encoder(naming_settings(cfg))
-    model = embedding_model(naming_settings(cfg))
-    total = int(conn.execute("SELECT COUNT(*) FROM clip_embeddings").fetchone()[0])
+    model = search_index_model(cfg)
+    encoder = search.text_encoder(search_index_settings(naming_settings(cfg), model))
+    total = int(conn.execute("SELECT COUNT(*) FROM search_embeddings").fetchone()[0])
     results: list[Result] = []
     for query in queries:
         ranked = search.search(conn, search.encode_query(query, encoder), model,
@@ -256,8 +259,9 @@ def main() -> None:  # pragma: no cover — I/O and the model
             results = rank_all(cfg, conn, queries, args.top)
         except search.EmbeddingsMissing as exc:
             raise SystemExit(
-                f"нечего ранжировать ({exc.reason}): эмбеддингов этой модели в индексе "
-                f"нет — запустите `sorta junk` (features.store_embeddings: true)") from None
+                f"нечего ранжировать ({exc.reason}): эмбеддингов этой модели в поисковом "
+                f"индексе нет — запустите `sorta junk` (features.search_index: true)"
+            ) from None
 
         if args.write_labels:
             written = write_label_template(Path(args.write_labels), results)

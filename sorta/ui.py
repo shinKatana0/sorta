@@ -380,7 +380,12 @@ from .geodata import GeoDataMissing, GeoResolver
 from .indexer import excludes_path, index as run_index, load_excludes, normalize_exclude
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
-from .junk import embedding_model, faces_stage_ran, quality_scope_ids
+from .junk import (
+    faces_stage_ran,
+    quality_scope_ids,
+    search_index_model,
+    search_index_settings,
+)
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .landmarks import batched
 from .naming import name_events, naming_settings
@@ -2933,7 +2938,13 @@ _SEARCH_PHOTOS_SQL = """SELECT COUNT(*) FROM files
 # a row whose frame has since become a duplicate or gone unreadable is not something a
 # search can return, so counting it would inflate the numerator of a fraction whose whole
 # job is to be honest.
-_SEARCH_COVERED_SQL = """SELECT COUNT(*) FROM clip_embeddings e
+#
+# F141: the table is `search_embeddings`, the multilingual index the engine actually reads
+# — not `clip_embeddings`, which holds the classification model's vectors and cannot
+# answer a query. Counting the other table would make this line say "searching all 19 753
+# photographs" over an index the search will refuse to use, which is the one thing this
+# route exists to prevent.
+_SEARCH_COVERED_SQL = """SELECT COUNT(*) FROM search_embeddings e
     JOIN files f ON f.id = e.file_id
     WHERE e.model = ? AND f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'"""
 
@@ -2962,7 +2973,7 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
     is computed here, once, so the line and the availability of the field cannot disagree.
     """
     counts = {str(r["model"]): int(r["n"]) for r in conn.execute(
-        "SELECT model, COUNT(*) AS n FROM clip_embeddings GROUP BY model")}
+        "SELECT model, COUNT(*) AS n FROM search_embeddings GROUP BY model")}
     stored = counts.get(model, 0)
     photos = int(conn.execute(_SEARCH_PHOTOS_SQL).fetchone()[0])
     indexed = int(conn.execute(
@@ -3046,7 +3057,7 @@ def _search_payload(cfg: Config, db_path: Path, text: str, limit: int,
     """
     conn = _connect(db_path)
     try:
-        model = embedding_model(naming_settings(cfg))
+        model = search_index_model(cfg)  # F141: the search model, not the classifier's
         payload = _search_index_state(conn, model)
         payload.update({"query": text, "limit": limit, "items": []})
         if not text.strip() or not payload["available"]:
@@ -3101,7 +3112,11 @@ class _LazyTextEncoder:
     def __call__(self, texts: Sequence[str]) -> Any:
         with self._lock:
             if self._encoder is None:
-                self._encoder = text_encoder(naming_settings(self._cfg))
+                # F141: the SEARCH model's text tower — a query has to land in the space
+                # the stored vectors live in, and since F141 that space is not the
+                # classification model's.
+                self._encoder = text_encoder(search_index_settings(
+                    naming_settings(self._cfg), search_index_model(self._cfg)))
             encoder = self._encoder
         return encoder(texts)
 
@@ -4933,6 +4948,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "запись вердиктов", "en": "saving verdicts",
         "ja": "判定を保存中",
     },
+    # F141: the second CLIP pass — the search index. Named apart from the fast pass above
+    # because it is what `features.search_index` costs and nothing else, and a caption
+    # saying "fast pass" over ten minutes of a second encode would be the wrong sentence.
+    "process_phase_junk_search": {
+        "ru": "поисковый индекс (CLIP)", "en": "search index (CLIP)",
+        "ja": "検索インデックス (CLIP)",
+    },
     "process_phase_elapsed": {  # a phase with no percent — the clock is the sign of life
         "ru": "{phase} — идёт {seconds} с",
         "en": "{phase} — {seconds}s so far",
@@ -6186,13 +6208,20 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # THE state of this feature: nothing was ever encoded. An empty result list would read
     # as "you have no photographs like that", which is a conclusion about somebody's own
     # archive drawn from a table that was never filled.
+    # F141 corrected this sentence: the index is no longer a by-product of an ordinary
+    # run. It is a second CLIP pass with a multilingual model, ~10.5 minutes per 20 000
+    # frames, behind `features.search_index` — so the setting has to be named, or the
+    # reader follows an instruction that will not fill the table.
     "search_state_empty": {
-        "ru": "Искать пока не по чему: индекс поиска пуст. Он считается обычным "
-              "прогоном коллекции — отдельная модель и отдельная настройка не нужны.",
-        "en": "There is nothing to search yet: the search index is empty. It is built by "
-              "an ordinary run over the collection — no separate model, no extra setting.",
-        "ja": "検索できる対象がまだありません。検索インデックスが空です。通常の処理を"
-              "実行すると作成されます（専用モデルも追加設定も不要です）。",
+        "ru": "Искать пока не по чему: индекс поиска пуст. Включите "
+              "features.search_index: true и запустите обработку коллекции — это "
+              "отдельный проход CLIP многоязычной моделью (~10,5 минут на 20 000 кадров).",
+        "en": "There is nothing to search yet: the search index is empty. Switch on "
+              "features.search_index: true and process the collection — it is a separate "
+              "CLIP pass with a multilingual model (~10.5 minutes per 20 000 frames).",
+        "ja": "検索できる対象がまだありません。検索インデックスが空です。"
+              "features.search_index: true を有効にしてコレクションを処理してください — "
+              "多言語モデルによる別途の CLIP パスです（2 万コマあたり約 10.5 分）。",
     },
     # The other unavailable state, and deliberately a different sentence: the fix is the
     # same run, but the reason is that the stored vectors belong to another model and are
