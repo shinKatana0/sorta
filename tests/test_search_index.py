@@ -120,7 +120,7 @@ class SearchIndexCase(unittest.TestCase):
                         classifier=classifier if classifier is not None
                         else EmbeddingClassifier(),
                         text_detector=NO_OCR,
-                        sharpness_detector=lambda _path: 100.0,
+                        sharpness_detector=lambda _path, _faces: junk.Sharpness(100.0),
                         search_encoder=encoder, **kwargs)
 
     def indexed(self, fid: int):

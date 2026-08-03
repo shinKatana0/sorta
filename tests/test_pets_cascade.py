@@ -134,7 +134,7 @@ class PetCascadeCase(FrameQualityCase):
             self.add_file(name)
         clf = PetClassifier(scores, documents=kwargs.pop("documents", ()))
         stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                         sharpness_detector=lambda _p: 500.0, pet_vlm=asker, **kwargs)
+                         sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0), pet_vlm=asker, **kwargs)
         return stats, clf
 
     def label(self, name):
@@ -399,7 +399,7 @@ class TestFallbacks(PetCascadeCase):
 
         self.add_file("Screenshot_1.png", camera_make=None, camera_model=None)
         classify(self.cfg, self.conn, use_clip=False, pet_vlm_factory=factory,
-                 sharpness_detector=lambda _p: 1.0)
+                 sharpness_detector=lambda _p, _faces: junk.Sharpness(1.0))
         self.assertIsNone(self.conn.execute("SELECT 1 FROM frame_quality").fetchone())
 
 
@@ -412,7 +412,7 @@ class TestPopulation(PetCascadeCase):
         self.add_file("cat.jpg")
         clf = PetClassifier({"Screenshot_1.png": 0.95, "cat.jpg": 0.95})
         classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                 sharpness_detector=lambda _p: 500.0, pet_vlm=asker)
+                 sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0), pet_vlm=asker)
         self.assertEqual(asker.asked, ["cat.jpg"])
         self.assertIsNone(self.label("Screenshot_1.png"))
 
@@ -441,7 +441,7 @@ class TestPopulation(PetCascadeCase):
         self.add_file("cat.jpg")
         clf = PetClassifier({"form.jpg": 0.95, "cat.jpg": 0.95}, products=("form.jpg",))
         stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                         sharpness_detector=lambda _p: 500.0, pet_vlm=asker,
+                         sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0), pet_vlm=asker,
                          vlm_classifier=lambda path:
                              "document" if path.endswith("form.jpg") else "personal_photo")
         self.assertEqual(
@@ -464,7 +464,7 @@ class TestIncrementality(PetCascadeCase):
 
         clf = PetClassifier({"toy.jpg": 0.95})
         stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                         sharpness_detector=lambda _p: 500.0, pet_vlm=asker)
+                         sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0), pet_vlm=asker)
         self.assertEqual(len(asker.asked), 1)      # ~500 frames x 0.78 s not paid again
         self.assertEqual(stats.pet_candidates, 0)
         self.assertEqual(self.label("toy.jpg")["pet_vlm"], PET_VLM_DEPICTION)
@@ -479,7 +479,7 @@ class TestIncrementality(PetCascadeCase):
         with unittest.mock.patch.object(
                 junk, "_PET_VLM_PROMPT", "Is this animal alive? real / depiction / none"):
             classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                     sharpness_detector=lambda _p: 500.0, pet_vlm=asker)
+                     sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0), pet_vlm=asker)
         after = self.conn.execute("SELECT source FROM frame_quality").fetchone()[0]
         self.assertEqual(len(asker.asked), 2)   # asked again under the new wording
         self.assertNotEqual(before, after)

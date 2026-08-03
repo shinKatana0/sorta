@@ -706,6 +706,30 @@ class FeaturesConfig:
     # number: "almost everything is blurred and I would delete it, except a couple I keep
     # for the memory" — a frame this cannot know about is exactly why the human marks.
     blur_review_max: float = 90.0
+    # F155: the same laplacian measured INSIDE the face boxes of a frame, and the number
+    # below which such a frame is a blur candidate. A separate setting from
+    # `blur_review_max` because the two are not on one scale: one is a variance over a
+    # whole preview, the other over a 100-200 px crop of it, and no factor converts them.
+    #
+    # MEASURED (2026-08-02, the 68 frames of a 200-frame hand-checked sample that have a
+    # face; 13 of them blurred):
+    #
+    #     measured over    threshold  flagged  right  precision  recall
+    #     the whole frame        300       10      2       20%      15%
+    #     the face crop          100       17      5       29%      38%
+    #     the face crop          200       33      8       24%      62%
+    #     the face crop          400       44     10       23%      77%
+    #
+    # 200 is the row that quadruples recall for a comparable number of frames flagged, and
+    # it is where this starts rather than where it ends: the sample holds 13 blurred frames,
+    # so one frame is worth ~8 points of recall and the direction is what was measured, not
+    # the figure. `python scripts/measure_frame_quality.py --features sharpness` prints the
+    # sweep on a real collection — read it before moving this.
+    #
+    # NOT A VERDICT. Precision is ~25% at every row above: three of four flagged frames are
+    # not blurred. It orders the blur list; nothing in the pipeline deletes or reclassifies
+    # anything by it.
+    face_sharpness_max: float = 200.0
     # F128: keep the CLIP vector the junk stage already computes instead of discarding it
     # (table `clip_embeddings`). ON by default, which is the deliberate half of this
     # setting: the price is small — ~60 MB per 20 000 photos, written inside a pass that
@@ -801,6 +825,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         sharpness_band_max=_as_float(raw.get("sharpness_band_max"), d.sharpness_band_max),
         subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
+        face_sharpness_max=_as_float(
+            raw.get("face_sharpness_max"), d.face_sharpness_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
         search_limit=_as_positive_int(raw.get("search_limit"), d.search_limit),
         group_photo_faces=_as_positive_int(

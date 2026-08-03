@@ -103,9 +103,20 @@ CONFIDENT = 4.0
 UNSURE = 1.5
 
 
-def flat_sharpness(value):
-    """A sharpness detector that answers `value` for every frame (files are not on disk)."""
-    return lambda _path: value
+def flat_sharpness(value, face=None):
+    """A sharpness detector that answers `value` for every frame (files are not on disk).
+
+    F155: the detector now answers with both laplacians, so the helper takes the face one
+    too — defaulted to None, which is what a frame with no face gets.
+    """
+    return lambda _path, _faces=junk.NO_FACES: junk.Sharpness(frame=value, face=face)
+
+
+def sharpness_by_path(values, faces=None):
+    """A detector reading a {path: frame sharpness} table; a path it does not know is None."""
+    by_face = faces or {}
+    return lambda path, _faces=junk.NO_FACES: junk.Sharpness(
+        frame=values.get(path), face=by_face.get(path))
 
 
 class FrameQualityCase(unittest.TestCase):
@@ -185,9 +196,9 @@ class TestMigration(unittest.TestCase):
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(frame_quality)")}
             (version,) = conn.execute("PRAGMA user_version").fetchone()
             conn.close()
-        self.assertEqual(cols, {"file_id", "sharpness", "pet", "pet_score", "pet_vlm",
-                                "eyes_open", "has_subject", "is_accidental",
-                                "junk_score", "source", "updated_at"})
+        self.assertEqual(cols, {"file_id", "sharpness", "face_sharpness", "pet",
+                                "pet_score", "pet_vlm", "eyes_open", "has_subject",
+                                "is_accidental", "junk_score", "source", "updated_at"})
         self.assertEqual(version, SCHEMA_VERSION)
 
     def test_a_db_from_before_the_table_gains_it_without_touching_its_data(self):
@@ -251,7 +262,9 @@ class TestLaplacian(unittest.TestCase):
 
     def test_detector_returns_none_for_a_missing_file(self):
         detector = junk.preview_sharpness_detector(256)
-        self.assertIsNone(detector("/nowhere/at/all.jpg"))
+        measured = detector("/nowhere/at/all.jpg", junk.NO_FACES)
+        self.assertIsNone(measured.frame)
+        self.assertIsNone(measured.face)
 
 
 class TestPetGroup(unittest.TestCase):
@@ -635,7 +648,7 @@ class TestQualityVlm(FrameQualityCase):
             return "eyes_open subject deliberate"
 
         classify(self.cfg, self.conn, classifier=clf,
-                 text_detector=NO_OCR, sharpness_detector=sharpness.get,
+                 text_detector=NO_OCR, sharpness_detector=sharpness_by_path(sharpness),
                  quality_vlm=ask)
         self.assertEqual(asked, ["/photos/blurry.jpg"])
         self.assertEqual(self.quality(uncertain)["has_subject"], 1)
@@ -697,7 +710,7 @@ class TestQualityVlm(FrameQualityCase):
         clf = QualityClassifier(logits={"closed.jpg": {_PHOTO_IDX: CONFIDENT},
                                         "crisp.jpg": {_PHOTO_IDX: CONFIDENT}})
         classify(self.cfg, self.conn, classifier=clf,
-                 text_detector=NO_OCR, sharpness_detector=sharpness.get,
+                 text_detector=NO_OCR, sharpness_detector=sharpness_by_path(sharpness),
                  quality_vlm=lambda _p: "eyes_closed no_subject accidental")
         rows = read_frame_quality(self.conn)
         self.assertIs(rows[answered].eyes_open, False)

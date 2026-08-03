@@ -134,7 +134,7 @@ class DetectorCase(FrameQualityCase):
         if detector is not None:
             kwargs.setdefault("detector", detector)
         stats = junk.classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                              sharpness_detector=lambda _p: 500.0, **kwargs)
+                              sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0), **kwargs)
         return stats, clf
 
     def run_stage(self, frames, detector=None, **kwargs):

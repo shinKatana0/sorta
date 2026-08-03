@@ -490,6 +490,30 @@ features:
   # < 160: 1215 — on a 19 757-photo collection). So the list opens here and continues on
   # demand, and nothing is ever deleted by this number.
   blur_review_max: 90.0
+  # F155: the same laplacian, measured INSIDE the face boxes of a frame (column
+  # `frame_quality.face_sharpness`), and the number below which such a frame is a blur
+  # candidate. It exists because the whole-frame number answers "how much detail is in this
+  # picture", which is a different question from "is it in focus": a detailed sharp street
+  # and a smooth blurred face score alike. On a hand-checked sample of 200 frames the
+  # whole-frame filter found 2 of the 33 blurred ones — 6%.
+  #
+  # Measured on the 68 frames of that sample that have a face (13 of them blurred):
+  #
+  #   over the whole frame, 300 → 10 flagged,  2 right (20% precision, 15% recall)
+  #   over the face crop,   100 → 17 flagged,  5 right (29%, 38%)
+  #   over the face crop,   200 → 33 flagged,  8 right (24%, 62%)
+  #   over the face crop,   400 → 44 flagged, 10 right (23%, 77%)
+  #
+  # 200 quadruples recall for a comparable number of frames flagged. Provisional: 13
+  # blurred frames means one frame is worth ~8 points of recall, so what was measured is
+  # the direction, not the figure — `python scripts/measure_frame_quality.py --features
+  # sharpness` prints the sweep on your own collection.
+  #
+  # Two limits worth knowing. It covers only frames a face was found on (a third of a
+  # typical archive; landscapes and objects have no such signal at all), and its precision
+  # is ~25% at every threshold above — three of four flagged frames are not blurred. It
+  # RANKS the blur list; nothing is deleted or reclassified by it.
+  face_sharpness_max: 200.0
   # F128: keep the CLIP vector of every canonical photograph (table `clip_embeddings`)
   # instead of throwing it away once its three scores have been read off. Nothing is shown
   # for it — it is what lets a later feature (search by words, an album from a query,

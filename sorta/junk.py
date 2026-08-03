@@ -347,10 +347,42 @@ lives in a file outside this feature's ownership. Until it learns this tier (one
 stored detection of this model at or above `features.detector_threshold` outranks the
 score, exactly as `detect.cascade_label` has it), the detector fills its table and writes
 its label, and the slice a user sees is still F130's answer.
+
+F155: the blur filter this stage feeds catches 6% of what a person calls blurred — 2 of 33
+on a hand-checked sample of 200 frames — and the reason is not the threshold. The variance
+of the laplacian over a whole frame answers "how much detail is in this picture", which is
+a different question from "is it in focus": a detailed sharp street and a smooth blurred
+face give the same number, and blurred frames sit in every band up to 400. Nothing about a
+whole frame is comparable across frames, so no cut through that number can be.
+
+A FACE IS COMPARABLE. It is the one object whose content is roughly constant from frame to
+frame, so the same variance measured inside it means the same thing twice. On the 68 frames
+of that sample that have a face (13 of them blurred): 62% recall at a threshold of 200,
+against 15% for the whole frame at 300, for a comparable number of frames flagged.
+
+`frame_quality.face_sharpness` is that number, and three properties of it are the feature:
+
+* it costs NO NEW PASS. `preview_sharpness_detector` decodes the shared preview once, as
+  before, and takes the second variance over a crop of the same array. What did change is
+  that the decode now applies the EXIF orientation — the boxes are written in the rotated
+  space — and the whole-frame number stands, because the laplacian kernel and its interior
+  are symmetric under every rotation and mirror an orientation can express (what the
+  resample leaves is ~0.01% on a rotated frame, four orders below the band it is read in);
+* THE COORDINATES ARE RESCALED (`face_crop_boxes`), and that is where the measurement this
+  feature is built on went wrong: `faces.bbox` is in pixels of the full original, the
+  preview is a few hundred pixels, and boxes used as written fell off the frame. 39 of 68
+  crops were dropped that way and the surviving 29 reported 100% recall instead of 62%. A
+  broken crop flatters the result rather than failing;
+* it RANKS AND DOES NOT JUDGE. ~25% precision at every threshold measured — three of four
+  flagged frames are not blurred — and it covers only the third of a collection that has a
+  face at all. So `features.face_sharpness_max` orders the blur list and nothing in this
+  stage reads it: no verdict, no threshold, no deletion. NULL means not measured, as
+  everywhere in `frame_quality`.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -1393,8 +1425,58 @@ def apply_text_frac(verdict: str, score: float, text_frac: float | None,
 # learned from the model's own labels (a closed circle); CLIP has no such circle — it
 # labels without being trained on anything of ours.
 
-# path -> the variance of the laplacian, or None if the frame did not decode.
-SharpnessFn = Callable[[str], float | None]
+# F155: one box of the `faces` table, as it is written there — (x1, y1, x2, y2) in pixels
+# of the FULL original frame, after its EXIF orientation has been applied (the faces stage
+# detects on a rotated full-resolution decode, see faces._decode_for_faces).
+FaceBox = tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class FaceBoxes:
+    """The faces of one frame, plus the frame their coordinates are measured in.
+
+    `long_edge` is what makes the boxes usable at all: they are written in pixels of the
+    ORIGINAL, and the laplacian is taken over a preview that is a small copy of it, so
+    without the size of the original there is no way back from one to the other. It is the
+    longer side (max of `files.width/height`) rather than the pair, because a thumbnail
+    scales both axes by one factor and the longer side is the axis that factor is set by —
+    and because the longer side is the one quantity of the two that an EXIF rotation
+    cannot swap.
+
+    Empty is the ordinary case, not an error: two thirds of a collection have no face, and
+    a frame the faces stage has never seen is empty here in exactly the same way.
+    """
+    boxes: tuple[FaceBox, ...] = ()
+    long_edge: float = 0.0
+
+    @property
+    def usable(self) -> bool:
+        """Are there boxes AND a scale to read them with?"""
+        return bool(self.boxes) and self.long_edge > 0
+
+
+NO_FACES = FaceBoxes()
+
+
+@dataclass(frozen=True)
+class Sharpness:
+    """Both laplacians of one frame, from ONE decode of its preview (F155).
+
+    They are returned together because they are measured together: the face number is the
+    same variance taken over a crop of the very same array, and computing it in a pass of
+    its own would decode every frame in the collection a second time for a signal that is
+    already in memory.
+
+    None means NOT MEASURED, the `frame_quality` rule: the frame did not decode (`frame`),
+    or it has no face, no faces run behind it, or a crop too small to measure (`face`).
+    """
+    frame: float | None = None
+    face: float | None = None
+
+
+# (path, the faces of that frame) -> both numbers. The second argument is `NO_FACES` for
+# every frame outside the face population, which is most of them.
+SharpnessFn = Callable[[str, FaceBoxes], Sharpness]
 # path -> the model's raw answer about one frame (parsed by `parse_quality_answer`).
 QualityAskFn = Callable[[str], str]
 
@@ -1423,6 +1505,66 @@ def laplacian_variance(img: Image.Image) -> float | None:
     return float(lap.var())
 
 
+# F155: the shortest side a crop may have before the laplacian over it stops meaning
+# anything. In PREVIEW pixels, because that is the array the variance is taken over: at
+# `sharpness_max_edge` = 512 a 24 px box is a face occupying ~5% of the frame's width, and
+# below that the crop is a few hundred pixels of mostly sensor noise. Such a frame gets
+# NULL rather than the number — "not measured", never a small value that would sort it to
+# the top of a blur list it was never measured for.
+FACE_CROP_MIN_PX = 24
+
+
+def face_crop_boxes(faces: FaceBoxes, size: tuple[int, int],
+                    min_px: int = FACE_CROP_MIN_PX) -> list[tuple[int, int, int, int]]:
+    """Face boxes rescaled from the ORIGINAL frame into preview pixels, clamped to it.
+
+    THE RESCALING IS THE FEATURE, not a detail of it. `faces.bbox` is written in
+    coordinates of the full original — ArcFace embeds out of it — while the laplacian is
+    taken over a preview of a few hundred pixels, so a box used as written falls outside
+    the array it is supposed to index. That is not a hypothetical: the measurement this
+    feature is built on made exactly that mistake, 39 of its 68 crops fell off the frame
+    and were dropped, and the 29 that survived reported 100% recall instead of the real
+    62%. A broken crop does not fail loudly — it flatters the result.
+
+    Clamping is the second half of the same guard: a box may legitimately run a pixel or
+    two past the edge (a face at the border, rounding in the scale), and a crop is taken
+    of the part that is inside rather than not at all.
+
+    Boxes below `min_px` on either side after scaling are left out — see FACE_CROP_MIN_PX.
+    A `faces` with no scale to it yields nothing, for the same reason: a box in unknown
+    units is not a box.
+    """
+    if not faces.usable:
+        return []
+    width, height = size
+    scale = max(width, height) / faces.long_edge
+    out: list[tuple[int, int, int, int]] = []
+    for x1, y1, x2, y2 in faces.boxes:
+        left = max(0, min(width, int(round(min(x1, x2) * scale))))
+        top = max(0, min(height, int(round(min(y1, y2) * scale))))
+        right = max(0, min(width, int(round(max(x1, x2) * scale))))
+        bottom = max(0, min(height, int(round(max(y1, y2) * scale))))
+        if right - left >= min_px and bottom - top >= min_px:
+            out.append((left, top, right, bottom))
+    return out
+
+
+def face_crop_sharpness(img: Image.Image, faces: FaceBoxes) -> float | None:
+    """The laplacian of the SHARPEST face on an already-decoded frame; None if none.
+
+    The sharpest and not the average, because of what the number is asked for: "was this
+    shot taken properly". One person in focus and another walking past out of it is a
+    photograph that worked, and an average would call it half-blurred. If any face in the
+    frame is sharp, the frame is.
+    """
+    best: float | None = None
+    for box in face_crop_boxes(faces, img.size):
+        value = laplacian_variance(img.crop(box))
+        if value is not None and (best is None or value > best):
+            best = value
+    return best
+
+
 def preview_sharpness_detector(max_edge: int) -> SharpnessFn:
     """The real detector: the shared preview cache, at a FIXED resolution.
 
@@ -1435,21 +1577,33 @@ def preview_sharpness_detector(max_edge: int) -> SharpnessFn:
     `decode_rgb_preview`, so the cost on any stage after the first is a small-JPEG decode,
     not a decode of the original. A vanished or undecodable file is None — "no signal",
     the same contract the OCR detector gives.
+
+    F155: ONE decode, two numbers — the whole frame and the sharpest face in it. The
+    orientation is applied here where it used to be left alone, because the face boxes are
+    written in the rotated space (faces._decode_for_faces) and the two have to be the same
+    space for the crop to land on the face. The frame number does not move under that: the
+    laplacian kernel is symmetric under every rotation and mirror an EXIF orientation can
+    express, and so is the set of interior pixels its variance is taken over. What is not
+    exactly symmetric is the RESAMPLE around it — scaling and then turning a frame is not
+    pixel-identical to turning and then scaling — and that is worth ~0.01% on a rotated
+    frame, against a band 270 units wide.
     """
-    def sharpness(path: str) -> float | None:
+    def sharpness(path: str, faces: FaceBoxes = NO_FACES) -> Sharpness:
         try:
             st = os.stat(path)
         except OSError:
-            return None
+            return Sharpness()
         img = imaging.decode_rgb_preview(
-            path, st.st_mtime, st.st_size, max_edge=max_edge, grayscale=True)
+            path, st.st_mtime, st.st_size, max_edge=max_edge, grayscale=True,
+            apply_orientation=True)
         if img is None:
-            return None
+            return Sharpness()
         try:
-            return laplacian_variance(img)
+            return Sharpness(frame=laplacian_variance(img),
+                             face=face_crop_sharpness(img, faces))
         except Exception as exc:  # noqa: BLE001 — one bad frame must not break the stage
             _log.warning("junk: резкость не посчиталась для %s: %s", path, exc)
-            return None
+            return Sharpness()
 
     return sharpness
 
@@ -2027,6 +2181,10 @@ class FrameQuality:
     """One `frame_quality` row as Python types — None stays None, and is not a False."""
     file_id: int
     sharpness: float | None = None
+    # F155: the same laplacian inside the sharpest face box of the frame, or None for "not
+    # measured" — no face, no faces run, or a crop below FACE_CROP_MIN_PX. It ranks the
+    # blur list and decides nothing: ~25% of what it flags is actually blurred.
+    face_sharpness: float | None = None
     pet: str | None = None
     pet_score: float | None = None
     # F130: real | depiction | none, or None for "the model was not asked about this
@@ -2046,6 +2204,58 @@ def _bool_or_none(value: object) -> bool | None:
     return None if value is None else bool(value)
 
 
+def _parse_bbox(raw: object) -> FaceBox | None:
+    """One `faces.bbox` string -> (x1, y1, x2, y2); None for anything that is not one.
+
+    Tolerant on purpose. The column is a JSON list written by another stage, and a row
+    this cannot read has to cost that frame its face number and nothing else — the
+    laplacian over the whole frame, the pets, the verdict all stand.
+    """
+    try:
+        values = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(values, list) or len(values) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (float(v) for v in values)
+    except (TypeError, ValueError):
+        return None
+    return x1, y1, x2, y2
+
+
+def read_face_boxes(conn: sqlite3.Connection,
+                    file_ids: Sequence[int]) -> dict[int, FaceBoxes]:
+    """The real faces of `file_ids`, with the size of the frame they were found in (F155).
+
+    `bbox = '[]'` is EXCLUDED, and that is not tidiness: the marker means "this file was
+    processed and had no face in it", and on the live collection 24 195 of 24 196 files
+    carry one (F125's trap). A predicate that forgets it answers "every file has a face"
+    and then tries to crop a zero-length box out of every frame in the archive.
+
+    A file with no width/height recorded is left out too — the boxes are in pixels of that
+    frame, so without its size there is nothing to scale them by. Files missing from the
+    result simply have no faces: the caller reads it with `NO_FACES` as the default.
+    """
+    out: dict[int, FaceBoxes] = {}
+    for part in batched(list(file_ids), 500):
+        rows = conn.execute(
+            f"""SELECT fa.file_id, fa.bbox, f.width, f.height
+                FROM faces fa JOIN files f ON f.id = fa.file_id
+                WHERE fa.bbox != ? AND fa.file_id IN ({','.join('?' * len(part))})""",
+            (NO_FACES_BBOX, *part))
+        for r in rows:
+            box = _parse_bbox(r["bbox"])
+            if box is None or r["width"] is None or r["height"] is None:
+                continue
+            file_id = int(r["file_id"])
+            known = out.get(file_id)
+            long_edge = float(max(int(r["width"]), int(r["height"])))
+            out[file_id] = FaceBoxes(
+                boxes=(known.boxes if known else ()) + (box,), long_edge=long_edge)
+    return out
+
+
 def read_frame_quality(conn: sqlite3.Connection,
                        file_ids: Sequence[int] | None = None) -> dict[int, FrameQuality]:
     """`frame_quality` by file_id — the reading side of the "NULL is not False" rule.
@@ -2054,14 +2264,16 @@ def read_frame_quality(conn: sqlite3.Connection,
     each rebuild the 0/NULL distinction out of raw rows; one of them would get it wrong
     exactly once and quietly discard frames nobody had looked at.
     """
-    sql = ("SELECT file_id, sharpness, pet, pet_score, pet_vlm, eyes_open, has_subject,"
-           " is_accidental, junk_score, source FROM frame_quality")
+    sql = ("SELECT file_id, sharpness, face_sharpness, pet, pet_score, pet_vlm, eyes_open,"
+           " has_subject, is_accidental, junk_score, source FROM frame_quality")
 
     def rows(cursor: sqlite3.Cursor) -> dict[int, FrameQuality]:
         return {
             int(r["file_id"]): FrameQuality(
                 file_id=int(r["file_id"]),
                 sharpness=None if r["sharpness"] is None else float(r["sharpness"]),
+                face_sharpness=(None if r["face_sharpness"] is None
+                                else float(r["face_sharpness"])),
                 pet=r["pet"],
                 pet_score=None if r["pet_score"] is None else float(r["pet_score"]),
                 pet_vlm=r["pet_vlm"],
@@ -2092,12 +2304,13 @@ def read_frame_quality(conn: sqlite3.Connection,
 # may never look at. F130 puts `pet_vlm` under the same rule — the fast half re-walks a
 # frame only when its own marker went stale (a prompt edit among other things), and a
 # stale prompt is exactly when a stored answer must not survive.
-_QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, pet, pet_score,
-                         pet_vlm, eyes_open, has_subject, is_accidental, junk_score,
-                         source, updated_at)
-                     VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+_QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, face_sharpness, pet,
+                         pet_score, pet_vlm, eyes_open, has_subject, is_accidental,
+                         junk_score, source, updated_at)
+                     VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
                      ON CONFLICT(file_id) DO UPDATE SET
-                         sharpness = excluded.sharpness, pet = excluded.pet,
+                         sharpness = excluded.sharpness,
+                         face_sharpness = excluded.face_sharpness, pet = excluded.pet,
                          pet_score = excluded.pet_score, pet_vlm = NULL, eyes_open = NULL,
                          has_subject = NULL, is_accidental = NULL, junk_score = NULL,
                          source = excluded.source, updated_at = excluded.updated_at"""
@@ -2910,6 +3123,10 @@ class _QualityPass:
         # population of the rescue score, which is the same one by construction: a score
         # belongs to a `frame_quality` row, and a row exists for personal photographs only.
         self._measured: list[tuple[int, str]] = []
+        # F155: where the faces of the frames this run measures are. Read in one query
+        # rather than one per frame, and only when the first frame actually asks — a
+        # collection whose quality half is up to date must not pay for the query at all.
+        self._faces: dict[int, FaceBoxes] | None = None
 
     @property
     def candidates(self) -> list[tuple[int, str, bool]]:
@@ -2924,6 +3141,12 @@ class _QualityPass:
     def wanted(self, file_id: int) -> bool:
         """Does this frame need quality work in this run? (its own incrementality)"""
         return file_id in self._ids
+
+    def _faces_of(self, file_id: int) -> FaceBoxes:
+        """The face boxes of one frame — the whole map is read on the first call (F155)."""
+        if self._faces is None:
+            self._faces = read_face_boxes(self._conn, sorted(self._ids))
+        return self._faces.get(file_id, NO_FACES)
 
     def needs_clip(self) -> bool:
         """Does the quality half need the CLIP row of a frame at all?
@@ -2954,13 +3177,18 @@ class _QualityPass:
         if verdict is not None and verdict != QUALITY_VERDICT:
             self._conn.execute("DELETE FROM frame_quality WHERE file_id = ?", (file_id,))
             return
-        sharpness = self._sharpness(path)
+        # F155: both laplacians out of one decode — the whole frame, and the sharpest face
+        # in it where the faces stage found one. The face crop is what actually separates
+        # a blurred frame from a detailed one (see the module docstring); the frame number
+        # is unchanged and still what the uncertainty band below reads.
+        measured = self._sharpness(path, self._faces_of(file_id))
+        sharpness = measured.frame
         pet: str | None = None
         pet_score: float | None = None
         if self._q.pets and probs_row is not None:
             pet, pet_score = pet_verdict(probs_row, self._q.pet_threshold)
-        self._conn.execute(_QUALITY_UPSERT, (file_id, sharpness, pet, pet_score,
-                                             self._source, self._now))
+        self._conn.execute(_QUALITY_UPSERT, (file_id, sharpness, measured.face, pet,
+                                             pet_score, self._source, self._now))
         self._stats.quality_rows += 1
         self._measured.append((file_id, path))
         if pet is not None:
@@ -3621,6 +3849,11 @@ def classify(
     band only, behind `vlm.quality`, with the same graceful fallback as the deep tier — a
     factory that raises leaves the cheap tiers running. All three are injectable for the
     same reason `classifier`/`text_detector` are: the suite must not load a model.
+
+    F155: the detector now takes the frame's face boxes as well and answers with BOTH
+    laplacians — over the whole preview and over the sharpest face in it — because they
+    come out of one decode and a second pass over the collection for the second number is
+    the one cost this signal is not worth.
 
     pet_vlm / pet_vlm_factory (F130): the animal check — the same shape and the same
     graceful fallback again, behind `features.pets_verify` (which needs `features.pets`).

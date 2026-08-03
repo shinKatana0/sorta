@@ -30,6 +30,12 @@ measurement goes. Two things are needed for that and both are here:
   it, weighted back to the collection by score band so the two are comparable to F122 and
   to each other. `--write-labels` writes the stratified worksheet to fill in.
 
+F155 adds the sweep `features.face_sharpness_max` has to be read off: the same laplacian
+measured INSIDE the face boxes, over the frames that have one. It prints under `--features
+sharpness`, next to the whole-frame distribution it is meant to be compared with, and like
+every table here it chooses nothing — the signal is ~25% precise and covers only the third
+of a collection that has a face, so what the grid shows is the size of a review list.
+
 Usage (from the repo root, with the venv python):
     python scripts/measure_frame_quality.py --features pets
     python scripts/measure_frame_quality.py --features pets sharpness band
@@ -89,7 +95,14 @@ SCORE_BANDS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0001)
 
 FEATURES = ("pets", "sharpness", "band", "verify")
 
-CACHE_VERSION = 1
+# F155: the grid the face-sharpness threshold is read off. It reaches far past the value
+# the brief measured (200) on purpose: what the 68-frame sample showed is a direction, and
+# a grid centred on the number it produced would only confirm it.
+DEFAULT_FACE_GRID = (50.0, 100.0, 200.0, 300.0, 400.0, 600.0)
+
+# F155 bumped this: `Frame` gained face_sharpness, so a cache written before it has one
+# column too few and would load with the fields shifted.
+CACHE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -111,6 +124,11 @@ class Frame:
     # from the cache, so a replay describes the index as it is now; defaulted so every
     # cache written before this feature still loads.
     pet_vlm: str | None = None
+    # F155: the laplacian inside the sharpest FACE of the frame, or None — no face on it,
+    # no faces run behind it, or a crop too small to measure. A different population from
+    # `sharpness` above (a third of a collection, not all of it), which is why the sweep
+    # below counts against the frames that have the number rather than against all of them.
+    face_sharpness: float | None = None
 
 
 def sample_rows(db_path: str, n: int, seed: int) -> list[sqlite3.Row]:
@@ -221,6 +239,57 @@ def format_sharpness(frames: list[Frame], q: junk.QualitySettings) -> str:
     out.append("Число зависит от разрешения (features.sharpness_max_edge) — меняя его, "
                "полосу\nнужно перемерить. Ниже полосы кадр смазан, выше — резкий; "
                "внутри решает VLM.")
+    return "\n".join(out)
+
+
+@dataclass(frozen=True)
+class FaceRow:
+    """One row of the face-sharpness sweep: what a threshold would put into the list."""
+    threshold: float
+    fired: int
+
+
+def sweep_face(frames: list[Frame], thresholds: list[float]) -> list[FaceRow]:
+    """How many frames WITH A FACE each threshold calls a blur candidate.
+
+    Below and not at or below: the number is the top of an open list, the same reading
+    `features.blur_review_max` has, and a frame exactly at the threshold is not in it.
+    """
+    return [FaceRow(t, sum(1 for f in frames
+                           if f.face_sharpness is not None and f.face_sharpness < t))
+            for t in thresholds]
+
+
+def format_face_sharpness(frames: list[Frame], rows: list[FaceRow],
+                          current: float) -> str:
+    """F155: the face block — the distribution and the sweep the threshold is read off.
+
+    Separate from the block above because it is a separate POPULATION: only frames a face
+    was found on, a third of a collection, and every share below is counted against that
+    third rather than against the whole. Mixing the two into one table would make the
+    coverage of this signal look like the coverage of the other one.
+    """
+    values = [f.face_sharpness for f in frames if f.face_sharpness is not None]
+    out = [
+        "=" * 88,
+        f"РЕЗКОСТЬ ЛИЦА (дисперсия лапласиана внутри вырезки, {len(values)} кадров "
+        f"с лицом из {len(frames)})",
+    ]
+    if not values:
+        out.append("  ни одного кадра с лицом — сначала нужен прогон стадии faces")
+        out.append("=" * 88)
+        return "\n".join(out)
+    out.append("  " + "  ".join(f"p{p}={v:.1f}" for p, v in percentiles(values)))
+    out.append(f"{'порог':>7} {'кандидатов':>14} {'от кадров с лицом':>22}")
+    for r in rows:
+        mark = "*" if abs(r.threshold - current) < 1e-9 else " "
+        out.append(f"{r.threshold:>7.1f}{mark}{r.fired:>13d} "
+                   f"{_pct(r.fired, len(values)):>21}")
+    out.append("=" * 88)
+    out.append("* — порог из конфига (features.face_sharpness_max). Это РАНЖИРОВАНИЕ, "
+               "не вердикт:\nна размеченной выборке верны около четверти помеченных, "
+               "и кадры без лиц этим\nсигналом не покрыты вовсе. Столбец в БД пишется "
+               "всегда, поэтому порог можно\nпересмотреть без нового прохода.")
     return "\n".join(out)
 
 
@@ -474,7 +543,8 @@ def save_cache(path: Path, frames: list[Frame]) -> None:
     """Per-frame aggregates for a later replay. File ids only — never paths."""
     path.write_text(json.dumps({
         "version": CACHE_VERSION,
-        "frames": [[f.file_id, f.pet_class, f.pet_score, f.sharpness, f.subject_score]
+        "frames": [[f.file_id, f.pet_class, f.pet_score, f.sharpness, f.subject_score,
+                    f.face_sharpness]
                    for f in frames],
     }), encoding="utf-8")
 
@@ -486,8 +556,23 @@ def load_cache(path: Path) -> list[Frame]:
         raise SystemExit(f"{path}: кэш версии {data.get('version')}, ожидается "
                          f"{CACHE_VERSION} — перемерить с --refresh")
     return [Frame(int(fid), pet, float(score),
-                  None if sharp is None else float(sharp), float(subject))
-            for fid, pet, score, sharp, subject in data["frames"]]
+                  None if sharp is None else float(sharp), float(subject),
+                  face_sharpness=None if face is None else float(face))
+            for fid, pet, score, sharp, subject, face in data["frames"]]
+
+
+def read_faces(db_path: str, file_ids: list[int]) -> dict[int, junk.FaceBoxes]:
+    """F155: the face boxes of the sample, straight out of `junk.read_face_boxes`.
+
+    Read-only and in a connection of its own — the sample was taken in one that is already
+    closed, and this script must never be the thing that writes to a user's index.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        return junk.read_face_boxes(conn, file_ids)
+    finally:
+        conn.close()
 
 
 def measure(cfg: Config, rows: list[sqlite3.Row],
@@ -496,11 +581,15 @@ def measure(cfg: Config, rows: list[sqlite3.Row],
 
     `clip_prompts(pets=True)` on purpose even when the toggle is off in the config: the
     whole point is to see what the pet group would say before deciding to switch it on.
+
+    F155: the face crop rides in the same call the frame laplacian is taken by — one decode,
+    both numbers, exactly as the stage does it, so the sweep prices the real signal.
     """
     s = naming_settings(cfg)
     classifier = clip_classifier(s)
     prompts = junk.clip_prompts(True)
     sharpness = junk.preview_sharpness_detector(q.sharpness_max_edge)
+    faces = read_faces(str(cfg.database), [int(r["id"]) for r in rows])
 
     frames: list[Frame] = []
     done = 0
@@ -511,8 +600,9 @@ def measure(cfg: Config, rows: list[sqlite3.Row],
             # would have kept it is what the sweep is for.
             pet_class, pet_score = junk.pet_verdict(p, 0.0)
             subject = float(junk._group_probs(p, junk._JUNK_GROUP)[0])
-            frames.append(
-                Frame(r["id"], pet_class, pet_score, sharpness(r["path"]), subject))
+            measured = sharpness(r["path"], faces.get(int(r["id"]), junk.NO_FACES))
+            frames.append(Frame(r["id"], pet_class, pet_score, measured.frame, subject,
+                                face_sharpness=measured.face))
         done += len(chunk)
         print(f"  CLIP+резкость {done}/{len(rows)}", end="\r", flush=True)
     print(" " * 40, end="\r")
@@ -532,6 +622,9 @@ def main() -> None:
     ap.add_argument("--candidate-thresholds", type=float, nargs="+",
                     default=list(DEFAULT_CANDIDATE_GRID),
                     help="the grid features.pet_candidate_threshold is read off")
+    ap.add_argument("--face-thresholds", type=float, nargs="+",
+                    default=list(DEFAULT_FACE_GRID),
+                    help="the grid features.face_sharpness_max is read off")
     ap.add_argument("--labels", help="JSON {file_id: true|false} — is there really a live "
                                      "animal in the frame; enables the accuracy block")
     ap.add_argument("--write-labels", help="write a stratified worksheet to fill in "
@@ -580,6 +673,11 @@ def main() -> None:
                           q.pet_threshold))
     if "sharpness" in args.features:
         print(format_sharpness(frames, q))
+        # F155: the same block, over the face crops — a different population and a
+        # different threshold, printed next to the one it is meant to be compared with.
+        print(format_face_sharpness(
+            frames, sweep_face(frames, sorted(args.face_thresholds)),
+            cfg.features.face_sharpness_max))
     if "band" in args.features:
         print(format_band(frames, q))
     if "verify" in args.features:

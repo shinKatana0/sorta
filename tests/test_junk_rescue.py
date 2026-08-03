@@ -131,7 +131,7 @@ class RescueCase(FrameQualityCase):
             # are at the floor).
             kwargs["vlm_classifier"] = lambda _path: "personal_photo"
         stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                         sharpness_detector=lambda _p: 500.0,
+                         sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0),
                          junk_rescue_vlm=asker, **kwargs)
         return stats, clf
 
@@ -448,7 +448,7 @@ class TestPopulation(RescueCase):
         clf = EmbeddingClassifier(vectors={"Screenshot_1.png": vector_for(0.9),
                                            "meme.jpg": vector_for(0.4)})
         stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                         sharpness_detector=lambda _p: 500.0,
+                         sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0),
                          junk_text_encoder=self.encoder, junk_rescue_vlm=asker,
                          vlm_classifier=lambda _p: "personal_photo")
         self.assertEqual(self.verdict_of("Screenshot_1.png"), "screenshot")
@@ -475,7 +475,7 @@ class TestPopulation(RescueCase):
 
         self.add_file("Screenshot_1.png", camera_make=None, camera_model=None)
         classify(self.cfg, self.conn, use_clip=False, junk_text_encoder_factory=factory,
-                 sharpness_detector=lambda _p: 1.0)
+                 sharpness_detector=lambda _p, _faces: junk.Sharpness(1.0))
         self.assertIsNone(self.conn.execute("SELECT 1 FROM frame_quality").fetchone())
 
 
@@ -490,7 +490,7 @@ class TestIncrementality(RescueCase):
         clf = EmbeddingClassifier(
             vectors={name: vector_for(value) for name, value in scores.items()})
         return classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                        sharpness_detector=lambda _p: 500.0,
+                        sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0),
                         junk_text_encoder=self.encoder, junk_rescue_vlm=asker,
                         vlm_classifier=lambda _p: "personal_photo")
 
