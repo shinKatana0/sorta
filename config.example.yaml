@@ -486,6 +486,26 @@ features:
   # every stored search vector stale (they are recomputed, never mixed), and it does NOT
   # touch classification — that model is `naming.clip.*` and is calibrated on separately.
   search_model: "xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k"
+  # F153: answer one query with BOTH indexes — the search one above and the classification
+  # vectors of `store_embeddings` — and merge the two lists. off | rank | union.
+  # It costs one extra matmul over a stored table (~1 ms) and no pass over any image, so
+  # nothing about a run gets slower; it needs `search_index` on, because without a second
+  # index there is nothing to merge.
+  #   off     the search index alone — today's behaviour, the other table is not read
+  #   rank    reciprocal rank fusion: a frame is weighted by its PLACE in each list, so a
+  #           frame both models rank highly beats one only a single model liked
+  #   union   the two lists merged as sets: a frame keeps its best place, so a frame only
+  #           one of the models found is not pushed out
+  # The scores themselves are never added up in either mode, and cannot be: a cosine of
+  # ViT-L-14 and a cosine of the multilingual model are numbers of different spaces that
+  # look comparable and are not.
+  # Why the default is `off`: the two models measure the SAME at the top (88/96/98% at
+  # ranks 1/3/5) while returning different frames, so what a merge is expected to improve
+  # is RECALL — and recall has never been measured for either of them. Measure it on your
+  # own labelled sample first: `python scripts/measure_search.py --fusion --queries-file
+  # queries.txt --labels marks.json` prints precision and recall at each depth for all
+  # four variants.
+  search_fusion: "off"
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

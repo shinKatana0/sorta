@@ -107,6 +107,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deletes. In the terminal the same six kinds take no selector —
   `sorta album product --dest …` is the whole command — and the folder they default to
   comes from the string catalog in all three languages.
+- **Both indexes can answer one query** (F153): `features.search_fusion` — `off` | `rank` |
+  `union`, **off by default**. Once the search index exists (F141) a photograph has two
+  vectors, and the measurement of 2026-08-02 said something about them that neither number
+  alone shows: over 217 hand-labelled judgements the classification model and the search
+  model score the SAME at the top (88/96/98% at ranks 1/3/5) and return **different
+  frames** — "it disagrees with xlm english on which photos, but both are good, even though
+  they differ". Two rankings wrong in different places are the one case where merging beats
+  either half, so a query can now be answered by both: `rank` weights a frame by its
+  **place** in each list (reciprocal rank fusion — agreement between the models wins),
+  `union` merges the two lists **as sets** (each frame keeps its best place, so what only
+  one model found is not pushed out). What no mode does is add the scores up, and the
+  merging function cannot: it is handed file ids and no numbers at all, because a cosine of
+  `ViT-L-14` and a cosine of `xlm-roberta-base-ViT-B-32` are values of two different spaces
+  that look comparable and are not — the mistake F128's `model` column exists to prevent.
+  An index with nothing to rank does not silently halve the answer: the other one ranks and
+  the fact is logged. The cost is one extra matmul over a stored table, ~1 ms of query
+  time, and no pass over any image. **The default is off because the number that would
+  choose otherwise does not exist yet**: precision cannot decide this — both models are at
+  98% at top-5 — and what a merge is expected to raise is RECALL, which has never been
+  measured for either of them. So the measurement is part of the feature rather than a
+  promise about it: `scripts/measure_search.py --fusion` prints precision **and** recall at
+  every depth for all four variants over one set of marks, states that its recall is
+  relative to the labelled frames rather than to the collection, and says out loud when a
+  variant's output is mostly unlabelled — a merge measured against a sample its competitor
+  chose is not measured at all. Nothing else moved: the interface, the thresholds, the
+  prompts and the schema are exactly as they were.
 - **Search that answers Russian** (F141): `features.search_index`, off by default, with
   `features.search_model` (`xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k`) next to it and a
   new table `search_embeddings` (schema v22). Search by words was accurate in English and
