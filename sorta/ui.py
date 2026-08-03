@@ -367,12 +367,12 @@ from . import db, faces, i18n, imaging
 from .config import (
     VLM_QUALITY_SCOPES,
     Config,
-    FeaturesConfig,
     save_language,
     save_setting,
 )
 from .dedup import (KEEPER_SOURCE_SHARPNESS, assign_duplicates, compute_phashes,
                     group_key, near_duplicate_groups, read_group_keepers)
+from .detect import detector_settings
 from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
 from .faces import detect_and_cluster
@@ -1570,7 +1570,15 @@ _ANIMALS_JOIN = ("FROM files f LEFT JOIN frame_quality fq ON fq.file_id = f.id "
                  "LEFT JOIN manual_pet mp ON mp.file_id = f.id")
 
 
-def _animals_population(features: FeaturesConfig) -> str:
+# F160: the animal rule now has a tier whose switches live outside `features:` — the
+# detector's master switch `detect.enabled` (F145) and the model that wrote the boxes. So
+# the helpers of this slice take the WHOLE live config, the way `_overview_payload` already
+# does, and resolve both switches through the one function that ANDs them
+# (`detector_settings`).
+# Reading half of the pair here is exactly the mistake F145 was written about, and a slice
+# still counting the boxes of a detector the user has switched off is the same bug in the
+# other direction.
+def _animals_population(cfg: Config) -> str:
     """What the TAB LISTS: the model's marks plus every frame a person has touched.
 
     Deliberately wider than the slice — a frame marked "not an animal" is no longer in the
@@ -1581,29 +1589,30 @@ def _animals_population(features: FeaturesConfig) -> str:
     not the `frame_quality.pet` cache — a threshold edit has to take frames OFF this page
     too, or the list and the counter it carries would disagree about the same collection.
     """
-    return (f"({animal_auto_sql(features, 'fq')} OR mp.file_id IS NOT NULL) "
-            "AND f.dup_of IS NULL AND f.error IS NULL")
+    return (f"({animal_auto_sql(cfg.features, 'fq', detector_settings(cfg))} "
+            "OR mp.file_id IS NOT NULL) AND f.dup_of IS NULL AND f.error IS NULL")
 
 
-def _animals_count_sql(features: FeaturesConfig) -> str:
+def _animals_count_sql(cfg: Config) -> str:
     """What COUNTS as an animal: `sorter.animal_ids_sql` and nothing else, over the
     canonical, readable files every other counter in this file is built on. Used by this
     tab and by the "Overview" number, so the two cannot disagree with the album or with
     each other."""
+    ids = animal_ids_sql(cfg.features, detector_settings(cfg))
     return f"""SELECT COUNT(*) FROM files f
-    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.id IN ({animal_ids_sql(features)})"""
+    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.id IN ({ids})"""
 
 
-def _animals_select(features: FeaturesConfig) -> str:
+def _animals_select(cfg: Config) -> str:
     """One card, one row shape — the page and the answer to a mark are the same SELECT, so
     a card redrawn after an edit says exactly what the same card would say on a reload."""
+    ids = animal_ids_sql(cfg.features, detector_settings(cfg))
     return f"""SELECT f.id, f.path, f.taken_at, fq.pet_score,
-           mp.is_animal AS manual, f.id IN ({animal_ids_sql(features)}) AS is_animal
+           mp.is_animal AS manual, f.id IN ({ids}) AS is_animal
     {_ANIMALS_JOIN}"""
 
 
-def _animals_payload(db_path: Path, features: FeaturesConfig,
-                     offset: int, limit: int) -> dict:
+def _animals_payload(db_path: Path, cfg: Config, offset: int, limit: int) -> dict:
     """`GET /api/animals` — one page of the animal slice, most confident first.
 
     Two numbers, because after F124 they are two different questions: `total` is the
@@ -1618,18 +1627,19 @@ def _animals_payload(db_path: Path, features: FeaturesConfig,
     reader is walking down a list sorted by confidence, and a list that reshuffles under
     the frame just marked is a list nobody can finish reading.
 
-    `features` is the LIVE config's, for the reason `/api/junk` reads its sensitive
-    classes off it: the thresholds this page is drawn with are the ones in force at the
-    moment of the request, not the ones some run wrote into the database (F137).
+    `cfg` is the LIVE config, for the reason `/api/junk` reads its sensitive classes off
+    it: the thresholds this page is drawn with — and, since F160, whether the detector's
+    tier counts at all — are the ones in force at the moment of the request, not the ones
+    some run wrote into the database (F137).
     """
-    population = _animals_population(features)
+    population = _animals_population(cfg)
     conn = _connect(db_path)
     try:
         total = conn.execute(
             f"SELECT COUNT(*) {_ANIMALS_JOIN} WHERE {population}").fetchone()[0]
-        animals = conn.execute(_animals_count_sql(features)).fetchone()[0]
+        animals = conn.execute(_animals_count_sql(cfg)).fetchone()[0]
         rows = conn.execute(
-            f"""{_animals_select(features)}
+            f"""{_animals_select(cfg)}
                 WHERE {population}
                 ORDER BY fq.pet_score DESC, f.id
                 LIMIT ? OFFSET ?""", (limit, offset)).fetchall()
@@ -1669,7 +1679,7 @@ def _validate_animal_mark_payload(payload: object) -> tuple[list[int], str] | No
     return ids, action
 
 
-def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
+def _apply_animal_mark(db_path: Path, cfg: Config,
                        ids: list[int], action: str) -> dict:
     """Write the user's verdict into `manual_pet`; answer with the redrawn cards.
 
@@ -1691,7 +1701,7 @@ def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
     altogether — and the client drops those cards.
     """
     now = datetime.now(timezone.utc).isoformat()
-    count_sql = _animals_count_sql(features)
+    count_sql = _animals_count_sql(cfg)
     conn = _connect(db_path)
     try:
         placeholders = ",".join("?" * len(ids))
@@ -1716,8 +1726,8 @@ def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
                            updated_at = excluded.updated_at""",
                     [(fid, is_animal, now) for fid in known])
         rows = conn.execute(
-            f"""{_animals_select(features)}
-                WHERE {_animals_population(features)}
+            f"""{_animals_select(cfg)}
+                WHERE {_animals_population(cfg)}
                   AND f.id IN ({known_placeholders})""",
             known).fetchall()
         animals = conn.execute(count_sql).fetchone()[0]
@@ -2580,7 +2590,7 @@ def _events_payload(db_path: Path,
     ]
 
 
-def _tabs_visibility_payload(db_path: Path, features: FeaturesConfig) -> dict[str, bool]:
+def _tabs_visibility_payload(db_path: Path, cfg: Config) -> dict[str, bool]:
     """F54: visibility of the "People"/"Events"/"Animals" tabs — by data presence
     (variant B, without a meta table). person ⇔ there is a faces row with a non-empty
     cluster_id (the same source as `_clusters_payload`); event ⇔ non-empty `events`;
@@ -2618,7 +2628,7 @@ def _tabs_visibility_payload(db_path: Path, features: FeaturesConfig) -> dict[st
         ).fetchone()[0])
         animal = bool(conn.execute(
             f"SELECT EXISTS(SELECT 1 {_ANIMALS_JOIN} "
-            f"WHERE {_animals_population(features)})"
+            f"WHERE {_animals_population(cfg)})"
         ).fetchone()[0])
         face = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files WHERE dup_of IS NULL AND error IS NULL "
@@ -2789,7 +2799,7 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
         # (`_animals_count_sql` -> `sorter.animal_ids_sql`) — a frame the user unmarked
         # leaves this number exactly as it leaves the album. F137: and a threshold the
         # user edited moves it here, in the tab and in the album together.
-        animals = conn.execute(_animals_count_sql(features)).fetchone()[0]
+        animals = conn.execute(_animals_count_sql(cfg)).fetchone()[0]
         faces_ran = faces_stage_ran(conn)
         faces_counts: dict[str, int | None] = {
             name: (_face_slice_count(conn, cfg, name) if faces_ran else None)
@@ -5964,16 +5974,29 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "バケットを読み込めません: ",
     },
     # --- F123: the "Animals" tab -----------------------------------------------------
+    # F160: the caption states BOTH measurements, because the slice is two different
+    # promises and a config switch chooses between them. The cascade alone is 82%
+    # precision at 64% recall; with the object detector on (`features.detector` +
+    # `detect.enabled`) it is 62% at 87% — a quarter more animals found and a fifth of the
+    # confidence given up for them. A caption naming one number while the other rule is in
+    # force buys recall with the reader's trust, which is the mistake F158 measured on the
+    # very same line.
     "animals_intro": {
         "ru": "Кадры с животными, сверху — те, в которых модель уверена больше. "
-              "Точность около 82%: ниже по списку начинают попадаться шубы и игрушки, "
-              "и видно, где проходит граница.",
+              "Точность около 82% при полноте 64%; с включённым детектором объектов "
+              "(features.detector) размен другой — точность около 62% при полноте 87%: "
+              "животных находится заметно больше, а шуб и игрушек среди них тоже. "
+              "Ниже по списку видно, где проходит граница.",
         "en": "Frames with animals, the ones the model is most confident about first. "
-              "Precision is about 82%: fur coats and plush toys start showing up "
-              "further down, which is where the border of confidence is.",
-        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 82% "
-              "で、下に行くほど毛皮のコートやぬいぐるみが混じり始め、そこが確信度の"
-              "境目です。",
+              "Precision is about 82% at 64% recall; with the object detector on "
+              "(features.detector) the trade is a different one — about 62% precision at "
+              "87% recall: noticeably more animals found, and more fur coats and plush "
+              "toys among them. Further down the list is where the border of confidence "
+              "runs.",
+        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 82%、"
+              "再現率は 64% です。物体検出を有効にすると (features.detector) 精度は約 "
+              "62%、再現率は 87% になり、見つかる動物は増えますが毛皮のコートや"
+              "ぬいぐるみも増えます。下に行くほど確信度の境目が見えてきます。",
     },
     "animals_empty": {
         "ru": "Здесь пусто — животные не найдены.",
@@ -12326,7 +12349,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             elif path == "/api/sort/summary":
                 self._serve_sort_summary(parse_qs(parts.query))
             elif path == "/api/tabs/visibility":
-                self._send_json(_tabs_visibility_payload(db_path, cfg.features))
+                self._send_json(_tabs_visibility_payload(db_path, cfg))
             elif path == "/api/overview":
                 # F108: plain aggregates, computed per request. The plan cache is not
                 # touched on purpose — building a layout here would cost minutes.
@@ -12498,7 +12521,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # F137: the thresholds off the LIVE config, for the reason `/api/junk` reads
             # its sensitive classes off it — the settings panel edits `pet_threshold`
             # without a restart, and a threshold that needs one is not a threshold.
-            self._send_json(_animals_payload(db_path, cfg.features, offset, limit))
+            self._send_json(_animals_payload(db_path, cfg, offset, limit))
 
         def _serve_face_slices(self, query: dict[str, list[str]]) -> None:
             # F152: read-only. Nothing about these slices is decided here — the rules are
@@ -12630,7 +12653,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 return
             ids, action = parsed
             self._send_json({"ok": True,
-                             **_apply_animal_mark(db_path, cfg.features, ids, action)})
+                             **_apply_animal_mark(db_path, cfg, ids, action)})
 
         def _handle_photo_trash(self) -> None:
             file_id = _validate_file_id_payload(self._read_json_body())
