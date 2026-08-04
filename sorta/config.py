@@ -412,6 +412,19 @@ class VlmConfig:
     states the default it starts from.
     """
     enabled: bool = False
+    # F161: the deep junk tier, which is the one thing `enabled` used to switch on BY
+    # ITSELF. That made the master switch the only line of the run screen with an effect
+    # of its own and no price next to it, and the effect it had was not "deep analysis"
+    # in general: the tier is the only producer of the `product` class (the fast tier
+    # never emits one), and on the live run of 2026-07-28 it moved 2 202 of its 2 592
+    # verdicts into exactly that class. So the effect gets a key, a line and a price, and
+    # `enabled` goes back to meaning permission alone.
+    #
+    # Default TRUE, unlike every other subordinate key here: a config file written before
+    # this key existed must run what it ran yesterday, and yesterday `vlm.enabled: true`
+    # meant the tier. It is subordinate all the same — see `products_allowed`: with the
+    # master off nothing is raised, whatever this says.
+    products: bool = True
     model: str = DEFAULT_VLM_MODEL
     workers: int = field(default_factory=default_vlm_workers)
     max_edge: int = DEFAULT_VLM_MAX_EDGE
@@ -701,6 +714,7 @@ def _vlm_from(data: dict) -> VlmConfig:
     model = _vlm_value(new, old, "model", "classify_vlm_model")
     return VlmConfig(
         enabled=_as_bool(_vlm_value(new, old, "enabled", "vlm_enabled"), d.enabled),
+        products=_as_bool(new.get("products"), d.products),
         model=model.strip() if isinstance(model, str) and model.strip() else d.model,
         workers=resolve_vlm_workers(data),
         max_edge=_as_positive_int(new.get("max_edge"), d.max_edge),
@@ -1461,6 +1475,23 @@ def vlm_allowed(cfg: Config) -> bool:
     config, so it is the effective per-run toggle.
     """
     return bool(getattr(getattr(cfg, "naming", None), "vlm_enabled", False))
+
+
+def products_allowed(cfg: Config) -> bool:
+    """F161: may this run ask the model what a frame IS? — the deep junk tier.
+
+    The F145 rule with one more subordinate key in it, and the key is new because the
+    question was not asked before: the deep tier was what `vlm.enabled` did by itself,
+    which left the master switch doing something under a name that describes a
+    technology. `vlm.products` is that something, named by its result — the tier is the
+    only producer of the `product` class — and the master keeps the veto.
+
+    Absent (an old config, or the settings object a measurement script builds by hand)
+    is TRUE: the tier is what a master switch alone used to mean, and a run started off
+    a file written before this key existed must do what it did yesterday.
+    """
+    return vlm_allowed(cfg) and bool(
+        getattr(getattr(cfg, "vlm", None), "products", True))
 
 
 def detector_allowed(cfg: Config) -> bool:

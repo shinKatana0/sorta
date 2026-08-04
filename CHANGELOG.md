@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Product recognition is a line of its own, with a price** (F161). "Deep analysis
+  (VLM)" was the master switch of every question the model is asked (F145) and, by
+  itself, the one thing that switched the deep junk tier on — which made it the only
+  option on the run screen with an effect nobody had named and a cost nobody had stated.
+  The effect is products: the deep tier is the **only producer of the `product` class**
+  (the fast tier never emits one), and on the live run of 2026-07-28 it moved **2 202 of
+  its 2 592 changed verdicts** into exactly that class. The cost is ~95 minutes over the
+  24 196-photo collection, or ~12 when `features.junk_rescue` narrows the candidates to
+  the band above its threshold (955 frames). So the tier is now **`vlm.products`**, a
+  line under the master carrying its own price — measured from this machine's run log
+  like every other line (F159), and following whichever of the two populations the
+  config actually selects. The master keeps the veto and nothing else, and says so: its
+  own price reads "0 — permission only", and the caption under it no longer promises
+  hours it does not take. `vlm.products` defaults to **true**, the only subordinate key
+  that does — a config written before it existed has to run what it ran yesterday, and a
+  body without the field (`/api/process/rerun-optional`) still gets the tier. Also here
+  because it is the same screen: on an empty collection the caret goes back into the
+  path field (F133, lost while F135/F138 rebuilt the run controls).
 - **"Blurred" is a list in order, not a window with a threshold** (F157). The morning of
   2026-08-02 measured the completeness of this filter at 6% and spent half a day calling
   that a catastrophe; the evening measurement cancelled the number, and not because the

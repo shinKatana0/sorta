@@ -48,7 +48,9 @@ hash verification) do not apply here. F138: the body also carries `pets_verify`/
 `quality`/`quality_scope`/`keeper` — the same per-run override on
 `features.pets_verify`/`vlm.quality`/`vlm.quality_scope`/`dedup.keeper_vlm`, since these
 are what a run's TIME is spent on and they moved onto the run screen out of the settings
-column. `GET /api/process/estimate` prices every line of that screen: a measured rate
+column. F161 adds `products` to that list (`vlm.products`, the deep junk tier), which is
+the effect `deep` used to have of its own: `deep` is now permission and nothing else.
+`GET /api/process/estimate` prices every line of that screen: a measured rate
 times a count from this index, `null` (a dash, never a zero) where the index cannot say.
 
 (8) `POST /api/process/reset` (F42, the "Start over" button) — wipes the ENTIRE index
@@ -4455,9 +4457,14 @@ def _process_defaults_payload(cfg: Config) -> dict:
     here too, from the same place — `vlm.quality`/`vlm.quality_scope`,
     `features.pets_verify`, `dedup.keeper_vlm`. The column no longer offers them, so
     the file is now their ONLY home and this is what a run starts from.
+
+    F161: `products` joins them from `vlm.products`, and its default is the reason the
+    key exists — a file that never heard of it answers True here, so the screen opens
+    showing the run that file has always described.
     """
     return {
         "deep": bool(cfg.naming.vlm_enabled),
+        "products": bool(cfg.vlm.products),
         "geo_online": cfg.geo.provider == "online",
         "pets": bool(cfg.features.pets),
         "pets_verify": bool(cfg.features.pets_verify),
@@ -4653,7 +4660,9 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
 
     `pets` is 0.0 rather than None when there is anything to count: the animal prompts
     ride inside the CLIP call the junk stage makes anyway (F123), so the line genuinely
-    adds nothing to the run — the one place a zero here is the truth.
+    adds nothing to the run — one of the two places a zero here is the truth. The other
+    is `deep` since F161: a master switch that only grants permission does no work, and
+    saying so with a number is the point of taking its old effect out into `products`.
 
     F159 adds `sources` and `measured_at`, on the same keys again. A rate is either
     `measured` — read out of this machine's own run log — or `default`, a number measured
@@ -4665,6 +4674,7 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
     key = (str(db_path), _db_fingerprint(db_path), cfg.index.phash_max_distance,
            int(cfg.dedup.keeper_min_group_size), int(cfg.dedup.keeper_max_frames),
            float(cfg.features.pet_candidate_threshold),
+           bool(cfg.features.junk_rescue), float(cfg.features.junk_rescue_threshold),
            float(cfg.estimate.keeper_call_sec), float(cfg.estimate.keeper_frame_sec),
            float(cfg.estimate.measurement_max_age_days), _run_log_fingerprint())
     with _estimate_cache_lock:
@@ -4678,8 +4688,22 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         # The deep tier's gate picks its candidates from the CLIP probabilities of the
         # run in progress, so the only honest source for "how many frames it asks
         # about" is how many it answered on last time (`source='vlm'`).
-        deep = _positive_or_none(int(conn.execute(
+        products = _positive_or_none(int(conn.execute(
             "SELECT COUNT(*) FROM media_class WHERE source = 'vlm'").fetchone()[0]))
+        # F161: unless the F140 selection is on, and then the tier is shown the frames
+        # that cleared `features.junk_rescue_threshold` instead of the whole candidate
+        # list — 955 of the live collection's 24 196 against ~7 300, twelve minutes
+        # against an hour and a half. The screen has to show the price of the run that
+        # WILL happen, so the population follows the config rather than averaging the
+        # two. A collection nobody has scored yet says nothing: no `junk_score` at all
+        # is a dash, the same answer the pet check gives before its own pass has run.
+        if cfg.features.junk_rescue:
+            scored = int(conn.execute(
+                "SELECT COUNT(*) FROM frame_quality"
+                " WHERE junk_score IS NOT NULL").fetchone()[0])
+            products = None if not scored else int(conn.execute(
+                "SELECT COUNT(*) FROM frame_quality WHERE junk_score >= ?",
+                (float(cfg.features.junk_rescue_threshold),)).fetchone()[0])
         # The pet check is shown the frames CLIP scored above the candidate threshold —
         # a number that exists only once the CLIP pet group has run at all.
         pet_scored = int(conn.execute(
@@ -4710,7 +4734,11 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         "events": _positive_or_none(photos),
         "pets": _positive_or_none(photos),
         "pets_verify": pets_verify,
-        "deep": deep,
+        # F161: the master switch is priced over the frames of the run it permits, and
+        # the rate is a structural zero — permission costs nothing. The line that costs
+        # what this one used to is `products`.
+        "deep": _positive_or_none(photos),
+        "products": products,
         "keeper": keeper,
         **{f"quality_{scope}": value for scope, value in scopes.items()},
     }
@@ -4720,9 +4748,13 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         "events": rates["events"],
         "pets": _Rate(0.0, _RATE_FIXED),
         "pets_verify": rates["vlm_frame"],
+        # F161: the master switch itself. Zero and `fixed`, like the animal line and for
+        # a kinder reason — that one rides on a pass that runs anyway, this one has no
+        # pass at all.
+        "deep": _Rate(0.0, _RATE_FIXED),
         # F165 moved the deep tier ahead of faces, into a stage of its own — so this is
         # the one model line whose rate comes from `classify` rather than from `junk`.
-        "deep": rates["vlm_verdict"],
+        "products": rates["vlm_verdict"],
         # The keeper line is the one that is not a rate times a count at all — see
         # `_keeper_seconds`. It carries the config's constants, so it is a `default`
         # until the day the log can tell its seconds from the per-frame ones.
@@ -4818,8 +4850,14 @@ class _RunOptions:
     `--quality/--no-quality`. The run screen always sends all four, so an unticked box
     there forces OFF (the F57 rule) rather than quietly falling back to config.yaml;
     `/api/process/rerun-optional`, which has no interface for them, leaves them alone.
+
+    F161 adds `products` with the same convention, and the "config decides" half of it
+    carries the compatibility promise: `/api/process/rerun-optional` sends `deep` and no
+    `products`, so re-running the junk stage with the model does what it did before this
+    key existed.
     """
     deep: bool = False
+    products: bool | None = None
     geo_online: bool = False
     faces: bool = False
     events: bool = False
@@ -4833,7 +4871,8 @@ class _RunOptions:
 def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None:
     """Parse `{"source_dir": str, "deep": bool=False, "geo_online": bool=False,
     "faces": bool=False, "events": bool=False, "pets": bool=False,
-    "pets_verify": bool?, "quality": bool?, "quality_scope": str?, "keeper": bool?}`
+    "products": bool?, "pets_verify": bool?, "quality": bool?, "quality_scope": str?,
+    "keeper": bool?}`
     (F50/#34: opt-in VLM tier / online geo for THIS run, without editing config.yaml;
     F53/#39: opt-in steps faces/events, the same principle — default False; F123:
     `pets` is an opt-in of the THIRD shape — neither a tier nor a step, but a config
@@ -4854,7 +4893,7 @@ def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None
         if not isinstance(value, bool):
             return None
         flags[key] = value
-    for key in ("pets_verify", "quality", "keeper"):
+    for key in ("products", "pets_verify", "quality", "keeper"):
         value = payload.get(key)
         if value is not None and not isinstance(value, bool):
             return None
@@ -4904,6 +4943,8 @@ def _run_cfg(cfg: Config, source_dir: str | None, opts: _RunOptions) -> Config:
     if opts.pets_verify is not None:
         features = dataclasses.replace(features, pets_verify=opts.pets_verify)
     vlm_changed: dict[str, Any] = {}
+    if opts.products is not None:
+        vlm_changed["products"] = opts.products
     if opts.quality is not None:
         vlm_changed["quality"] = opts.quality
     if opts.quality_scope is not None:
@@ -4951,6 +4992,11 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     `vlm.quality`, `vlm.quality_scope`, `dedup.keeper_vlm`), so the list of stages is
     again untouched and only what one of them computes changes. They are what the run
     screen prices: between a quarter of an hour and four hours each.
+
+    `products` (F161) — the fifth of that shape, on `vlm.products`, and the one that took
+    an effect away from `deep`: with it off the classify half runs its cheap tiers and
+    asks the model nothing, whatever `deep` says. `deep` remains what decides whether a
+    model may be raised at all.
 
     `only_optional` (F62/F63: "Re-run selected" — POST
     `/api/process/rerun-optional`) — steps are narrowed to the SELECTED stages over the
@@ -5493,13 +5539,43 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Глубокий анализ (VLM)", "en": "Deep analysis (VLM)",
         "ja": "詳細分析（VLM）",
     },
+    # F161: the hint used to open with "Slower", and that stopped being true here. The
+    # checkbox is permission and nothing else since the deep tier became a line of its
+    # own below it: what is slow are the lines it unlocks, each of which now says its own
+    # price. Leaving "slower" on the master would price the same hours twice and leave
+    # the one thing this switch really decides — whether a model may be raised at all —
+    # unsaid.
     "process_deep_hint": {
-        "ru": "Медленнее; нужен `uv sync --extra vlm` (иначе автоматический откат "
-              "на быстрый анализ).",
-        "en": "Slower; requires `uv sync --extra vlm` (otherwise falls back to "
-              "the fast tier automatically).",
-        "ja": "処理が遅くなります。`uv sync --extra vlm` が必要です"
+        "ru": "Разрешает поднимать модель. Сам по себе не считает ничего: время "
+              "показано у строк под ним. Нужен `uv sync --extra vlm` (иначе "
+              "автоматический откат на быстрый анализ).",
+        "en": "Permission to load the model. It computes nothing by itself — the time "
+              "is on the lines below it. Requires `uv sync --extra vlm` (otherwise "
+              "falls back to the fast tier automatically).",
+        "ja": "モデルの読み込みを許可します。これ自体は何も計算しません（所要時間は"
+              "下の各項目に表示されます）。`uv sync --extra vlm` が必要です"
               "（なければ自動的に高速分析にフォールバックします）。",
+    },
+    # F161: the effect that used to be the master switch's own, given its name back. It
+    # is deliberately named after what it PRODUCES and not after how: "deep analysis" is
+    # a technology, and 85% of what that technology did on the live run of 2026-07-28 was
+    # find products (2 202 verdicts of 2 592).
+    "process_products_label": {
+        "ru": "Распознавание товаров", "en": "Product recognition", "ja": "商品の認識",
+    },
+    # And the hint says what a person GETS, in the two places they will look for it. The
+    # last sentence is the one that matters: the fast tier does not produce the class at
+    # all, so without this line the products slice is not thin — it is empty.
+    "process_products_hint": {
+        "ru": "Отсюда берутся папка «_Товары» в раскладке и одноимённый срез: снимки "
+              "вещей на продажу отделяются от снимков на память. Без этой строки "
+              "товаров не мало — их ноль.",
+        "en": "The “_Products” folder of the layout and the slice of the same name come "
+              "from here: pictures of things for sale are told apart from pictures kept "
+              "for memory. Without this line products are not few — there are none.",
+        "ja": "振り分けの「_商品」フォルダーと同名のスライスはここから作られます: "
+              "売るために撮った写真を、思い出の写真と切り分けます。この項目がなければ"
+              "商品は少ないのではなく、ゼロです。",
     },
     "process_deep_vlm_missing": {
         "ru": "VLM не установлен — будет использован быстрый ярус (CLIP). "
@@ -5625,6 +5701,14 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "costs_off": {
         "ru": "0 — не выполняется", "en": "0 — does not run",
         "ja": "0 — 実行されません",
+    },
+    # F161: and what the MASTER switch costs, which is also nothing — for the opposite
+    # reason. A line under a cleared master does not run; this one has nothing to run.
+    # Both numbers are zero and saying so with one string would hide the difference the
+    # feature is about: permission is not work.
+    "costs_permission_only": {
+        "ru": "0 — только разрешение", "en": "0 — permission only",
+        "ja": "0 — 許可のみ",
     },
     "costs_under_minute": {
         "ru": "меньше минуты", "en": "under a minute", "ja": "1 分未満",
@@ -8752,6 +8836,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="cost-price" data-cost="deep"></span>
 <span class="process-toggle-hint cost-hint">{{process_deep_hint}}</span>
 <span id="process-deep-vlm-missing" class="process-toggle-hint process-toggle-warn" style="display:none">{{process_deep_vlm_missing}}</span>
+<span class="cost-child" id="process-products-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-products-checkbox"> {{process_products_label}}</label>
+<span class="cost-price" data-cost="products"></span>
+<span class="process-toggle-hint cost-hint">{{process_products_hint}}</span>
+<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
+</span>
 </div>
 <div class="cost-row">
 <label class="process-toggle-label"><input type="checkbox" id="process-quality-checkbox"> {{process_quality_label}}</label>
@@ -11307,6 +11397,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // either way, and an empty index differs only in what stands in the value column.
     overviewEmpty = !!data.empty;
     if (overviewEmpty) body.appendChild(overviewNote(I18N.overview_empty));
+    // F133, restored by F161: the invitation says "enter a photo folder", and the caret
+    // goes there. This is the one screen where a first-time reader has nothing to go on,
+    // and the field is on the same tab — nobody is taken anywhere. The call was written
+    // by F133, disappeared while F135/F138 rebuilt this panel, and the test that asserted
+    // it was weakened rather than lost, so it comes back with the assertion.
+    // Only when the field is still empty: a path already typed means the caret has been
+    // there and may since have moved somewhere the reader chose.
+    if (overviewEmpty) {
+      var picker = document.getElementById("process-source-dir");
+      if (picker && !picker.value) picker.focus();
+    }
     var groups = document.createElement("div");
     groups.className = "overview-groups";
     groups.appendChild(overviewCollectionCard(data));
@@ -11351,6 +11452,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .then(function (r) { return r.json(); })
       .then(function (data) {
         document.getElementById("process-deep-checkbox").checked = !!data.deep;
+        // F161: `vlm.products` defaults to true, so this box starts ticked and the
+        // screen opens describing the run the config file has always described.
+        document.getElementById("process-products-checkbox").checked = !!data.products;
         document.getElementById("process-geo-online-checkbox").checked = !!data.geo_online;
         document.getElementById("process-pets-checkbox").checked = !!data.pets;
         // F138: the four that moved here out of the settings column start from the
@@ -11390,6 +11494,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var costEstimate = null;
   var costSources = null;
   var costMeasuredAt = null;
+  //
+  // F161: `master` is the row that grants permission and does nothing else. It is not a
+  // `vlm` row — those are the ones it switches off — and its price is not a number from
+  // the server either: it is zero by construction, in both directions of every checkbox
+  // on this screen.
   var COST_ROWS = [
     { key: "base", always: true },
     { key: "faces", id: "process-faces-checkbox" },
@@ -11397,7 +11506,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     { key: "pets", id: "process-pets-checkbox" },
     { key: "pets_verify", id: "process-pets-verify-checkbox",
       parent: "process-pets-checkbox", vlm: true },
-    { key: "deep", id: "process-deep-checkbox" },
+    { key: "deep", id: "process-deep-checkbox", master: true },
+    { key: "products", id: "process-products-checkbox", vlm: true },
     { key: "quality", id: "process-quality-checkbox", scoped: true, vlm: true },
     { key: "keeper", id: "process-keeper-checkbox", vlm: true }
   ];
@@ -11416,7 +11526,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   //     the run will actually do;
   //   * nothing is switched on or off automatically. Clearing the master leaves the
   //     subordinate boxes exactly as they were — one movement, one consequence.
-  var VLM_SUBORDINATE_IDS = ["process-pets-verify-checkbox", "process-quality-checkbox",
+  //
+  // F161: the deep junk tier joined that list. It used to BE the master switch's own
+  // effect, which is why it was not here — a line nobody could see could not be marked
+  // as subordinate to anything.
+  var VLM_SUBORDINATE_IDS = ["process-products-checkbox",
+                             "process-pets-verify-checkbox", "process-quality-checkbox",
                              "process-quality-scope", "process-keeper-checkbox"];
 
   function vlmMasterOn() {
@@ -11442,6 +11557,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // only line whose price depends on a second control — the scope select carries four
   // populations that differ by hours.
   function costSeconds(row) {
+    // F161: the master switch grants permission and runs nothing, so its own price is
+    // zero on a collection this index knows nothing else about too — a dash there would
+    // turn the whole sum into "at least" over a line that costs nothing.
+    if (row.master) return 0;
     // F145: a subordinate line costs nothing with the master off, whatever the box next
     // to it says — that IS the run, and a dash here would mean "unknown" rather than
     // "free".
@@ -11498,7 +11617,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       // "almost free" is what a stage that RUNS and is cheap gets, and this one does not
       // run at all.
       if (cell) {
-        cell.textContent = (row.vlm && vlmOff) ? I18N.costs_off : formatCost(seconds);
+        // F161: and the master switch says the other zero — the one that means "this
+        // line has no work of its own", not "this line will not run".
+        cell.textContent = row.master ? I18N.costs_permission_only
+            : (row.vlm && vlmOff) ? I18N.costs_off : formatCost(seconds);
       }
       if (!costRowEnabled(row)) return;
       if (seconds === null) { unknown = true; return; }
@@ -11544,7 +11666,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   document.getElementById("process-deep-checkbox")
       .addEventListener("change", updateVlmMissingWarning);
   ["process-faces-checkbox", "process-events-checkbox", "process-pets-checkbox",
-   "process-pets-verify-checkbox", "process-deep-checkbox", "process-quality-checkbox",
+   "process-pets-verify-checkbox", "process-deep-checkbox", "process-products-checkbox",
+   "process-quality-checkbox",
    "process-quality-scope", "process-keeper-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", renderCosts);
   });
@@ -11819,6 +11942,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     postJson("/api/process", {
       source_dir: path, deep: deep, geo_online: geoOnline, faces: faces, events: events,
       pets: pets, pets_verify: petsVerify,
+      // F161: sent explicitly like the four above — an unticked box has to force the
+      // deep tier OFF for this run, which is the whole point of giving it a line.
+      products: document.getElementById("process-products-checkbox").checked,
       quality: document.getElementById("process-quality-checkbox").checked,
       quality_scope: currentQualityScope(),
       keeper: document.getElementById("process-keeper-checkbox").checked,
@@ -11895,6 +12021,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function optionsSummaryText() {
     var on = [];
     [["process-deep-checkbox", I18N.process_deep_label],
+     ["process-products-checkbox", I18N.process_products_label],
      ["process-geo-online-checkbox", I18N.process_geo_online_label],
      ["process-faces-checkbox", I18N.process_faces_label],
      ["process-events-checkbox", I18N.process_events_label],
@@ -12159,7 +12286,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .addEventListener("input", updateStepLayout);
   document.getElementById("process-source-dir")
       .addEventListener("change", sourceDirChanged);
-  ["process-deep-checkbox", "process-geo-online-checkbox", "process-faces-checkbox",
+  ["process-deep-checkbox", "process-products-checkbox",
+   "process-geo-online-checkbox", "process-faces-checkbox",
    "process-events-checkbox", "process-pets-checkbox",
    "process-pets-verify-checkbox", "process-quality-checkbox",
    "process-keeper-checkbox"].forEach(function (id) {

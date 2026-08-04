@@ -710,10 +710,13 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         data = json.loads(body)
         # F138: the four knobs that left the settings column start from the config here
         # too — the file is their only home now, and this is what the screen reads.
+        # F161: `products` is the fifth, and the one whose default is TRUE — it is the
+        # deep tier, which a config that never heard of the key has always run.
         self.assertEqual(set(data.keys()),
-                         {"deep", "geo_online", "pets", "pets_verify", "quality",
-                          "quality_scope", "keeper", "vlm_available"})
+                         {"deep", "products", "geo_online", "pets", "pets_verify",
+                          "quality", "quality_scope", "keeper", "vlm_available"})
         self.assertFalse(data["deep"])
+        self.assertTrue(data["products"])
         self.assertFalse(data["geo_online"])
         self.assertFalse(data["pets"])
         self.assertFalse(data["pets_verify"])

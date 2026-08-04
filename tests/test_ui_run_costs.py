@@ -265,7 +265,7 @@ class TestTheBlockItself(RunCostsTestBase):
 
     def test_every_line_carries_a_price_slot(self):
         for key in ("base", "faces", "events", "pets", "pets_verify", "deep",
-                    "quality", "keeper"):
+                    "products", "quality", "keeper"):
             with self.subTest(key=key):
                 self.assertIn(f'data-cost="{key}"', self.options)
 
@@ -280,8 +280,13 @@ class TestTheBlockItself(RunCostsTestBase):
 
     def test_the_only_nesting_is_one_level_deep(self):
         """A subordinate control of a subordinate control is where this block would
-        stop being readable, so there is deliberately no second level."""
-        self.assertEqual(self.options.count('class="cost-child"'), 2)
+        stop being readable, so there is deliberately no second level.
+
+        Three children since F161: the product line sits under the master switch the way
+        the animal check sits under the animals, which is what keeps the block at seven
+        rows while the master stops doing anything by itself.
+        """
+        self.assertEqual(self.options.count('class="cost-child"'), 3)
         for child in self.options.split('class="cost-child"')[1:]:
             self.assertNotIn("cost-child", child.split("</span>", 1)[0])
 
@@ -356,11 +361,16 @@ class TestEstimateEndpoint(RunCostsTestBase):
 
     def test_a_stage_that_never_ran_is_unknown_rather_than_free(self):
         """The frames the deep tier asks about are chosen from the CLIP scores of the
-        run in progress: before one has happened the number does not exist."""
+        run in progress: before one has happened the number does not exist.
+
+        F161 moved that line from `deep` to `products` — the master switch is priced at
+        zero on any collection, which is a different statement and has a case of its own
+        below.
+        """
         self.add_photo("a.jpg")
         self.start_server()
         data = self.estimate()
-        self.assertIsNone(data["seconds"]["deep"])
+        self.assertIsNone(data["seconds"]["products"])
         self.assertIsNone(data["seconds"]["pets_verify"])
         self.assertIsNone(data["seconds"]["keeper"])
         self.assertIsNotNone(data["seconds"]["base"])
@@ -378,6 +388,8 @@ class TestEstimateEndpoint(RunCostsTestBase):
         self.assertEqual(data["seconds"]["pets"], 0.0)
 
     def test_the_deep_tier_is_priced_by_the_frames_it_answered_on(self):
+        """F161: the line is `products` now, and it is the same arithmetic on the same
+        population — what changed is which checkbox it stands next to."""
         ids = [self.add_photo(f"p{i}.jpg") for i in range(3)]
         for file_id, source in zip(ids, ("clip", "vlm", "vlm")):
             self.conn.execute(
@@ -386,8 +398,8 @@ class TestEstimateEndpoint(RunCostsTestBase):
         self.conn.commit()
         self.start_server()
         data = self.estimate()
-        self.assertEqual(data["counts"]["deep"], 2)
-        self.assertAlmostEqual(data["seconds"]["deep"],
+        self.assertEqual(data["counts"]["products"], 2)
+        self.assertAlmostEqual(data["seconds"]["products"],
                                round(2 * ui._SEC_PER_VLM_FRAME, 1))
 
     def test_the_pet_check_is_priced_by_its_candidate_threshold(self):

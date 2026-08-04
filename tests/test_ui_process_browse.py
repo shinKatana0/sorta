@@ -24,7 +24,9 @@ class TestProcessControlsLayout(UiServerTestBase):
         html = body.decode("utf-8")
 
         deep_checkbox = html.index('id="process-deep-checkbox"')
-        deep_hint = html.index("Slower; requires")
+        # F161 rewrote this hint: the master switch is permission and costs nothing, so
+        # it no longer opens with "Slower" — what is slow are the lines below it.
+        deep_hint = html.index("Permission to load the model")
         geo_checkbox = html.index('id="process-geo-online-checkbox"')
         geo_hint = html.index("More accurate place names")
         start_btn = html.index('id="process-start-btn"')
