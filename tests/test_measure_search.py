@@ -7,6 +7,13 @@ flatter the feature — the bands have to add up to the collection, an unlabelle
 not be counted as a miss, a thin sample has to say so out loud — and that a report about
 someone's photographs does not print where they are unless it was asked to.
 
+F153 adds the other half of the numbers and the comparison that needs them. Precision was
+never going to decide whether merging the two indexes is worth anything — both models are
+at 98% at top-5 already — so what is tested here is that RECALL is computed against a
+stated denominator (the marked frames, not the collection), that an unlabelled frame
+counts as not relevant in it while precision still ignores it, and that a table which
+cannot support a conclusion says so instead of printing one.
+
 No model, no GPU, no photo: everything below is arithmetic over (file_id, score) pairs.
 """
 from __future__ import annotations
@@ -17,6 +24,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from sorta import search
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "measure_search.py"
 
@@ -119,6 +128,111 @@ class TestTheTablesReadHonestly(unittest.TestCase):
         self.assertNotIn("ВНИМАНИЕ", printed)
 
 
+class TestRecall(unittest.TestCase):
+    """F153: the half nobody measured — and the denominator it is honest about."""
+
+    def test_recall_counts_the_marked_frames_the_prefix_reached(self):
+        hits = [(i, 0.3 - 0.001 * i) for i in range(1, 11)]
+        labels = {1: True, 3: False, 5: True, 99: True}  # three positives in the pool
+        rows = {depth: (found, pool, recall)
+                for depth, found, pool, recall in measure.recall_at(
+                    hits, labels, depths=(2, 10))}
+        self.assertEqual(rows[2], (1, 3, 1 / 3))
+        self.assertEqual(rows[10], (2, 3, 2 / 3))
+
+    def test_an_unlabelled_frame_is_not_relevant_here_although_precision_ignores_it(self):
+        # The two rules differ on purpose: precision asks what a person checked, recall
+        # asks what the variant surfaced. Counting an unjudged frame as relevant would let
+        # a variant raise its recall by returning frames nobody has looked at.
+        hits = [(1, 0.3), (2, 0.3)]
+        labels = {1: True, 7: True}
+        self.assertEqual(measure.recall_at(hits, labels, depths=(2,)), [(2, 1, 2, 0.5)])
+        self.assertEqual(measure.precision_at(hits, labels, depths=(2,)), [(2, 1, 1, 1.0)])
+
+    def test_a_query_with_no_positive_marks_is_an_empty_pool_and_not_an_accuracy(self):
+        self.assertEqual(measure.recall_at([(1, 0.3)], {1: False}, depths=(1,)),
+                         [(1, 0, 0, 0.0)])
+
+    def test_the_recall_table_states_that_the_denominator_is_the_marks(self):
+        printed = measure.format_recall(result(), {1: True, 2: True, 3: False})
+        self.assertIn("ПОЛНОТА", printed)
+        self.assertIn("не вся коллекция", printed)
+
+    def test_a_thin_pool_is_flagged_before_its_recall_is_read(self):
+        self.assertIn("ВНИМАНИЕ", measure.format_recall(result(), {1: True}))
+
+
+class TestTheVariantComparison(unittest.TestCase):
+    """F153: L14, XLM and both merges in one table, over one set of marks."""
+
+    def variants(self):
+        # XLM has the two relevant frames deeper down; L14 has one of them first. A merge
+        # is supposed to be able to beat both, which is exactly what needs measuring.
+        return measure.with_fusions({
+            measure.VARIANT_SEARCH: [(3, 0.31), (1, 0.30), (2, 0.29)],
+            measure.VARIANT_CLASS: [(2, 0.25), (4, 0.24), (1, 0.23)],
+        })
+
+    def test_all_four_variants_are_measured(self):
+        variants = self.variants()
+        self.assertEqual(set(variants), {measure.VARIANT_SEARCH, measure.VARIANT_CLASS,
+                                         *measure.FUSION_VARIANTS})
+
+    def test_the_merges_come_from_the_features_own_function(self):
+        # Not a copy of the arithmetic living in the script: a private reimplementation
+        # would measure this file instead of the feature.
+        variants = self.variants()
+        for mode in measure.FUSION_VARIANTS:
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    variants[mode],
+                    search.fuse([[3, 1, 2], [2, 4, 1]], mode, measure.FUSION_DEPTH))
+
+    def test_an_index_that_could_not_rank_leaves_the_others_measurable(self):
+        variants = measure.with_fusions({measure.VARIANT_SEARCH: [(1, 0.3), (2, 0.2)]})
+        self.assertEqual([fid for fid, _w in variants[measure.SEARCH_FUSION_RANK]], [1, 2])
+        self.assertEqual(measure.with_fusions({})[measure.SEARCH_FUSION_UNION], [])
+
+    def test_every_variant_gets_a_cell_per_depth_from_the_same_marks(self):
+        scores = measure.compare(self.variants(), {1: True, 2: True, 3: False},
+                                 depths=(1, 3))
+        self.assertEqual(len(scores), 4 * 2)
+        by_key = {(s.variant, s.depth): s for s in scores}
+        xlm = by_key[(measure.VARIANT_SEARCH, 3)]
+        self.assertEqual((xlm.labelled, xlm.correct), (3, 2))
+        self.assertEqual((xlm.found, xlm.pool), (2, 2))
+        self.assertEqual(xlm.recall, 1.0)
+        self.assertEqual(by_key[(measure.VARIANT_CLASS, 1)].found, 1)
+
+    def test_the_unjudged_part_of_a_prefix_is_counted_and_not_hidden(self):
+        scores = measure.compare({measure.VARIANT_SEARCH: [(1, 0.3), (9, 0.2)]},
+                                 {1: True}, depths=(2,))
+        self.assertEqual((scores[0].labelled, scores[0].unlabelled), (1, 1))
+
+    def test_the_table_prints_a_line_per_variant_and_depth(self):
+        printed = measure.format_comparison(
+            "cake", measure.compare(self.variants(), {1: True, 2: True, 3: False},
+                                    depths=(3,)))
+        self.assertIn("«cake»", printed)
+        for variant in (measure.VARIANT_SEARCH, measure.VARIANT_CLASS,
+                        *measure.FUSION_VARIANTS):
+            self.assertIn(variant, printed)
+        self.assertIn("ОТНОСИТЕЛЬНАЯ", printed)
+
+    def test_a_thin_pool_of_positives_is_flagged_in_the_comparison_too(self):
+        printed = measure.format_comparison(
+            "cake", measure.compare(self.variants(), {1: True}, depths=(3,)))
+        self.assertIn("ВНИМАНИЕ", printed)
+        self.assertIn(str(measure.MIN_LABELS), printed)
+
+    def test_a_mostly_unlabelled_output_says_the_marks_are_not_enough(self):
+        printed = measure.format_comparison(
+            "cake", measure.compare(
+                {measure.VARIANT_SEARCH: [(i, 0.3) for i in range(1, 21)]},
+                {i: True for i in range(1, 6)}, depths=(20,)))
+        self.assertIn("доразметьте", printed)
+
+
 class TestTheWorksheet(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -129,12 +243,28 @@ class TestTheWorksheet(unittest.TestCase):
 
     def test_the_template_holds_file_ids_and_nulls_only(self):
         path = self.root / "marks.json"
-        written = measure.write_label_template(path, [result(), result(query="snow")])
+        written = measure.write_label_template(
+            path, measure.top_ids([result(), result(query="snow")]))
         self.assertEqual(written, 6)
         data = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(set(data), {"cake", "snow"})
         self.assertEqual(set(data["cake"].values()), {None})
         self.assertEqual(set(data["cake"]), {"1", "2", "3"})
+
+    def test_a_fusion_worksheet_covers_the_top_of_every_variant(self):
+        # The frames only the merge surfaced are the ones the comparison stands on, and
+        # they are unlabelled by construction — a sheet holding one variant's top would
+        # measure the merge against a sample its competitor chose.
+        ids = measure.merged_ids({"XLM": [(1, 0.3), (2, 0.2)],
+                                  "rank": [(2, 0.02), (5, 0.01)]}, top=2)
+        self.assertEqual(ids, [1, 2, 5])
+        path = self.root / "marks.json"
+        self.assertEqual(measure.write_label_template(path, {"cake": ids}), 3)
+        self.assertEqual(set(json.loads(path.read_text(encoding="utf-8"))["cake"]),
+                         {"1", "2", "5"})
+
+    def test_the_worksheet_only_holds_the_top_asked_for(self):
+        self.assertEqual(measure.merged_ids({"XLM": [(1, 0.3), (2, 0.2)]}, top=1), [1])
 
     def test_a_partially_filled_sheet_drops_the_unanswered_frames(self):
         path = self.root / "marks.json"
