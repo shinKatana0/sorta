@@ -486,7 +486,7 @@ class TestFaceSlicesHtml(FaceSliceTestBase):
         keys = ("face_slice_people", "face_slice_group", "face_slice_portrait",
                 "face_slices_intro", "face_hint_people", "face_hint_group",
                 "face_hint_portrait", "face_no_faces_run", "face_empty",
-                "face_count_label", "face_load_more", "face_shown_label",
+                "face_count_label", "slice_load_more", "slice_shown_label",
                 "error_loading_face_slices", "overview_with_people",
                 "overview_group_photos", "overview_portraits")
         for key in keys:
@@ -499,8 +499,8 @@ class TestFaceSlicesHtml(FaceSliceTestBase):
             self.assertIn("{n}", ui._UI_STRINGS["face_hint_group"][lang])
             self.assertIn("{share}", ui._UI_STRINGS["face_hint_portrait"][lang])
             self.assertIn("{n}", ui._UI_STRINGS["face_count_label"][lang])
-            self.assertIn("{shown}", ui._UI_STRINGS["face_shown_label"][lang])
-            self.assertIn("{total}", ui._UI_STRINGS["face_shown_label"][lang])
+            self.assertIn("{shown}", ui._UI_STRINGS["slice_shown_label"][lang])
+            self.assertIn("{total}", ui._UI_STRINGS["slice_shown_label"][lang])
 
 
 class TestTabVisibility(FaceSliceTestBase):

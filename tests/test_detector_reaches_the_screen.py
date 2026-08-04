@@ -122,7 +122,14 @@ class AnimalRuleCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.cfg = Config(sources=[self.root], database=self.root / "test.db", raw={})
-        self.cfg.features = FeaturesConfig(pets=True, detector=True)
+        # The confidence is PINNED here and not taken from the default: this file is about
+        # the mechanism, and `_CASES_BOXES` below is written against 0.5 ("weak" sits under
+        # it, "strong" over it). F162 moved the default to 0.6 off a table of precision and
+        # recall — a number about which frames are worth marking, not about what the rule
+        # does with a box — and a mechanism test that rode the default would have to be
+        # re-read every time that table is measured again.
+        self.cfg.features = FeaturesConfig(pets=True, detector=True,
+                                           detector_threshold=0.5)
         self.cfg.detect = DetectConfig(enabled=True)
         self.conn = connect(self.cfg.database)
         self._n = 0

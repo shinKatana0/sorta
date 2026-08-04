@@ -1,8 +1,9 @@
 """F99 (G3): the city folder is named in the layout language, not in the DB anchor.
 
-`geo` writes the English/asciiname anchor into `places.city` plus `places.
-city_geonameid` and deliberately localizes nothing (see geo._CANONICAL_LANG) — the
-translation belongs here. Measured on the live collection (2026-07-28): 18 450 of
+`geo` writes `places.city` next to `places.city_geonameid` (F172: the name in the
+config language, by one rule for every source) — but the folder language is decided
+HERE, out of the geonameid, so switching it costs no geo run. Measured on the live
+collection (2026-07-28): 18 450 of
 26 135 placed files carry a geonameid, 15 284 of them have a Russian name in the
 bundled `names.tsv`, and before this feature every one of them was filed under its
 English name while the country folder above it was already Russian.

@@ -6,6 +6,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Every ordered slice can be walked past its first page — search included** (F173). A
+  query for «дети» came back with **exactly 200 frames** and no way further:
+  `features.search_limit` was 200, and search had no paging at all, only a caption saying
+  "200 frames". Animals, faces, screenshots and the Review each had a "show more" button;
+  the one slice built by a QUERY rather than by a model's marks did not. That is the
+  expensive one to miss, because the measurements of 2026-08-02/03 found exactly one
+  confirmed lever of completeness — **the depth of the list**. Doubling it adds ~25 points
+  on average, and on children it goes from **61% to 89%**: the second half of the ranking
+  held nearly a third of all the frames the person was looking for, and the handle for it
+  did not turn. `features.search_limit` is therefore **`features.search_page`** now — a
+  ceiling cuts the answer off, a page only decides how much of it arrives first — and the
+  old key keeps working, so an existing `config.yaml` loses nothing to the rename (it logs
+  one line and reads the value). The counter says how many there are **in total** rather
+  than how many are on screen: "showing 200" and "there are exactly 200" read identically,
+  and for a ranking the second is almost never true. Beside the button there is one line
+  about what depth costs — further down the list means more found **and** more missed —
+  because that trade is measured and the person pressing the button is the one making it.
+  There is no infinite scroll on purpose: a portion arrives when somebody asks for one.
+  **The button is one mechanism now, not a fifth copy of one.** The server answers every
+  paged slice through `ui._page_payload` (`items`/`total`/`offset`/`limit`/`has_more`, with
+  `has_more` computed from the window actually served), the browser draws every one of them
+  through a single `makePager`, and the caption is one catalog entry in the three languages
+  instead of one per slice. The animal and face slices were moved onto it; the slices still
+  ahead of this one in the queue (query slices, pinned queries, low resolution, blurred as
+  a list) inherit the button by calling it rather than by copying it. The ranking order is
+  untouched: this feature is about reaching the tail, not about how the tail is sorted.
+- **The detector's threshold and depth are taken from the table it prints itself** (F162).
+  Two defaults move and nothing else does: `features.detector_threshold` 0.5 → **0.6** and
+  `features.detector_candidates` 2 000 → **4 000**. Both come off a re-measurement on
+  **500** hand-labelled frames (36 animals), because the numbers F154 shipped were read on
+  200, where fifteen animals made every one of them worth 6.7 points of recall. On the
+  larger sample both figures moved by two dozen points — the detector at 0.50 is **78%
+  precision / 69% recall**, not 62% / 87%, against **94% / 47%** for the CLIP label on the
+  same frames. That spread is what a thin class does to a small sample, and it is the whole
+  reason a row is chosen from a table and not in advance.
+  **0.60 dominates 0.50 with nothing traded away**: the same 69% recall, 25 correct marks
+  out of 29 instead of 25 out of 32. Three false ones go for free — a clean win rather than
+  a compromise, which is why this one needs no decision about what a user prefers. 0.70
+  buys no precision (86% again) and gives up two points of recall.
+  The depth is a **ceiling**, not a threshold: it decides which frames the detector is
+  shown at all, and an animal the query never ranked that high is not found at any
+  confidence. Measured, 500 candidates reach 25% of the known animals, 1 000 reach 50%,
+  2 000 reach 83% — so **17% of them were unreachable in principle** on the old default —
+  and 4 000 reach **100%**. The price is named honestly: 4 000 frames is **5.6 minutes** at
+  the measured 83.8 ms per frame, 2.8 minutes more than before, against the ~19 the animal
+  stage already spends on the VLM and the 30.8 a pass over all 22 096 frames would cost.
+  10 000 is pointless: the same ceiling for three times the time.
+  Both tables are now written beside the values themselves — in `sorta/config.py`,
+  `config.example.yaml` and the three user guides — so the numbers read as measured and
+  paid for rather than picked. **`detect.enabled` does not move**: the detector stays off
+  by default, and whether the cascade wants it is a decision for a live run, when the total
+  time is on the table next to the few points that separate it from F158.
+
 ### Removed
 - **The "is there a subject" question is gone, and so are the answers it collected**
   (F177). The frame-quality prompt asked two things in one call — are the eyes open, and
@@ -87,6 +141,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the detector on. The default does not move — `detect.enabled` stays off, and trading
   20 points of precision for 23 of recall is the user's decision, taken with the numbers of
   a run in hand.
+- **One city, one name — and one alphabet per language** (F172). A `language: ru` layout
+  came out in three alphabets at once: «Санкт-Петербург», «Москва» and «Серик» next to
+  `Nizhny Novgorod` (382 files), `Samara` (179) and `Ryazan` (109), with a Thai village in
+  its own script between them. Worse, one city was filed twice — «Сочи» (385 frames) and
+  `Sochi` (29) share a geonameid and are the same place. The bundled data was never the
+  problem: `names.tsv` holds a Russian name for every one of those cities. The NAME had two
+  sources that did not agree about the language. The bundled base was asked for the English
+  anchor (`geo._CANONICAL_LANG`), the online provider answered in the language of the
+  request — so whether a city came out Russian depended on whether Nominatim happened to
+  name a suburb for it: the answers that stopped at the region were completed from the
+  offline base, in English, and landed beside their own Russian twins. The rule is now
+  written down once, in `geo._place_name`, and every source goes through it: `language` →
+  `en` → the native name the source knew (the asciiname of `places.tsv` offline, the
+  provider's own text online). A geonameid outranks text, so two files of one city cannot
+  be named differently again; where there is no Russian name, the English one is used
+  rather than an invented transliteration, and a place with no alternatives at all keeps
+  its own script. Nothing about WHERE a file goes changed — only what the place is called.
+  No schema change: the geonameid is still written next to the name, so the sorter keeps
+  choosing the folder language when it READS the row (F99) and a change of `language`
+  still costs no geo run at all.
 - **"There is an animal here" is computed when read, not frozen when written** (F137).
   The thresholds of the animal cascade are deliberately **not** part of the prompt
   fingerprint — the scores and the model's answers are stored precisely so a threshold can

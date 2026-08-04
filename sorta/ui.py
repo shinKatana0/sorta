@@ -288,11 +288,13 @@ route that marks a whole slice at once: reviewed by eye, blurred frames turn up 
 band up to 400, so sharpness ranks the list and a person decides each frame.
 
 (22) `GET /api/search` (F134, the query line of the "Slices" tab) — the F129 engine
-behind the field F133 drew and left disabled: `q` is the words, `limit` a SAMPLE SIZE
-(`features.search_limit` by default, clamped, never a similarity threshold — there is
-none and there will not be one), and the answer is the ranking as cards with a score on
-each. Every answer also carries the STATE of the index — `state` (empty / other_model /
-partial / ready), `available`, `indexed`, `total` and `index_model` — because the failure
+behind the field F133 drew and left disabled: `q` is the words, `offset`/`limit` a PAGE of
+the ranking (`features.search_page` frames by default, clamped, never a similarity
+threshold — there is none and there will not be one), and the answer is that page as cards
+with a score on each, plus `total`/`has_more` like every other paged slice (F173: the
+ranking does not end where the page does, and the counter has to say so). Every answer also
+carries the STATE of the index — `state` (empty / other_model / partial / ready),
+`available`, `indexed`, `photos` and `index_model` — because the failure
 this route exists to avoid is answering "nothing was found" when the truth is "nothing was
 ever computed": the two are the same empty list on screen, and only one of them is a fact
 about the person's photographs. An empty `q` returns that state and nothing else, without
@@ -401,7 +403,7 @@ from .search import (
     REASON_OTHER_MODEL,
     EmbeddingsMissing,
     TextEncoder,
-    search_text,
+    rank_text,
     text_encoder,
 )
 from .sorter import (
@@ -743,23 +745,52 @@ class PlanCache:
         }
 
 
-def _parse_page_window(query: dict[str, list[str]]) -> tuple[int, int] | None:
-    """(offset, limit) for a `/api/plan` category page, or None -> 400.
+def _parse_page_window(query: dict[str, list[str]],
+                       default_limit: int = _PLAN_PAGE_DEFAULT_LIMIT
+                       ) -> tuple[int, int] | None:
+    """(offset, limit) for any paged route, or None -> 400.
 
     A missing parameter falls back to the default; a non-integer or negative one is
     rejected rather than coerced — the one outcome that must never happen is quietly
     serving the whole category. A limit above the maximum is clamped, not rejected:
     an over-eager client gets less data, not an error.
+
+    F173: `default_limit` is an argument because one route's page size is a setting rather
+    than a constant — search opens to `features.search_page`. Everything else about the
+    window is the same rule for every list, which is the point: a slice added tomorrow
+    gets a validated window by calling this, not by writing a fourth copy of it.
     """
     raw_offset = (query.get("offset") or ["0"])[0]
-    raw_limit = (query.get("limit") or [str(_PLAN_PAGE_DEFAULT_LIMIT)])[0]
+    raw_limit = (query.get("limit") or [str(default_limit)])[0].strip()
     try:
-        offset, limit = int(raw_offset), int(raw_limit)
+        offset, limit = int(raw_offset), int(raw_limit or default_limit)
     except ValueError:
         return None
     if offset < 0 or limit < 0:
         return None
     return offset, min(limit, _PLAN_PAGE_MAX_LIMIT)
+
+
+def _page_payload(items: list[dict], *, total: int, offset: int, limit: int) -> dict:
+    """The five keys every paged slice answers with — F173's shared half on the server.
+
+    Two of them are the feature. `total` is the length of the LIST, never the length of
+    this page: "showing 200" and "there are 200" read identically, and for a ranking the
+    second is almost never true. `has_more` is computed here, from the window the server
+    actually served, so the button on the screen cannot disagree with the data behind it —
+    a client deciding for itself would have to keep a running count and would be wrong the
+    first time a page came back short.
+
+    A slice merges its own keys into the result (`animals`, `counts`, the state of the
+    search index): what is shared is the paging, not the payload.
+    """
+    return {
+        "items": items,
+        "total": int(total),
+        "offset": int(offset),
+        "limit": int(limit),
+        "has_more": int(offset) + len(items) < int(total),
+    }
 
 
 def _resolve_path(db_path: Path, file_id: int) -> Path | None:
@@ -1664,11 +1695,9 @@ def _animals_payload(db_path: Path, cfg: Config, offset: int, limit: int) -> dic
     finally:
         conn.close()
     return {
-        "total": int(total),
         "animals": int(animals),
-        "offset": offset,
-        "limit": limit,
-        "items": [_animal_item_to_json(r) for r in rows],
+        **_page_payload([_animal_item_to_json(r) for r in rows],
+                        total=int(total), offset=offset, limit=limit),
     }
 
 
@@ -1865,10 +1894,7 @@ def _face_slices_payload(cfg: Config, db_path: Path, slice_: str, offset: int,
         # rule the numbers were produced by instead of repeating a default in JS.
         "group_min": int(cfg.features.group_photo_faces),
         "portrait_share": float(cfg.features.portrait_face_share),
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "items": items,
+        **_page_payload(items, total=total, offset=offset, limit=limit),
     }
 
 
@@ -3097,9 +3123,10 @@ _SEARCH_ROWS_SQL = """SELECT f.id, f.path, f.taken_at, mc.verdict
     FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
     WHERE f.id IN ({marks})"""
 
-# A limit is a SAMPLE SIZE (search.py), so a client asking for more than the server is
-# willing to render gets less rather than an error — the `_parse_page_window` rule.
-_SEARCH_MAX_LIMIT = 1000
+# F173: a limit is a SAMPLE SIZE (search.py) and a page of one at that, so the ceiling on
+# how much may be rendered at once is `_PLAN_PAGE_MAX_LIMIT` like everywhere else — a
+# client asking for more gets less rather than an error. It used to be a constant of its
+# own with the same value, which is one more place a rule could drift.
 
 
 def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
@@ -3111,7 +3138,7 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
     and the row count is how the name is chosen, because a table can hold leftovers of
     several models and only the dominant one is worth putting in front of a reader.
 
-    `indexed` counts vectors of THIS model within the searchable population, `total` the
+    `indexed` counts vectors of THIS model within the searchable population, `photos` the
     population itself. The pair is the "we are searching N of M photographs" line, and it
     is computed here, once, so the line and the availability of the field cannot disagree.
     """
@@ -3139,7 +3166,12 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
         "model": model,
         "index_model": model if stored else (max(others)[1] if others else None),
         "indexed": indexed,
-        "total": photos,
+        # F173: `photos`, not `total`. This route answers with a PAGE of a ranking now, and
+        # in every paged payload of this server `total` means the length of the list being
+        # walked. Two numbers called the same thing in one answer is how a counter starts
+        # saying "showing 200 of 19 753 photographs in the collection" about a list of
+        # 4 000 — so the coverage line's denominator got the name of what it counts.
+        "photos": photos,
     }
 
 
@@ -3186,56 +3218,61 @@ def _search_items(conn: sqlite3.Connection, hits: Sequence[tuple[int, float]],
             for fid, score in hits if fid in rows]
 
 
-def _search_payload(cfg: Config, db_path: Path, text: str, limit: int,
+def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: int,
                     encoder: TextEncoder | None = None) -> dict:
-    """`GET /api/search` — the state of the index always, the ranking when there is one.
+    """`GET /api/search` — the state of the index always, a page of the ranking when there
+    is one.
 
     The model is not asked anything unless there is a reason to: an empty query and an
-    unavailable index both return before `search_text`, which is what keeps a stray
+    unavailable index both return before `rank_text`, which is what keeps a stray
     keystroke from loading CLIP and what makes "the line is disabled" cheap to render.
 
     `EmbeddingsMissing` is still caught, because the state was read a moment earlier and a
     run can empty the table in between; the answer then carries the engine's own reason
     rather than an empty `items` list, which is the one thing this route must never send.
+
+    F173: a page rather than the whole answer, in the shape `_page_payload` gives every
+    other paged slice. `total` is the length of the RANKING — the number the counter says
+    and the number the "show more" button is decided by — and it comes back from the engine
+    with the page, so the two cannot be computed out of step with each other. A state that
+    ranks nothing still carries `total: 0` and `has_more: false`: the client draws the same
+    controls whatever happened, and they are simply not there when there is nothing below.
     """
     conn = _connect(db_path)
     try:
         model = search_index_model(cfg)  # F141: the search model, not the classifier's
         payload = _search_index_state(conn, model)
-        payload.update({"query": text, "limit": limit, "items": []})
+        payload.update({"query": text,
+                        **_page_payload([], total=0, offset=offset, limit=limit)})
         if not text.strip() or not payload["available"]:
             return payload
         try:
-            hits = search_text(cfg, conn, text, limit=limit, encoder=encoder)
+            page = rank_text(cfg, conn, text, limit=limit, offset=offset, encoder=encoder)
         except EmbeddingsMissing as exc:
             payload["state"] = exc.reason
             payload["available"] = False
             return payload
-        payload["items"] = _search_items(
-            conn, hits, frozenset(cfg.vlm.exclude_classes))
+        payload.update(_page_payload(
+            _search_items(conn, page.hits, frozenset(cfg.vlm.exclude_classes)),
+            total=page.total, offset=page.offset, limit=page.limit))
         return payload
     finally:
         conn.close()
 
 
 def _parse_search_query(query: dict[str, list[str]],
-                        default_limit: int) -> tuple[str, int] | None:
-    """(query text, limit) for `GET /api/search`, or None -> 400.
+                        default_limit: int) -> tuple[str, int, int] | None:
+    """(query text, offset, limit) for `GET /api/search`, or None -> 400.
 
     An absent/empty `q` is NOT an error: the client asks with one on purpose, to learn the
-    state of the index without spending a model on it. `limit` follows the
-    `_parse_page_window` rule — a non-integer or a negative one is rejected, an
-    over-eager one is clamped.
+    state of the index without spending a model on it. The window is the shared
+    `_parse_page_window` — a non-integer or a negative number is rejected, an over-eager
+    limit is clamped — with `features.search_page` as the default size of a page.
     """
-    text = (query.get("q") or [""])[0]
-    raw_limit = (query.get("limit") or [str(default_limit)])[0].strip()
-    try:
-        limit = int(raw_limit or default_limit)
-    except ValueError:
+    window = _parse_page_window(query, default_limit)
+    if window is None:
         return None
-    if limit < 0:
-        return None
-    return text, min(limit, _SEARCH_MAX_LIMIT)
+    return (query.get("q") or [""])[0], window[0], window[1]
 
 
 class _LazyTextEncoder:
@@ -5301,6 +5338,32 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "The plan is empty — nothing to lay out.",
         "ja": "プランは空です — 整理する対象がありません。",
     },
+    # --- F173: the three captions of the shared pager (`makePager`) --------------------
+    # One button, one counter, one warning, for every ordered slice there is and every one
+    # there will be. They are not per-slice keys because the fifth copy of "Показать ещё"
+    # is how a new slice ships without the button at all: a slice that has to add a string
+    # to get one has a reason to skip it, and search shipped without one for that reason.
+    "slice_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
+    # THE fix of the counter. "Показано 200" is indistinguishable from "нашлось ровно 200",
+    # and for a ranking the second is almost never true — so the denominator is the length
+    # of the list, always, and the numerator only says how far down it the reader is.
+    "slice_shown_label": {
+        "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
+        "ja": "{total} 件中 {shown} 件を表示",
+    },
+    # The price of depth, in one line and only where something is actually ranked. Measured
+    # on 2026-08-02/03: doubling the list adds ~25 points of completeness on average, and
+    # the query «дети» goes from 61% to 89% — while the frames that arrive with the second
+    # page are exactly the ones the model was least sure about. Pressing the button buys
+    # coverage with precision, and a person choosing that has to know it is a trade.
+    "slice_depth_hint": {
+        "ru": "Дальше по списку — больше находок и больше промахов: вторая половина "
+              "заметно полнее, но модель в ней уверена меньше.",
+        "en": "Further down the list means more found and more missed: the second half is "
+              "noticeably more complete, and the model is less sure of it.",
+        "ja": "リストを下るほど、見つかる数は増え、外れも増えます。後半は網羅性が高い"
+              "一方で、モデルの確信度は低くなります。",
+    },
     "error_loading_moves": {
         "ru": "Ошибка загрузки перемещений: ", "en": "Error loading moves: ",
         "ja": "移動読み込みエラー: ",
@@ -6105,11 +6168,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "animals_score_label": {
         "ru": "уверенность {score}", "en": "confidence {score}", "ja": "確信度 {score}",
     },
-    "animals_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
-    "animals_shown_label": {
-        "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
-        "ja": "{total} 件中 {shown} 件を表示",
-    },
+    # F173: the button and the counter of this slice are `slice_load_more` /
+    # `slice_shown_label` now — the shared pager's, like every other ordered list.
     "error_loading_animals": {
         "ru": "Не удалось загрузить животных: ", "en": "Could not load the animals: ",
         "ja": "動物を読み込めません: ",
@@ -6528,10 +6588,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "search_score_label": {
         "ru": "близость {score}", "en": "closeness {score}", "ja": "近さ {score}",
     },
+    # F173: the numerator AND the denominator. The old wording ("{n} frames") was true of
+    # the page and read as a fact about the collection — «200 кадров» for a query whose
+    # ranking is four thousand long, with the half that matters below the fold.
     "search_shown_label": {
-        "ru": "Запрос «{q}»: {n} кадров, от самого близкого",
-        "en": "Query “{q}”: {n} frames, closest first",
-        "ja": "クエリ「{q}」: {n} 件（近い順）",
+        "ru": "Запрос «{q}»: показано {shown} из {total}, от самого близкого",
+        "en": "Query “{q}”: showing {shown} of {total}, closest first",
+        "ja": "クエリ「{q}」: {total} 件中 {shown} 件を表示（近い順）",
     },
     # An available index always ranks everything it holds, so an empty list means the
     # index itself is empty of frames a search may return — never "there are no such
@@ -6607,12 +6670,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "face_count_label": {
         "ru": "лиц: {n}", "en": "{n} faces", "ja": "顔 {n}",
     },
-    "face_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
-    "face_shown_label": {
-        "ru": "Показано {shown} из {total}",
-        "en": "Showing {shown} of {total}",
-        "ja": "{total} 件中 {shown} 件を表示",
-    },
+    # F173: the shared pager's button and counter here too. What this slice does NOT take
+    # from it is `slice_depth_hint` — nothing is ranked here (a frame is in the slice
+    # because the detector found a face), so there is no precision to trade for depth and
+    # a line saying otherwise would be a warning about a risk this list does not carry.
     "error_loading_face_slices": {
         "ru": "Не удалось загрузить срезы по лицам: ",
         "en": "Could not load the face slices: ",
@@ -7701,7 +7762,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="search-album" class="album-controls"></div>
 <div id="search-grid"></div>
 <div class="process-actions">
+<button type="button" id="search-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
 <span id="search-shown" class="override-hint"></span>
+<span id="search-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
 </div>
 </div>
 
@@ -7726,7 +7789,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="face-album" class="album-controls"></div>
 <div id="face-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
-<button type="button" id="face-more-btn" class="btn btn-ghost" style="display:none">{{face_load_more}}</button>
+<button type="button" id="face-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
 <span id="face-shown" class="override-hint"></span>
 </div>
 </div>
@@ -7736,8 +7799,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="animals-album" class="album-controls"></div>
 <div id="animals-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
-<button type="button" id="animals-more-btn" class="btn btn-ghost" style="display:none">{{animals_load_more}}</button>
+<button type="button" id="animals-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
 <span id="animals-shown" class="override-hint"></span>
+<span id="animals-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
 <span id="animals-counted" class="override-hint"></span>
 <span id="animals-mark-status" class="album-status"></span>
 </div>
@@ -7913,6 +7977,113 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return template.replace(/\\{(\\w+)\\}/g, function (_, key) {
       return Object.prototype.hasOwnProperty.call(vals, key) ? vals[key] : "";
     });
+  }
+
+  // --- F173: "show more", once, for every ordered slice ----------------------
+  // The measurements of 2026-08-02/03 left exactly one confirmed lever of completeness —
+  // the DEPTH of the list. Doubling it adds ~25 points on average, and the query «дети»
+  // goes from 61% to 89%: the second half of a ranking holds nearly a third of what the
+  // reader is looking for. Four slices had a button for that and search, the one slice
+  // built by a query rather than by a model's marks, did not — it stopped dead at
+  // `features.search_limit` frames with a caption that read like an answer.
+  //
+  // So this is the organ itself, written once. A slice hands over its grid, the URL of a
+  // page and the way to draw a card; it gets appending pages, a button that hides itself
+  // at the end of the list, a counter that says how many there are IN TOTAL and — where
+  // something is actually ranked — the one line about what depth costs. A slice added
+  // tomorrow (a saved query, a low-resolution list) gets all of that by calling this, and
+  // that is the point: the fifth copy of the same twenty lines is how a new list ships
+  // without the button again.
+  //
+  // Deliberately NOT an infinite scroll. A page arrives when a person asks for one,
+  // because depth is a trade against precision and the person making it has to be making
+  // it on purpose.
+  function makePager(opts) {
+    var total = 0;
+    var offset = 0;
+    var hasMore = false;
+
+    function grid() { return document.getElementById(opts.grid); }
+
+    // The number on screen is counted off the DOM rather than accumulated, so a card that
+    // leaves the grid (a mark that takes a frame out of the list) cannot desynchronize the
+    // counter from what the reader can see — and the next page starts where the list ends.
+    function shown() { return grid().querySelectorAll(opts.cardSelector).length; }
+
+    function paint(data) {
+      var n = shown();
+      offset = n;
+      var counter = document.getElementById(opts.shown);
+      if (counter) {
+        counter.textContent = n
+            ? (opts.shownText ? opts.shownText(n, total, data)
+                              : fmt(I18N.slice_shown_label, { shown: n, total: total }))
+            : "";
+      }
+      var visible = hasMore && n > 0;
+      var btn = document.getElementById(opts.moreBtn);
+      if (btn) btn.style.display = visible ? "" : "none";
+      // The warning belongs to the button: with nothing left to load there is no trade to
+      // warn about, and a permanent line about precision is a line nobody reads.
+      var hint = opts.hint ? document.getElementById(opts.hint) : null;
+      if (hint) hint.style.display = visible ? "" : "none";
+    }
+
+    function renderPage(data, append) {
+      var box = grid();
+      if (!append) box.textContent = "";
+      (data.items || []).forEach(function (it) { box.appendChild(opts.card(it)); });
+      total = Number(data.total) || 0;
+      // `has_more` is the server's, computed from the window it actually served: a client
+      // guessing from its own running count is wrong the first time a page comes back
+      // short, and the wrong direction of that mistake is a button that promises a page
+      // which does not exist.
+      hasMore = !!data.has_more;
+      if (!shown()) box.appendChild(stateEl("empty", opts.emptyText(data)));
+      paint(data);
+      // Whatever else this slice prints beside the shared counter — the animal tab's
+      // second number, for one. It runs after the page is in the DOM, because the number
+      // it is about is usually a number of cards.
+      if (opts.after) opts.after(data, shown());
+    }
+
+    function fetchPage(from, append) {
+      var box = grid();
+      if (!append) {
+        box.textContent = "";
+        box.appendChild(stateEl("loading", I18N.loading));
+      }
+      return fetch(opts.url(from, opts.pageSize))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (opts.onData) opts.onData(data, append);
+          renderPage(data, append);
+          return data;
+        })
+        .catch(function (err) {
+          box.textContent = "";
+          box.appendChild(stateEl("error", opts.errorText() + err));
+        });
+    }
+
+    var moreBtn = document.getElementById(opts.moreBtn);
+    if (moreBtn) {
+      moreBtn.addEventListener("click", function () { fetchPage(offset, true); });
+    }
+
+    return {
+      load: function () { return fetchPage(0, false); },
+      more: function () { return fetchPage(offset, true); },
+      // The grid changed under the pager (a mark redrew or removed a card): recount and
+      // restate, without asking the server for a page it already sent.
+      sync: function (newTotal) {
+        if (newTotal !== null && newTotal !== undefined) total = Number(newTotal) || 0;
+        hasMore = shown() < total;
+        paint(null);
+        return shown();
+      },
+      shown: shown,
+    };
   }
 
   function applyTheme(theme) {
@@ -9174,40 +9345,58 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     appendAlbumBusyHint(box);
   }
 
-  function renderSearchResults(data) {
-    applySearchState(data);
-    var grid = document.getElementById("search-grid");
-    grid.textContent = "";
-    var items = data.items || [];
-    items.forEach(function (it) { grid.appendChild(renderSearchCard(it)); });
-    if (!items.length) {
-      // Never "nothing was found": a usable index ranks everything it holds, so an empty
-      // list is a fact about the index and the answer says which one.
-      grid.appendChild(stateEl("empty",
-          data.available ? I18N.search_no_frames : searchStateText(data)));
-    }
-    document.getElementById("search-shown").textContent = items.length
-        ? fmt(I18N.search_shown_label, { q: data.query, n: items.length }) : "";
-    renderSearchAlbumControls(items.length ? data.query : "");
-  }
+  // F173: the words the pages belong to. A "show more" that read the input field would
+  // fetch the continuation of a ranking nobody is looking at as soon as somebody starts
+  // typing the next query — the button continues the list on screen, not the field.
+  var searchQuery = "";
+
+  // The hole this feature was written for. Search was the one user-facing slice with no
+  // way past the first page, and the caption said "200 frames" where the truth was "the
+  // first 200 of a ranking that does not end here" — over the very slice the measurement
+  // found is best built by a query rather than by faces (94% against 64%, F152).
+  //
+  // No `pageSize`: the size of a page is `features.search_page` and it is the server's to
+  // know. Asking without a `limit` is what makes the setting reach the screen — a number
+  // repeated in JS is a second copy of the setting, and the copy is the one that goes stale.
+  var searchPager = makePager({
+    grid: "search-grid",
+    cardSelector: ".search-card",
+    moreBtn: "search-more-btn",
+    shown: "search-shown",
+    hint: "search-depth-hint",
+    url: function (offset) {
+      return "/api/search?q=" + encodeURIComponent(searchQuery) + "&offset=" + offset;
+    },
+    card: renderSearchCard,
+    // Never "nothing was found": a usable index ranks everything it holds, so an empty
+    // list is a fact about the index and the answer says which one.
+    emptyText: function (data) {
+      return data.available ? I18N.search_no_frames : searchStateText(data);
+    },
+    errorText: function () { return I18N.error_loading_search; },
+    shownText: function (n, total) {
+      return fmt(I18N.search_shown_label,
+                 { q: searchQuery, shown: n, total: total });
+    },
+    onData: function (data, append) {
+      applySearchState(data);
+      // The album gathers the QUERY, not the page, so it is built once per search — and
+      // rebuilding it on every "show more" would wipe the destination somebody typed.
+      if (!append) {
+        renderSearchAlbumControls((data.items || []).length ? data.query : "");
+      }
+    },
+  });
 
   function runSearch() {
     var q = document.getElementById("slice-query").value.trim();
     // An empty query goes nowhere near the model — not from here and not on the server.
     if (!q || !(searchState && searchState.available)) return;
+    searchQuery = q;
     showSearchPanel();
-    var grid = document.getElementById("search-grid");
-    grid.textContent = "";
-    grid.appendChild(stateEl("loading", I18N.loading));
     document.getElementById("search-shown").textContent = "";
     renderSearchAlbumControls("");
-    return fetch("/api/search?q=" + encodeURIComponent(q))
-      .then(function (r) { return r.json(); })
-      .then(function (data) { renderSearchResults(data); })
-      .catch(function (err) {
-        grid.textContent = "";
-        grid.appendChild(stateEl("error", I18N.error_loading_search + err));
-      });
+    return searchPager.load();
   }
 
   document.getElementById("slice-query-btn").addEventListener("click", runSearch);
@@ -11652,7 +11841,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // is to read down a list that is sorted by exactly that number.
 
   var ANIMALS_PAGE_SIZE = 200;
-  var animalsOffset = 0;
   // The length of the LIST, kept so a card redrawn after a mark can restate "showing
   // N of M" without asking the server for a page it already has.
   var animalsTotal = 0;
@@ -11720,30 +11908,36 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                                  fileId + '"]');
   }
 
-  // Both numbers of the page: how much of the LIST is on screen, and how many of it
-  // count as animals. After a manual mark those are different questions — the card
-  // stays in the list and leaves the count.
-  function renderAnimalsCounts(shown, total, animals) {
-    document.getElementById("animals-shown").textContent =
-        shown ? fmt(I18N.animals_shown_label, { shown: shown, total: total }) : "";
+  // The second number of the page, the one the shared pager knows nothing about: how many
+  // of what is on screen count as animals. After a manual mark that is a different
+  // question from "how much of the list is shown" — the card stays in the list and leaves
+  // the count.
+  function renderAnimalsCounted(shown, animals) {
     document.getElementById("animals-counted").textContent =
         shown ? fmt(I18N.animals_counted_label, { n: animals }) : "";
   }
 
-  function renderAnimalsPage(data, append) {
-    var grid = document.getElementById("animals-grid");
-    if (!append) grid.textContent = "";
-    (data.items || []).forEach(function (it) {
-      grid.appendChild(renderAnimalCard(it));
-    });
-    var shown = grid.querySelectorAll(".animal-card").length;
-    if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
-    animalsTotal = data.total;
-    renderAnimalsCounts(shown, data.total, data.animals);
-    document.getElementById("animals-more-btn").style.display =
-        shown && shown < data.total ? "" : "none";
-    animalsOffset = shown;
-  }
+  // F173: the paging, the button, the "showing N of M" line and the depth warning are the
+  // shared pager's now — this slice is ranked by confidence, so the trade the button makes
+  // is exactly the one `slice_depth_hint` describes.
+  var animalsPager = makePager({
+    grid: "animals-grid",
+    cardSelector: ".animal-card",
+    moreBtn: "animals-more-btn",
+    shown: "animals-shown",
+    hint: "animals-depth-hint",
+    pageSize: ANIMALS_PAGE_SIZE,
+    url: function (offset, limit) {
+      return "/api/animals?offset=" + offset + "&limit=" + limit;
+    },
+    card: renderAnimalCard,
+    emptyText: function () { return I18N.animals_empty; },
+    errorText: function () { return I18N.error_loading_animals; },
+    after: function (data, shown) {
+      animalsTotal = data.total;
+      renderAnimalsCounted(shown, data.animals);
+    },
+  });
 
   // The answer redraws the card in place instead of reloading the page: this list is
   // read top-down until the confidence runs out, and a reload after every decision
@@ -11767,27 +11961,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           animalsTotal = Math.max(0, animalsTotal - 1);
         }
         var grid = document.getElementById("animals-grid");
-        var shown = grid.querySelectorAll(".animal-card").length;
+        // The pager recounts the grid and restates both the counter and the button; the
+        // page is not re-fetched, because a reload after every decision would send the
+        // reader back to the first screen.
+        var shown = animalsPager.sync(animalsTotal);
         if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
-        animalsOffset = shown;
-        renderAnimalsCounts(shown, animalsTotal, resp.animals);
+        renderAnimalsCounted(shown, resp.animals);
       })
       .catch(function (err) { status.textContent = I18N.animals_error_prefix + err; });
-  }
-
-  function fetchAnimals(offset, append) {
-    var grid = document.getElementById("animals-grid");
-    if (!append) {
-      grid.textContent = "";
-      grid.appendChild(stateEl("loading", I18N.loading));
-    }
-    return fetch("/api/animals?offset=" + offset + "&limit=" + ANIMALS_PAGE_SIZE)
-      .then(function (r) { return r.json(); })
-      .then(function (data) { renderAnimalsPage(data, append); })
-      .catch(function (err) {
-        grid.textContent = "";
-        grid.appendChild(stateEl("error", I18N.error_loading_animals + err));
-      });
   }
 
   // The album controls of the People/Events cards, one per tab instead of one per
@@ -11815,12 +11996,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function loadAnimals() {
     renderAnimalsAlbumControls();
-    return fetchAnimals(0, false);
+    return animalsPager.load();
   }
-
-  document.getElementById("animals-more-btn").addEventListener("click", function () {
-    fetchAnimals(animalsOffset, true);
-  });
 
   // --- F152: the face slices -----------------------------------------------
   // Three pins over one panel — the junk-bucket arrangement, because these are three
@@ -11837,7 +12014,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var FACE_SLICES = ["people", "group", "portrait"];
   var FACE_PAGE_SIZE = 200;
   var faceSlice = "people";
-  var faceOffset = 0;
   var faceLoaded = false;
   var faceReason = null;
 
@@ -11889,42 +12065,33 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return card;
   }
 
-  function renderFacePage(data, append) {
-    var grid = document.getElementById("face-grid");
-    if (!append) grid.textContent = "";
-    (data.items || []).forEach(function (it) { grid.appendChild(renderFaceCard(it)); });
-    var shown = grid.querySelectorAll(".face-card").length;
-    if (!shown) {
-      grid.appendChild(stateEl("empty",
-          faceReason === "no_faces_run" ? I18N.face_no_faces_run : I18N.face_empty));
-    }
-    document.getElementById("face-shown").textContent =
-        shown ? fmt(I18N.face_shown_label, { shown: shown, total: data.total }) : "";
-    document.getElementById("face-more-btn").style.display =
-        shown && shown < data.total ? "" : "none";
-    faceOffset = shown;
-  }
-
-  function fetchFaceSlice(offset, append) {
-    var grid = document.getElementById("face-grid");
-    if (!append) {
-      grid.textContent = "";
-      grid.appendChild(stateEl("loading", I18N.loading));
-    }
-    return fetch("/api/face-slices?slice=" + faceSlice + "&offset=" + offset +
-                 "&limit=" + FACE_PAGE_SIZE)
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        applyFaceCounts(data);
-        renderSlicePins();
-        document.getElementById("face-hint").textContent = faceHintText(data);
-        renderFacePage(data, append);
-      })
-      .catch(function (err) {
-        grid.textContent = "";
-        grid.appendChild(stateEl("error", I18N.error_loading_face_slices + err));
-      });
-  }
+  // F173: the same pager as everywhere else, minus the depth hint. These slices are not
+  // ranked — a frame is here because the detector found a face on it — so "further down
+  // the list the model is less sure" would be a warning about a risk this list does not
+  // have, and the caption above the grid already says the slice is a fact and not an
+  // estimate.
+  var facePager = makePager({
+    grid: "face-grid",
+    cardSelector: ".face-card",
+    moreBtn: "face-more-btn",
+    shown: "face-shown",
+    pageSize: FACE_PAGE_SIZE,
+    url: function (offset, limit) {
+      return "/api/face-slices?slice=" + faceSlice + "&offset=" + offset +
+             "&limit=" + limit;
+    },
+    card: renderFaceCard,
+    emptyText: function () {
+      return faceReason === "no_faces_run" ? I18N.face_no_faces_run : I18N.face_empty;
+    },
+    errorText: function () { return I18N.error_loading_face_slices; },
+    onData: function (data) {
+      // Before the cards, because the empty state and the hint both read `faceReason`.
+      applyFaceCounts(data);
+      renderSlicePins();
+      document.getElementById("face-hint").textContent = faceHintText(data);
+    },
+  });
 
   // One album per slice, the animal arrangement: the selector goes out empty and the
   // server ignores it (the collection holds a single slice of each kind), and the album
@@ -11953,12 +12120,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   function loadFaceSlice() {
-    return fetchFaceSlice(0, false).then(function () { renderFaceAlbumControls(); });
+    return facePager.load().then(function () { renderFaceAlbumControls(); });
   }
-
-  document.getElementById("face-more-btn").addEventListener("click", function () {
-    fetchFaceSlice(faceOffset, true);
-  });
 
   // --- F126: the "Review" workspace ----------------------------------------
   // One tab, three slices, one job: look and decide. The switcher keeps every slice in
@@ -12838,13 +13001,13 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # F134: read-only, and read-only in the strong sense — an empty `q` asks for
             # the state of the index alone and never reaches the model. The sensitive
             # classes come off the LIVE config for the reason `/api/junk` does that.
-            parsed = _parse_search_query(query, cfg.features.search_limit)
+            parsed = _parse_search_query(query, cfg.features.search_page)
             if parsed is None:
-                self._send_json({"error": "invalid limit"},
+                self._send_json({"error": "invalid offset/limit"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            text, limit = parsed
-            self._send_json(_search_payload(cfg, db_path, text, limit,
+            text, offset, limit = parsed
+            self._send_json(_search_payload(cfg, db_path, text, offset, limit,
                                             encoder=query_encoder))
 
         def _serve_places_search(self, query: dict[str, list[str]]) -> None:

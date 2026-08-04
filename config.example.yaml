@@ -433,9 +433,13 @@ features:
   # So ANIMALS ONLY. People stay on the face boxes and food stays a query — adding either
   # here is a claim that the measurement changed, and it needs a table of its own first.
   #
+  # The animal row was re-measured on 500 frames (2026-08-03) and reads 78% / 69% at the
+  # same confidence — the table under `detector_threshold` below is the current one. The
+  # boundary between the three slices did not move, which is what this table is kept for.
+  #
   # It is a CASCADE and never a pass: a zero-shot query over the vectors that
   # `store_embeddings` already keeps ranks the collection, and only the top
-  # `detector_candidates` frames are shown to the detector — ~3 minutes instead of the ~31
+  # `detector_candidates` frames are shown to the detector — 5.6 minutes instead of the ~31
   # a full pass costs at 83.8 ms per frame.
   # The answer overrides the CLIP label in both directions, and every refusal (no vectors,
   # no weights, an error on a frame) falls back to the label you already have — never to
@@ -444,16 +448,36 @@ features:
   # rather than another pass.
   detector: false
   # How deep into the query ranking the candidates go — the ONE number that decides what
-  # this costs, because the detector sees nothing else. 2 000 frames is ~3 minutes at the
-  # measured 83.8 ms. Recall is bounded by the query's own recall at this depth (87% on the
-  # labelled sample), so raising it buys the animals the query ranked lower, linearly.
-  detector_candidates: 2000
+  # this costs, because the detector sees nothing else. Measured on 500 labelled frames
+  # (36 animals), where the last column is the share of the known animals this depth shows
+  # the detector at all:
+  #     depth   candidates     time    recall ceiling
+  #       500          500   0.7 min        25%
+  #      1000         1000   1.4 min        50%
+  #      2000         2000   2.8 min        83%   <- the previous default
+  #      4000         4000   5.6 min       100%   <- chosen
+  #     10000        10000  14.0 min       100%
+  # The ceiling bounds every recall below it: a frame the query never showed is not found at
+  # any threshold, and at 2 000 candidates 17% of the animals were out of reach in
+  # principle. 4 000 frames costs 5.6 minutes at the measured 83.8 ms per frame — 2.8
+  # minutes more than before, against the ~19 the animal stage already spends on the VLM.
+  # 10 000 buys nothing: the same ceiling for three times the time. `python
+  # scripts/measure_detector.py` prints this table for your own collection.
+  detector_candidates: 4000
   # The confidence at which a box counts. CHOSEN FROM A TABLE, not in advance: `python
-  # scripts/measure_detector.py` prints precision and recall at 0.3 / 0.5 / 0.7 on your own
-  # labelled sample, next to what the CLIP label scores on the same frames. 0.5 is the row
-  # that was measured (62% / 87%). Every box is stored with its score, so re-choosing this
-  # costs a query and no new pass over any image.
-  detector_threshold: 0.5
+  # scripts/measure_detector.py` prints precision and recall on your own labelled sample,
+  # next to what the CLIP label scores on the same frames. The rows, on the same 500:
+  #                            precision   recall
+  #     the CLIP label today       94%       47%
+  #     detector at 0.50           78%       69%   <- the previous default
+  #     detector at 0.60           86%       69%   <- chosen
+  #     detector at 0.70           86%       67%
+  # 0.60 dominates 0.50 with nothing traded away: the same recall, 25 correct marks out of
+  # 29 instead of 25 out of 32. The 62% / 87% this shipped with came off 200 frames, where
+  # fifteen animals made each one worth 6.7 points of recall; both numbers moved by two
+  # dozen points on the larger sample — what a thin class does to a small one. Every box is
+  # stored with its score, so re-choosing this costs a query and no new pass over any image.
+  detector_threshold: 0.6
   # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
   # what place the frame shows, and only a proposal the model names itself goes on. The
   # order does not bend: CLIP proposes → the model checks → the corroboration of
@@ -539,18 +563,25 @@ features:
   # naming.clip.model or naming.clip.pretrained and the stored rows are recomputed rather
   # than used, because vectors of different models are not comparable.
   store_embeddings: true
-  # F129: how many frames a search by words takes — `sorta search "торт"` prints this many
-  # and `sorta album query "торт"` gathers this many.
+  # F129: how many frames a search by words takes at a time — `sorta search "торт"` prints
+  # this many and `sorta album query "торт"` gathers this many.
   # This is NOT a similarity threshold, and there will not be one, for the same reason
   # sharpness has none: a CLIP score orders frames against each other and means nothing in
   # absolute terms, so "this really is a cake" is not a line anybody can draw. What this
   # number chooses is the size of the SAMPLE a person then looks through — raise it to see
   # further down the ranking, lower it for a shorter list.
+  # F173 renamed this from `search_limit`, because a ceiling and a page are different
+  # things: in the interface the list continues past this number by pressing "show more",
+  # and it does not continue past a ceiling. Depth is the one measured lever of
+  # completeness there is — doubling the list adds ~25 points on average, and the query
+  # "дети" goes from 61% to 89% — so the number decides where the FIRST portion ends, not
+  # where the answer does. The old spelling still works and still means this; renaming it
+  # in your own file only silences a warning in the log.
   # Two limits of the method worth knowing before choosing it: compound queries ("a cake
   # with candles on a table by the window") are weak, single subjects are what CLIP does
   # well; and the population is personal photographs only (screenshots and documents have
   # no vector at all).
-  search_limit: 200
+  search_page: 200
   # F152: the two numbers the FACE SLICES need — "photographs with people", "group
   # photographs", "portraits" in the Slices tab, and `sorta album people|group|portrait`.
   # Nothing here is a confidence threshold: those slices are read off the `faces` table,
