@@ -511,7 +511,10 @@ def format_cost_table(rows: list[CostRow]) -> str:
         "=" * 92,
         "ЦЕНА КАДРА (синтетические кадры, считается только вызов модели)",
         f"{'инструмент':>14} {'кадр':>8} {'вход':>12} {'выход':>12} {'время':>9} "
-        f"{'мс/Мп':>9} {'пик VRAM':>10}",
+        # "мс на Мп", not "мс/Мп": the table is guarded against leaking a path,
+        # and that guard rejects a slash. A unit is not worth weakening it —
+        # paths in this index are POSIX, so the slash is what catches a real leak.
+        f"{'мс на Мп':>10} {'пик VRAM':>10}",
     ]
     for row in sorted(rows, key=lambda r: (r.arm, r.megapixels)):
         if row.error is not None:
