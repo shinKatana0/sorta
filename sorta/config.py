@@ -919,6 +919,33 @@ class FeaturesConfig:
     # number: "almost everything is blurred and I would delete it, except a couple I keep
     # for the memory" — a frame this cannot know about is exactly why the human marks.
     blur_review_max: float = 90.0
+    # F150: the ceiling of the "low resolution" slice, in MEGAPIXELS — a photograph whose
+    # `files.width * files.height` is below this many million pixels is in it.
+    #
+    # The one number in this section that measures nothing. Width and height are a FACT
+    # the indexer wrote down, so this is not a threshold over a model's confidence and
+    # there is no precision or recall to quote for it: the slice does not find frames
+    # that look small, it lists the frames that ARE small.
+    #
+    # MEASURED (2026-08-02, 22 095 photographs) — the distribution the default comes from:
+    #
+    #     megapixels   frames   share   of them inside the blur window
+    #     < 0.2            94    0.4%              5%
+    #     0.2 - 0.5       133    0.6%             10%
+    #     0.5 - 1         479    2.2%              1%
+    #     1 - 2           586    2.7%              2%
+    #     5 - 12        2 942   13.3%              6%
+    #     > 12         17 493   79.2%              2%
+    #
+    # 1.0 selects 706 frames, and the shape is what makes the round number the right one:
+    # phones do not take pictures of that size, so what lies under a megapixel is what
+    # arrived through a messenger or came off a download. It is also a population no other
+    # slice sees — 682 of those 706 are formally sharp (a 3% intersection with the blur
+    # window), so they are invisible everywhere else in the product.
+    #
+    # NOT a verdict, and the wording of the slice says so: a small frame can be the only
+    # surviving photograph of somebody, and nothing here deletes or reclassifies anything.
+    low_resolution_mp: float = 1.0
     # F155: the same laplacian measured INSIDE the face boxes of a frame, and the number
     # below which such a frame is a blur candidate. A separate setting from
     # `blur_review_max` because the two are not on one scale: one is a variance over a
@@ -1045,6 +1072,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         sharpness_band_max=_as_float(raw.get("sharpness_band_max"), d.sharpness_band_max),
         subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
+        low_resolution_mp=_as_float(
+            raw.get("low_resolution_mp"), d.low_resolution_mp),
         face_sharpness_max=_as_float(
             raw.get("face_sharpness_max"), d.face_sharpness_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),

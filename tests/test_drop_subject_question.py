@@ -203,7 +203,9 @@ class TestTheAlbumKindIsUnknown(unittest.TestCase):
 
     def test_the_slices_that_stay_are_still_declared(self):
         """F177 must not take the neighbours with it."""
-        self.assertEqual(sorter.QUALITY_ALBUM_KINDS, ("blurred", "eyes_closed"))
+        # F150 added `low_resolution` beside them; the two F177 spared are still here.
+        self.assertEqual(sorter.QUALITY_ALBUM_KINDS,
+                         ("blurred", "eyes_closed", "low_resolution"))
         for kind in ("blurred", "eyes_closed"):
             self.assertIn(kind, sorter.ALBUM_FOLDER_KEYS)
 
@@ -234,8 +236,8 @@ class TestTheAlbumKindIsUnknown(unittest.TestCase):
 class TestTheSliceIsGoneFromTheInterface(ReviewTestBase):
     """Brief test 4: the workspace, its counters and the "Overview" row."""
 
-    def test_the_switcher_declares_three_slices(self):
-        self.assertEqual(ui._REVIEW_SLICES, ("dupes", "blurred", "eyes"))
+    def test_the_switcher_does_not_declare_the_retired_slice(self):
+        self.assertNotIn("subject", ui._REVIEW_SLICES)
         self.assertNotIn("subject", ui._REVIEW_SLICE_KIND)
         self.assertNotIn("subject", ui._REVIEW_SLICE_ORDER)
 
@@ -249,7 +251,8 @@ class TestTheSliceIsGoneFromTheInterface(ReviewTestBase):
         self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
         self.start_server()
         counts = self.counts(self.review("?slice=blurred"))
-        self.assertEqual(set(counts), {"dupes", "blurred", "eyes"})
+        self.assertNotIn("subject", counts)
+        self.assertEqual(set(counts), set(ui._REVIEW_SLICES))
 
     def test_the_overview_does_not_count_it(self):
         self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
