@@ -35,7 +35,6 @@ from sorta import cli, faces, junk
 from sorta.faces import EMBED_DIM, detect_faces
 from sorta.junk import QUALITY_VERDICT, classify
 from tests.test_frame_quality import (
-    CONFIDENT,
     FrameQualityCase,
     QualityClassifier,
     flat_sharpness,
