@@ -25,6 +25,10 @@ from sorta.sorter import CLASS_ALBUM_KINDS, QUALITY_ALBUM_KINDS
 
 from tests.test_ui import UiServerTestBase
 
+# F179: an eye openness inside the default window `features.eye_openness_max` (0.18) — what
+# makes a frame a member of the closed-eyes slice now that the VLM answer is gone.
+CLOSED = 0.05
+
 
 class SliceAlbumTestBase(UiServerTestBase):
     def post(self, path: str, data: object) -> tuple[int, dict]:
@@ -61,13 +65,13 @@ class SliceAlbumTestBase(UiServerTestBase):
         return file_id
 
     def add_quality(self, rel: str, *, sharpness: float | None = 500.0,
-                    eyes_open: int | None = None) -> int:
+                    eye_openness: float | None = None) -> int:
         file_id = self.add_classified(rel, "photo")
         self.conn.execute(
-            """INSERT INTO frame_quality (file_id, sharpness, eyes_open,
+            """INSERT INTO frame_quality (file_id, sharpness, eye_openness,
                    source, updated_at)
                VALUES (?, ?, ?, 'clip', '2026-01-01')""",
-            (file_id, sharpness, eyes_open))
+            (file_id, sharpness, eye_openness))
         self.conn.commit()
         return file_id
 
@@ -155,7 +159,7 @@ class TestTheAlbumMatchesWhatTheViewShows(SliceAlbumTestBase):
         self.add_classified("meme.jpg", "meme")
         self.blurred = self.add_quality("blurred.jpg", sharpness=10.0)
         self.add_quality("sharp.jpg", sharpness=900.0)
-        self.add_quality("eyes.jpg", eyes_open=0)
+        self.add_quality("eyes.jpg", eye_openness=CLOSED)
         self.start_server()
 
     def test_the_product_album_is_the_size_of_the_product_bucket(self):

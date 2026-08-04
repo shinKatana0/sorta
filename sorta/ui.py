@@ -277,16 +277,17 @@ product that deletes files and the one that has been run against a live collecti
 GET carries the counters of all the slices (a slice with nothing in it stays in the
 switcher with a zero — an empty slice is an answer, a missing one is a riddle) plus one
 bounded page of the current flat slice, over photographs only (`media_class.verdict =
-'photo'`, F120) that are canonical and readable. The blurred list is ordered by ascending
-sharpness and opens as far as `features.blur_review_max`; `beyond=1` continues past that
-window, which is a prefix of the same ordering, so nothing is lost or repeated at the
-seam. The low-resolution list is ordered by ascending `files.width * files.height` below
-`features.low_resolution_mp` megapixels, and it is the one slice here whose membership was
-never measured by anything: the two columns are a fact the indexer wrote down, so the card
-carries the resolution itself and the hint says what the pixel count does NOT catch (a
-large frame ruined by compression). Without a faces run the eyes slice answers
-`eyes_reason='no_faces_run'` rather than a zero (F125: the question is only asked where a
-face was found). The POST writes the
+'photo'`, F120) that are canonical and readable. Every flat list is ORDERED by the number
+it exists for, ascending in all three cases (little variance = blurred, a thin slit = a
+closed eye, few pixels = low resolution), and each opens as far as its own window —
+`features.blur_review_max`, `features.eye_openness_max` (F179),
+`features.low_resolution_mp`; `beyond=1` continues past that window, which is a prefix of
+the same ordering, so nothing is lost or repeated at the seam. Low resolution is the one
+slice here whose membership was never measured by anything: the two columns are a fact the
+indexer wrote down, so the card carries the resolution itself and the hint says what the
+pixel count does NOT catch (a large frame ruined by compression). Without a faces run the
+eyes slice answers `eyes_reason='no_faces_run'` rather than a zero (F125: the eyes are only
+measured where a face was found). The POST writes the
 decision into the EXISTING `dedup_choice` (`keep`/`to_delete`, or `clear` to drop the
 row) — `file_id` is its primary key, so a frame that appears in two slices carries one
 decision, and `to_delete` is already understood by the sorter. There is deliberately no
@@ -2095,16 +2096,17 @@ _REVIEW_SLICES = ("dupes", "blurred", "eyes", "low_resolution")
 _REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed",
                       "low_resolution": "low_resolution"}
 
-# Blurred is ranked by the number the slice exists for; low resolution likewise, by the
-# pixel count it is named after — ASCENDING, so the most damaged frame is the first one a
-# person sees. Neither ordering is a verdict: it decides what to look at first, not what
-# to delete. The remaining slice has no ranking of its own, so it goes in index order —
-# stable between pages, which is what paging needs. `f.id` closes every one of them:
-# frames of equal sharpness or of equal size must come back in the same order on every
-# page, or paging would drop and repeat them at the seam.
+# Every flat slice is ranked by the number it exists for, and for all three that means
+# ASCENDING, so the most damaged frame is the first one a person sees: a blurred frame has
+# little variance, a closed eye is a thin slit, a low-resolution frame has few pixels. None
+# of the three orderings is a verdict — each decides what to look at first, not what to
+# delete. F179 gave the eyes such a number; before it they went in index order, because the
+# VLM answer behind them was a yes/no with nothing to sort by. `f.id` closes every one of
+# them: frames of equal sharpness, equal openness or equal size must come back in the same
+# order on every page, or paging would drop and repeat them at the seam.
 _REVIEW_SLICE_ORDER = {
     "blurred": "fq.sharpness ASC, f.id",
-    "eyes": "f.id",
+    "eyes": "fq.eye_openness ASC, f.id",
     "low_resolution": "f.width * f.height ASC, f.id",
 }
 
@@ -2133,8 +2135,9 @@ def _review_where(slice_: str, features: FeaturesConfig, *,
                   beyond: bool = False) -> tuple[str, list[object]]:
     """The WHERE of one flat slice + its parameters — the shared rule, by slice name.
 
-    `beyond` is "show more": the blurred list opens to `features.blur_review_max` and
-    runs on without a ceiling once asked. It bounds that slice alone.
+    `beyond` is "show more": the blurred list opens to `features.blur_review_max` and the
+    closed-eyes list to `features.eye_openness_max` (F179), and each runs on without a
+    ceiling once asked. Each window bounds its own slice alone.
     """
     return quality_slice_where(_REVIEW_SLICE_KIND[slice_], features, beyond=beyond)
 
@@ -2151,8 +2154,11 @@ def _review_flat_counts(conn: sqlite3.Connection,
                         features: FeaturesConfig) -> dict[str, int]:
     """The flat slice counters — plain aggregates, cheap enough for "Overview".
 
-    Blurred is counted INSIDE the window, so the chip, the "Overview" row and the length
-    of the list the tab opens with are the same number.
+    EVERY slice is counted INSIDE its own window, so the chip, the "Overview" row and the
+    length of the list the tab opens with are one number per slice. F179 made that true of
+    the eyes too: the slice is a ranking now, and a counter that ignored the window would
+    advertise every frame a face was measured on — the whole face population, not the
+    closed eyes.
     """
     return {name: _review_count(conn, name, features)
             for name in _REVIEW_SLICES if name != "dupes"}
@@ -2235,20 +2241,25 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     The client renders that slice from `/api/dupes`, exactly as it did when it was a tab
     of its own.
 
-    `eyes_reason='no_faces_run'` (F125) — the eyes question is asked only where a face
-    was found, so without a faces run the honest answer is why there is no data, not a
-    zero that looks like "your subjects all had their eyes open".
+    `eyes_reason='no_faces_run'` (F125) — the eye number is measured only where a face was
+    found, so without a faces run the honest answer is why there is no data, not a zero
+    that looks like "your subjects all had their eyes open".
 
     F150: `low_resolution_mp` travels with the answer for the same reason `blur_max`
-    does — the hint above the grid states the rule the list was built by instead of
-    repeating a default in JS.
+    does — and `eye_max` with it since F179 — the hint above the grid states the rule the
+    list was built by instead of repeating a default in JS.
+
+    F179: `window_total` is the count of the CURRENT slice's window, because every flat
+    slice has one now — blurred down to `features.blur_review_max`, closed eyes down to
+    `features.eye_openness_max` — and "show more" walks either of them past its window
+    into the frames the ranking is less sure about.
     """
     conn = _connect(db_path)
     try:
         counts = _review_flat_counts(conn, features)
         pending = _review_pending_counts(conn, features)
         eyes_reason = None if faces_stage_ran(conn) else "no_faces_run"
-        window_total = counts["blurred"]
+        window_total = counts.get(slice_, counts["blurred"])
         items: list[dict] = []
         total = 0
         if slice_ != "dupes":
@@ -2294,6 +2305,10 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
         "pending_total": sum(pending.values()),
         "eyes_reason": eyes_reason,
         "blur_max": float(features.blur_review_max),
+        # F179: the number the closed-eyes caption is shown with — and that caption states
+        # the PRECISION measured at it, not a count, because 62% right is the fact a person
+        # needs before looking at the list.
+        "eye_max": float(features.eye_openness_max),
         "low_resolution_mp": float(features.low_resolution_mp),
         "window_total": window_total,
         "beyond": bool(beyond),
@@ -5351,13 +5366,24 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_quality_label": {
         "ru": "Качество кадров", "en": "Frame quality", "ja": "コマの品質",
     },
+    # F179: the hint used to read "whether the eyes are open — what nothing cheap can
+    # decide", and that is no longer true. The "Closed eyes" slice is computed from the
+    # eyelid geometry on every run, with no model and no toggle, and it is right 62% of the
+    # time against this question's 60% while finding five times as many frames. The switch
+    # stays (it still asks and still fills `frame_quality.eyes_open`), but a person deciding
+    # whether to spend ~92 minutes on it has to be told that the slice does not wait for it.
     "process_quality_hint": {
-        "ru": "Открыты ли глаза — то, чего не решить дёшево. Нужен "
-              "`uv sync --extra vlm`.",
-        "en": "Whether the eyes are open — what nothing cheap can decide. Needs "
-              "`uv sync --extra vlm`.",
-        "ja": "目が開いているか — 安価な手段では決められないものです。"
-              "`uv sync --extra vlm` が必要です。",
+        "ru": "Спросить модель, открыты ли глаза. Срез «Закрытые глаза» и без этого "
+              "считается по геометрии век на каждом прогоне — на размеченной выборке "
+              "модель дала 60% точности против 62% у геометрии, найдя впятеро меньше "
+              "кадров. Нужен `uv sync --extra vlm`.",
+        "en": "Ask the model whether the eyes are open. The “Closed eyes” slice is computed "
+              "from the eyelid geometry on every run without it — on a labelled sample the "
+              "model was 60% right against the geometry's 62%, and found five times fewer "
+              "frames. Needs `uv sync --extra vlm`.",
+        "ja": "目が開いているかをモデルに尋ねます。「目を閉じた」区分はこれがなくても毎回"
+              "まぶたの形状から算出されます。ラベル付きサンプルではモデルの正解率 60% に対し"
+              "形状では 62% で、検出数は 5 分の 1 でした。`uv sync --extra vlm` が必要です。",
     },
     "process_quality_scope_label": {
         "ru": "У каких кадров спрашивать",
@@ -6851,19 +6877,36 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "なく表示範囲です。ぼやけたコマは 400 までのどの帯にも現れるため、"
               "「しきい値以下をすべて削除」というボタンはなく、既定では何も削除しません。",
     },
+    # F179: the caption states the MEASURED PRECISION and not a count. "Found 730 frames"
+    # reads as a verdict about 730 photographs; on 249 hand-labelled frames this list is
+    # right about 62% of what it points at, which is the one thing a person needs to know
+    # before opening it. The list is ordered from the most closed, so the top is where the
+    # 62% lives and "show more" walks into the doubtful part on purpose.
     "review_hint_eyes": {
-        "ru": "Кадры, на которых у людей закрыты глаза. Вопрос задаётся только там, где "
-              "найдено лицо.",
-        "en": "Frames where the people have their eyes closed. The question is only "
-              "asked where a face was found.",
-        "ja": "人物が目を閉じているコマです。この質問は顔が検出されたコマにのみ行われます。",
+        "ru": "Кадры, на которых у людей, скорее всего, закрыты глаза: посчитано по "
+              "геометрии век самого крупного лица, а не спрошено у модели. На 249 "
+              "размеченных кадрах такой список верен в 62% случаев — каждый третий кадр "
+              "здесь на самом деле с открытыми глазами, поэтому ничего не удаляется само. "
+              "Сверху самые закрытые; «показать ещё» продолжает список за порог {max}, в "
+              "сомнительную часть. Мерится только там, где найдено лицо.",
+        "en": "Frames where the people most likely have their eyes closed — computed from "
+              "the eyelid geometry of the largest face, not asked of a model. On 249 "
+              "hand-labelled frames a list like this is right 62% of the time: one frame "
+              "in three here actually has its eyes open, so nothing is ever deleted "
+              "automatically. The most closed come first, and “show more” continues past "
+              "the {max} mark into the doubtful part. Measured only where a face was found.",
+        "ja": "最も大きい顔のまぶたの形状から算出した、目を閉じている可能性が高いコマです"
+              "（モデルへの質問ではありません）。手作業でラベル付けした 249 コマでは、この"
+              "一覧の正解率は 62% です。3 コマに 1 コマは実際には目が開いているため、自動的"
+              "な削除は行いません。閉じている度合いの高い順に並び、「もっと見る」はしきい値 "
+              "{max} を越えて確度の低い部分へ進みます。顔が検出されたコマのみで計測します。",
     },
     "review_eyes_no_faces": {
-        "ru": "Данных нет: стадия «лица» не запускалась, а про глаза спрашивают только "
-              "там, где найдено лицо. Прогоните лица и повторите разбор.",
-        "en": "No data: the faces stage never ran, and the eyes question is only asked "
-              "where a face was found. Run faces and come back to this slice.",
-        "ja": "データがありません。顔ステージが実行されておらず、目の質問は顔が検出された"
+        "ru": "Данных нет: стадия «лица» не запускалась, а глаза мерятся только там, где "
+              "найдено лицо. Прогоните лица и повторите разбор.",
+        "en": "No data: the faces stage never ran, and the eyes are only measured where a "
+              "face was found. Run faces and come back to this slice.",
+        "ja": "データがありません。顔ステージが実行されておらず、目の計測は顔が検出された"
               "コマにのみ行われます。顔ステージを実行してから、この区分を開いてください。",
     },
     # F150: the whole boundary of the slice, said out loud. Three things a person has to
@@ -13146,8 +13189,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var REVIEW_SLICES = ["dupes", "blurred", "eyes", "low_resolution"];
   var reviewSlice = "dupes";
   var reviewOffset = 0;
-  // Blur opens to `features.blur_review_max` and continues past it only when asked:
-  // the number is a window, not a verdict.
+  // Each flat slice opens to a window — `features.blur_review_max`,
+  // `features.eye_openness_max` (F179) — and continues past it only when asked: the
+  // number is a window, not a verdict.
   var reviewBeyond = false;
   var reviewWindowTotal = 0;
   var reviewSelected = {};
@@ -13192,7 +13236,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function reviewHintText(data) {
     if (reviewSlice === "eyes") {
       return data.eyes_reason === "no_faces_run"
-          ? I18N.review_eyes_no_faces : I18N.review_hint_eyes;
+          ? I18N.review_eyes_no_faces
+          : fmt(I18N.review_hint_eyes, { max: data.eye_max });
     }
     // F150: the ceiling comes off the answer, not out of a constant here — the number in
     // the sentence has to be the one the list was actually built with.
@@ -13282,7 +13327,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // Past the end of the window the button changes its meaning, not just its target:
     // the next page is no longer "more of the same list" but a step outside the window
     // the list opened to.
-    var beyondNext = reviewSlice === "blurred" && !reviewBeyond &&
+    // WHICH SLICES HAVE A WINDOW, listed rather than negated. Blurred opens down to
+    // `blur_review_max` and closed eyes down to `eye_openness_max` (F179): both are
+    // RANKINGS cut short, so there is a "further down the list" to step into. Duplicates
+    // have no ranking, and `low_resolution` (F150) has no window either — its megapixel
+    // ceiling is the membership rule itself, so `beyond` selects exactly the same frames
+    // and the button would promise a page that does not exist. `!== "dupes"` was the same
+    // thing right up until F150 added a fourth slice.
+    var BEYOND_SLICES = ["blurred", "eyes"];
+    var beyondNext = BEYOND_SLICES.indexOf(reviewSlice) >= 0 && !reviewBeyond &&
         shown >= reviewWindowTotal;
     var more = shown < data.total || beyondNext;
     var moreBtn = document.getElementById("review-more-btn");

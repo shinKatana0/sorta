@@ -51,6 +51,11 @@ def flat_image(size: tuple[int, int] = SOURCE_SIZE, value: int = 128) -> Image.I
     return Image.new("RGB", size, (value, value, value))
 
 
+def no_landmark_model():
+    """A 106-point model that finds no contour — what the suite runs with (see run_stage)."""
+    return lambda _img, _box: None
+
+
 def add_noise(img: Image.Image, box: tuple[int, int, int, int], seed: int = 7) -> None:
     """Paste high-frequency noise into `box` — the only sharp region of the frame."""
     left, top, right, bottom = box
@@ -98,18 +103,36 @@ class FaceSharpnessCase(FrameQualityCase):
         self.conn.commit()
 
     def run_stage(self, **kwargs):
-        """classify() with the REAL sharpness detector — the pixels are the point here."""
+        """classify() with the REAL sharpness detector — the pixels are the point here.
+
+        F179: the real 106-point model is NOT one of them. It lives inside the `buffalo_l`
+        set and `FaceAnalysis` downloads that set when it is missing, so a default here
+        would put a few hundred megabytes of network into the test suite; the stub answers
+        "no contour", which is the same path a machine without the [faces] extra takes.
+        The eye geometry has a suite of its own (tests/test_closed_eyes_slice.py), and it
+        injects a contour it can predict.
+        """
         kwargs.setdefault("classifier", QualityClassifier())
         kwargs.setdefault("text_detector", NO_OCR)
+        kwargs.setdefault("eye_landmarks_factory", no_landmark_model)
         return junk.classify(self.cfg, self.conn, **kwargs)
 
     def preview_of(self, fid):
-        """The very frame the detector measures — for computing an expected value."""
+        """The very frame the detector measures — for computing an expected value.
+
+        F179: the stage decodes in COLOUR once a face has ever been found in this index —
+        the 106-point contour is measured on colour pixels — and grayscale otherwise, so
+        this mirrors that choice off the same fact (`faces_stage_ran`). Both paths measure
+        the luma of the same preview and the two laplacians agree to ~0.15%, but the cases
+        below compare to four decimal places, which is a claim about the ARRAY and not
+        about the signal.
+        """
         path = self.conn.execute(
             "SELECT path FROM files WHERE id = ?", (fid,)).fetchone()["path"]
         img = imaging.decode_rgb_preview(
             path, Path(path).stat().st_mtime, Path(path).stat().st_size,
-            max_edge=PREVIEW_EDGE, grayscale=True, apply_orientation=True)
+            max_edge=PREVIEW_EDGE, grayscale=not junk.faces_stage_ran(self.conn),
+            apply_orientation=True)
         assert img is not None
         return img
 

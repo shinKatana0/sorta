@@ -1102,6 +1102,31 @@ class FeaturesConfig:
     # not blurred. It orders the blur list; nothing in the pipeline deletes or reclassifies
     # anything by it.
     face_sharpness_max: float = 200.0
+    # F179: how open the eyes of the largest face are (column `frame_quality.eye_openness`
+    # — the height of the eye opening over its width, off the 106-point contour), and the
+    # number BELOW which the frame joins the "closed eyes" slice. The only threshold here
+    # a smaller number passes: a closed eye is a thin slit.
+    #
+    # MEASURED (F178, 2026-08-03, the same 249 hand-labelled frames the retired VLM
+    # question was judged on, weighted back to the collection):
+    #
+    #     way in                threshold  precision  recall
+    #     the VLM (retired)             —      60%       9%
+    #     eyelid geometry            0.16      68%      34%
+    #     eyelid geometry            0.18      62%      48%   <- this line
+    #     eyelid geometry            0.22      56%      61%
+    #     a classifier over the crop  0.9      46%      57%
+    #     CLIP over the crop          0.8      58%      49%
+    #
+    # 0.18 was chosen by a rule fixed before the run, not by eye, and the two neighbouring
+    # rows are printed so the price of moving it is visible: 0.16 buys six points of
+    # precision for fourteen of recall, 0.22 the other way about. The population it points
+    # at is ~948 frames — 15.6% of everything with a face in it.
+    #
+    # NOT A VERDICT. At 62% precision one frame in three of that slice has its eyes open,
+    # so this ORDERS the list (most closed first) and opens it to a window that "show more"
+    # continues past. Nothing is deleted or reclassified by it.
+    eye_openness_max: float = 0.18
     # F128: keep the CLIP vector the junk stage already computes instead of discarding it
     # (table `clip_embeddings`). ON by default, which is the deliberate half of this
     # setting: the price is small — ~60 MB per 20 000 photos, written inside a pass that
@@ -1245,6 +1270,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
             raw.get("low_resolution_mp"), d.low_resolution_mp),
         face_sharpness_max=_as_float(
             raw.get("face_sharpness_max"), d.face_sharpness_max),
+        eye_openness_max=_as_float(
+            raw.get("eye_openness_max"), d.eye_openness_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
         search_page=_as_positive_int(
             _renamed_value(raw, "features", "search_page", "search_limit"), d.search_page),

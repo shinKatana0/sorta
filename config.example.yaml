@@ -591,6 +591,34 @@ features:
   # is ~25% at every threshold above — three of four flagged frames are not blurred. It
   # RANKS the blur list; nothing is deleted or reclassified by it.
   face_sharpness_max: 200.0
+  # F179: how open the eyes of the largest face on a frame are (column
+  # `frame_quality.eye_openness`) — the height of the eye opening over its width, measured
+  # off the 106-point face contour on the same preview everything else in this stage uses.
+  # The frames BELOW this number are the "closed eyes" slice; it is the one threshold here
+  # that a SMALLER value passes, because a closed eye is a thin slit.
+  #
+  # It replaced a question asked of a local VLM, and the table is why. Measured on the same
+  # 249 hand-labelled frames that question was judged on:
+  #
+  #   the VLM (retired)               → 60% precision,  9% recall (92 minutes a run)
+  #   eyelid geometry, 0.16           → 68%,           34%
+  #   eyelid geometry, 0.18           → 62%,           48%   <- this line
+  #   eyelid geometry, 0.22           → 56%,           61%
+  #   a classifier over the eye crop  → 46%,           57%
+  #   CLIP over the eye crop          → 58%,           49%
+  #
+  # Five times the recall of the model at slightly better precision, out of arithmetic over
+  # contour points rather than a network's opinion. The neighbouring rows are printed so the
+  # price of moving this is visible: 0.16 buys six points of precision for fourteen of
+  # recall, 0.22 trades them back. The population is ~948 frames — 15.6% of everything with
+  # a face in it.
+  #
+  # Two limits worth knowing. It covers only frames a face was found on (run `sorta faces`
+  # first — without it the slice is empty and says so), and its precision is 62%: one frame
+  # in three of that list has its eyes open. So the list is ORDERED by this number, most
+  # closed first, and continues past the window by pressing "show more". Nothing is deleted
+  # or reclassified by it.
+  eye_openness_max: 0.18
   # F128: keep the CLIP vector of every canonical photograph (table `clip_embeddings`)
   # instead of throwing it away once its three scores have been read off. Nothing is shown
   # for it — it is what lets a later feature (search by words, an album from a query,

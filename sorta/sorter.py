@@ -2102,8 +2102,15 @@ LOW_RESOLUTION_FROM = "FROM files f JOIN media_class mc ON mc.file_id = f.id"
 
 QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
 
-# `eyes_open` is `= 0` and never `IS NOT 1`: NULL there means "not asked" (schema), and a
-# frame nobody looked at must not be shown to a user as an answer.
+# The first two are `IS NOT NULL` and never a comparison against a stored verdict: NULL
+# means "not measured" (schema), and a frame nobody looked at must not be shown to a user
+# as an answer. F179 put the eyes on that footing too — the slice used to read
+# `fq.eyes_open = 0`, the answer a VLM gave about 135 frames before the question was
+# retired at 60% precision and 9% recall. It is now `eye_openness`, geometry over the eye
+# contour, and the number that decides membership is a WINDOW read at query time (see
+# below) rather than a verdict frozen into the row by whatever threshold the last run
+# happened to have — the F137 lesson, where a moved threshold left the live archive
+# selecting 966 animals at a gate of 0.30 long after the gate had gone back to 0.50.
 #
 # `low_resolution` states the same care in its own terms. `width > 0 AND height > 0`
 # excludes both a frame whose dimensions the index never learned (NULL — the pixels are
@@ -2115,7 +2122,7 @@ QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS N
 # photographs), which is exactly the kind of accident this line does not rely on.
 _QUALITY_MEMBER = {
     "blurred": "fq.sharpness IS NOT NULL",
-    "eyes_closed": "fq.eyes_open = 0",
+    "eyes_closed": "fq.eye_openness IS NOT NULL",
     "low_resolution": ("f.media_type <> 'video' AND f.width > 0 AND f.height > 0 "
                        "AND f.width * f.height < ?"),
 }
@@ -2124,6 +2131,7 @@ _QUALITY_MEMBER = {
 def quality_slice_from(kind: str) -> str:
     """The FROM one quality slice is selected over — `f`, `mc` and, where needed, `fq`."""
     return LOW_RESOLUTION_FROM if kind == "low_resolution" else QUALITY_FROM
+
 
 
 def quality_slice_where(kind: str, features: FeaturesConfig, *,
@@ -2135,15 +2143,22 @@ def quality_slice_where(kind: str, features: FeaturesConfig, *,
     nothing re-run in between.
 
     `beyond` is the workspace's "show more": the blurred list opens to
-    `features.blur_review_max` and continues past it only when asked. The window is a
-    prefix of the same ordering, so continuing past it neither repeats a frame nor skips
-    one, and it bounds that slice alone. An album is ALWAYS gathered inside the window
-    (`beyond` is never passed here by `plan_album`): the button collects what was shown,
-    and past the window sit thousands of frames nobody has looked at.
+    `features.blur_review_max` and the closed-eyes list to `features.eye_openness_max`
+    (F179), and each continues past its own window only when asked. A window is a prefix
+    of the same ordering, so continuing past it neither repeats a frame nor skips one, and
+    it bounds its own slice alone. An album is ALWAYS gathered inside the window (`beyond`
+    is never passed here by `plan_album`): the button collects what was shown, and past
+    the window sit thousands of frames nobody has looked at.
+
+    Both of those windows are `< the number`, on two scales that have nothing in common —
+    a variance in the hundreds and a ratio under one — because on both of them SMALLER is
+    the interesting end: a blurred frame has little variance, and a closed eye is a thin
+    slit.
 
     F150: `low_resolution` binds a ceiling of its own, `features.low_resolution_mp`,
     converted from megapixels to pixels here — the config speaks the unit a person reads
-    off a camera, the column holds the number the index wrote.
+    off a camera, the column holds the number the index wrote. It is NOT under `beyond`:
+    there the ceiling is the membership rule itself, not a window over a ranking.
     """
     where = f"{QUALITY_POPULATION} AND {_QUALITY_MEMBER[kind]}"
     params: list[object] = []
@@ -2152,6 +2167,9 @@ def quality_slice_where(kind: str, features: FeaturesConfig, *,
     elif kind == "blurred" and not beyond:
         where += " AND fq.sharpness < ?"
         params.append(float(features.blur_review_max))
+    elif kind == "eyes_closed" and not beyond:
+        where += " AND fq.eye_openness < ?"
+        params.append(float(features.eye_openness_max))
     return where, params
 
 # --- F152: the face slices — three questions the `faces` table already answers ------
@@ -2318,9 +2336,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     what it exists to prevent.
     kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`; F150,
     `low_resolution`): the slice = the "Review" workspace's flat list of that name
-    (`quality_slice_where`, the shared rule), blurred inside the
-    `features.blur_review_max` window and low-resolution under `features.low_resolution_mp`
-    megapixels. No selector; the default album name comes from the catalog.
+    (`quality_slice_where`, the shared rule), each inside its own window — blurred under
+    `features.blur_review_max`, closed eyes under `features.eye_openness_max` (F179) and
+    low-resolution under `features.low_resolution_mp` megapixels. No selector; the default
+    album name comes from the catalog.
     kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
     `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
     fact that covers 77% of what a person would call a photo of people (measured). Like

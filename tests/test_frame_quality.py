@@ -196,8 +196,8 @@ class TestMigration(unittest.TestCase):
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(frame_quality)")}
             (version,) = conn.execute("PRAGMA user_version").fetchone()
             conn.close()
-        self.assertEqual(cols, {"file_id", "sharpness", "face_sharpness", "pet",
-                                "pet_score", "pet_vlm", "eyes_open", "has_subject",
+        self.assertEqual(cols, {"file_id", "sharpness", "face_sharpness", "eye_openness",
+                                "pet", "pet_score", "pet_vlm", "eyes_open", "has_subject",
                                 "is_accidental", "junk_score", "source", "updated_at"})
         self.assertEqual(version, SCHEMA_VERSION)
 

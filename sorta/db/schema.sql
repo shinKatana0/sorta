@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 26;
+PRAGMA user_version = 27;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -137,6 +137,15 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     --                                       answer did not parse — never guessed as 0). Kept
     --                                       only where a face was detected (F121): the model
     --                                       answers it on cats otherwise.
+    --                                       F179: NOTHING READS IT ANY MORE. `vlm.quality`
+    --                                       still asks and still writes here, but the slice
+    --                                       that used to select on it now selects on
+    --                                       `eye_openness` below — 62% precision at 48%
+    --                                       recall against this column's 60% at 9%. The
+    --                                       answers are left where they are (they are the
+    --                                       only ones a person checked by eye) and the
+    --                                       question is left switchable; what changed is
+    --                                       that no user-facing list waits for it.
     has_subject INTEGER,                  -- RETIRED by F177, always NULL — the v26 migration
     --                                       emptied the 6 111 answers the one live run
     --                                       collected. Looked at by eye, the 212 frames it
@@ -181,6 +190,30 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     -- is worth computing over. Several faces -> the SHARPEST one: if any face in the frame
     -- is in focus, the shot was taken properly.
     face_sharpness REAL,
+    -- v27 (F179): how open the eyes of the largest face are — the height of the eye
+    -- opening over its width, off the 106-point contour of `2d106det`, measured on the
+    -- same preview `face_sharpness` above is taken from. Geometry, not a model's opinion:
+    -- the number is arithmetic over contour points, and it is what replaced the VLM
+    -- question this table used to carry (`eyes_open`, retired at 60% precision and 9%
+    -- recall for 92 minutes a run). On the SAME 249 hand-labelled frames the VLM was
+    -- judged on, the threshold this is read against gives 62% precision at 48% recall —
+    -- five times the recall at slightly better precision, and the population it points at
+    -- is ~948 frames, 15.6% of everything with a face in it.
+    --
+    -- IT RANKS, IT DOES NOT JUDGE, and at 62% precision that is not a formality: one in
+    -- three frames of the slice has its eyes open. `features.eye_openness_max` orders the
+    -- list and opens it to a window; nothing in this stage deletes or reclassifies by it.
+    --
+    -- SMALL MEANS CLOSED — the one column here where a LOWER number is the interesting
+    -- one. Several faces -> the LARGEST one, and only that one: a frame where somebody in
+    -- the background blinked is not a portrait with closed eyes (the mirror of the rule
+    -- `face_sharpness` uses, and for the same reason — each picks the face the shot is
+    -- about).
+    --
+    -- NULL = not measured, as everywhere in this table: no face on the frame, the faces
+    -- stage never ran, the crop came out below the minimum the contour is worth fitting
+    -- to, or the 106-point model was not available on this machine.
+    eye_openness REAL,
     source TEXT NOT NULL,                 -- classic | clip | vlm — WHICH TIER processed the
     --                                       row, and with it the incrementality marker (the
     --                                       F68 lesson, one column that means the tier)
