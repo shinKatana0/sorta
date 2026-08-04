@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The screenshot slice says it is an opinion** (F171). On 350 hand-labelled frames the
+  `screenshot` verdict is right about **59%** of what it points at (83% recall): every
+  third frame in that bucket is an ordinary photograph. The live run of 2026-08-04
+  reproduced the prediction made from that sample to within one frame — the rescue added
+  **441 frames** to the bucket (1 782 against 1 341), and 41% of what it adds are
+  photographs, so ~**181 personal pictures** left the city layout for a list a person
+  reads as "these are your screenshots" and never opens. No verdict, threshold or file
+  moves here: what changed is what the slice says and in what order it says it. The
+  caption now names the **model** as the author of the verdict, states the measurement it
+  was written from, and names returning a frame as an **ordinary step of the work** rather
+  than the repair of a rare mistake. A bucket is answered as a **list in order** —
+  `media_class.score` descending, the frames the classifier settled without a number
+  keeping the path order behind them — and the page says whether that ordering happened
+  (`ordered_by_score`), so the caption promises a ranking only where there is one; the
+  "all" view keeps the path order, because four classes are four separate softmaxes and an
+  order across them would be a comparison nobody measured. The way back is the action that
+  already existed (`POST /api/overrides` with `photo`), above the grid where it was, and
+  all three guides now carry the measurement, the run that confirmed it and the advice to
+  look the list over before deleting anything.
 - **Product recognition is a line of its own, with a price** (F161). "Deep analysis
   (VLM)" was the master switch of every question the model is asked (F145) and, by
   itself, the one thing that switched the deep junk tier on — which made it the only
@@ -284,6 +303,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **"Try to improve" no longer leaves a file the index has never heard of** (F185). The
+  copy was written under its final name and the row inserted by a SEPARATE call, so an
+  insert that did not happen left a `_restored` file lying in the archive with nothing
+  behind it — and the next `index` run reads such a file as a NEW photograph, so the
+  collection grows a near-duplicate the person never made. Found on the live archive as
+  **81 `_restored` files and zero rows**. The copy is now written to a staging name
+  beside its destination, the row is written while it is still called that, and only then
+  is it renamed into place — a rename inside one directory is atomic, and every other way
+  out of that sequence takes the staging file with it (`restore.restore_and_record`).
+  The click that found it also produced the second half: a **busy index is a reason now,
+  not a stack trace** (`ERROR_DATABASE_BUSY`). SQLite allows one writer, an `index` stage
+  can be running from the terminal, and the busy-guard (F145) only knows about runs
+  started from the interface — so pressing the button during a terminal run raised
+  `sqlite3.OperationalError` out of a request handler. It joins the three codes the
+  interface already translates, and it is `_BUSY` rather than `_FAILED` on purpose:
+  nothing is broken, the same press works a minute later, and the interface reads that
+  difference off the name to decide whether offering "try again" is honest. No retrying
+  happens inside `restore` — waiting for the index there would hold a connection and a
+  thread for as long as a stage takes.
 - **The run estimate is computed from measurements instead of baked-in constants**
   (F159). The run screen priced the "best frame of a group" stage at **1.32 s per group,
   whatever the group held**. Measured on 2026-08-03, one comparative question costs
