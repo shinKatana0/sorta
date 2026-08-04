@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A name in the search line finds the person** (F189). Naming a face cluster and merging
+  another into it made that person reachable by `sorta album person <name>` and by
+  `sort --by person` — and by no query anybody could type: the search line knew only CLIP
+  vectors, so «Ирина» asked the model for frames that resemble a **word**. The bridge is a
+  parse of the query string and nothing else — no index, no threshold, no cluster work.
+  The two answers stay **apart**, which is the whole feature: a query is a RANKING (recall
+  grows with depth, precision falls) and a name is an **exact selection** (the frame is in
+  that person's cluster or it is not), so a name gives a LIST — no threshold, no depth, no
+  "show more by relevance", paging by count only — and the answer says which kind it is
+  ("Кадры человека: Ирина — показано 200 из 214", and no closeness number on the cards).
+  Which frames are the person's is not decided twice: the selection is the album's own
+  (`sorter.plan_album(kind='person')`, the `merged_into` roots of F31), and a test compares
+  the two SETS rather than trusting that they agree. The match is exact apart from case and
+  stray blanks («ирина » and «Ирина» are one name); nothing fuzzy («Ира» does not find
+  «Ирина» — a near miss on a name puts somebody else's photographs under it), and an
+  unnamed cluster is found by nothing. **The word search never disappears**: a name that is
+  also an ordinary word («Роза», «Марк») shows the person first and keeps the ranking one
+  click away — `--words` in the terminal, a link above the grid in the web app. Pinning
+  (F156) picks it up: a pinned name is an ordinary tab answering the same set, captioned as
+  a person rather than as an estimate and gathering the person's album. Nothing is indexed
+  for this and no model is loaded, so it also works on a collection whose search index is
+  empty.
+
 ### Changed
 - **The screenshot slice says it is an opinion** (F171). On 350 hand-labelled frames the
   `screenshot` verdict is right about **59%** of what it points at (83% recall): every
