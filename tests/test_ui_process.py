@@ -712,17 +712,16 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         # too — the file is their only home now, and this is what the screen reads.
         # F161: `products` is the fifth, and the one whose default is TRUE — it is the
         # deep tier, which a config that never heard of the key has always run.
+        # F186 retired three of that set — `quality`, `quality_scope` and `keeper` — with
+        # the two questions they switched on, and the payload lost them with the boxes.
         self.assertEqual(set(data.keys()),
                          {"deep", "products", "geo_online", "pets", "pets_verify",
-                          "quality", "quality_scope", "keeper", "vlm_available"})
+                          "vlm_available"})
         self.assertFalse(data["deep"])
         self.assertTrue(data["products"])
         self.assertFalse(data["geo_online"])
         self.assertFalse(data["pets"])
         self.assertFalse(data["pets_verify"])
-        self.assertFalse(data["quality"])
-        self.assertFalse(data["keeper"])
-        self.assertEqual(data["quality_scope"], "groups")
 
     def test_vlm_enabled_and_online_provider_in_cfg_reflected(self):
         self.cfg.naming = dataclasses.replace(self.cfg.naming, vlm_enabled=True)
@@ -763,6 +762,55 @@ class TestProcessDefaultsInitJs(ProcessTestBase):
         self.assertIn(
             'document.getElementById("process-geo-online-checkbox").checked = '
             '!!data.geo_online', html)
+
+
+class TestTheRetiredControlsLeftNoStubs(ProcessTestBase):
+    """F186: the three retired run options are gone from the screen — script included.
+
+    Removing the markup of a control and leaving the script that reads it is not a
+    cosmetic leftover here: every one of these ids is looked up with
+    `document.getElementById(id).addEventListener(...)`, which throws on a missing
+    element and takes the REST of the page's initialization down with it — the cost
+    estimate, the wizard layout, the start button. So the page is checked for the ids
+    and not only for the markup.
+    """
+
+    RETIRED_IDS = ("process-quality-checkbox", "process-quality-scope",
+                   "process-keeper-checkbox")
+
+    def page(self) -> str:
+        self.start_server()
+        _status, body, _ctype = self.get("/")
+        return body.decode("utf-8")
+
+    def test_no_retired_control_is_named_anywhere_on_the_page(self):
+        html = self.page()
+        for element_id in self.RETIRED_IDS:
+            with self.subTest(id=element_id):
+                self.assertNotIn(element_id, html)
+
+    def test_the_run_request_does_not_send_the_retired_flags(self):
+        html = self.page()
+        for key in ("quality:", "quality_scope:", "keeper:"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, html)
+
+    def test_their_captions_are_gone_with_them(self):
+        for key in ("process_quality_label", "process_quality_hint",
+                    "process_quality_scope_label", "process_keeper_label",
+                    "process_keeper_hint", "settings_scope_groups",
+                    "settings_scope_events", "settings_scope_faces",
+                    "settings_scope_all"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, ui._UI_STRINGS)
+
+    def test_the_controls_that_stay_are_still_there(self):
+        """The other half — this suite must not pass on an emptied run screen."""
+        html = self.page()
+        for element_id in ("process-deep-checkbox", "process-products-checkbox",
+                           "process-pets-checkbox", "process-pets-verify-checkbox"):
+            with self.subTest(id=element_id):
+                self.assertIn(element_id, html)
 
 
 class TestVlmMissingWarningHtml(ProcessTestBase):

@@ -5682,57 +5682,6 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "候補を 1 枚ずつモデルに見せます（実際の動物か、その画像か、いないか）。"
               "精度は上がりますが、コマごとにモデルへ問い合わせます。",
     },
-    "process_quality_label": {
-        "ru": "Качество кадров", "en": "Frame quality", "ja": "コマの品質",
-    },
-    # F179: the hint used to read "whether the eyes are open — what nothing cheap can
-    # decide", and that is no longer true. The "Closed eyes" slice is computed from the
-    # eyelid geometry on every run, with no model and no toggle, and it is right 62% of the
-    # time against this question's 60% while finding five times as many frames. The switch
-    # stays (it still asks and still fills `frame_quality.eyes_open`), but a person deciding
-    # whether to spend ~92 minutes on it has to be told that the slice does not wait for it.
-    "process_quality_hint": {
-        "ru": "Спросить модель, открыты ли глаза. Срез «Закрытые глаза» и без этого "
-              "считается по геометрии век на каждом прогоне — на размеченной выборке "
-              "модель дала 60% точности против 62% у геометрии, найдя впятеро меньше "
-              "кадров. Нужен `uv sync --extra vlm`.",
-        "en": "Ask the model whether the eyes are open. The “Closed eyes” slice is computed "
-              "from the eyelid geometry on every run without it — on a labelled sample the "
-              "model was 60% right against the geometry's 62%, and found five times fewer "
-              "frames. Needs `uv sync --extra vlm`.",
-        "ja": "目が開いているかをモデルに尋ねます。「目を閉じた」区分はこれがなくても毎回"
-              "まぶたの形状から算出されます。ラベル付きサンプルではモデルの正解率 60% に対し"
-              "形状では 62% で、検出数は 5 分の 1 でした。`uv sync --extra vlm` が必要です。",
-    },
-    "process_quality_scope_label": {
-        "ru": "У каких кадров спрашивать",
-        "en": "Which frames to ask about",
-        "ja": "どのコマについて尋ねるか",
-    },
-    "process_keeper_label": {
-        "ru": "Лучший кадр в группе", "en": "Best frame of a group",
-        "ja": "グループ内のベストショット",
-    },
-    # F159 rewrote the second sentence. It used to sell the group question as the cheap
-    # way to ask — one call instead of one per frame — and the 2026-08-03 measurement
-    # took that away: the price is linear in the frames the prompt carries, so from three
-    # frames up the group question costs what the separate ones cost. What is left is the
-    # honest reason to switch it on, which was never the price.
-    "process_keeper_hint": {
-        "ru": "Один сравнительный вопрос модели на группу почти-дублей: какой кадр "
-              "оставить. Время растёт с размером группы — на группу из пяти уходит "
-              "примерно столько же, сколько на пять отдельных вопросов, зато отдельные "
-              "вопросы не говорят, который кадр лучше. Ничего не удаляет — только "
-              "подсказка на вкладке «Разбор».",
-        "en": "One comparative question per near-duplicate group: which frame to keep. "
-              "The time grows with the group — five frames take about what five separate "
-              "questions take, but separate questions do not say which frame is the best "
-              "one. It deletes nothing — it is a recommendation on the Review tab.",
-        "ja": "類似写真のグループごとに 1 回、どのコマを残すかをモデルに比較させます。"
-              "所要時間はグループの大きさに比例し、5 コマなら個別に 5 回尋ねるのとほぼ"
-              "同じです。ただし個別の質問ではどれが最良かは分かりません。"
-              "削除は行いません —「確認」タブでの推奨にとどまります。",
-    },
     # F145: said next to every option that asks the SAME model the "Deep analysis"
     # checkbox loads. With the checkbox clear each of them costs nothing and does
     # nothing — the line says which switch turns it back on, so a dead option does not
@@ -6606,13 +6555,6 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "そもそもどのコマについて尋ねるかを決めるしきい値です。計算は安価で、"
               "高価な部分を節約します — 帯が狭いほど、モデルに届くコマは減ります。",
     },
-    "settings_scope_groups": {
-        "ru": "Группы похожих", "en": "Near-duplicate groups", "ja": "類似のグループ",
-    },
-    "settings_scope_events": {"ru": "События", "en": "Events", "ja": "イベント"},
-    # F125 added the value; the entry in the list is F126's, which owns this file.
-    "settings_scope_faces": {"ru": "По лицам", "en": "By faces", "ja": "顔で"},
-    "settings_scope_all": {"ru": "Все кадры", "en": "Every frame", "ja": "すべてのコマ"},
     "settings_features_pet_threshold_label": {
         "ru": "Порог уверенности для животных",
         "en": "Animal confidence threshold",
@@ -11610,9 +11552,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   document.getElementById("process-deep-checkbox")
       .addEventListener("change", updateVlmMissingWarning);
   ["process-faces-checkbox", "process-events-checkbox", "process-pets-checkbox",
-   "process-pets-verify-checkbox", "process-deep-checkbox", "process-products-checkbox",
-   "process-quality-checkbox",
-   "process-quality-scope", "process-keeper-checkbox"].forEach(function (id) {
+   "process-pets-verify-checkbox", "process-deep-checkbox",
+   "process-products-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", renderCosts);
   });
   // Draw once before either answer arrives: dashes and the right nested rows, rather
@@ -11889,9 +11830,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       // F161: sent explicitly like the four above — an unticked box has to force the
       // deep tier OFF for this run, which is the whole point of giving it a line.
       products: document.getElementById("process-products-checkbox").checked,
-      quality: document.getElementById("process-quality-checkbox").checked,
-      quality_scope: currentQualityScope(),
-      keeper: document.getElementById("process-keeper-checkbox").checked,
     }).then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
@@ -11970,9 +11908,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
      ["process-faces-checkbox", I18N.process_faces_label],
      ["process-events-checkbox", I18N.process_events_label],
      ["process-pets-checkbox", I18N.process_pets_label],
-     ["process-pets-verify-checkbox", I18N.process_pets_verify_label],
-     ["process-quality-checkbox", I18N.process_quality_label],
-     ["process-keeper-checkbox", I18N.process_keeper_label]].forEach(function (pair) {
+     ["process-pets-verify-checkbox", I18N.process_pets_verify_label]].forEach(
+        function (pair) {
       if (document.getElementById(pair[0]).checked) on.push(pair[1]);
     });
     return I18N.step_options_summary_prefix +
@@ -12233,8 +12170,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   ["process-deep-checkbox", "process-products-checkbox",
    "process-geo-online-checkbox", "process-faces-checkbox",
    "process-events-checkbox", "process-pets-checkbox",
-   "process-pets-verify-checkbox", "process-quality-checkbox",
-   "process-keeper-checkbox"].forEach(function (id) {
+   "process-pets-verify-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", updateStepLayout);
   });
 
