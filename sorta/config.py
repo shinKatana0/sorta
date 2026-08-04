@@ -359,6 +359,29 @@ def default_vlm_workers() -> int:
 # is empty and the quality VLM does not run at all (see junk.quality_scope_ready).
 VLM_QUALITY_SCOPES = ("groups", "events", "faces", "all")
 
+# F153: how the two indexes answer one query. Two vectors per photograph exist once the
+# search index is on (F141) — the classification one (`clip_embeddings`, ViT-L-14) and the
+# search one (`search_embeddings`, the multilingual model) — and the measurement that
+# produced them said the two are equally accurate at the top and WRONG IN DIFFERENT
+# PLACES. That is the condition under which putting the two lists together is worth
+# anything, and it is also the reason the two ways of doing it below both work on RANKS:
+#
+#   off     one index, today's behaviour — the search index alone
+#   rank    reciprocal rank fusion: a frame is weighted by its POSITION in each list,
+#           so agreement between the models outranks a single model's favourite
+#   union   the two lists merged as sets: a frame keeps its best position, so a frame
+#           found by one model only is not pushed out by one both models found
+#
+# What no mode does is ADD THE SCORES. A cosine of ViT-L-14 and a cosine of
+# xlm-roberta-base-ViT-B-32 are numbers of two different spaces: they look comparable,
+# they print alike, and summing them is exactly the mistake F128's `model` column exists
+# to prevent. The fusion functions in `search.py` are given file ids and no scores at all,
+# which is that rule made mechanical rather than remembered.
+SEARCH_FUSION_OFF = "off"
+SEARCH_FUSION_RANK = "rank"
+SEARCH_FUSION_UNION = "union"
+SEARCH_FUSION_MODES = (SEARCH_FUSION_OFF, SEARCH_FUSION_RANK, SEARCH_FUSION_UNION)
+
 # F120: the media classes a frame can be excluded by before any VLM sees it. These are
 # the `media_class.verdict` values; `photo` is deliberately absent — excluding personal
 # photographs would leave the tier with nothing to do.
@@ -585,6 +608,21 @@ def _as_repo_id(key: str, value: Any, default: str) -> str:
     if value is not None:
         _log.warning("config: %s=%r — ожидался идентификатор модели, использую %r",
                      key, value, default)
+    return default
+
+
+def _as_fusion(value: Any, default: str) -> str:
+    """F153: one of SEARCH_FUSION_MODES; anything else -> the default, with a warning.
+
+    A misspelled mode must not silently become a fusion nobody asked for, and it must not
+    silently become `off` either: which of the three is running decides what the ranking
+    IS, so the fallback is announced.
+    """
+    if isinstance(value, str) and value.strip().lower() in SEARCH_FUSION_MODES:
+        return value.strip().lower()
+    if value is not None:
+        _log.warning("config: features.search_fusion=%r не из %s — использую %r",
+                     value, "/".join(SEARCH_FUSION_MODES), default)
     return default
 
 
@@ -1057,6 +1095,20 @@ class FeaturesConfig:
     # improvement, and `scripts/measure_restore.py` prints what raising this costs in time
     # and memory on the three frame populations separately.
     restore_max_edge: int = 1024
+    # F153: how a query uses the two indexes at once — `off` | `rank` | `union` (see
+    # SEARCH_FUSION_MODES above for what each does). The price is one extra matmul over a
+    # stored table, ~0.9 ms per index, and no pass over any image: this is query time and
+    # a run does not get slower by a millisecond.
+    #
+    # OFF, and that value is a MEASUREMENT RESULT ONLY ONCE THE MEASUREMENT EXISTS. The
+    # observation this feature comes from is that the two models return DIFFERENT frames
+    # at the same precision (88/96/98% at 1/3/5 for both), so the gain expected from
+    # putting them together is in RECALL — and recall has never been measured for either
+    # of them. `scripts/measure_search.py --fusion --labels ...` prints precision AND
+    # recall at each depth for all four variants; until that has been run on a labelled
+    # collection there is no number here to choose a default by, and a fusion switched on
+    # by hope would be exactly the assumed accuracy F121/F122 cost 320 labels to unlearn.
+    search_fusion: str = SEARCH_FUSION_OFF
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -1102,6 +1154,7 @@ def _features_from(raw: dict) -> FeaturesConfig:
             "features.restore_model", raw.get("restore_model"), d.restore_model),
         restore_max_edge=_as_positive_int(
             raw.get("restore_max_edge"), d.restore_max_edge),
+        search_fusion=_as_fusion(raw.get("search_fusion"), d.search_fusion),
     )
 
 
