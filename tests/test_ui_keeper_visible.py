@@ -7,17 +7,27 @@ showing fell between them.
 
 What is checked here is mostly what the feature must NOT do. Preselecting the keeper is
 a hint one click undoes; preselecting the rest for deletion would be a finished decision
-about 37 files in a group of 38, taken on a model that was asked about five of them. So
-the central test below reads `dedup_choice` after the tab has been opened, not the
-markup: the table is the decision, everything else is a suggestion.
+about 37 files in a group of 38, taken on a recommendation about five of them. So the
+central test below reads `dedup_choice` after the tab has been opened, not the markup:
+the table is the decision, everything else is a suggestion.
+
+F186 retired the model that could name a keeper; the reader did not move. A collection
+that ran that question still carries its rows, and they are still shown as the model's —
+which is why `MODEL_SOURCE` below is a stored string rather than a call into `junk`. What
+a run writes today is the sharpness recommendation, and both captions are still here.
 """
 from __future__ import annotations
 
 import json
 import unittest
 
-from sorta import dedup, junk, ui
+from sorta import dedup, ui
 from tests.test_ui_dupes import DupesTestBase
+
+# The `group_keeper.source` a run wrote while the retired question was being asked
+# (`vlm#<prompt fingerprint>`). Anything that is not `sharpness` is the model, by the one
+# rule ui._dupes_payload applies — see `keeper_source` there.
+MODEL_SOURCE = "vlm#abc12345"
 
 
 class KeeperVisibleTestBase(DupesTestBase):
@@ -74,7 +84,7 @@ class TestTheRecommendationIsShown(KeeperVisibleTestBase):
         """The row wins over the local ranking — otherwise the model's answer is still
         invisible, which is the whole bug."""
         ids = self.add_group("a", "0" * 16, [900, 600, 300])
-        self.store_keeper(ids, ids[2], junk.keeper_source())  # the SMALLEST frame
+        self.store_keeper(ids, ids[2], MODEL_SOURCE)  # the SMALLEST frame
         self.start_server()
         group = self.group_of(ids[0])
         self.assertEqual(group["keeper_id"], ids[2])
@@ -83,7 +93,7 @@ class TestTheRecommendationIsShown(KeeperVisibleTestBase):
 
     def test_the_keeper_is_preselected_while_nothing_was_decided(self):
         ids = self.add_group("a", "0" * 16, [900, 600, 300])
-        self.store_keeper(ids, ids[1], junk.keeper_source())
+        self.store_keeper(ids, ids[1], MODEL_SOURCE)
         self.start_server()
         group = self.group_of(ids[0])
         self.assertEqual(self.recommended_ids(group), [ids[1]])
@@ -96,7 +106,7 @@ class TestTheRecommendationIsShown(KeeperVisibleTestBase):
 
     def test_a_human_choice_overrides_the_recommendation_and_survives_a_reload(self):
         ids = self.add_group("a", "0" * 16, [900, 600, 300])
-        self.store_keeper(ids, ids[0], junk.keeper_source())
+        self.store_keeper(ids, ids[0], MODEL_SOURCE)
         self.start_server()
         status, payload = self.post("/api/dupes/choice",
                                     {"group": ids, "keep_file_id": ids[2]})
@@ -116,14 +126,14 @@ class TestTheRecommendationIsShown(KeeperVisibleTestBase):
         """Trust in advice depends on who gives it: two sources, two captions."""
         by_model = self.add_group("m", "0" * 16, [900, 600, 300])
         by_sharpness = self.add_group("s", "f" * 16, [900, 600, 300])
-        self.store_keeper(by_model, by_model[1], junk.keeper_source())
+        self.store_keeper(by_model, by_model[1], MODEL_SOURCE)
         self.store_keeper(by_sharpness, by_sharpness[0], dedup.KEEPER_SOURCE_SHARPNESS)
         self.start_server()
         self.assertEqual(self.group_of(by_model[0])["keeper_source"], "model")
         self.assertEqual(self.group_of(by_sharpness[0])["keeper_source"], "sharpness")
         # The prompt fingerprint stays out of the interface: it is revision-of-the-
         # question bookkeeping, not something a person can act on.
-        self.assertNotIn(junk.keeper_prompt_fingerprint(), json.dumps(self.groups()))
+        self.assertNotIn(MODEL_SOURCE, json.dumps(self.groups()))
         html = self.html()
         self.assertIn('g.keeper_source === "model"', html)
         self.assertIn("I18N.keeper_badge_model", html)
@@ -133,7 +143,7 @@ class TestTheRecommendationIsShown(KeeperVisibleTestBase):
         """There is exactly one per group, and a burst can hold two good moments —
         the hint is the only place that can say so without shouting it."""
         ids = self.add_group("a", "0" * 16, [900, 600, 300])
-        self.store_keeper(ids, ids[1], junk.keeper_source())
+        self.store_keeper(ids, ids[1], MODEL_SOURCE)
         self.start_server()
         self.assertIn("badge.title = I18N.keeper_badge_hint;", self.html())
 
@@ -145,7 +155,7 @@ class TestNothingIsMarkedWithoutAHand(KeeperVisibleTestBase):
     def test_opening_the_tab_marks_nothing_for_deletion(self):
         by_model = self.add_group("m", "0" * 16, [900, 600, 300])
         by_sharpness = self.add_group("s", "f" * 16, [900, 600, 300])
-        self.store_keeper(by_model, by_model[2], junk.keeper_source())
+        self.store_keeper(by_model, by_model[2], MODEL_SOURCE)
         self.store_keeper(by_sharpness, by_sharpness[0], dedup.KEEPER_SOURCE_SHARPNESS)
         self.start_server()
         groups = self.groups()
@@ -160,7 +170,7 @@ class TestNothingIsMarkedWithoutAHand(KeeperVisibleTestBase):
     def test_the_review_workspace_marks_nothing_either(self):
         """The duplicates slice of the Review tab renders the same payload."""
         ids = self.add_group("a", "0" * 16, [900, 600, 300])
-        self.store_keeper(ids, ids[2], junk.keeper_source())
+        self.store_keeper(ids, ids[2], MODEL_SOURCE)
         self.start_server()
         status, body, _ctype = self.get("/api/review?slice=dupes")
         self.assertEqual(status, 200)
@@ -215,7 +225,7 @@ class TestGroupsWithoutARow(KeeperVisibleTestBase):
         and if it ever does, the group falls back instead of losing its star."""
         ids = self.add_group("a", "0" * 16, [900, 600, 300])
         other = self.add_dupe("z.jpg", phash="f" * 16, width=10, height=10, size=10)
-        self.store_keeper(ids, other, junk.keeper_source())
+        self.store_keeper(ids, other, MODEL_SOURCE)
         self.start_server()
         group = self.group_of(ids[0])
         self.assertIsNone(group["keeper_source"])

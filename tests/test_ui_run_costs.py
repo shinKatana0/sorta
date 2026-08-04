@@ -6,13 +6,18 @@ settings column next to the number of preparation threads (`vlm.quality` +
 screen where a run is started, and what makes that a budget rather than a longer row of
 switches is the price on every line plus the sum under them.
 
+F186 retired two of those three questions, and the budget lost the keeper line and the
+scope select with them. A budget must not quote a price for a stage that no longer runs,
+so what is checked below is both that the retired lines are gone and that the ones beside
+them did not move.
+
 What is pinned here is the whole of that:
 
-* the four knobs reach the run and do NOT rewrite config.yaml (§2, test 1);
+* the knobs reach the run and do NOT rewrite config.yaml (§2, test 1);
 * each starts from the config (test 2);
 * each is GONE from the settings column, explicitly — one home per value (test 3);
 * the thresholds and the model stayed there (test 4);
-* the scope select is shown only with its parent on (§3, test 5);
+* the budget names every line the run has and no line it does not (F186);
 * the sum is the sum of the lines and moves with a toggle, in the browser (test 6);
 * an empty collection shows a dash, never a zero (§1, test 7);
 * the estimate is labelled as an estimate (§1, test 8).
@@ -55,13 +60,10 @@ class RunCostsTestBase(ProcessTestBase):
         self.config_path.write_text(
             "language: en\n"
             "vlm:\n"
-            "  quality: false\n"
-            "  quality_scope: groups\n"
+            "  products: true\n"
             "features:\n"
             "  pets: false\n"
-            "  pets_verify: false\n"
-            "dedup:\n"
-            "  keeper_vlm: false\n",
+            "  pets_verify: false\n",
             encoding="utf-8")
         loaded = load_config(self.config_path)
         self.cfg.vlm, self.cfg.features = loaded.vlm, loaded.features
@@ -108,70 +110,64 @@ class TestKnobsReachTheRun(RunCostsTestBase):
     """Test 1: each of the four drives the run — and leaves config.yaml alone."""
 
     def test_every_moved_knob_reaches_the_junk_stage(self):
-        run_cfg = self.run_once({
-            "pets": True, "pets_verify": True, "quality": True,
-            "quality_scope": "events", "keeper": True,
-        })
-        self.assertIs(run_cfg.vlm.quality, True)
-        self.assertEqual(run_cfg.vlm.quality_scope, "events")
+        run_cfg = self.run_once({"pets": True, "pets_verify": True})
+        self.assertIs(run_cfg.features.pets, True)
         self.assertIs(run_cfg.features.pets_verify, True)
-        self.assertIs(run_cfg.dedup.keeper_vlm, True)
 
     def test_the_file_is_not_rewritten_by_a_run(self):
         """§2's exception, the F123 shape: the screen starts from the config and
         overrides it for ONE run. A run that wrote the file back would make every
         checkbox a permanent setting nobody asked to change."""
         before = self.config_path.read_text(encoding="utf-8")
-        self.run_once({"pets": True, "pets_verify": True, "quality": True,
-                       "quality_scope": "all", "keeper": True})
+        self.run_once({"pets": True, "pets_verify": True, "products": False})
         self.assertEqual(self.config_path.read_text(encoding="utf-8"), before)
-        self.assertEqual(self.saved()["vlm"]["quality"], False)
         self.assertEqual(self.saved()["features"]["pets_verify"], False)
-        self.assertEqual(self.saved()["dedup"]["keeper_vlm"], False)
+        self.assertEqual(self.saved()["vlm"]["products"], True)
 
     def test_the_shared_config_of_the_server_is_not_mutated(self):
         """The other routes read the same object; a run must not move it under them."""
-        self.run_once({"quality": True, "keeper": True, "pets_verify": True,
-                       "pets": True})
-        self.assertIs(self.cfg.vlm.quality, False)
+        self.run_once({"pets_verify": True, "pets": True})
+        self.assertIs(self.cfg.features.pets, False)
         self.assertIs(self.cfg.features.pets_verify, False)
-        self.assertIs(self.cfg.dedup.keeper_vlm, False)
 
     def test_an_unticked_box_forces_off_what_the_config_switched_on(self):
         """The F57 rule, carried over: an empty checkbox means OFF, not "as the file
         says" — otherwise unticking something expensive would quietly do nothing."""
-        self.cfg.vlm = dataclasses.replace(self.cfg.vlm, quality=True)
-        self.cfg.features = dataclasses.replace(self.cfg.features, pets_verify=True)
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_vlm=True)
-        run_cfg = self.run_once({"quality": False, "pets_verify": False,
-                                 "keeper": False})
-        self.assertIs(run_cfg.vlm.quality, False)
+        self.cfg.features = dataclasses.replace(self.cfg.features, pets=True,
+                                                pets_verify=True)
+        run_cfg = self.run_once({"pets": False, "pets_verify": False})
+        self.assertIs(run_cfg.features.pets, False)
         self.assertIs(run_cfg.features.pets_verify, False)
-        self.assertIs(run_cfg.dedup.keeper_vlm, False)
 
     def test_a_body_without_them_leaves_the_config_alone(self):
         """`/api/process/rerun-optional` and any caller outside the browser have no
         interface for these four; an absent field means "the file decides", the
         cli._quality_overrides convention — not a silent OFF."""
-        self.cfg.vlm = dataclasses.replace(self.cfg.vlm, quality=True)
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_vlm=True)
+        self.cfg.features = dataclasses.replace(self.cfg.features, pets_verify=True)
         run_cfg = self.run_once({})
-        self.assertIs(run_cfg.vlm.quality, True)
-        self.assertIs(run_cfg.dedup.keeper_vlm, True)
+        self.assertIs(run_cfg.features.pets_verify, True)
 
-    def test_an_unknown_scope_is_refused_rather_than_defaulted(self):
-        """`all` is the 4.3-hour option: a misspelling must not be rounded into it or
-        past it, so the set is closed and a miss is a 400."""
-        self.patch_fast_stages()
-        self.start_server()
-        status, _resp = self.post("/api/process", {"source_dir": str(self.src_dir),
-                                                   "quality_scope": "everything"})
-        self.assertEqual(status, 400)
+    def test_a_retired_flag_switches_nothing_on(self):
+        """F186: the run route knew three flags this screen no longer has.
+
+        A caller outside the browser may still send them — a script, a saved request —
+        and the route reads them the way it reads any field it does not know: not at all.
+        What matters is that the run then does what the file says, rather than the model
+        being asked a question that no longer exists.
+        """
+        run_cfg = self.run_once({"quality": True, "quality_scope": "faces",
+                                 "keeper": True})
+        for section, key in (("vlm", "quality"), ("vlm", "quality_scope"),
+                             ("dedup", "keeper_vlm")):
+            with self.subTest(key=f"{section}.{key}"):
+                self.assertFalse(hasattr(getattr(run_cfg, section), key))
+        # and the run itself happened, with the settings of the file beside them
+        self.assertIs(run_cfg.features.pets_verify, False)
 
     def test_a_flag_that_is_not_a_boolean_is_refused(self):
         self.patch_fast_stages()
         self.start_server()
-        for body in ({"quality": "yes"}, {"keeper": 1}, {"pets_verify": "true"}):
+        for body in ({"pets": "yes"}, {"products": 1}, {"pets_verify": "true"}):
             with self.subTest(body=body):
                 status, _resp = self.post(
                     "/api/process", {"source_dir": str(self.src_dir), **body})
@@ -182,29 +178,25 @@ class TestDefaultsComeFromTheConfig(RunCostsTestBase):
     """Test 2: the starting state of every moved knob is what the file says."""
 
     def test_defaults_follow_the_config(self):
-        self.cfg.vlm = dataclasses.replace(self.cfg.vlm, quality=True,
-                                           quality_scope="faces")
-        self.cfg.features = dataclasses.replace(self.cfg.features, pets_verify=True)
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_vlm=True)
+        self.cfg.features = dataclasses.replace(self.cfg.features, pets=True,
+                                                pets_verify=True)
+        self.cfg.vlm = dataclasses.replace(self.cfg.vlm, products=False)
         self.start_server()
         _status, body, _ctype = self.get("/api/process/defaults")
         data = json.loads(body)
-        self.assertIs(data["quality"], True)
-        self.assertEqual(data["quality_scope"], "faces")
+        self.assertIs(data["pets"], True)
         self.assertIs(data["pets_verify"], True)
-        self.assertIs(data["keeper"], True)
+        self.assertIs(data["products"], False)
 
     def test_the_script_sets_every_checkbox_from_that_answer(self):
         html = ui._render_index_html("en")
         for field, control in (("pets_verify", "process-pets-verify-checkbox"),
-                               ("quality", "process-quality-checkbox"),
-                               ("keeper", "process-keeper-checkbox")):
+                               ("pets", "process-pets-checkbox"),
+                               ("products", "process-products-checkbox")):
             with self.subTest(field=field):
                 self.assertIn(
                     f'document.getElementById("{control}").checked = !!data.{field};',
                     html)
-        self.assertIn('document.getElementById("process-quality-scope").value ='
-                      ' data.quality_scope;', html)
 
 
 class TestOneHomePerKnob(RunCostsTestBase):
@@ -241,9 +233,8 @@ class TestOneHomePerKnob(RunCostsTestBase):
 
     def test_each_moved_knob_has_exactly_one_control_in_the_page(self):
         html = ui._render_index_html("en")
-        for control in ("process-quality-checkbox", "process-quality-scope",
-                        "process-pets-verify-checkbox", "process-keeper-checkbox",
-                        "process-deep-checkbox", "process-pets-checkbox"):
+        for control in ("process-pets-verify-checkbox", "process-deep-checkbox",
+                        "process-products-checkbox", "process-pets-checkbox"):
             with self.subTest(control=control):
                 self.assertEqual(html.count(f'id="{control}"'), 1)
 
@@ -259,34 +250,46 @@ class TestTheBlockItself(RunCostsTestBase):
 
     def test_the_block_holds_no_more_than_seven_lines(self):
         """The readability criterion, and the reason the four knobs could be moved at
-        all: a longer list is the console of switches F133 took away."""
+        all: a longer list is the console of switches F133 took away.
+
+        Five top-level rows since F186 took two questions out of the budget — under the
+        ceiling rather than at it, which is the direction this criterion is allowed to
+        move in. Both numbers are asserted: the ceiling is the rule, the exact count is
+        what makes a line appearing or vanishing unnoticed impossible.
+        """
         block = self.html.split('id="process-costs"', 1)[1].split("</div>\n</div>", 1)[0]
-        self.assertEqual(len(re.findall(r'class="cost-row"', block)), 7)
+        rows = len(re.findall(r'class="cost-row"', block))
+        self.assertLessEqual(rows, 7)
+        self.assertEqual(rows, 5)
 
     def test_every_line_carries_a_price_slot(self):
         for key in ("base", "faces", "events", "pets", "pets_verify", "deep",
-                    "products", "quality", "keeper"):
+                    "products"):
             with self.subTest(key=key):
                 self.assertIn(f'data-cost="{key}"', self.options)
 
-    def test_the_scope_starts_hidden_and_is_shown_with_its_parent(self):
-        """§3: a scope for a question nobody is asking is a choice about nothing."""
-        row = self.options.split('id="process-quality-scope-row"', 1)[1][:60]
-        self.assertIn('style="display:none"', row)
-        self.assertIn('document.getElementById("process-quality-scope-row").style.display'
-                      ' =\n        qualityOn ? "" : "none";', self.html)
-        self.assertIn('var qualityOn = document.getElementById('
-                      '"process-quality-checkbox").checked;', self.html)
+    def test_the_budget_names_no_line_the_run_does_not_have(self):
+        """F186: the keeper line and the scope select are gone from the markup.
+
+        A price slot for a stage nobody runs is worse than a missing one — it reads as a
+        cost a person is about to pay, and the sum under the list would carry it.
+        """
+        for gone in ('data-cost="quality"', 'data-cost="keeper"',
+                     'id="process-quality-scope-row"', 'id="process-quality-scope"',
+                     'id="process-keeper-checkbox"'):
+            with self.subTest(fragment=gone):
+                self.assertNotIn(gone, self.html)
 
     def test_the_only_nesting_is_one_level_deep(self):
         """A subordinate control of a subordinate control is where this block would
         stop being readable, so there is deliberately no second level.
 
-        Three children since F161: the product line sits under the master switch the way
-        the animal check sits under the animals, which is what keeps the block at seven
-        rows while the master stops doing anything by itself.
+        Two children: the animal check under the animals, and the product line under the
+        master switch (F161) — which is what keeps the block short while the master stops
+        doing anything by itself. The third was the scope select of the quality question,
+        and F186 retired it with the question.
         """
-        self.assertEqual(self.options.count('class="cost-child"'), 3)
+        self.assertEqual(self.options.count('class="cost-child"'), 2)
         for child in self.options.split('class="cost-child"')[1:]:
             self.assertNotIn("cost-child", child.split("</span>", 1)[0])
 
@@ -307,7 +310,7 @@ class TestTheBlockItself(RunCostsTestBase):
         self.assertIn("total += seconds;", self.html)
         self.assertIn('value.textContent = formatCost(total);', self.html)
         listeners = self.html.split(
-            '"process-quality-scope", "process-keeper-checkbox"].forEach', 1)[1]
+            '"process-products-checkbox"].forEach', 1)[1]
         self.assertIn('addEventListener("change", renderCosts)',
                       listeners.split("});", 1)[0])
 
@@ -321,10 +324,7 @@ class TestTheBlockItself(RunCostsTestBase):
                     "costs_always", "costs_total_label", "costs_total_at_least",
                     "costs_unknown", "costs_free", "costs_under_minute",
                     "costs_minutes", "costs_hours", "process_pets_verify_label",
-                    "process_pets_verify_hint", "process_quality_label",
-                    "process_quality_hint", "process_quality_scope_label",
-                    "process_keeper_label", "process_keeper_hint",
-                    "settings_costs_moved_hint"):
+                    "process_pets_verify_hint", "settings_costs_moved_hint"):
             with self.subTest(key=key):
                 entry = ui._UI_STRINGS[key]
                 self.assertEqual(set(entry), {"ru", "en", "ja"})
@@ -372,7 +372,6 @@ class TestEstimateEndpoint(RunCostsTestBase):
         data = self.estimate()
         self.assertIsNone(data["seconds"]["products"])
         self.assertIsNone(data["seconds"]["pets_verify"])
-        self.assertIsNone(data["seconds"]["keeper"])
         self.assertIsNotNone(data["seconds"]["base"])
 
     def test_the_lines_that_only_need_frames_are_priced_at_once(self):
@@ -417,68 +416,27 @@ class TestEstimateEndpoint(RunCostsTestBase):
         self.assertAlmostEqual(data["seconds"]["pets_verify"],
                                round(2 * ui._SEC_PER_VLM_FRAME, 1))
 
-    def test_the_keeper_question_is_priced_per_group_not_per_frame(self):
-        """The keeper line is counted in GROUPS, not in the frames they hold: the
-        question is asked once per group, whatever the answer costs.
+    def test_the_estimate_prices_the_lines_of_the_run_and_no_others(self):
+        """F186: the retired questions took their lines out of the payload.
 
-        The pair is deliberate and so is the pinned `keeper_min_group_size`: this case is
-        about the ARITHMETIC over a group, and it must not move when the product default
-        moves (F144 raised it to 3 and pinned the mechanism tests the same way).
-
-        Three branches rewrote this fixture independently on 2026-08-02, each chasing the
-        default instead of pinning it. Pinning is why it stops.
-
-        F159 replaced the flat 1.32 s a group used to be priced at — the measured price of
-        a PAIR, applied to every size — with `estimate.keeper_call_sec` plus a cost per
-        frame in the prompt. What that price IS lives in
-        `test_estimate_from_measurements.py`; what this case still pins is the population.
+        Two of them were priced here — the keeper question per GROUP (a population this
+        endpoint computed with a near-duplicate pass of its own) and the quality question
+        per frame, once for each of its four scopes. Neither stage runs, so neither may
+        appear in a budget; and the lines that stayed have to be exactly the ones the run
+        still has, which is what the second half of this case says.
         """
         for i in range(2):
             self.add_photo(f"dup{i}.jpg", phash="f" * 16)
-        self.add_photo("alone.jpg", phash="0" * 16)
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_min_group_size=2)
         self.start_server()
         data = self.estimate()
-        self.assertEqual(data["counts"]["keeper"], 1)
-        self.assertAlmostEqual(
-            data["seconds"]["keeper"],
-            round(self.cfg.estimate.keeper_call_sec
-                  + 2 * self.cfg.estimate.keeper_frame_sec, 1))
-        # The same grouping is what `quality_scope: groups` asks about — by frames.
-        self.assertEqual(data["counts"]["quality_groups"], 2)
-
-    def test_a_group_below_the_configured_size_is_not_asked_about(self):
-        for i in range(2):
-            self.add_photo(f"dup{i}.jpg", phash="f" * 16)
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_min_group_size=3)
-        self.start_server()
-        self.assertEqual(self.estimate()["counts"]["keeper"], 0)
-
-    def test_every_scope_is_priced_so_the_select_costs_no_request(self):
-        """The four scopes differ by hours, and the choice has to be answerable the
-        moment it is made — so all four travel at once."""
-        for i in range(3):
-            self.add_photo(f"p{i}.jpg", phash="f" * 16)
-        self.start_server()
-        data = self.estimate()
-        self.assertEqual(data["counts"]["quality_all"], 3)
-        self.assertEqual(data["counts"]["quality_groups"], 3)
-        # Neither events nor faces have been built — a dash, not "no frames".
-        self.assertIsNone(data["seconds"]["quality_events"])
-        self.assertIsNone(data["seconds"]["quality_faces"])
-
-    def test_the_faces_scope_becomes_knowable_once_faces_have_been_found(self):
-        first = self.add_photo("a.jpg")
-        self.add_photo("b.jpg")
-        self.conn.execute(
-            "INSERT INTO faces (file_id, bbox, embedding) VALUES (?, '[1,2,3,4]', x'00')",
-            (first,))
-        self.conn.commit()
-        self.start_server()
-        data = self.estimate()
-        self.assertEqual(data["counts"]["quality_faces"], 1)
-        self.assertAlmostEqual(data["seconds"]["quality_faces"],
-                               round(ui._SEC_PER_VLM_FRAME, 1))
+        self.assertEqual(set(data["seconds"]),
+                         {"base", "faces", "events", "pets", "pets_verify", "deep",
+                          "products"})
+        for retired in ("keeper", "quality_all", "quality_groups", "quality_events",
+                        "quality_faces"):
+            with self.subTest(line=retired):
+                self.assertNotIn(retired, data["seconds"])
+                self.assertNotIn(retired, data["counts"])
 
     def test_the_answer_follows_the_index_rather_than_the_cache(self):
         """The near-duplicate grouping costs seconds, so the payload is cached the way
