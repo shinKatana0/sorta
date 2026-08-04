@@ -133,19 +133,20 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     -- label with. `pet` above is the DECISION: 'animal' when pet_vlm = 'real', or when
     -- pet_vlm IS NULL and pet_score >= features.pet_threshold.
     pet_vlm TEXT,
-    eyes_open INTEGER,                    -- the VLM answer: 1 | 0 | NULL (not asked, or the
-    --                                       answer did not parse — never guessed as 0). Kept
-    --                                       only where a face was detected (F121): the model
-    --                                       answers it on cats otherwise.
-    --                                       F179: NOTHING READS IT ANY MORE. `vlm.quality`
-    --                                       still asks and still writes here, but the slice
-    --                                       that used to select on it now selects on
+    eyes_open INTEGER,                    -- RETIRED by F186, and NULL on every row written
+    --                                       since. It held the VLM answer: 1 | 0 | NULL (not
+    --                                       asked, or the answer did not parse — never
+    --                                       guessed as 0), kept only where a face was
+    --                                       detected (F121), because the model answers it on
+    --                                       cats otherwise.
+    --                                       F179 replaced what read it: the slice that used
+    --                                       to select on this column selects on
     --                                       `eye_openness` below — 62% precision at 48%
-    --                                       recall against this column's 60% at 9%. The
-    --                                       answers are left where they are (they are the
-    --                                       only ones a person checked by eye) and the
-    --                                       question is left switchable; what changed is
-    --                                       that no user-facing list waits for it.
+    --                                       recall against this column's 60% at 9%, and no
+    --                                       model call at all — and F186 then stopped the
+    --                                       question being asked. The answers a run already
+    --                                       collected are left where they are: they are the
+    --                                       only ones a person checked by eye.
     has_subject INTEGER,                  -- RETIRED by F177, always NULL — the v26 migration
     --                                       emptied the 6 111 answers the one live run
     --                                       collected. Looked at by eye, the 212 frames it

@@ -464,13 +464,16 @@ class TestGuidesAgreeWithTheCode(unittest.TestCase):
 
         `config.example.yaml` is checked with them: it is the file people copy, and a
         retired key sitting in it would be written into every new config in the world.
+        The schema is checked with them too — its column comments are the field list, and
+        `frame_quality.eyes_open` was described there as a column a live key still wrote.
         """
         retired = ("vlm.quality", "vlm.quality_scope", "dedup.keeper_vlm",
                    "estimate.keeper_call_sec", "estimate.keeper_frame_sec",
                    "quality_scope:", "keeper_vlm:", "keeper_call_sec:",
                    "keeper_frame_sec:", "--quality-scope", "--no-quality")
         example = _ROOT / "config.example.yaml"
-        for lang, path in {**GUIDES, "example": example}.items():
+        schema = _ROOT / "sorta" / "db" / "schema.sql"
+        for lang, path in {**GUIDES, "example": example, "schema": schema}.items():
             text = read(path)
             for key in retired:
                 with self.subTest(lang=lang, key=key):
