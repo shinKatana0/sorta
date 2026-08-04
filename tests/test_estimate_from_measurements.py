@@ -42,7 +42,12 @@ MEASURED = {
     "stage=phash": 0.40,
     "stage=faces": 2.00,
     "stage=events": 0.50,
-    "stage=junk phase=junk_vlm": 3.00,
+    # F165 split the stage that asks the model in two, and both halves call their VLM
+    # phase `junk_vlm`. The rates differ here on purpose: a line priced off the wrong
+    # half would be charged the rate of a different population, and these numbers are
+    # what makes that visible instead of a coincidence.
+    "stage=classify phase=junk_vlm": 3.00,
+    "stage=junk phase=junk_vlm": 5.00,
 }
 BASE_RATE = sum(MEASURED[f"stage={s}"] for s in ("index", "geo", "landmarks", "phash"))
 
@@ -272,7 +277,11 @@ class TestTheLogIsBelievedOverTheConstants(EstimateTestBase):
         # The lines whose every unit WAS measured are unaffected by the missing one.
         self.assertEqual(data["sources"]["faces"], "measured")
 
-    def test_the_model_questions_are_priced_by_the_junk_stage_vlm_phase(self):
+    def test_the_model_questions_are_priced_by_the_vlm_phase_that_asks_them(self):
+        """F165 runs the deep tier ahead of faces, in `classify`, and leaves the quality
+        and animal questions behind it, in `junk`. Both phases are named `junk_vlm`, so a
+        line priced off the wrong one is charged the rate of a different population — and
+        nothing but this case would notice."""
         ids = [self.add_photo(f"p{i}.jpg") for i in range(3)]
         for file_id in ids[:2]:
             self.conn.execute(
@@ -285,7 +294,9 @@ class TestTheLogIsBelievedOverTheConstants(EstimateTestBase):
 
         self.assertEqual(data["counts"]["deep"], 2)
         self.assertAlmostEqual(data["seconds"]["deep"],
-                               round(2 * MEASURED["stage=junk phase=junk_vlm"], 1))
+                               round(2 * MEASURED["stage=classify phase=junk_vlm"], 1))
+        self.assertAlmostEqual(data["seconds"]["quality_all"],
+                               round(3 * MEASURED["stage=junk phase=junk_vlm"], 1))
         for key in ("deep", "quality_all", "pets_verify"):
             with self.subTest(key=key):
                 self.assertEqual(data["sources"][key], "measured")
@@ -367,11 +378,11 @@ class TestTheEstimateAndTheRunAgree(EstimateTestBase):
         Written out stage by stage rather than reusing the payload — the two agreeing
         because they are the same expression would prove nothing.
         """
-        total = photos * BASE_RATE                              # index/geo/landmarks/phash
-        total += photos * MEASURED["stage=faces"]               # faces, switched on
-        total += photos * MEASURED["stage=events"]              # events, switched on
-        total += deep * MEASURED["stage=junk phase=junk_vlm"]   # the deep tier
-        for size in groups:                                     # the keeper question
+        total = photos * BASE_RATE                    # index/geo/landmarks/phash
+        total += photos * MEASURED["stage=faces"]     # faces, switched on
+        total += photos * MEASURED["stage=events"]    # events, switched on
+        total += deep * MEASURED["stage=classify phase=junk_vlm"]   # the deep tier
+        for size in groups:                           # the keeper question
             if size >= int(self.cfg.dedup.keeper_min_group_size):
                 total += (self.cfg.estimate.keeper_call_sec
                           + self.cfg.estimate.keeper_frame_sec
