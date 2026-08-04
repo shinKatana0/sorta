@@ -174,9 +174,10 @@ only paid for where the cheap one is not sure:
   `_group_probs` keeps the junk verdict exactly where it was — a renormalized slice of a
   softmax IS the softmax over that slice — so `naming.junk_threshold` does not move under
   a threshold that was measured against three prompts.
-* eyes open / a subject at all / an accidental shot — the local VLM, behind `vlm.quality`,
-  over the UNCERTAIN BAND only (sharpness in the zone where it decides nothing, or a CLIP
-  junk-group score too low to mean anything) inside `vlm.quality_scope` (pHash groups by
+* eyes open — the local VLM, behind `vlm.quality` (F177 retired the two questions that
+  used to share the call), over the UNCERTAIN BAND only (sharpness in the zone where it
+  decides nothing, or a CLIP junk-group score too low to mean anything) inside
+  `vlm.quality_scope` (pHash groups by
   default; F125 adds `faces` — the frames a face was actually found on, which is the only
   population the eyes question has, and without a faces run that scope asks nothing at
   all). The answer is one line of keywords read leniently (the F96 lesson: asked for a
@@ -1510,9 +1511,9 @@ def apply_text_frac(verdict: str, score: float, text_frac: float | None,
 #
 # Three questions, three prices. Sharpness is a laplacian over the preview every other
 # stage has already paid for (milliseconds, no toggle, written always). Pets are a prompt
-# group inside the CLIP call above (free, `features.pets`). Everything left — are the eyes
-# open, is there a subject at all, is this a pocket shot — is a VLM at ~0.78 s per frame,
-# so it is asked ONLY about the frames the cheap tiers did not settle (`vlm.quality`).
+# group inside the CLIP call above (free, `features.pets`). Everything left — since F177
+# that is the eyes and nothing else — is a VLM at ~0.78 s per frame, so it is asked ONLY
+# about the frames the cheap tiers did not settle (`vlm.quality`).
 #
 # The population rule is the F109 result put to use: sending the model the least confident
 # 30% of frames kept 98.2% of the findings. There it was worthless because the probe
@@ -1710,34 +1711,41 @@ def preview_sharpness_detector(max_edge: int) -> SharpnessFn:
 # of those, 5% actually were — and the frames it called DELIBERATE held twice that rate
 # (10%). A signal that is slightly anti-correlated with the thing it names is not
 # something a threshold repairs, and every token it occupied was paid for on every frame.
+# F177: the "is there a clear subject" question follows it, and by inspection rather than
+# by a labelled sample. The first live run asked 6 111 frames and called 212 of them
+# subjectless; looked at by eye those 212 are ordinary photographs — city shots and studio
+# work alike — so the signal separates nothing. One question is left, and the prompt that
+# carries it got shorter.
 _QUALITY_PROMPT = (
     "Look at this photo and answer with keywords from this list only:\n"
     "eyes_open or eyes_closed — whether the people in the photo have their eyes open "
-    "(use neither word if there are no people);\n"
-    "subject or no_subject — whether the photo has a clear subject.\n"
+    "(use neither word if there are no people).\n"
     "Answer with those keywords separated by spaces, nothing else."
 )
 _QUALITY_MAX_NEW_TOKENS = 16
 
-# Keyword -> value, per field, IN PRIORITY ORDER. The negatives come first on purpose:
-# "no_subject" contains "subject", and a scan that met the positive first would read
-# every refusal as agreement.
-# F122: `is_accidental` is no longer asked, so it is no longer parsed. The COLUMN stays
-# and stays NULL — "not asked" is exactly what NULL means here, dropping it would need a
-# table rebuild, and a retired question is cheaper to leave documented than to excise.
+# Keyword -> value, per field, IN PRIORITY ORDER — the order is what keeps a keyword that
+# CONTAINS another from being read as it (see `_PET_VLM_KEYWORDS`, where it still matters).
+# F122/F177: `is_accidental` and `has_subject` are no longer asked, so they are no longer
+# parsed. The COLUMNS stay and stay NULL — "not asked" is exactly what NULL means here,
+# dropping them would need a table rebuild, and a retired question is cheaper to leave
+# documented than to excise.
 _QUALITY_KEYWORDS: tuple[tuple[str, tuple[tuple[str, bool], ...]], ...] = (
     ("eyes_open", (("eyes_closed", False), ("eyes_open", True))),
-    ("has_subject", (("no_subject", False), ("subject", True))),
 )
 _NON_WORD_RE = re.compile(r"[^a-z]+")
 
 
 @dataclass(frozen=True)
 class QualityFlags:
-    """The three model answers about one frame. None means NOT ASKED / not understood.
+    """The `frame_quality` answer columns of one frame. None means NOT ASKED / not parsed.
 
     Never a False by default: a consumer reading a defaulted False would conclude that a
     frame it has never shown to anything has its eyes closed.
+
+    Only `eyes_open` is still asked. `has_subject` (F177) and `is_accidental` (F122) are
+    retired questions whose columns stay — they are here so the write below keeps setting
+    them to NULL, which is what "not asked" means in that table.
     """
     eyes_open: bool | None = None
     has_subject: bool | None = None
@@ -1796,7 +1804,7 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
 
 def vlm_quality_asker(describe: Callable[[Sequence[Image.Image], str, int], str],
                       max_edge: int) -> QualityAskFn:
-    """The quality question (eyes, subject) over a loaded runtime — see _frame_question."""
+    """The quality question (the eyes) over a loaded runtime — see _frame_question."""
     return _frame_question(describe, max_edge, _QUALITY_PROMPT, _QUALITY_MAX_NEW_TOKENS)
 
 
@@ -1844,8 +1852,8 @@ _PET_VLM_MAX_NEW_TOKENS = 8
 # Keyword -> stored value, IN PRIORITY ORDER, and the order is a decision rather than an
 # accident. `real` is the word a model reaches for while EXPLAINING one of the other two
 # ("not a real animal", "no real animal here"), so a scan that met it first would read
-# half the rejections as agreement — the same trap `_QUALITY_KEYWORDS` avoids by putting
-# `no_subject` before `subject`.
+# half the rejections as agreement — the same trap `_QUALITY_KEYWORDS` used to avoid by
+# putting `no_subject` before `subject`, until F177 retired that question.
 _PET_VLM_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("depiction", PET_VLM_DEPICTION),
     ("none", PET_VLM_NONE),
@@ -2285,6 +2293,9 @@ class FrameQuality:
     # frame" — which is what tells a rejected frame from one below the candidate threshold.
     pet_vlm: str | None = None
     eyes_open: bool | None = None
+    # The two retired questions (F177, F122). The columns are read like every other one
+    # so that a row is a row, but nothing asks them any more; `has_subject` was emptied
+    # of the answers it did collect by the v26 migration, so both are NULL everywhere.
     has_subject: bool | None = None
     is_accidental: bool | None = None
     # F140: the zero-shot "screenshot rather than photograph" margin, or None for "not
@@ -3398,13 +3409,13 @@ class _QualityPass:
                 # F121: the prompt says "use neither word if there are no people" and the
                 # model does not obey it — the first review found cats answered as
                 # eyes_open and people in glasses answered as eyes_closed. The detector
-                # already knows where a face is, so the answer is believed only there:
-                # asking is free (one prompt, three questions, one call), believing is
-                # not. Only when `faces` has actually run — otherwise "no face here" is
+                # already knows where a face is, so the answer is believed only there.
+                # Only when `faces` has actually run — otherwise "no face here" is
                 # indistinguishable from "nobody looked".
+                # F177: the eyes are now the WHOLE answer, so a frame with no face in it
+                # leaves nothing to write rather than an answer about its subject.
                 if self._faces_known and not has_face:
-                    flags = QualityFlags(has_subject=flags.has_subject,
-                                         is_accidental=flags.is_accidental)
+                    flags = QualityFlags()
                 if flags.known:
                     self._conn.execute(_QUALITY_ANSWER_UPDATE, (
                         _as_int(flags.eyes_open), _as_int(flags.has_subject),

@@ -326,31 +326,30 @@ class TestQualityAnswerParsing(unittest.TestCase):
     """Brief test 7: what the model says, read leniently — and NULL when it says nothing."""
 
     def test_the_expected_answer(self):
-        # F122: `accidental`/`deliberate` is no longer asked, so the word is no longer
-        # read — 5% precision on a labelled sample, against 10% in the frames the model
-        # called deliberate. The keyword may still appear; it must be ignored.
+        # F122/F177: `accidental`/`deliberate` and `subject`/`no_subject` are no longer
+        # asked, so the words are no longer read. The keywords may still appear in an
+        # answer; they must be ignored.
         flags = parse_quality_answer("eyes_open subject deliberate")
-        self.assertEqual(flags, QualityFlags(True, True, None))
+        self.assertEqual(flags, QualityFlags(True, None, None))
 
     def test_spaces_punctuation_and_case_are_not_a_format(self):
         flags = parse_quality_answer("Eyes-Open, No Subject. Accidental!")
-        self.assertEqual(flags, QualityFlags(True, False, None))
+        self.assertEqual(flags, QualityFlags(True, None, None))
 
     def test_prose_around_the_keywords_still_parses(self):
         flags = parse_quality_answer(
             "The photo shows a person whose eyes_closed, and it has subject.")
         self.assertEqual(flags.eyes_open, False)
-        self.assertEqual(flags.has_subject, True)
+        self.assertIsNone(flags.has_subject)
         self.assertIsNone(flags.is_accidental)
 
-    def test_no_subject_is_not_read_as_subject(self):
-        self.assertEqual(parse_quality_answer("no_subject").has_subject, False)
-
-    def test_the_retired_accidental_keyword_is_ignored(self):
-        """F122: the question is gone, so a model that still volunteers the word gets no
-        column for it. NULL is the honest value — nobody asked."""
+    def test_the_retired_keywords_are_ignored(self):
+        """F122/F177: the questions are gone, so a model that still volunteers the words
+        gets no column for them. NULL is the honest value — nobody asked."""
         self.assertIsNone(parse_quality_answer("not accidental").is_accidental)
         self.assertIsNone(parse_quality_answer("accidental").is_accidental)
+        self.assertIsNone(parse_quality_answer("no_subject").has_subject)
+        self.assertIsNone(parse_quality_answer("subject").has_subject)
 
     def test_an_unparsable_answer_is_all_none(self):
         for answer in ("", "I cannot help with that", "42", "да"):
@@ -360,9 +359,9 @@ class TestQualityAnswerParsing(unittest.TestCase):
                 self.assertFalse(flags.known)
 
     def test_a_partial_answer_keeps_the_rest_none(self):
-        flags = parse_quality_answer("subject")
+        flags = parse_quality_answer("eyes_open")
         self.assertTrue(flags.known)
-        self.assertIsNone(flags.eyes_open)
+        self.assertIsNone(flags.has_subject)
         self.assertIsNone(flags.is_accidental)
 
 
@@ -651,8 +650,8 @@ class TestQualityVlm(FrameQualityCase):
                  text_detector=NO_OCR, sharpness_detector=sharpness_by_path(sharpness),
                  quality_vlm=ask)
         self.assertEqual(asked, ["/photos/blurry.jpg"])
-        self.assertEqual(self.quality(uncertain)["has_subject"], 1)
-        self.assertIsNone(self.quality(certain)["has_subject"])
+        self.assertEqual(self.quality(uncertain)["eyes_open"], 1)
+        self.assertIsNone(self.quality(certain)["eyes_open"])
 
     def test_the_scope_narrows_the_population_to_phash_groups(self):
         self.vlm(quality=True)  # quality_scope='groups' — the default
@@ -663,15 +662,15 @@ class TestQualityVlm(FrameQualityCase):
 
         def ask(path):
             asked.append(path)
-            return "subject"
+            return "eyes_open"
 
         classify(self.cfg, self.conn, classifier=QualityClassifier(),
                  text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
                  quality_vlm=ask)
         self.assertEqual(sorted(asked), ["/photos/g1.jpg", "/photos/g2.jpg"])
-        self.assertEqual(self.quality(grouped_a)["has_subject"], 1)
-        self.assertEqual(self.quality(grouped_b)["has_subject"], 1)
-        self.assertIsNone(self.quality(lonely)["has_subject"])
+        self.assertEqual(self.quality(grouped_a)["eyes_open"], 1)
+        self.assertEqual(self.quality(grouped_b)["eyes_open"], 1)
+        self.assertIsNone(self.quality(lonely)["eyes_open"])
 
     def test_the_events_scope_asks_about_event_frames(self):
         self.vlm(quality=True, quality_scope="events")
@@ -687,9 +686,9 @@ class TestQualityVlm(FrameQualityCase):
 
         classify(self.cfg, self.conn, classifier=QualityClassifier(),
                  text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
-                 quality_vlm=lambda p: asked.append(p) or "subject")
+                 quality_vlm=lambda p: asked.append(p) or "eyes_open")
         self.assertEqual(asked, ["/photos/e1.jpg"])
-        self.assertIsNone(self.quality(outside)["has_subject"])
+        self.assertIsNone(self.quality(outside)["eyes_open"])
 
     def test_an_unparsable_answer_leaves_null_not_false(self):
         self.vlm(quality=True, quality_scope="all")
@@ -714,9 +713,10 @@ class TestQualityVlm(FrameQualityCase):
                  quality_vlm=lambda _p: "eyes_closed no_subject accidental")
         rows = read_frame_quality(self.conn)
         self.assertIs(rows[answered].eyes_open, False)
-        self.assertIs(rows[answered].has_subject, False)
-        # F122: retired question, and the point of the case is that False and None stay
-        # distinguishable — `is_accidental` now demonstrates the None half of it.
+        # F122/F177: retired questions, and the point of the case is that False and None
+        # stay distinguishable — these two now demonstrate the None half of it, on an
+        # answer that names both retired keywords out loud.
+        self.assertIsNone(rows[answered].has_subject)
         self.assertIsNone(rows[answered].is_accidental)
         self.assertIsNone(rows[unasked].eyes_open)
         self.assertIsNone(rows[unasked].has_subject)
@@ -803,7 +803,7 @@ class TestVlmQualityAsker(unittest.TestCase):
             path = Path(tmp) / "x.jpg"
             Image.new("RGB", (256, 192), (30, 60, 90)).save(path, "JPEG")
             answer = ask(str(path))
-        self.assertEqual(parse_quality_answer(answer), QualityFlags(True, True, None))
+        self.assertEqual(parse_quality_answer(answer), QualityFlags(True, None, None))
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], 1)
         self.assertIn("eyes_open", seen[0][1])

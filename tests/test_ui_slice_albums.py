@@ -61,13 +61,13 @@ class SliceAlbumTestBase(UiServerTestBase):
         return file_id
 
     def add_quality(self, rel: str, *, sharpness: float | None = 500.0,
-                    eyes_open: int | None = None, has_subject: int | None = None) -> int:
+                    eyes_open: int | None = None) -> int:
         file_id = self.add_classified(rel, "photo")
         self.conn.execute(
-            """INSERT INTO frame_quality (file_id, sharpness, eyes_open, has_subject,
+            """INSERT INTO frame_quality (file_id, sharpness, eyes_open,
                    source, updated_at)
-               VALUES (?, ?, ?, ?, 'clip', '2026-01-01')""",
-            (file_id, sharpness, eyes_open, has_subject))
+               VALUES (?, ?, ?, 'clip', '2026-01-01')""",
+            (file_id, sharpness, eyes_open))
         self.conn.commit()
         return file_id
 
@@ -172,8 +172,7 @@ class TestTheAlbumMatchesWhatTheViewShows(SliceAlbumTestBase):
 
     def test_each_quality_album_is_the_size_of_its_chip(self):
         counts = {row["slice"]: row["count"] for row in self.review()["counts"]}
-        for slice_, kind in (("blurred", "blurred"), ("eyes", "eyes_closed"),
-                             ("subject", "no_subject")):
+        for slice_, kind in (("blurred", "blurred"), ("eyes", "eyes_closed")):
             with self.subTest(slice=slice_):
                 _status, body = self.album(kind)
                 self.assertEqual(body["count"], counts[slice_])
@@ -259,8 +258,7 @@ class TestThePayloadsTellTheClientWhatToDraw(SliceAlbumTestBase):
 
     def test_each_flat_review_slice_names_its_kind(self):
         self.start_server()
-        for slice_, kind in (("blurred", "blurred"), ("eyes", "eyes_closed"),
-                             ("subject", "no_subject")):
+        for slice_, kind in (("blurred", "blurred"), ("eyes", "eyes_closed")):
             with self.subTest(slice=slice_):
                 self.assertEqual(self.review("?slice=" + slice_)["album_kind"], kind)
 
@@ -319,7 +317,7 @@ class TestTheFolderNamesAreTranslated(unittest.TestCase):
 
     def test_every_new_folder_key_has_three_distinct_names(self):
         from sorta.i18n import FOLDER_KEYS, folder
-        for key in ("screenshots", "memes", "blurred", "eyes_closed", "no_subject"):
+        for key in ("screenshots", "memes", "blurred", "eyes_closed"):
             with self.subTest(key=key):
                 self.assertIn(key, FOLDER_KEYS)
                 names = {lang: folder(key, lang) for lang in ("ru", "en", "ja")}

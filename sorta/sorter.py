@@ -1744,8 +1744,8 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 #
 # F139: the rest of the slices the interface already draws. Nothing about them needed
 # inventing — the engine has gathered any slice into a folder since F34, and products,
-# screenshots, memes, blurred frames, closed eyes and "no subject" were left with a
-# counter and a delete button only because their views arrived after the album did.
+# screenshots, memes, blurred frames and closed eyes were left with a counter and a
+# delete button only because their views arrived after the album did.
 #
 # The class slices are one `media_class.verdict` each, over the same canonical, readable
 # population every other counter uses — so the album and the bucket's counter are the
@@ -1757,8 +1757,10 @@ CLASS_ALBUM_KINDS = ("product", "screenshot", "meme")
 
 # The quality slices of the "Review" workspace (F126). They select on `frame_quality`,
 # and `blurred` selects through the SAME window the workspace lists — see
-# `quality_slice_where`.
-QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed", "no_subject")
+# `quality_slice_where`. F177 removed a third one, `no_subject`: the question behind it is
+# no longer asked and the answers it had are gone, so the kind is now simply unknown — a
+# `sorta album no_subject` is refused like any other name that is not a slice.
+QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed")
 
 # F152: `people`, `group` and `portrait` are read straight off the `faces` table, which a
 # detector filled — so membership is a FACT about boxes, not an estimate. What that fact
@@ -1791,7 +1793,6 @@ ALBUM_FOLDER_KEYS = {
     "meme": "memes",
     "blurred": "blurred",
     "eyes_closed": "eyes_closed",
-    "no_subject": "no_subject",
 }
 
 # F124: THE rule for "is there an animal in this frame", written down once. The user's
@@ -1988,7 +1989,7 @@ def animal_ids_sql(features: FeaturesConfig,
     LEFT JOIN manual_pet amp ON amp.file_id = af.id
     WHERE COALESCE(amp.is_animal, {animal_auto_sql(features, detector=detector)})"""
 
-# F139: the same idea as animal_ids_sql, for the three quality slices — the membership
+# F139: the same idea as animal_ids_sql, for the quality slices — the membership
 # rule written down ONCE, in terms of the aliases `f` (files), `fq` (frame_quality) and
 # `mc` (media_class), and read by both consumers: the album here and the "Review"
 # workspace in ui.py, which draws the list and its counter from it. Two spellings would
@@ -2002,12 +2003,11 @@ QUALITY_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
                 "JOIN media_class mc ON mc.file_id = f.id")
 QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
 
-# `eyes_open`/`has_subject` are `= 0` and never `IS NOT 1`: NULL there means "not asked"
-# (schema), and a frame nobody looked at must not be shown to a user as an answer.
+# `eyes_open` is `= 0` and never `IS NOT 1`: NULL there means "not asked" (schema), and a
+# frame nobody looked at must not be shown to a user as an answer.
 _QUALITY_MEMBER = {
     "blurred": "fq.sharpness IS NOT NULL",
     "eyes_closed": "fq.eyes_open = 0",
-    "no_subject": "fq.has_subject = 0",
 }
 
 
@@ -2191,10 +2191,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     private" (F133) and a private bucket keeps its counter and gets neither a preview nor
     an album — gathering somebody's passports into one folder in one click is exactly
     what it exists to prevent.
-    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`/`no_subject`): the slice =
-    the "Review" workspace's flat list of that name (`quality_slice_where`, the shared
-    rule), blurred inside the `features.blur_review_max` window. No selector; the default
-    album name comes from the catalog.
+    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`): the slice = the "Review"
+    workspace's flat list of that name (`quality_slice_where`, the shared rule), blurred
+    inside the `features.blur_review_max` window. No selector; the default album name
+    comes from the catalog.
     kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
     `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
     fact that covers 77% of what a person would call a photo of people (measured). Like

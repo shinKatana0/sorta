@@ -267,13 +267,13 @@ route that marks a whole band at once: the feature exists because somebody LOOKE
 frame, and a threshold is already there for the other case.
 
 (21) `GET /api/review` + `POST /api/review/mark` (F126, the "Review" tab, which replaces
-the "Duplicates" tab) — the four things a person looks at in order to decide what stays:
-near-duplicates, blurred frames, closed eyes, frames with no subject. One workspace with
-four SLICES rather than four tabs, because it is one job. Duplicates are the only GROUPED
+the "Duplicates" tab) — the three things a person looks at in order to decide what stays:
+near-duplicates, blurred frames, closed eyes. One workspace with three SLICES rather than
+three tabs, because it is one job. Duplicates are the only GROUPED
 slice and keep their own route and their own rendering untouched — `/api/dupes` and the
 four write routes above answer exactly as they did, since that is the one path in the
 product that deletes files and the one that has been run against a live collection. The
-GET carries the counters of all four slices (a slice with nothing in it stays in the
+GET carries the counters of all three slices (a slice with nothing in it stays in the
 switcher with a zero — an empty slice is an answer, a missing one is a riddle) plus one
 bounded page of the current flat slice, over photographs only (`media_class.verdict =
 'photo'`, F120) that are canonical and readable. The blurred list is ordered by ascending
@@ -1914,14 +1914,19 @@ def _parse_face_slice_query(query: dict[str, list[str]]) -> tuple[str, int, int]
     return slice_, window[0], window[1]
 
 
-# --- F126: the "Review" workspace — duplicates, blur, closed eyes, no subject -------
-# Four signals, one job: look at a frame and decide whether it stays. Duplicates have had
-# a tab with the whole viewing-and-deleting machinery since U3; the other three have been
+# --- F126: the "Review" workspace — duplicates, blur, closed eyes ------------------
+# Three signals, one job: look at a frame and decide whether it stays. Duplicates have had
+# a tab with the whole viewing-and-deleting machinery since U3; the other two have been
 # computed into `frame_quality` since F113 and were not visible anywhere. So this is one
-# place with four SLICES rather than four tabs — and the duplicates half is deliberately
-# untouched: `/api/dupes` and its four write routes answer exactly as before, because that
+# place with SLICES rather than tabs — and the duplicates half is deliberately untouched:
+# `/api/dupes` and its four write routes answer exactly as before, because that
 # is the one path in the product that deletes files and it is the one path that has been
 # run against the live collection.
+#
+# F177 removed a fourth slice, "no subject". The model was asked about 6 111 frames and
+# called 212 of them subjectless; looked at by eye, those 212 are ordinary photographs, so
+# the slice was showing a list assembled by nothing. It is deleted rather than hidden: a
+# hidden slice comes back at the first edit of this file.
 #
 # Two rules the slices are built on:
 #
@@ -1934,7 +1939,7 @@ def _parse_face_slice_query(query: dict[str, list[str]]) -> tuple[str, int, int]
 #   threshold" route here, and the measurement is why: reviewed by eye in bands, blurred
 #   frames turn up in every band up to 400, and the blurred frame that gets kept is the
 #   only photograph of a person or a place. Sharpness ranks the list; a human decides.
-_REVIEW_SLICES = ("dupes", "blurred", "eyes", "subject")
+_REVIEW_SLICES = ("dupes", "blurred", "eyes")
 
 # F139: which album kind each flat slice gathers into — and, read the other way, the map
 # that keeps the list and the album on one rule. The names differ because the switcher's
@@ -1942,15 +1947,13 @@ _REVIEW_SLICES = ("dupes", "blurred", "eyes", "subject")
 # renaming either half would move an API parameter for nothing. Duplicates have no kind:
 # they are the grouped slice, the one where a keeper is chosen, and the one path in the
 # program that deletes files — collecting them into a folder is not what they are for.
-_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed",
-                      "subject": "no_subject"}
+_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed"}
 
-# Blurred is ranked by the number the slice exists for; the other two have no ranking of
-# their own, so they go in index order — stable between pages, which is what paging needs.
+# Blurred is ranked by the number the slice exists for; the other one has no ranking of
+# its own, so it goes in index order — stable between pages, which is what paging needs.
 _REVIEW_SLICE_ORDER = {
     "blurred": "fq.sharpness ASC, f.id",
     "eyes": "f.id",
-    "subject": "f.id",
 }
 
 # The membership rule itself lives in sorter.py (`quality_slice_where`, `QUALITY_FROM`)
@@ -1978,7 +1981,7 @@ def _review_count(conn: sqlite3.Connection, slice_: str,
 
 
 def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, int]:
-    """The three flat slice counters — plain aggregates, cheap enough for "Overview".
+    """The flat slice counters — plain aggregates, cheap enough for "Overview".
 
     Blurred is counted INSIDE the window, so the chip, the "Overview" row and the length
     of the list the tab opens with are the same number.
@@ -1986,11 +1989,10 @@ def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, 
     return {
         "blurred": _review_count(conn, "blurred", blur_max),
         "eyes": _review_count(conn, "eyes", None),
-        "subject": _review_count(conn, "subject", None),
     }
 
 
-# F133: the same three slices again, counting only the frames NOBODY has decided about.
+# F133: the same flat slices again, counting only the frames NOBODY has decided about.
 # "Decided" is a row in `dedup_choice` and nothing else — the rule the marks are written
 # by — so a slice empties as the person works through it, which is what makes the warning
 # on the "Layout" tab disappear on its own.
@@ -2011,7 +2013,6 @@ def _review_pending_counts(conn: sqlite3.Connection, blur_max: float) -> dict[st
     return {
         "blurred": _review_pending_count(conn, "blurred", blur_max),
         "eyes": _review_pending_count(conn, "eyes", None),
-        "subject": _review_pending_count(conn, "subject", None),
     }
 
 
@@ -2899,7 +2900,7 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
     so. `cfg` (rather than the single `blur_max` this used to take) is what carries the
     thresholds those three rules read.
 
-    F126: the three flat review slices are counted here too, by the SAME queries the
+    F126: the flat review slices are counted here too, by the SAME queries the
     workspace itself uses (`_review_flat_counts`) — a counter that disagrees with the
     list it links to is worse than no counter. The blur window comes from the same
     `features` (`blur_review_max`), so this row and that list say one number. The
@@ -2973,7 +2974,6 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
             "faces_reason": None if faces_ran else "no_faces_run",
             "blurred": review["blurred"],
             "eyes_closed": review["eyes"],
-            "no_subject": review["subject"],
         },
         "place": place,
         "classes": classes,
@@ -4873,13 +4873,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Качество кадров", "en": "Frame quality", "ja": "コマの品質",
     },
     "process_quality_hint": {
-        "ru": "Открыты ли глаза, есть ли сюжет, не случаен ли кадр — то, чего не "
-              "решить дёшево. Нужен `uv sync --extra vlm`.",
-        "en": "Whether the eyes are open, whether there is a subject, whether the shot "
-              "was an accident — what nothing cheap can decide. Needs "
+        "ru": "Открыты ли глаза — то, чего не решить дёшево. Нужен "
               "`uv sync --extra vlm`.",
-        "ja": "目が開いているか、被写体があるか、意図しない撮影ではないか — 安価な手段"
-              "では決められないものです。`uv sync --extra vlm` が必要です。",
+        "en": "Whether the eyes are open — what nothing cheap can decide. Needs "
+              "`uv sync --extra vlm`.",
+        "ja": "目が開いているか — 安価な手段では決められないものです。"
+              "`uv sync --extra vlm` が必要です。",
     },
     "process_quality_scope_label": {
         "ru": "У каких кадров спрашивать",
@@ -6202,12 +6201,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "マークを保存できません: ",
     },
     # --- F126: the "Review" workspace -------------------------------------------------
-    # The switcher labels are the four slices; the duplicates one keeps the wording the
-    # tab had, because that is what the user has been calling it since U3.
+    # The switcher labels are the slices; the duplicates one keeps the wording the tab
+    # had, because that is what the user has been calling it since U3.
     "review_slice_dupes": {"ru": "Дубли", "en": "Duplicates", "ja": "重複"},
     "review_slice_blurred": {"ru": "Размытые", "en": "Blurred", "ja": "ぼやけ"},
     "review_slice_eyes": {"ru": "Закрытые глаза", "en": "Closed eyes", "ja": "目を閉じた"},
-    "review_slice_subject": {"ru": "Без сюжета", "en": "No subject", "ja": "被写体なし"},
     "review_intro": {
         "ru": "Одно место для всего, что надо просмотреть глазами и частью удалить. "
               "Отметка «удалить» — это пометка, а не удаление: файлы уедут в папку "
@@ -6240,14 +6238,6 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Frames where the people have their eyes closed. The question is only "
               "asked where a face was found.",
         "ja": "人物が目を閉じているコマです。この質問は顔が検出されたコマにのみ行われます。",
-    },
-    "review_hint_subject": {
-        "ru": "Кадры, в которых модель не нашла осмысленного сюжета: снятый пол, "
-              "смазанная стена, случайное нажатие.",
-        "en": "Frames where the model found no subject at all: a shot of the floor, a "
-              "smeared wall, an accidental press.",
-        "ja": "モデルが被写体を見つけられなかったコマです。床の写り込み、ぶれた壁、"
-              "誤操作などです。",
     },
     "review_eyes_no_faces": {
         "ru": "Данных нет: стадия «лица» не запускалась, а про глаза спрашивают только "
@@ -6404,13 +6394,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "overview_with_people": {"ru": "С людьми", "en": "With people", "ja": "人物あり"},
     "overview_group_photos": {"ru": "Групповых", "en": "Group photos", "ja": "集合写真"},
     "overview_portraits": {"ru": "Портретов", "en": "Portraits", "ja": "ポートレート"},
-    # F126: the three review slices that have a number of their own. Blurred is counted
+    # F126: the review slices that have a number of their own. Blurred is counted
     # inside the window the list opens to, so the row and the list agree.
     "overview_blurred": {"ru": "Размытых", "en": "Blurred", "ja": "ぼやけ"},
     "overview_eyes_closed": {"ru": "С закрытыми глазами", "en": "With closed eyes",
                              "ja": "目を閉じた"},
-    "overview_no_subject": {"ru": "Без сюжета", "en": "With no subject",
-                            "ja": "被写体なし"},
     "overview_place_exact_gps": {"ru": "Точный GPS", "en": "Exact GPS", "ja": "正確なGPS"},
     "overview_place_manual": {"ru": "Указано вручную", "en": "Set by hand", "ja": "手動指定"},
     "overview_place_session_inferred": {
@@ -7722,7 +7710,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" class="btn btn-sm review-slice-btn active" id="review-slice-dupes">{{review_slice_dupes}}<span class="review-slice-count" id="review-count-dupes"></span></button>
 <button type="button" class="btn btn-sm review-slice-btn" id="review-slice-blurred">{{review_slice_blurred}}<span class="review-slice-count" id="review-count-blurred"></span></button>
 <button type="button" class="btn btn-sm review-slice-btn" id="review-slice-eyes">{{review_slice_eyes}}<span class="review-slice-count" id="review-count-eyes"></span></button>
-<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-subject">{{review_slice_subject}}<span class="review-slice-count" id="review-count-subject"></span></button>
 </div>
 <div id="review-dupes">
 <div class="dupes-controls">
@@ -9654,13 +9641,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     if (c.faces_reason === "no_faces_run") {
       card.appendChild(overviewNote(I18N.face_no_faces_run));
     }
-    // F126: the three slices of the review workspace that have a number of their own.
+    // F126: the slices of the review workspace that have a number of their own.
     card.appendChild(overviewRow(I18N.overview_blurred,
                                  overviewCount(c.blurred, "review", "blurred")));
     card.appendChild(overviewRow(I18N.overview_eyes_closed,
                                  overviewCount(c.eyes_closed, "review", "eyes")));
-    card.appendChild(overviewRow(I18N.overview_no_subject,
-                                 overviewCount(c.no_subject, "review", "subject")));
     return card;
   }
 
@@ -12139,17 +12124,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   // --- F126: the "Review" workspace ----------------------------------------
-  // One tab, four slices, one job: look and decide. The switcher keeps every slice in
+  // One tab, three slices, one job: look and decide. The switcher keeps every slice in
   // place at zero, because "you have no closed eyes" is an answer and a vanished entry
   // is a riddle. Duplicates are rendered by the code below this block, untouched — they
   // are the only grouped slice, the only one where a keeper is chosen, and the only path
-  // in the program that deletes files. The three flat slices share the tile grid and the
+  // in the program that deletes files. The two flat slices share the tile grid and the
   // one action they afford: a mark in `dedup_choice`, which the sorter already reads.
   // Paged like every other grid since F70 — 530 cards with previews do not go into the
   // DOM at once.
 
   var REVIEW_PAGE_SIZE = 200;
-  var REVIEW_SLICES = ["dupes", "blurred", "eyes", "subject"];
+  var REVIEW_SLICES = ["dupes", "blurred", "eyes"];
   var reviewSlice = "dupes";
   var reviewOffset = 0;
   // Blur opens to `features.blur_review_max` and continues past it only when asked:
@@ -12196,14 +12181,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // it is also where the F125 answer lands: without a faces run there is no data, and
   // saying so beats showing a zero that reads as "nobody blinked".
   function reviewHintText(data) {
-    if (reviewSlice === "blurred") {
-      return fmt(I18N.review_hint_blurred, { max: data.blur_max });
-    }
     if (reviewSlice === "eyes") {
       return data.eyes_reason === "no_faces_run"
           ? I18N.review_eyes_no_faces : I18N.review_hint_eyes;
     }
-    return I18N.review_hint_subject;
+    return fmt(I18N.review_hint_blurred, { max: data.blur_max });
   }
 
   function renderReviewCard(item) {

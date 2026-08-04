@@ -1,8 +1,8 @@
 """F139: the albums of the remaining slices — classes and quality.
 
 `sorter.plan_album` grew six kinds: `product`/`screenshot`/`meme`, selected on
-`media_class.verdict`, and `blurred`/`eyes_closed`/`no_subject`, selected on
-`frame_quality` by the same rule that draws the "Review" workspace. The engine itself is
+`media_class.verdict`, and `blurred`/`eyes_closed` (plus `no_subject`, retired by F177),
+selected on `frame_quality` by the same rule that draws the "Review" workspace. The engine itself is
 F34's and is not re-tested here; what is pinned below is what a new kind can get wrong:
 
 * the slice it selects (and, for `blurred`, that it is a WINDOW and not a threshold —
@@ -48,19 +48,19 @@ class SliceAlbumTestBase(SorterTestBase):
         return file_id
 
     def add_quality(self, rel: str, *, sharpness: float | None = 500.0,
-                    eyes_open: int | None = None, has_subject: int | None = None,
+                    eyes_open: int | None = None,
                     verdict: str = "photo", **kwargs) -> int:
         """A photograph with a `frame_quality` row — the population of the flat slices.
 
         The default sharpness sits far above `features.blur_review_max`, so a frame made
-        for the eyes/subject cases does not quietly join the blurred one as well.
+        for the eyes case does not quietly join the blurred one as well.
         """
         file_id = self.add_classified(rel, verdict, **kwargs)
         self.conn.execute(
-            """INSERT INTO frame_quality (file_id, sharpness, eyes_open, has_subject,
+            """INSERT INTO frame_quality (file_id, sharpness, eyes_open,
                    source, updated_at)
-               VALUES (?, ?, ?, ?, 'clip', '2026-01-01')""",
-            (file_id, sharpness, eyes_open, has_subject))
+               VALUES (?, ?, ?, 'clip', '2026-01-01')""",
+            (file_id, sharpness, eyes_open))
         self.conn.commit()
         return file_id
 
@@ -161,17 +161,14 @@ class TestQualitySlices(SliceAlbumTestBase):
     def test_each_quality_slice_gathers_its_own_frames(self):
         blurred = self.add_quality("blurred.jpg", sharpness=10.0)
         eyes = self.add_quality("eyes.jpg", eyes_open=0)
-        subject = self.add_quality("subject.jpg", has_subject=0)
-        self.add_quality("fine.jpg", eyes_open=1, has_subject=1)
+        self.add_quality("fine.jpg", eyes_open=1)
         self.assertEqual(self.ids("blurred"), [blurred])
         self.assertEqual(self.ids("eyes_closed"), [eyes])
-        self.assertEqual(self.ids("no_subject"), [subject])
 
     def test_a_frame_nobody_asked_about_is_not_an_answer(self):
         # NULL means "not asked" (schema) and must never be shown as "eyes closed".
-        self.add_quality("unasked.jpg", eyes_open=None, has_subject=None)
+        self.add_quality("unasked.jpg", eyes_open=None)
         self.assertEqual(self.ids("eyes_closed"), [])
-        self.assertEqual(self.ids("no_subject"), [])
 
     def test_only_photographs_are_in_a_quality_slice(self):
         # F120: sharpness and open eyes mean nothing on a screenshot or a receipt.
@@ -254,7 +251,6 @@ class TestApplyAndJournal(SliceAlbumTestBase):
         self.add_classified("meme.jpg", "meme", content=b"meme")
         self.add_quality("blurred.jpg", sharpness=10.0, content=b"blur")
         self.add_quality("eyes.jpg", eyes_open=0, content=b"eyes")
-        self.add_quality("subject.jpg", has_subject=0, content=b"subj")
         for kind in CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS:
             with self.subTest(kind=kind):
                 report = self.gather(kind, mode="link", apply=True)
@@ -340,7 +336,6 @@ class TestMoveWarns(SliceAlbumTestBase):
         self.add_classified("meme.jpg", "meme")
         self.add_quality("blurred.jpg", sharpness=10.0)
         self.add_quality("eyes.jpg", eyes_open=0)
-        self.add_quality("subject.jpg", has_subject=0)
         expected = i18n.cli_text("cli.album.warn_move", "en")
         for kind in CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS:
             with self.subTest(kind=kind):
