@@ -6,7 +6,302 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **"Try to improve" no longer trades real pixels for invented ones in silence** (F169).
+  The button of F149 scaled every frame to one ceiling before the model — `1024` px, a
+  constant in `restore.py` — and the model is ×4. For a small frame that is a clean gain
+  (800 px in, 3200 px out, the case the action was built for). For a phone shot it was a
+  trade nobody was told about: **4032 × 3024 → 1024 × 768 → 4096 × 3072**, the same size
+  out, through a quarter and back, with the real detail of the original dropped on the way
+  in and plausible detail drawn in its place. The frame can come back looking sharper and
+  holding less of what was there. Two things follow, and both are here. **The ceiling is a
+  setting** — `features.restore_max_edge` — because it is the single number that decides
+  what a person gets back, and a threshold in the code is a threshold nobody can move; the
+  route now passes it, which it did not, so the constant really did decide for everybody.
+  **A frame above it is told so**: the answer carries `rebuilt` with both numbers, the
+  Review tab prints that beside "done" in all three languages, and a frame under the
+  ceiling is handed to the model untouched and says nothing — because nothing was given
+  up. What should ultimately happen to a 12-megapixel frame (tile it at native resolution,
+  supersample back down, or close the action for that population and treat defocus as the
+  different problem it is) is **not** decided here: `scripts/measure_restore.py` is the
+  phase-0 measurement it will be decided from. It prints the three frame populations
+  separately (< 1024 px, 1024–2500 px, > 2500 px), each against the original as the
+  baseline, with size, weight, time, peak memory and the share of the frame's own pixels
+  the model was even shown, at the current ceiling, at 2048 and at the full frame (a run
+  that does not fit is a row, not a crash) — and lays out **blind** pairs for the eyes,
+  both halves at the same size, the order seeded, the key in a file meant to be opened
+  afterwards. It deliberately does not compute "better": the first probe of F149 used a
+  model trained on clean bicubic downscaling and its numbers flattered a result a human
+  eye then rejected, and "sharper" is not "truer".
+- **«Not personal photos» was the wrong name for four different buckets** (F175). The
+  slice showed **4 980** frames, which is exactly `product` 2 107 + `screenshot` 1 782 +
+  `document` 1 015 + `meme` 76 — the classifier's whole output under one name — and that
+  name was wrong three times over. **First, it collided with a different concept.**
+  `files.not_personal` is a heuristic over the file NAME (`S01E05`, `1080p`, a rip group)
+  that marks downloaded films: **three** files out of 38 485, computed by a different
+  stage, filed into a different folder — and named almost identically. **Second, it was
+  wrong on the facts.** A photograph of a shop receipt is personal, a screenshot of a
+  conversation with your wife is personal, a passport more so; they are simply not
+  photographs taken *for memory*, which is a different thing. Read as "not personal" the
+  slice invites you to select everything and delete it, and 1 015 of the frames in it are
+  documents that must not be deleted — a class that is private on top of that
+  (`vlm.exclude_classes`, never rendered). The slice is **«Служебные кадры» / «Utility
+  frames» / 「実用目的のコマ」** now. **Third, one caption cannot be honest about four
+  different measurements.** Products are 78% precise at 81% recall (2026-08-03, 999
+  frames), screenshots 59% at 83% (350 frames), and documents and memes have not been
+  measured at all. So the caption of the whole slice names **no** percentage, each bucket
+  states its own when it is the one open, and a bucket nobody has measured says **"not
+  measured"** — the lookup falls back to it, so a class added later cannot quietly
+  inherit a neighbour's number. **The documents are told apart before anything is
+  selected:** the card carries the mark as a field of its own (`sensitive`, decided by
+  the server from `vlm.exclude_classes`, not inferred by the browser from a missing
+  thumbnail), gets a border and a "not for deletion" chip, and the note about what that
+  bucket holds now sits **above** the button that selects the whole page. Nothing about
+  the classification changed: the classes are neither merged nor split, `document` stays
+  in `vlm.exclude_classes`, and `is_not_personal_video` is untouched — the guides simply
+  say, in all three languages, that the flag and the slice are two different questions.
+- **An action says where the frame will land, instead of «return to the photos»** (F174).
+  Two of the marks the slices offer read as one movement to the person making it — "this
+  frame does not belong here" — and the interface gave them two different names while
+  saying nothing about what either one does. They are not the same movement. «This is not
+  an animal» edits a MEMBERSHIP (`manual_pet`): the frame has been lying in its city folder
+  the whole time, it is shown in the slice as a view over the canon, and the mark moves no
+  file, ever. «Return to the photos» edits a route (`manual_overrides`): such a frame is
+  **not** in the city layout at all, and returning it is a real transfer out of `_Products`
+  on the next `sort --apply`. The button now reads the same in both slices, and what
+  differs is stated **under** it: "goes into `Russia/Samara/2023`" there, "we take it out
+  of the slice; the frame already lies in `Russia/Samara/2023`, the file will not move"
+  here — which is the sentence that answers the fear the wording has to answer, that a mark
+  deletes something. Where the frame lands is **not a guess**: the layout is a pure
+  function of rows that are already in the database, so `sorter.destinations` answers for a
+  page of cards with one query, through the same `_target_parts` and the same SELECT that
+  `plan_and_sort` builds the plan from — and for the junk view it is asked with the
+  correction **already assumed**, so the caption names the city the frame goes back to and
+  not the service folder it is sitting in. A frame with no geodata is told so by name
+  (`_Unsorted/no_place`, a third of the live collection) instead of being promised a city,
+  and a country without a city is told the country level. A **bulk** return states the
+  spread of the selection — "12 frames will return: 7 into cities, 5 into no_place" —
+  because a person ticks dozens at a time and one folder name out of twelve deceives them;
+  the count updates as the selection does, rather than appearing in the confirmation dialog
+  where it is seen too late. Nothing is applied any earlier than before: the marks still
+  pile up and land on `sort --apply`, the two tables stay two tables, and the layout rules
+  are untouched. The test that matters is the one that pins the caption to the plan — the
+  folder a card names is compared against what `plan_and_sort` builds for the same file,
+  before and after the correction is written, so the two cannot drift apart.
+- **Faces are not looked for where the classifier has already said "this is not a
+  photograph"** (F165). The faces stage is the most expensive one there is — 30.9 minutes,
+  46% of a full run — and it walked all **24 195** frames, among them 1 342 screenshots,
+  682 documents and 76 memes, plus ~2 200 products once the deep tier has spoken: **up to
+  4 300 frames, 18% of the collection**, at 77 ms each. The classifier knew about every one
+  of them. It just used to run afterwards. So the stage is now **split by dependency**, not
+  reordered: `classify` — the verdicts, which need nothing from faces — runs before them,
+  and `junk` keeps everything that reads what the faces stage writes. The pipeline is
+  `index → geo → landmarks → classify → faces → events → junk → phash`, and there is a
+  `sorta classify` command for the front half.
+  **Swapping the two stages instead would have been the silent kind of breakage**: `junk`
+  reads the `faces` table in four places, and one of them is `frame_quality.face_sharpness`
+  (F155), measured inside the boxes that stage writes. With the order flipped it would have
+  stopped being computed on every first run — no error, no log line, just a NULL that means
+  "not measured". Splitting keeps all four dependencies where they were.
+  The economy is honest about its size and its edges: **~5% of the faces stage without the
+  deep tier, up to 18% with it**, and it costs no new model and no new pass — only an
+  order. A frame with **no verdict** is detected as before (NULL means "nobody asked", not
+  "not a photograph"), so `sorta faces` on its own still walks the whole collection; a frame
+  the deep tier later moves back to `photo` has no `faces` row yet and is picked up on the
+  next run. What does change: before the faces stage has ever run there is no face to veto
+  a CLIP verdict with (F13/F15), so on a **first** run with `--faces` a frame the classifier
+  is confident about is no longer rescued by the face in it — which is exactly what a
+  default run, where faces are opt-in, has always done.
+- **Every ordered slice can be walked past its first page — search included** (F173). A
+  query for «дети» came back with **exactly 200 frames** and no way further:
+  `features.search_limit` was 200, and search had no paging at all, only a caption saying
+  "200 frames". Animals, faces, screenshots and the Review each had a "show more" button;
+  the one slice built by a QUERY rather than by a model's marks did not. That is the
+  expensive one to miss, because the measurements of 2026-08-02/03 found exactly one
+  confirmed lever of completeness — **the depth of the list**. Doubling it adds ~25 points
+  on average, and on children it goes from **61% to 89%**: the second half of the ranking
+  held nearly a third of all the frames the person was looking for, and the handle for it
+  did not turn. `features.search_limit` is therefore **`features.search_page`** now — a
+  ceiling cuts the answer off, a page only decides how much of it arrives first — and the
+  old key keeps working, so an existing `config.yaml` loses nothing to the rename (it logs
+  one line and reads the value). The counter says how many there are **in total** rather
+  than how many are on screen: "showing 200" and "there are exactly 200" read identically,
+  and for a ranking the second is almost never true. Beside the button there is one line
+  about what depth costs — further down the list means more found **and** more missed —
+  because that trade is measured and the person pressing the button is the one making it.
+  There is no infinite scroll on purpose: a portion arrives when somebody asks for one.
+  **The button is one mechanism now, not a fifth copy of one.** The server answers every
+  paged slice through `ui._page_payload` (`items`/`total`/`offset`/`limit`/`has_more`, with
+  `has_more` computed from the window actually served), the browser draws every one of them
+  through a single `makePager`, and the caption is one catalog entry in the three languages
+  instead of one per slice. The animal and face slices were moved onto it; the slices still
+  ahead of this one in the queue (query slices, pinned queries, low resolution, blurred as
+  a list) inherit the button by calling it rather than by copying it. The ranking order is
+  untouched: this feature is about reaching the tail, not about how the tail is sorted.
+- **The detector's threshold and depth are taken from the table it prints itself** (F162).
+  Two defaults move and nothing else does: `features.detector_threshold` 0.5 → **0.6** and
+  `features.detector_candidates` 2 000 → **4 000**. Both come off a re-measurement on
+  **500** hand-labelled frames (36 animals), because the numbers F154 shipped were read on
+  200, where fifteen animals made every one of them worth 6.7 points of recall. On the
+  larger sample both figures moved by two dozen points — the detector at 0.50 is **78%
+  precision / 69% recall**, not 62% / 87%, against **94% / 47%** for the CLIP label on the
+  same frames. That spread is what a thin class does to a small sample, and it is the whole
+  reason a row is chosen from a table and not in advance.
+  **0.60 dominates 0.50 with nothing traded away**: the same 69% recall, 25 correct marks
+  out of 29 instead of 25 out of 32. Three false ones go for free — a clean win rather than
+  a compromise, which is why this one needs no decision about what a user prefers. 0.70
+  buys no precision (86% again) and gives up two points of recall.
+  The depth is a **ceiling**, not a threshold: it decides which frames the detector is
+  shown at all, and an animal the query never ranked that high is not found at any
+  confidence. Measured, 500 candidates reach 25% of the known animals, 1 000 reach 50%,
+  2 000 reach 83% — so **17% of them were unreachable in principle** on the old default —
+  and 4 000 reach **100%**. The price is named honestly: 4 000 frames is **5.6 minutes** at
+  the measured 83.8 ms per frame, 2.8 minutes more than before, against the ~19 the animal
+  stage already spends on the VLM and the 30.8 a pass over all 22 096 frames would cost.
+  10 000 is pointless: the same ceiling for three times the time.
+  Both tables are now written beside the values themselves — in `sorta/config.py`,
+  `config.example.yaml` and the three user guides — so the numbers read as measured and
+  paid for rather than picked. **`detect.enabled` does not move**: the detector stays off
+  by default, and whether the cascade wants it is a decision for a live run, when the total
+  time is on the table next to the few points that separate it from F158.
+
+### Removed
+- **The "is there a subject" question is gone, and so are the answers it collected**
+  (F177). The frame-quality prompt asked two things in one call — are the eyes open, and
+  does the frame have a clear subject. The second one ran for the first and only time on
+  2026-08-03: **6,111 frames asked, 212 called subjectless**. Looked at by eye, those 212
+  are ordinary photographs — street shots and studio work side by side — so the signal
+  separates nothing, which is the same fate `is_accidental` met in F122 (measured at 5%
+  precision and retired). Gone with it: the **"No subject" slice** of the Review
+  workspace, its row in "Overview", and the **`no_subject` album kind** — deleted rather
+  than hidden, because a hidden slice comes back at the first edit of the file that hides
+  it, and `sorta album no_subject` is now refused as an unknown kind. **The stored
+  answers are erased by a migration** (schema v26), and that is the part that had to be
+  written rather than left to happen: nothing else would ever reach those rows — the
+  question is out of the prompt so the stage cannot overwrite them, `vlm.quality` is off
+  so the stage does not run at all, and a stale prompt fingerprint only means "recompute
+  this row", never "the answer stored here is wrong". Without it the slice would keep
+  listing 212 frames of a question nobody asks. **The eyes answers are NOT erased**: the
+  migration touches one column. Editing the prompt does make every quality answer formally
+  stale — they were given under a different wording — and the fingerprint will have them
+  re-asked if quality is ever switched on again; but dropping the second question does not
+  change the answer to the first, and those 6,083 answers (135 of them "eyes closed") are
+  the only ones a person has checked by eye. The column `frame_quality.has_subject` stays
+  and stays NULL, exactly as `is_accidental` does: NULL already means "not asked", and
+  dropping a column in SQLite costs a table rebuild. The **blurred** slice is untouched
+  and is not a VLM question at all (a Laplacian in the cheap tier, plus the sharpness
+  inside the face box from F155), and the **closed eyes** question keeps working — its own
+  cost is a separate conversation.
+- **The cloud naming provider is gone, and with it the only code that could send a
+  photograph anywhere** (F170). `naming.provider: claude` named events by uploading a
+  few sample frames of each one to a vendor API; it was opt-in and off by default, and
+  that was still the wrong shape for this product. What can be said about it changes:
+  not "your photos do not leave your machine **unless** you turn one key on" but **"the
+  product contains no code that sends images out"** — a sentence a reader checks with
+  `grep` over the package instead of taking on trust. The key was also a trap by name:
+  `naming.provider` reads as a choice of who invents the folder names, and nothing in it
+  says that choosing that value uploads the archive. Three providers remain and all three
+  run on the user's own hardware — `template` (the default), `vlm` (the local Qwen2.5-VL
+  the deep tier already loads) and `local_vlm` (an ollama endpoint the user runs). The
+  advantage that was deleted was never measured: nobody had compared the cloud model's
+  event names against the local one, so this trades an unverified benefit for a checkable
+  guarantee — the same trade this project already made for StreetCLIP, query translation
+  and the phrasing ensemble. The honest cost is stated rather than argued away: **a
+  machine with no GPU is now left with template names**, because the local model will
+  crawl there. That is the loss of an ornament, not of a function — `template` is the
+  default mode and the base of the product, and Qwen 3B does run on a CPU, slowly enough
+  to matter for thousands of calls and not for the few hundred that naming events takes.
+  An existing `config.yaml` that still selects the removed provider **keeps working**:
+  the run logs one line saying the provider was removed, names the three that are
+  available, and falls back to `template` — people upgrade with working files, and a
+  removal must not kill somebody's run on its first line. `geo.provider: online`
+  (Nominatim) is untouched and is a different conversation: it sends **coordinates**, not
+  pictures, its name says what it is, and the guides describe it.
+
 ### Fixed
+- **The run estimate is computed from measurements instead of baked-in constants**
+  (F159). The run screen priced the "best frame of a group" stage at **1.32 s per group,
+  whatever the group held**. Measured on 2026-08-03, one comparative question costs
+  **0.45 s plus 1.03 s for every frame in the prompt** — 1.47 s for a pair, 2.45 for a
+  triple, 3.46 for four, 4.56 for five. The 1.32 was the price of a PAIR, quoted for
+  groups "of up to five", and on the reference collection it estimated the stage at half
+  a minute against a measured **1.9 — a 3.7x understatement**, which is 90 invisible
+  seconds on a small archive and hours on a 300 GB one full of groups of nine, ten and
+  eleven. The line is now summed over the ACTUAL group sizes, capped at the frames
+  `dedup.keeper_max_frames` really sends, and both numbers moved into a config section of
+  their own (`estimate.keeper_call_sec` / `estimate.keeper_frame_sec`) with the
+  measurement table in the comment above them.
+  **The deeper fix is that the screen stopped carrying constants at all.** Since F147 the
+  run log holds `stage=… elapsed=… processed=…` for every stage and phase of every run —
+  the real speed of THIS machine — and the estimate now reads its rates from there
+  (`runlog.read_measurements`): the four always-on stages behind the base line, faces,
+  events, and the model questions priced off the VLM phase of the stage that asks them —
+  `classify` for the deep tier and `junk` for the quality and animal ones, which F165
+  split apart and which both call that phase `junk_vlm`. A constant is
+  what is used when the log has nothing to say, and the screen **states which of the two
+  it used** — "the numbers come from your own last run (2026-08-03)" against "a default
+  estimate: this machine has no measurements of its own yet" — because somebody deciding
+  whether to start a four-hour run is entitled to know whose four hours the estimate is
+  describing. A timing is discarded rather than trusted when the version that wrote it is
+  not the version asking (the `frame_quality.source` device: a stored answer is kept only
+  while the question behind it is the same one), when no environment header vouches for
+  it, or when it is older than `estimate.measurement_max_age_days`. Half a line measured
+  is not a measured line: the base line covers four stages and falls back whole.
+  **The same measurement also retired the premise the option was sold on.** From three
+  frames up, one question over a group is **not** cheaper than asking about the frames one
+  at a time (2.45 s against 2.31, 4.56 against 3.85) — the saving was only ever real for
+  pairs, and `keeper_min_group_size: 3` stopped asking about those. The stage stays,
+  because it answers something separate questions do not — which of the frames is the best
+  one — but no caption calls it the cheap way to ask any more; they say the time grows
+  with the group. The stage's own behaviour is untouched: this is a feature about
+  estimating the time, not about spending less of it.
+- **The detector's answer reaches the screen — and the rule is checked against itself**
+  (F160). F154 shipped the object detector: it ranked the candidates, ran the model, stored
+  `detections` and wrote `frame_quality.pet`. What it could not reach is the place the
+  verdict is actually READ: since F137 the album, the "Animals" tab and the Overview
+  counter derive it when they read, through `sorter.animal_auto_sql`, and that expression
+  knew nothing about the new table — so a run spent three minutes, the boxes went into the
+  database, and **not one number a user looks at moved**. The tier is now in that
+  expression, with the same order of precedence it has in the stage (the user over
+  everything, then the F130 answer — a box detector calls a drawn cat a cat — then the
+  detector, then the CLIP score), and it reads the stored BOXES rather than the label
+  column, so `features.detector_threshold` can be re-chosen in either direction without a
+  new pass over a single image, exactly as F137 made the other two thresholds. With
+  `detect.enabled` or `features.detector` off the expression is byte-for-byte the one that
+  shipped before, boxes left behind by an earlier run included.
+  **The real cause was wider than the missing branch.** "What counts as an animal" is
+  written twice on purpose — `junk.pet_label` labels the one frame a stage has just scored,
+  `animal_auto_sql` answers "which files" over a whole index — and by now four things
+  decide it (the CLIP score F122, the VLM answer F130, the user F124, the detector F154).
+  Every one of them had to be written into both halves and **nothing checked that it was**.
+  So the case table — every combination of score, answer, detection and manual mark, at
+  five sets of thresholds — is now run through **both** spellings and asserted equal row by
+  row. A fifth source that lands in only one of them fails a test instead of a slice.
+  The caption of the "Animals" tab states both measurements, because the switch chooses
+  between two different promises: 82% precision at 64% recall for the cascade, 62% at 87%
+  with the detector on. The default does not move — `detect.enabled` stays off, and trading
+  20 points of precision for 23 of recall is the user's decision, taken with the numbers of
+  a run in hand.
+- **One city, one name — and one alphabet per language** (F172). A `language: ru` layout
+  came out in three alphabets at once: «Санкт-Петербург», «Москва» and «Серик» next to
+  `Nizhny Novgorod` (382 files), `Samara` (179) and `Ryazan` (109), with a Thai village in
+  its own script between them. Worse, one city was filed twice — «Сочи» (385 frames) and
+  `Sochi` (29) share a geonameid and are the same place. The bundled data was never the
+  problem: `names.tsv` holds a Russian name for every one of those cities. The NAME had two
+  sources that did not agree about the language. The bundled base was asked for the English
+  anchor (`geo._CANONICAL_LANG`), the online provider answered in the language of the
+  request — so whether a city came out Russian depended on whether Nominatim happened to
+  name a suburb for it: the answers that stopped at the region were completed from the
+  offline base, in English, and landed beside their own Russian twins. The rule is now
+  written down once, in `geo._place_name`, and every source goes through it: `language` →
+  `en` → the native name the source knew (the asciiname of `places.tsv` offline, the
+  provider's own text online). A geonameid outranks text, so two files of one city cannot
+  be named differently again; where there is no Russian name, the English one is used
+  rather than an invented transliteration, and a place with no alternatives at all keeps
+  its own script. Nothing about WHERE a file goes changed — only what the place is called.
+  No schema change: the geonameid is still written next to the name, so the sorter keeps
+  choosing the folder language when it READS the row (F99) and a change of `language`
+  still costs no geo run at all.
 - **"There is an animal here" is computed when read, not frozen when written** (F137).
   The thresholds of the animal cascade are deliberately **not** part of the prompt
   fingerprint — the scores and the model's answers are stored precisely so a threshold can
@@ -65,6 +360,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **The run log says what is happening now, not what happened** (F166). F147 gave the junk
+  stage a breakdown by phase, and the live run of 2026-08-03 showed what was still missing:
+  all four phase lines carried the **same timestamp**, printed in one batch just before the
+  stage summary, because `log_phase` was called for every phase at once at the end. An
+  instrument that answers "where did the time go" at the moment the time has gone answers
+  nothing about a two-hour stage — and if the run is cut short it answers **nothing at
+  all**: the orchestrator interrupted `junk` mid-run and lost the numbers of three phases
+  that had finished long before, along with everything the F159 estimate would have learned
+  from them. Every timed unit of a run — the stage, and each phase inside it — now writes
+  the same three kinds of line: `stage=<s>[ phase=<p>] started[ total=<n>]`, a periodic
+  `... progress elapsed=<sec> processed=<n>[ total=<n>] rate=<n>/s`, and its summary **the
+  moment that unit is over** rather than at the end of the stage. An interrupted or failed
+  run therefore keeps every phase that finished, and marks the one that did not as
+  `interrupted (...)`/`failed` with its seconds instead of silently dropping it. The
+  periodic line is a heartbeat and not a channel of its own: one line per
+  `logging.progress_interval_sec` (default **60 s**, `0` switches it off), through the same
+  logger and at the same level as the summaries, and silent while a phase of that stage is
+  open — the phase line already carries the same counters with a name on top of them. Those
+  counters are the very pair `/api/process/status` serves, read from the same call that
+  moves the progress bar, so the file and the interface cannot come to disagree about where
+  a run is — F147's rule for the phase names, applied to the numbers next to them. Stages
+  with no phases of their own (`index`, `geo`, `landmarks`, `faces`, `events`, `phash`) are
+  no less readable for it. The shape of the F147 summary line is untouched: `stage=` and
+  `elapsed=` are where they were, and every grep and estimate built on them keeps working.
 - **The junk stage says where its seconds went** (F147). On the run of 2026-08-02 the
   stage took **2 070 seconds** — more than half of the whole hour — and the log held one
   line about it: `stage=junk elapsed=2070.208`. Six different things work inside it (CLIP
@@ -83,6 +402,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a zero, because `elapsed=0` reads as "it happened instantly". Measurement
   only: not one verdict, threshold or call count moves, which is the whole reason to build
   the instrument before pulling any lever with it.
+- **Sharpness measured inside the face** (F155): a new column `frame_quality.face_sharpness`
+  (schema v24) — the same laplacian the stage already computes, taken over the face boxes of
+  the frame instead of over the whole of it. **The blur filter needed it because its recall
+  was 6%**: on a hand-checked sample of 200 frames it caught 2 of the 33 blurred ones, and
+  the reason is not the threshold. The variance of the laplacian over a whole frame answers
+  "how much detail is in this picture", which is a different question from "is it in focus"
+  — a detailed sharp street and a smooth blurred face give the same number, and blurred
+  frames sit in every band up to 400. A face is the one object comparable across frames, so
+  the same measure taken inside it means the same thing twice: on the 68 frames of that
+  sample that have a face (13 of them blurred), **62% recall at a threshold of 200 against
+  15% for the whole frame at 300**, for a comparable number of frames flagged. It costs no
+  new pass — the preview is decoded once and the second variance comes off a crop of the
+  same array — and **the coordinates are rescaled** from the original into preview pixels,
+  which is the one thing that had to be right: `faces.bbox` is written in pixels of the full
+  frame, and the measurement this feature came from used them as written, lost 39 of its 68
+  crops off the edge and reported 100% recall over the survivors instead of the real 62%. A
+  broken crop flatters the result rather than failing, so the suite pins the rescaling
+  directly. Several faces give the sharpest one (if any face is in focus, the shot worked);
+  the `bbox = '[]'` marker is not a face; a crop too small to measure is NULL, not zero.
+  **It ranks and does not judge**: precision is ~25% at every threshold measured, and only
+  the third of a collection that has a face is covered at all, so `features.face_sharpness_max`
+  (`200.0`, provisional — `python scripts/measure_frame_quality.py --features sharpness`
+  prints the sweep) orders the blur list and nothing in the pipeline acts on it.
 - **An object detector as a second tier over a query, not a pass** (F154): the animal label
   gets a third tier (`features.detector`, off by default, behind its own master switch
   `detect.enabled`) — a COCO detector from torchvision, run over the candidates a zero-shot
@@ -145,6 +487,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pair from ever coming back as a duplicate to sort out: `dedup.near_duplicate_groups`
   leaves derived files out of its groups, so nobody spends the next run deciding about pairs
   they created themselves. Pressing the button twice returns the copy that exists.
+  One thing this did **not** reach when it shipped, stated rather than hidden: since F137
+  the album, the "Animals" tab and the Overview counter derive the verdict when they read,
+  out of `pet_score`/`pet_vlm` through `sorter.animal_auto_sql`, and that expression did
+  not know about `detections` — so the detector filled its table and wrote
+  `frame_quality.pet` while the slice a user saw was still the F130 answer. F160 (above)
+  closed that, and made the two spellings of the rule check each other.
 - **Three slices over what the faces stage already found** (F152): **With people**, **Group
   photos** and **Portraits** in the Slices tab, with counters on the Overview and albums of
   their own (`sorta album people|group|portrait`, no selector — the collection holds exactly
@@ -501,6 +849,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box belongs in the "Slices" block of the web app, which F133 is rewriting.
 
 ### Changed
+- **Three cheap levers on the junk stage, and the measurement kept all three shut**
+  (F164). The phase table of F147 named where the 25,4 minutes of the stage go, and the
+  three obvious levers under it were: `junk_write` at 19,4 ms a frame (a commit per row?),
+  the OCR thread ceiling of 4 (set "so a weak card is not knocked over", never priced),
+  and the four VLM preparation threads on a 24-core machine with the card at 51%. Each
+  was measured before it was pulled, and none of them turned out to be a lever.
+  **`junk_write` is not writing.** The stage already wraps its whole pass in ONE
+  transaction, and this exact upsert costs **0,004–0,005 ms a row** across three runs —
+  0,1 s of the 470 s the phase was billed for. Committing per chunk or per row costs
+  between nothing and everything depending on whether the operating system really
+  flushes (0,003 vs 0,157 ms a row for chunks, 0,014 vs 2,271 for rows — two runs of
+  three never flushed, one paid 55 s for the same rows): batching would have been a
+  gamble on that, for 0,02%, and would have traded away the property that makes an
+  interrupted run safe (half of today's verdicts and half of yesterday's is a database
+  whose incrementality marker lies). What the phase really holds is the laplacian of the
+  quality half — **26,9 ms** a frame against 0,005 for the verdict and 0,06 for the
+  stored vector — which, over the 79% of frames that get a quality row, is the 19,4 ms
+  exactly. Recorded where the statement is, so the next person starts from the right
+  number. **More VLM threads are slower, not faster.** The case for raising
+  `vlm.workers` was F101's profile (~0,6 s of CPU per frame against ~0,19 s of GPU) and
+  it expired when F105 gave the runtime the fast image processor: preparing a frame now
+  takes ~0,12 s of about **seven cores**, so four threads on 24 cores already ask for
+  more than exists. Measured over 120 frames of the live collection with the model's
+  turn replaced by a sleep of its measured 0,19 s: 2 threads x1,26, 4 x1,16, 6 x1,06,
+  8 x0,98, 12 x0,87 — and the frames in flight grow the process from 551 MB to 2,6 GB
+  across that range. The 51% of the live run is what NO overlap looks like at those two
+  numbers, not a starving card. The default stays min(4, cores). **The OCR ceiling stays
+  unmeasured on purpose**: what it protects is VRAM (one easyocr Reader per thread), so
+  only a run on a free GPU can price it — the sweep now exists
+  (`scripts/measure_ocr_workers.py`) and the number waits for it. Nothing about a
+  verdict moves in any of this: `scripts/measure_junk_write.py` and
+  `scripts/measure_vlm_workers.py` are new measurement tools, and the two new test
+  modules pin what the seconds rest on — the pass writes in one transaction and an
+  interrupted run leaves the previous verdicts untouched, and 1 / 2 / 4 / 6 / 8 / 12
+  threads at either end of the stage produce byte-identical `media_class` rows with the
+  deep tier's labels still in candidate order (the F101 invariant).
 - **What costs time is on the run screen, and it says how much** (F138). Three knobs
   worth between a quarter of an hour and four hours of a run — `vlm.quality` +
   `vlm.quality_scope` (95 minutes by faces, 4.3 hours over everything),

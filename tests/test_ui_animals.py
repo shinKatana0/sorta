@@ -188,7 +188,9 @@ class TestAnimalsTabHtml(AnimalsTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn("var ANIMALS_PAGE_SIZE = 200;", html)
-        self.assertIn("fetchAnimals(animalsOffset, true)", html)
+        # F173: the paging is the shared pager's, not a fourth copy of the same loop.
+        self.assertIn("var animalsPager = makePager(", html)
+        self.assertIn("return animalsPager.load();", html)
 
     def test_i18n_ru_en_ja(self):
         self.start_server()
@@ -198,7 +200,7 @@ class TestAnimalsTabHtml(AnimalsTestBase):
 
     def test_every_new_string_is_translated_three_ways(self):
         keys = ("tab_animal", "animals_intro", "animals_empty", "animals_score_label",
-                "animals_load_more", "animals_shown_label", "error_loading_animals",
+                "slice_load_more", "slice_shown_label", "error_loading_animals",
                 "overview_animals", "process_pets_label", "process_pets_hint")
         for key in keys:
             with self.subTest(key=key):
@@ -208,8 +210,8 @@ class TestAnimalsTabHtml(AnimalsTestBase):
                     self.assertTrue(entry[lang].strip())
         for lang in ("ru", "en", "ja"):
             self.assertIn("{score}", ui._UI_STRINGS["animals_score_label"][lang])
-            self.assertIn("{shown}", ui._UI_STRINGS["animals_shown_label"][lang])
-            self.assertIn("{total}", ui._UI_STRINGS["animals_shown_label"][lang])
+            self.assertIn("{shown}", ui._UI_STRINGS["slice_shown_label"][lang])
+            self.assertIn("{total}", ui._UI_STRINGS["slice_shown_label"][lang])
 
     def test_the_intro_names_the_measured_precision(self):
         """F158: the caption promised "about 92%" — a number from the score-stratified
@@ -294,9 +296,12 @@ class TestProcessPetsOverride(ProcessTestBase):
         captured: dict = {}
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                      progress=None):
-            captured["cfg"] = cfg
-            self.calls.append("junk")
+                      verdicts_only=False, progress=None):
+            # F165: the same function is the `classify` stage too — the config under
+            # test is the one the half AFTER faces gets, so only that call is captured.
+            if not verdicts_only:
+                captured["cfg"] = cfg
+            self.calls.append("classify" if verdicts_only else "junk")
 
         self.patch_fast_stages()
         self._patch("classify_junk", fake_junk)
@@ -351,8 +356,10 @@ class TestProcessPetsOverride(ProcessTestBase):
         final = _poll_until(self.status, lambda d: d["finished"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "junk", "phash"])
-        self.assertEqual(final["stage_total"], 5)  # index/geo/landmarks/junk/phash
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "junk",
+             "phash"])
+        # index/geo/landmarks/classify/junk/phash
+        self.assertEqual(final["stage_total"], 6)
         self.assertNotIn("pets", ui._PIPELINE_STAGE_NAMES)
         self.assertNotIn("pets", ui._OPTIONAL_STAGES)
 
@@ -406,9 +413,12 @@ class TestRerunOptionalWithPets(ProcessTestBase):
         captured: dict = {}
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                      progress=None):
-            captured["cfg"] = cfg
-            self.calls.append("junk")
+                      verdicts_only=False, progress=None):
+            # F165: the same function is the `classify` stage too — the config under
+            # test is the one the half AFTER faces gets, so only that call is captured.
+            if not verdicts_only:
+                captured["cfg"] = cfg
+            self.calls.append("classify" if verdicts_only else "junk")
 
         self.patch_fast_stages()
         self._patch("classify_junk", fake_junk)
@@ -464,8 +474,8 @@ class TestPetsCheckboxHtml(ProcessTestBase):
         self.assertIn("pets: pets,", html)
         self.assertIn('"process-pets-checkbox"', html)
         # and it is NOT a stage in the client's model of the run either
-        self.assertIn('var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "faces", '
-                      '"events", "junk", "phash"];', html)
+        self.assertIn('var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", '
+                      '"classify", "faces", "events",', html)
         self.assertNotIn('OPTIONAL_PROCESS_STAGES = { faces: true, events: true, pets',
                          html)
 

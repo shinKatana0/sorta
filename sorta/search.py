@@ -31,8 +31,12 @@ implementation detail:
   running `sorta junk`.
 * **This ranks, it does not classify.** There is no "this really is a cake" threshold and
   there will not be one, for the same reason sharpness has none: the score orders frames
-  against each other and says nothing in absolute terms. `features.search_limit` is
-  therefore a SAMPLE SIZE, not a cutoff.
+  against each other and says nothing in absolute terms. `features.search_page` is
+  therefore a SAMPLE SIZE, not a cutoff — and since F173 it is not even the end of the
+  sample: `rank` returns a WINDOW of the ranking together with the length of the whole of
+  it, so a caller can walk down the list instead of being cut off at the first page. Depth
+  is the one lever of completeness the measurements found (the query «дети» goes from 61%
+  to 89% when the list is doubled), so it is the last thing this engine may take away.
 
 Known limits, measured elsewhere and repeated here so a caller does not have to guess:
 compound queries ("a cake with candles on a table by the window") are weak — CLIP takes a
@@ -62,7 +66,9 @@ Neither one adds the scores up, and `fuse` cannot: it is handed file ids and no 
 because a cosine of ViT-L-14 and a cosine of xlm-roberta-base-ViT-B-32 belong to different
 spaces and look comparable anyway. Which mode is worth defaulting to is a question for
 `scripts/measure_search.py --fusion`, which prints precision AND RECALL — the half nobody
-has measured, and the half a merge is expected to move.
+has measured, and the half a merge is expected to move. A merged ranking is paged like any
+other (F173): the window is cut after the merge and the total is the length of the merged
+list, so «показано N из M» stays a fact about the list the reader is actually looking at.
 
 The real CLIP is loaded exactly once, in `text_encoder`; everything else takes an encoder
 as an argument, which is what lets the tests run the whole engine without a model.
@@ -99,11 +105,6 @@ _log = logging.getLogger(__name__)
 # tests; the real one is `text_encoder` below — the project's own open_clip, never a second
 # model, because a query has to land in the space the stored vectors live in.
 TextEncoder = Callable[[Sequence[str]], np.ndarray]
-
-# (connection, query vector, model, limit) -> the ranking of ONE index. Two functions have
-# this shape — `search` and `search_classification` — and F153 picks between them together
-# with the model name, never apart from it.
-_Ranker = Callable[[sqlite3.Connection, np.ndarray, str, int], list[tuple[int, float]]]
 
 # The population of a search (F120), and the reason it is spelled out here rather than left
 # to the table: `search_embeddings` is written by the junk stage and only ever holds personal
@@ -217,9 +218,31 @@ def encode_query(text: str, encoder: TextEncoder) -> np.ndarray:
     return vec / norm if norm > 0 else vec
 
 
-def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
-           limit: int) -> list[tuple[int, float]]:
-    """The ranking: (file_id, score) for the `limit` nearest photographs, best first.
+@dataclass(frozen=True)
+class Page:
+    """One window of a ranking, and how long the ranking it came out of is.
+
+    F173: `total` is the point. A list of exactly `limit` frames says nothing about whether
+    the ranking ended there or was cut there, and those are different facts — for a query
+    the second is almost always the true one. Everything a caller needs to draw «показано
+    N из M» and to decide whether a "show more" button belongs on the screen is here, so
+    that neither of the two can be recomputed slightly differently somewhere else.
+    """
+
+    hits: list[tuple[int, float]]
+    total: int
+    offset: int
+    limit: int
+
+    @property
+    def has_more(self) -> bool:
+        """Whether anything is left below this window — the button's whole condition."""
+        return self.offset + len(self.hits) < self.total
+
+
+def rank(conn: sqlite3.Connection, query: np.ndarray, model: str, *,
+         limit: int, offset: int = 0) -> Page:
+    """The ranking: (file_id, score), best first, windowed to [offset, offset+limit).
 
     The score is a dot product — both sides are unit vectors, so it IS the cosine, and no
     normalization happens per row. Ties are broken by file_id (the ids are sorted before the
@@ -227,23 +250,34 @@ def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
     whatever order the dict happened to have: a ranking that reshuffles between runs cannot
     be measured, and measuring it is a condition of this feature.
 
+    That same determinism is what makes PAGING honest here (F173). The whole list is scored
+    and ordered on every call, and a window is taken out of it afterwards, so the second
+    page is the continuation of the first and not a second opinion about the collection: no
+    frame is shown twice and none is skipped between the pages. Only the window is turned
+    into Python objects — the argsort ran over everything either way, and materializing
+    300 000 tuples to hand back 200 of them would be the one part of this that scales badly.
+
     Vectors of another model are absent by construction — `read_search_embeddings` filters
     on `model` — and a row whose width does not match the query is dropped as well: a
     truncated blob is a broken row, not a reason for the whole search to fail. That width
     check is also the last guard against a query encoded by the classification tower (768
     numbers) reaching the search index (512): it cannot rank, so it ranks nothing.
+
+    F153: this ranks the SEARCH index and only ever that one. `rank_classification` is the
+    other table's twin, and the two are separate functions rather than one with an argument
+    for the same reason `junk` has two readers — see there.
     """
     q = np.asarray(query, dtype=np.float32).ravel()
     candidates = [int(r["id"]) for r in conn.execute(_CANDIDATES_SQL)]
     return _rank(conn, read_search_embeddings(conn, model, candidates), q, model,
-                 limit, _SEARCH_TABLE)
+                 limit=limit, offset=offset, table=_SEARCH_TABLE)
 
 
-def search_classification(conn: sqlite3.Connection, query: np.ndarray, model: str,
-                          limit: int) -> list[tuple[int, float]]:
+def rank_classification(conn: sqlite3.Connection, query: np.ndarray, model: str, *,
+                        limit: int, offset: int = 0) -> Page:
     """F153: the same ranking over the CLASSIFICATION index (`clip_embeddings`).
 
-    A function of its own rather than a table argument on `search`, for the reason
+    A function of its own rather than a table argument on `rank`, for the reason
     `junk.read_search_embeddings` is a function of its own: the model filter is the safety
     property of both, and a parameter choosing which table to apply it to is one call site
     away from being handed the wrong one. Here the two stay apart all the way down — the
@@ -259,41 +293,84 @@ def search_classification(conn: sqlite3.Connection, query: np.ndarray, model: st
     q = np.asarray(query, dtype=np.float32).ravel()
     candidates = [int(r["id"]) for r in conn.execute(_CANDIDATES_SQL)]
     return _rank(conn, read_clip_embeddings(conn, model, candidates), q, model,
-                 limit, _CLASS_TABLE)
+                 limit=limit, offset=offset, table=_CLASS_TABLE)
 
 
 def _rank(conn: sqlite3.Connection, vectors: dict[int, np.ndarray], q: np.ndarray,
-          model: str, limit: int, table: str) -> list[tuple[int, float]]:
-    """The arithmetic both indexes share: unit vectors in, (file_id, cosine) out."""
+          model: str, *, limit: int, offset: int, table: str) -> Page:
+    """The arithmetic both indexes share: unit vectors in, one window of a ranking out."""
     ids = sorted(fid for fid, vec in vectors.items() if vec.size == q.size)
     if not ids:
         raise _nothing_to_rank(conn, model, table)
     matrix = np.stack([vectors[fid] for fid in ids])
     scores = matrix @ q
-    order = np.argsort(-scores, kind="stable")[:max(0, limit)]
-    return [(ids[i], float(scores[i])) for i in order]
+    start = max(0, offset)
+    order = np.argsort(-scores, kind="stable")[start:start + max(0, limit)]
+    return Page(hits=[(ids[i], float(scores[i])) for i in order],
+                total=len(ids), offset=start, limit=max(0, limit))
+
+
+def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
+           limit: int, offset: int = 0) -> list[tuple[int, float]]:
+    """`rank` for a caller that wants the frames and not the length of the list.
+
+    What `sorta search` and the measurement script both do with a ranking: print it. Kept
+    as its own name so that the CLI is not made to unpack a page it has no use for.
+    """
+    return rank(conn, query, model, limit=limit, offset=offset).hits
+
+
+def search_classification(conn: sqlite3.Connection, query: np.ndarray, model: str,
+                          limit: int, offset: int = 0) -> list[tuple[int, float]]:
+    """`rank_classification` for a caller that wants the frames alone (F153).
+
+    The measurement script is that caller: it compares whole lists of file ids variant by
+    variant, and the length of the classification index is not a fact it has any use for.
+    """
+    return rank_classification(conn, query, model, limit=limit, offset=offset).hits
+
+
+# --- F153: two indexes, one answer -----------------------------------------------------
+
+# One index, ranked: `rank` over the search index and `rank_classification` over the
+# classification one. The two are picked together with the model name and never apart from
+# it, which is why the fusion below carries the pair around rather than a table flag.
+_Ranker = Callable[..., Page]
+
+# How deep each index is ranked before the merge: all of it. A merge of two TRUNCATED lists
+# cannot be windowed correctly — a frame just below the cut in both lists outranks a frame
+# inside the cut in one of them, which is the whole property `rank` mode exists for — and
+# it cannot state a total either, which is what F173's paging needs to be true. So the
+# opt-in mode pays for two full lists of Python tuples per query. That is query time, and
+# no pass over any image: a run does not get slower by a millisecond.
+_WHOLE_RANKING = 1 << 30
 
 
 @dataclass(frozen=True)
 class Fusion:
     """One answer of the search, plus which indexes are behind it (F153).
 
-    `hits` is what every caller already handles — (file_id, score), best first. The other
-    three fields exist because a merge can be a merge of one: an index that has nothing to
-    rank must not turn into a quietly shorter answer, so the models that ranked are named
-    in `used` and the ones that did not are in `missing` with the engine's own reason code
-    (`REASON_EMPTY` / `REASON_OTHER_MODEL`) next to them.
+    `page` is what every caller already handles — F173's window of the ranking with the
+    length of the whole of it. The other two fields exist because a merge can be a merge of
+    one: an index that has nothing to rank must not turn into a quietly shorter answer, so
+    the models that ranked are named in `used` and the ones that did not are in `missing`
+    with the engine's own reason code (`REASON_EMPTY` / `REASON_OTHER_MODEL`) next to them.
 
-    What `score` MEANS depends on `mode`, and that is not a wart: with `off` it is the
-    cosine of the search model, with a fusion it is a weight computed from POSITIONS in
-    the two lists and belongs to no vector space at all. Both are ordering numbers with no
-    absolute meaning (see the module docstring), which is why nothing in the project reads
-    a threshold off one.
+    What a `score` on that page MEANS depends on `mode`, and that is not a wart: with `off`
+    it is the cosine of the search model, with a fusion it is a weight computed from
+    POSITIONS in the two lists and belongs to no vector space at all. Both are ordering
+    numbers with no absolute meaning (see the module docstring), which is why nothing in
+    the project reads a threshold off one.
     """
     mode: str
-    hits: list[tuple[int, float]]
+    page: Page
     used: tuple[str, ...]
     missing: dict[str, str]
+
+    @property
+    def hits(self) -> list[tuple[int, float]]:
+        """The window itself — for a caller that pages through nothing."""
+        return self.page.hits
 
 
 def fusion_mode(cfg: Config) -> str:
@@ -338,17 +415,19 @@ def fuse(rankings: Sequence[Sequence[int]], mode: str,
     return [(file_id, weights[file_id]) for file_id in order[:max(0, limit)]]
 
 
-def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
-                limit: int | None = None,
-                encoder: TextEncoder | None = None,
-                class_encoder: TextEncoder | None = None) -> list[tuple[int, float]]:
-    """`encode_query` + `search` with everything the config already knows.
+def rank_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
+              limit: int | None = None, offset: int = 0,
+              encoder: TextEncoder | None = None,
+              class_encoder: TextEncoder | None = None) -> Page:
+    """`encode_query` + `rank` with everything the config already knows.
 
-    The one entry point the CLI, the album and the measurement share, so that "which model
-    are we comparing against" is answered in one place (`junk.search_index_model` — the
-    architecture AND the weights) instead of three. `limit=None` means
-    `features.search_limit`. The encoder is loaded only when the caller does not bring one,
-    which is what keeps the CLIP import out of every module that merely imports this one.
+    The one entry point the CLI, the album, the interface and the measurement share, so
+    that "which model are we comparing against" is answered in one place
+    (`junk.search_index_model` — the architecture AND the weights) instead of four.
+    `limit=None` means `features.search_page` — a PAGE since F173, and the config comment
+    is where the difference between that and a ceiling is written down. The encoder is
+    loaded only when the caller does not bring one, which is what keeps the CLIP import out
+    of every module that merely imports this one.
 
     F141: that model is `features.search_model` and NOT `naming.clip.*`. The two are
     different on purpose — the classification model is the one every threshold in the
@@ -360,29 +439,35 @@ def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
 
     F153: with `features.search_fusion` on, the same call ALSO ranks the classification
     index and merges the two lists — the call site does not change, which is why the CLI,
-    the album and the web app got the feature without a line of their own. The list this
-    returns is `search_fusion(...).hits`; a caller that needs to know which indexes
+    the album and the web app got the feature without a line of their own. The page this
+    returns is `search_fusion(...).page`; a caller that needs to know WHICH indexes
     answered calls that instead.
     """
-    return search_fusion(cfg, conn, text, limit=limit, encoder=encoder,
-                         class_encoder=class_encoder).hits
+    return search_fusion(cfg, conn, text, limit=limit, offset=offset, encoder=encoder,
+                         class_encoder=class_encoder).page
 
 
 def search_fusion(cfg: Config, conn: sqlite3.Connection, text: str, *,
-                  limit: int | None = None,
+                  limit: int | None = None, offset: int = 0,
                   encoder: TextEncoder | None = None,
                   class_encoder: TextEncoder | None = None) -> Fusion:
-    """F153: `search_text` with the merge visible — which indexes ranked, and which did not.
+    """F153: `rank_text` with the merge visible — which indexes ranked, and which did not.
 
-    With `features.search_fusion: off` this is today's search exactly: the classification
-    index is not read, not counted and not encoded for, so the mode is also the switch for
-    the second CLIP text pass a query would otherwise pay for.
+    With `features.search_fusion: off` this is today's search exactly: `rank` over the
+    search index, the same window and the same total, and the classification index not
+    read, not counted and not encoded for — so the mode is also the switch for the second
+    CLIP text pass a query would otherwise pay for.
 
     With `rank` or `union` both indexes are ranked and `fuse` merges the positions. Each
     side is encoded by ITS OWN tower — the search model's for `search_embeddings`, the
     classification model's for `clip_embeddings` — because a query has to land in the space
     the stored vectors live in; `class_encoder` is that second tower and is built here only
     when the caller did not bring one.
+
+    The window is taken AFTER the merge and the total is the size of the merged ranking, so
+    F173's «показано N из M» stays true with a fusion on: N and M are then about a list
+    neither index has on its own. That is also why both are ranked in full — see
+    `_WHOLE_RANKING`.
 
     An index with nothing to rank does not sink the query: the other one answers, and the
     fact travels out loud — a warning in the log and the reason in `missing` — because a
@@ -392,26 +477,28 @@ def search_fusion(cfg: Config, conn: sqlite3.Connection, text: str, *,
     """
     mode = fusion_mode(cfg)
     model = search_index_model(cfg)
-    depth = int(limit if limit is not None else cfg.features.search_limit)
+    size = int(limit if limit is not None else cfg.features.search_page)
+    start = max(0, offset)
     if encoder is None:  # pragma: no cover — ML, smoke test
         encoder = text_encoder(search_index_settings(naming_settings(cfg), model))
     vector = encode_query(text, encoder)
     if mode == SEARCH_FUSION_OFF:
-        return Fusion(mode, search(conn, vector, model, depth), (model,), {})
+        return Fusion(mode, rank(conn, vector, model, limit=size, offset=start),
+                      (model,), {})
 
     class_model = embedding_model(naming_settings(cfg))
     if class_encoder is None:  # pragma: no cover — ML, smoke test
         class_encoder = _classification_encoder(naming_settings(cfg))
     sides: tuple[tuple[str, np.ndarray, _Ranker], ...] = (
-        (model, vector, search),
-        (class_model, encode_query(text, class_encoder), search_classification),
+        (model, vector, rank),
+        (class_model, encode_query(text, class_encoder), rank_classification),
     )
     ranked: dict[str, list[int]] = {}
     missing: dict[str, str] = {}
     for name, query, rank_with in sides:
         try:
             ranked[name] = [file_id for file_id, _score in
-                            rank_with(conn, query, name, depth)]
+                            rank_with(conn, query, name, limit=_WHOLE_RANKING).hits]
         except EmbeddingsMissing as exc:
             missing[name] = exc.reason
     if not ranked:
@@ -419,13 +506,31 @@ def search_fusion(cfg: Config, conn: sqlite3.Connection, text: str, *,
     for name, reason in missing.items():
         _log.warning("поиск: индекс модели %r не участвует в слиянии (%s) — "
                      "ранжирует только %s", name, reason, ", ".join(ranked))
-    return Fusion(mode, fuse(list(ranked.values()), mode, depth), tuple(ranked), missing)
+    merged = fuse(list(ranked.values()), mode, start + size)
+    return Fusion(
+        mode,
+        Page(hits=merged[start:], offset=start, limit=size,
+             total=len({file_id for ranking in ranked.values() for file_id in ranking})),
+        tuple(ranked), missing)
+
+
+def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
+                limit: int | None = None, offset: int = 0,
+                encoder: TextEncoder | None = None,
+                class_encoder: TextEncoder | None = None) -> list[tuple[int, float]]:
+    """`rank_text` for a caller that wants the frames alone — the CLI and the album.
+
+    Neither of those two draws a "show more" button, so neither has anything to do with
+    the length of the ranking; they get the list they asked for and nothing to unpack.
+    """
+    return rank_text(cfg, conn, text, limit=limit, offset=offset, encoder=encoder,
+                     class_encoder=class_encoder).hits
 
 
 def file_paths(conn: sqlite3.Connection, file_ids: Sequence[int]) -> dict[int, str]:
     """file_id -> path for a result list — the printing side of a search.
 
-    Chunked for the reason `read_clip_embeddings` gives: `features.search_limit` is a
+    Chunked for the reason `read_clip_embeddings` gives: `features.search_page` is a
     user-set number and SQLite has a ceiling on bound parameters.
     """
     out: dict[int, str] = {}

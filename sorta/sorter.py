@@ -97,6 +97,7 @@ from urllib.parse import quote
 from . import i18n, imaging
 from .config import Config, FeaturesConfig
 from .dedup import near_duplicate_groups
+from .detect import ANIMAL_LABELS, DetectorSettings, detector_settings
 from .geodata import GeoResolver
 from .hashing import file_hash
 from .indexer import excludes_path, load_excludes
@@ -432,7 +433,7 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         return [i18n.folder("unsorted", lang), i18n.folder("not_personal", lang)], "not_personal"
     verdict = row["junk_verdict"]
     if row["manual_action"] == "photo":
-        # F103: the user opened the "Not personal photos" view, looked at the frame and
+        # F103: the user opened the "Utility frames" slice, looked at the frame and
         # said it is an ordinary photo. Only the ROUTE changes here — media_class keeps
         # the model's verdict, because that verdict is a measurement and a correction by
         # eye is a separate layer on top of it. Overwriting the measurement would mean a
@@ -1241,6 +1242,116 @@ def _precheck_hash(conn: sqlite3.Connection, batch_id: int, item: PlanItem,
     return src_hash
 
 
+# The rows every layout decision is made from — ONE select, used by the plan itself and
+# by the destination preview below (F174).
+#
+# F85c: `mp.file_id IS NULL` (not COALESCE per column) decides between the two sources of
+# a place — a manual row wins as a WHOLE, so a hand-picked city can never end up under an
+# inferred country, and the district of the automatic place cannot survive under a city
+# the user replaced. `country_name` is dropped for a manual row on purpose: it is the
+# provider's spelling of the OLD country, and _target_parts localizes the cc through
+# i18n.country when it is absent.
+#
+# F174: the FIRST placeholder is the manual action to assume for these files instead of
+# the one the table holds — NULL for the plan (it reads the marks as they are), 'photo'
+# for the preview that answers "and where would this frame go if I returned it". It sits
+# in the SELECT list, so it is bound before the parameters of `{cond}`.
+_PLAN_ROWS_SQL = _CTE + """SELECT f.id, f.path, f.taken_at, f.taken_at_confidence,
+           f.hash, f.hash_algo, f.not_personal, f.gps_lat, f.gps_lon,
+           f.camera_make, f.camera_model,
+           CASE WHEN mp.file_id IS NULL THEN p.country ELSE mp.country END AS country,
+           CASE WHEN mp.file_id IS NULL THEN p.country_name END AS country_name,
+           CASE WHEN mp.file_id IS NULL THEN p.city ELSE mp.city END AS city,
+           CASE WHEN mp.file_id IS NULL THEN p.confidence
+                ELSE 'manual' END AS place_confidence,
+           CASE WHEN mp.file_id IS NULL THEN p.city_geonameid
+                ELSE mp.city_geonameid END AS city_geonameid,
+           CASE WHEN mp.file_id IS NULL THEN p.district_geonameid END AS district_geonameid,
+           CASE WHEN mp.file_id IS NULL THEN p.district_name END AS district_name,
+           mc.verdict AS junk_verdict, mc.source AS junk_source,
+           dc.action AS dedup_action,
+           COALESCE(?, mo.action) AS manual_action, mo.target AS manual_target
+       FROM files f
+       LEFT JOIN places p ON p.file_id = f.id
+       LEFT JOIN manual_places mp ON mp.file_id = f.id
+       LEFT JOIN media_class mc ON mc.file_id = f.id
+       LEFT JOIN dedup_choice dc ON dc.file_id = f.id
+       LEFT JOIN manual_overrides mo ON mo.file_id = f.id
+       WHERE f.dup_of IS NULL AND f.error IS NULL AND {cond}
+       ORDER BY f.path"""
+
+
+@dataclass(frozen=True)
+class Destination:
+    """Where one file will lie after the next apply — the layout segments and the reason.
+
+    `reason` is the plan's own stable English code (`city`, `country_only`, `no_place`,
+    `low_date`, ...), not a sentence: the caller phrases it, the way `PlanItem.reason` is
+    phrased by the CSV and by the web app.
+    """
+    file_id: int
+    parts: tuple[str, ...]
+    reason: str
+
+    @property
+    def folder(self) -> str:
+        """The target DIRECTORY relative to the sort root, POSIX separators — the same
+        string `Path(PlanItem.target_rel).parent` carries (target_rel adds the file name,
+        which only `_resolve_dst` knows, because it depends on what is already there)."""
+        return "/".join(self.parts)
+
+
+def destinations(cfg: Config, conn: sqlite3.Connection, mode: str,
+                 file_ids: Sequence[int],
+                 assume_action: str | None = None) -> dict[int, Destination]:
+    """F174: where the given files will go, computed WITHOUT planning the collection.
+
+    The web app has two actions that read as one — "this is not an animal" and "return
+    this to the photos" — and neither of them used to say where the frame ends up. It is
+    not a guess: the layout is a pure function of rows that are already in the database,
+    so the answer for a handful of files costs one query. What it must not become is a
+    SECOND copy of the layout rules — a caption computed by its own code starts lying at
+    the first edit of `_target_parts`. Hence this reads `_PLAN_ROWS_SQL` and calls
+    `_target_parts`, exactly as `plan_and_sort` does, and nothing else.
+
+    `assume_action` is the `manual_overrides.action` to pretend these files carry
+    ('photo' — "the classifier is wrong, this IS a photo"), so the caption can state the
+    destination of a correction BEFORE it is written. None reads the marks as they stand,
+    which is the question the animals slice asks: where does this frame lie already.
+
+    Deliberately NOT answered here, because they are decisions of a whole run rather than
+    of a frame: the `--exclude` directories, the near-duplicate roles (`--dedupe`) and the
+    name-conflict suffix `_resolve_dst` gives the file inside that folder. This is the
+    target FOLDER, which is what the user is being asked about.
+
+    Nothing is written and no file is touched — the marks still apply on `sort --apply`.
+    """
+    if mode not in MODES:
+        raise ValueError(f"неизвестный режим {mode!r}; допустимы: {', '.join(MODES)}")
+    ids = [int(fid) for fid in file_ids]
+    if not ids:
+        return {}
+    lang = i18n.normalize_lang(cfg.raw.get("language"))
+    drop_unlocalized_district = bool(
+        getattr(cfg.sort, "drop_unlocalized_district", True))
+    resolver = GeoResolver()
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(_PLAN_ROWS_SQL.format(cond=f"f.id IN ({placeholders})"),
+                        [assume_action, *ids]).fetchall()
+    # Both loaders walk the whole table, and only their own mode reads the result — a
+    # caption under a page of cards must not cost a scan of every face in the archive.
+    persons = _load_persons(conn) if mode == "person" else {}
+    events = _load_events(conn) if mode == "event" else {}
+    strategy = str(cfg.sort.multi_person)
+    out: dict[int, Destination] = {}
+    for r in rows:
+        parts, reason = _target_parts(mode, strategy, r, persons.get(r["id"], []),
+                                      events.get(r["id"]), lang, resolver,
+                                      drop_unlocalized_district)
+        out[int(r["id"])] = Destination(int(r["id"]), tuple(parts), reason)
+    return out
+
+
 def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                   dest: Path | None, apply: bool = False,
                   copy: bool = False,
@@ -1364,36 +1475,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                               csv_path=placeholder.with_suffix(".csv"),
                               html_path=placeholder.with_suffix(".html"))
 
-    # F85c: `mp.file_id IS NULL` (not COALESCE per column) decides between the two
-    # sources of a place — a manual row wins as a WHOLE, so a hand-picked city can never
-    # end up under an inferred country, and the district of the automatic place cannot
-    # survive under a city the user replaced. `country_name` is dropped for a manual row
-    # on purpose: it is the provider's spelling of the OLD country, and _target_parts
-    # localizes the cc through i18n.country when it is absent.
-    rows = conn.execute(
-        _CTE + f"""SELECT f.id, f.path, f.taken_at, f.taken_at_confidence,
-               f.hash, f.hash_algo, f.not_personal, f.gps_lat, f.gps_lon,
-               f.camera_make, f.camera_model,
-               CASE WHEN mp.file_id IS NULL THEN p.country ELSE mp.country END AS country,
-               CASE WHEN mp.file_id IS NULL THEN p.country_name END AS country_name,
-               CASE WHEN mp.file_id IS NULL THEN p.city ELSE mp.city END AS city,
-               CASE WHEN mp.file_id IS NULL THEN p.confidence
-                    ELSE 'manual' END AS place_confidence,
-               CASE WHEN mp.file_id IS NULL THEN p.city_geonameid
-                    ELSE mp.city_geonameid END AS city_geonameid,
-               CASE WHEN mp.file_id IS NULL THEN p.district_geonameid END AS district_geonameid,
-               CASE WHEN mp.file_id IS NULL THEN p.district_name END AS district_name,
-               mc.verdict AS junk_verdict, mc.source AS junk_source,
-               dc.action AS dedup_action,
-               mo.action AS manual_action, mo.target AS manual_target
-           FROM files f
-           LEFT JOIN places p ON p.file_id = f.id
-           LEFT JOIN manual_places mp ON mp.file_id = f.id
-           LEFT JOIN media_class mc ON mc.file_id = f.id
-           LEFT JOIN dedup_choice dc ON dc.file_id = f.id
-           LEFT JOIN manual_overrides mo ON mo.file_id = f.id
-           WHERE f.dup_of IS NULL AND f.error IS NULL AND {cond}
-           ORDER BY f.path""", params).fetchall()
+    rows = conn.execute(_PLAN_ROWS_SQL.format(cond=cond), [None, *params]).fetchall()
 
     excludes = _resolve_excludes(cfg, exclude)
     excluded_count = 0
@@ -1743,8 +1825,8 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 #
 # F139: the rest of the slices the interface already draws. Nothing about them needed
 # inventing — the engine has gathered any slice into a folder since F34, and products,
-# screenshots, memes, blurred frames, closed eyes and "no subject" were left with a
-# counter and a delete button only because their views arrived after the album did.
+# screenshots, memes, blurred frames and closed eyes were left with a counter and a
+# delete button only because their views arrived after the album did.
 #
 # The class slices are one `media_class.verdict` each, over the same canonical, readable
 # population every other counter uses — so the album and the bucket's counter are the
@@ -1756,8 +1838,10 @@ CLASS_ALBUM_KINDS = ("product", "screenshot", "meme")
 
 # The quality slices of the "Review" workspace (F126). They select on `frame_quality`,
 # and `blurred` selects through the SAME window the workspace lists — see
-# `quality_slice_where`.
-QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed", "no_subject")
+# `quality_slice_where`. F177 removed a third one, `no_subject`: the question behind it is
+# no longer asked and the answers it had are gone, so the kind is now simply unknown — a
+# `sorta album no_subject` is refused like any other name that is not a slice.
+QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed")
 
 # F152: `people`, `group` and `portrait` are read straight off the `faces` table, which a
 # detector filled — so membership is a FACT about boxes, not an estimate. What that fact
@@ -1790,7 +1874,6 @@ ALBUM_FOLDER_KEYS = {
     "meme": "memes",
     "blurred": "blurred",
     "eyes_closed": "eyes_closed",
-    "no_subject": "no_subject",
 }
 
 # F124: THE rule for "is there an animal in this frame", written down once. The user's
@@ -1810,10 +1893,11 @@ ALBUM_FOLDER_KEYS = {
 # behind without a word: the live archive kept 966 animals selected at a 0.30 candidate
 # gate long after the gate went back to 0.50, where the stored answers say 848.
 #
-# So the label is DERIVED here, out of what the stage stores — `pet_score` and `pet_vlm` —
-# and out of the thresholds the caller's config holds right now. `frame_quality.pet` is
-# still written and is still the column to grep a database by, but nothing reads it to
-# decide anything; a consumer that did would reopen the same gap somewhere else.
+# So the label is DERIVED here, out of what the stage stores — `pet_score`, `pet_vlm` and,
+# since F160, the `detections` row F154 leaves behind — and out of the thresholds the
+# caller's config holds right now. `frame_quality.pet` is still written and is still the
+# column to grep a database by, but nothing reads it to decide anything; a consumer that
+# did would reopen the same gap somewhere else.
 #
 # Both joins are LEFT joins, and that is not decoration: a frame the user marked as an
 # animal need not have a `frame_quality` row at all (the stage never reached it), and it
@@ -1829,8 +1913,107 @@ ALBUM_FOLDER_KEYS = {
 # a different collection.
 
 
-def animal_auto_sql(features: FeaturesConfig, fq: str = "afq") -> str:
-    """The AUTOMATIC half of the animal rule — the F130 cascade as a SQL expression.
+def _sql_text(value: str) -> str:
+    """One string literal for an interpolated expression, quotes doubled.
+
+    These expressions bind no parameters (see the note above), so the one value in them
+    that comes from a config file — the detector's model name — is quoted here rather
+    than pasted. A name with an apostrophe in it must break nothing and must not be able
+    to close the literal it sits in.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
+# F160: the animal classes a STORED box may carry, as a SQL list. The same boundary
+# `detect.ANIMAL_LABELS` draws for the Python spelling and read off it, so a class added
+# or removed there moves both halves of the rule at once. The writer already stores
+# nothing else (`detect.animal_boxes` filters at the model's edge and again on the way
+# into the column), and the check is repeated here for the same reason it is repeated
+# there: this is the expression a label is read off, and a `person` box that reached the
+# column somehow must not be able to become an animal.
+_ANIMAL_LABELS_SQL = ",".join(_sql_text(label) for label in sorted(ANIMAL_LABELS))
+
+
+def _detections_exists_sql(fq: str, model: str, extra: str = "") -> str:
+    """`this frame has a row from THIS detector` — correlated by `frame_quality.file_id`.
+
+    A subquery and not a join, so that every caller of `animal_auto_sql` keeps the query
+    it already had: the expression drops into the same place with the same aliases, and
+    nobody has to remember to LEFT JOIN a fourth table to get a correct answer. The
+    correlation goes through `{fq}.file_id` because that is the file id the expression is
+    already given (`frame_quality.file_id` IS `files.id`), and `detections.file_id` is the
+    primary key of its table, so each branch is one index lookup.
+
+    Keyed by `model`, exactly as `junk._DetectorPass._stored` keys incrementality: boxes
+    from another detector are not this one's answer, and a frame holding them reads as a
+    frame nobody has examined — never as a frame with no animal on it.
+    """
+    return ("EXISTS(SELECT 1 FROM detections ad"
+            f" WHERE ad.file_id = {fq}.file_id AND ad.model = {_sql_text(model)}{extra})")
+
+
+_BEST_BOX_LABEL = "json_extract(ad.boxes, '$[0][0]')"
+_BEST_BOX_SCORE = "json_extract(ad.boxes, '$[0][1]')"
+
+
+def _best_box_is_an_animal_sql(threshold: float) -> str:
+    """Does the best stored box of this row count as an animal at `threshold`?
+
+    `boxes` is JSON written by `detect.pack_boxes`, best box first, so `$[0]` IS the best
+    one and no ordering has to be redone here. The guards around it are not decoration,
+    and each one is a way the two spellings could otherwise disagree:
+
+    * `json_valid` — `json_extract` RAISES on a column that is not JSON, and a broken row
+      must cost the frame its answer, never the query. `detect.unpack_boxes` is exactly
+      that lenient on the Python side, and for the same reason;
+    * the arity and the type of the score — `unpack_boxes` drops a row that is not six
+      values with a number where the score goes, and SQLite orders TEXT ABOVE every
+      number, so an unguarded `'x' >= 0.5` is TRUE and a garbled row would read as a
+      confident animal;
+    * the label — the same boundary `_ANIMAL_LABELS_SQL` states.
+
+    Nested CASE rather than a chain of ANDs because only the branch a WHEN selects is
+    evaluated, while the terms of an AND may be reordered by the planner — and a guard
+    that runs after the thing it guards is not a guard.
+    """
+    return ("CASE WHEN json_valid(ad.boxes) THEN CASE"
+            " WHEN json_array_length(ad.boxes, '$[0]') = 6"
+            " AND json_type(ad.boxes, '$[0][1]') IN ('integer','real')"
+            f" THEN {_BEST_BOX_LABEL} IN ({_ANIMAL_LABELS_SQL})"
+            f" AND {_BEST_BOX_SCORE} >= {float(threshold)!r} END END")
+
+
+def _detector_tier_sql(fq: str, detector: DetectorSettings | None) -> str:
+    """The detector's branch of the CASE, or nothing at all when it is switched off.
+
+    Off means BYTE-FOR-BYTE the expression F137 shipped (the F145 rule, and the reason
+    this returns a string rather than a branch that happens to be false): with
+    `detect.enabled` or `features.detector` off, a `detections` table left behind by a run
+    that had them on decides nothing, and every verdict is the one the cheaper tiers give.
+
+    On, the branch is `detect.cascade_label` in SQL: a frame this detector EXAMINED is
+    decided by what it found, in both directions — an animal found under a CLIP score too
+    low to count is an animal (87% recall against 33%), and a frame CLIP called an animal
+    with nothing detected on it stops being one (the precision half).
+
+    What is read is the BOXES and not the `label`/`score` columns, and that is the F137
+    property applied to a third threshold: those two columns hold the best box at or above
+    the threshold that was in force WHEN THE RUN HAPPENED, while `boxes` holds everything
+    above the storage floor, best first. Reading `$[0]` re-chooses
+    `features.detector_threshold` without a new pass over a single image — the same thing
+    `detect.best_animal` does over `unpack_boxes` on the Python side, which is what makes
+    the two answers the same answer.
+    """
+    if detector is None or not detector.enabled:
+        return ""
+    found = f" AND {_best_box_is_an_animal_sql(detector.threshold)}"
+    return (f" WHEN {_detections_exists_sql(fq, detector.model)}"
+            f" THEN {_detections_exists_sql(fq, detector.model, found)}")
+
+
+def animal_auto_sql(features: FeaturesConfig, fq: str = "afq",
+                    detector: DetectorSettings | None = None) -> str:
+    """The AUTOMATIC half of the animal rule — the whole cascade as a SQL expression.
 
     `junk.pet_label` is the same rule in Python and is what the stage writes with; this is
     what every reader decides by. Two spellings of one rule, and they are kept side by side
@@ -1838,36 +2021,56 @@ def animal_auto_sql(features: FeaturesConfig, fq: str = "afq") -> str:
     files" over a whole index, and a Python loop over 20 000 rows is not the shape of that
     question.
 
-    The order is F130's and does not change: an answer from the model outranks the score
-    (0.95 and "a plush toy" is not an animal, 0.35 and "alive" is), and a frame it never
-    answered about falls back to `pet_score >= features.pet_threshold`.
+    THEY ARE ONE RULE AND THE SUITE PROVES IT ROW BY ROW. Four sources decide this label by
+    now — the CLIP score (F122), the VLM answer (F130), the user (F124) and the detector
+    (F154) — and every one of them had to be written twice. F160 is the feature that found
+    the fourth missing from this half, which is the worst kind of gap: the stage ran, the
+    answer was in the database, and no counter, tab or album moved. So the case table lives
+    in `tests/test_detector_reaches_the_screen.py` and is run through BOTH spellings; a
+    fifth source that reaches only one of them fails that test rather than a user.
 
-    What F137 adds is the gate the answer is read THROUGH: a stored answer counts only for
-    a frame the current `features.pet_candidate_threshold` would still show the model. It
-    is the same replay F130 chose that threshold with (the 0.30 → 0.50 rows of its table
+    The order of precedence, highest first:
+
+    * an answer from the VLM check outranks everything below it (0.95 and "a plush toy" is
+      not an animal, 0.35 and "alive" is), and a box detector cannot be asked that question
+      at all — it calls a drawn cat a cat, which is the error F130 exists to remove;
+    * then the detector, on the frames it examined — see `_detector_tier_sql`;
+    * then `pet_score >= features.pet_threshold`, the rule that ran before any of this.
+
+    Each tier falls through to the next when it has nothing to say, and NEVER to "no
+    animal": a refusal is the fallback surviving, not a verdict.
+
+    What F137 adds is the gate the VLM answer is read THROUGH: a stored answer counts only
+    for a frame the current `features.pet_candidate_threshold` would still show the model.
+    It is the same replay F130 chose that threshold with (the 0.30 → 0.50 rows of its table
     are stored answers re-read at a higher gate, not a second pass), and without it the
-    candidate threshold would be the one setting that still needed a run to take effect —
-    the exact gap this feature closes. In a database whose answers came from the config now
-    in force the gate changes nothing: every frame that has an answer cleared it to get one.
+    candidate threshold would be the one setting that still needed a run to take effect.
+    In a database whose answers came from the config now in force the gate changes nothing:
+    every frame that has an answer cleared it to get one.
 
-    `fq` is the alias of the `frame_quality` row in the caller's query. Every branch is
-    NULL-safe: a frame with no row at all (no score, no answer) is not an animal, which is
-    what the LEFT JOIN needs it to be rather than a NULL that COALESCE would swallow.
+    `fq` is the alias of the `frame_quality` row in the caller's query; `detector` is
+    `detect.detector_settings(cfg)` — both switches already ANDed together — and None means
+    the caller has no detector to speak of, which reads exactly as one switched off. Every
+    branch is NULL-safe: a frame with no row at all (no score, no answer, and therefore no
+    id to correlate a detection by) is not an animal, which is what the LEFT JOIN needs it
+    to be rather than a NULL that COALESCE would swallow.
     """
     return (f"CASE WHEN {fq}.pet_vlm IS NOT NULL"
             f" AND {fq}.pet_score >= {float(features.pet_candidate_threshold)!r}"
             f" THEN {fq}.pet_vlm = '{PET_VLM_REAL}'"
+            f"{_detector_tier_sql(fq, detector)}"
             f" ELSE COALESCE({fq}.pet_score >= {float(features.pet_threshold)!r}, 0) END")
 
 
-def animal_ids_sql(features: FeaturesConfig) -> str:
+def animal_ids_sql(features: FeaturesConfig,
+                   detector: DetectorSettings | None = None) -> str:
     """The ids of the animal slice — the whole rule, manual verdict included."""
     return f"""SELECT af.id FROM files af
     LEFT JOIN frame_quality afq ON afq.file_id = af.id
     LEFT JOIN manual_pet amp ON amp.file_id = af.id
-    WHERE COALESCE(amp.is_animal, {animal_auto_sql(features)})"""
+    WHERE COALESCE(amp.is_animal, {animal_auto_sql(features, detector=detector)})"""
 
-# F139: the same idea as animal_ids_sql, for the three quality slices — the membership
+# F139: the same idea as animal_ids_sql, for the quality slices — the membership
 # rule written down ONCE, in terms of the aliases `f` (files), `fq` (frame_quality) and
 # `mc` (media_class), and read by both consumers: the album here and the "Review"
 # workspace in ui.py, which draws the list and its counter from it. Two spellings would
@@ -1881,12 +2084,11 @@ QUALITY_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
                 "JOIN media_class mc ON mc.file_id = f.id")
 QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
 
-# `eyes_open`/`has_subject` are `= 0` and never `IS NOT 1`: NULL there means "not asked"
-# (schema), and a frame nobody looked at must not be shown to a user as an answer.
+# `eyes_open` is `= 0` and never `IS NOT 1`: NULL there means "not asked" (schema), and a
+# frame nobody looked at must not be shown to a user as an answer.
 _QUALITY_MEMBER = {
     "blurred": "fq.sharpness IS NOT NULL",
     "eyes_closed": "fq.eyes_open = 0",
-    "no_subject": "fq.has_subject = 0",
 }
 
 
@@ -2051,10 +2253,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     NULL) that have a face in a cluster whose merged_into chain root (F31, via the
     shared _CTE/_person_files) has label==selector (casefold).
     kind='event': selector — an event name OR id; the slice = the event(s)' event_files.
-    kind='animal' (F123): the slice = the files the frame-quality stage's stored scores
-    and answers make animals under the CURRENT thresholds (F137), corrected by the user's
-    own marks (F124, `animal_ids_sql` — the same expression the web app's tab and counter
-    read, never a second copy of it). The selector is not used — the
+    kind='animal' (F123): the slice = the files the frame-quality stage's stored scores,
+    answers and (F160) detections make animals under the CURRENT thresholds and switches
+    (F137), corrected by the user's own marks (F124, `animal_ids_sql` — the same
+    expression the web app's tab and counter read, never a second copy of it). The selector is not used — the
     collection has exactly one animal slice — and an empty string is accepted for it; the
     default album name is the localized `animals` folder.
     kind='query' (F129): selector — the words themselves; the slice = the top
@@ -2070,10 +2272,10 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     private" (F133) and a private bucket keeps its counter and gets neither a preview nor
     an album — gathering somebody's passports into one folder in one click is exactly
     what it exists to prevent.
-    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`/`no_subject`): the slice =
-    the "Review" workspace's flat list of that name (`quality_slice_where`, the shared
-    rule), blurred inside the `features.blur_review_max` window. No selector; the default
-    album name comes from the catalog.
+    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`): the slice = the "Review"
+    workspace's flat list of that name (`quality_slice_where`, the shared rule), blurred
+    inside the `features.blur_review_max` window. No selector; the default album name
+    comes from the catalog.
     kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
     `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
     fact that covers 77% of what a person would call a photo of people (measured). Like
@@ -2118,9 +2320,11 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         # F123/F124/F137: the one shared rule, and the thresholds it needs come off the
         # config THIS call was handed — so a gather right after a threshold edit gathers
         # what the tab is showing, with nothing re-run in between. dup_of/error are
-        # excluded below, with the other kinds.
+        # excluded below, with the other kinds. F160: the detector's tier comes off the
+        # same config, both of its switches at once (`detect.detector_settings`), so an
+        # album gathered with it on holds what the tab with it on lists.
         resolved_name = i18n.folder(ALBUM_FOLDER_KEYS["animal"], lang)
-        subject_cond = f"f.id IN ({animal_ids_sql(cfg.features)})"
+        subject_cond = f"f.id IN ({animal_ids_sql(cfg.features, detector_settings(cfg))})"
         subject_params = []
     elif kind in CLASS_ALBUM_KINDS:
         # F139/F133: the privacy guard is here rather than in the web app, because a

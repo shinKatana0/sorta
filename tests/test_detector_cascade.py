@@ -134,7 +134,7 @@ class DetectorCase(FrameQualityCase):
         if detector is not None:
             kwargs.setdefault("detector", detector)
         stats = junk.classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                              sharpness_detector=lambda _p: 500.0, **kwargs)
+                              sharpness_detector=lambda _p, _faces: junk.Sharpness(500.0), **kwargs)
         return stats, clf
 
     def run_stage(self, frames, detector=None, **kwargs):
@@ -278,11 +278,18 @@ class TestBothSwitches(unittest.TestCase):
         self.assertTrue(detector_allowed(cfg))
         self.assertTrue(detector_settings(cfg).enabled)
 
-    def test_the_defaults_are_off_and_the_numbers_are_the_measured_ones(self):
+    def test_the_defaults_are_off_and_the_numbers_come_from_the_features_section(self):
+        """The settings object carries the `features:` defaults through untouched.
+
+        WHICH numbers those are is pinned in test_config.py, beside the tables they were
+        read off — F162 re-measured both and moved them, and a copy of the values here
+        would have made that a three-file edit for no property this file is about.
+        """
+        d = FeaturesConfig()
         s = detector_settings(Config(naming=_naming_from({})))
         self.assertFalse(s.enabled)
-        self.assertEqual(s.candidates, 2000)
-        self.assertEqual(s.threshold, 0.5)
+        self.assertEqual(s.candidates, d.detector_candidates)
+        self.assertEqual(s.threshold, d.detector_threshold)
 
 
 class TestMigration(unittest.TestCase):

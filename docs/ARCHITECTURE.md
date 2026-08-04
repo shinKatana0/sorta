@@ -26,7 +26,7 @@ Switching the sort mode does not require re-running the pipelines.
 | core | `config.py`, `db/`, `hashing.py`, `dates.py`, `exif.py`, `imaging.py` | FS (decode) | — |
 | indexer | `indexer.py`, `dedup.py` | FS | `files` |
 | geo | `geo.py` | `files`, `geo_cache` | `places`, `geo_cache` (online provider only) |
-| faces | `faces.py` | `files` | `faces`, `face_clusters` |
+| faces | `faces.py` | `files`, `media_class` (F165: it detects only where the classifier has not said "not a photograph"; no row = detect) | `faces`, `face_clusters` |
 | events | `events.py` | `files`, `places` | `events`, `event_files` |
 | naming | `naming.py`, `landmarks.py`, `junk.py` | `files`, `places`, `events` | `places` (unknown only), `media_class`, `events.name` (name_is_manual=0 only) |
 | restore | `restore.py` | `files` | `restored_files`, the copy's own `files` row, FS |
@@ -58,6 +58,12 @@ Switching the sort mode does not require re-running the pipelines.
   reports, the CSV plan and the UI show how confidently a place was determined (F85a),
   and `path_inferred` (F85c) is country-only by construction — it comes from a folder
   NAME, not from geometry.
+- `city` — the name of the place in `language`, by ONE rule for every source that can
+  find one (`geo._place_name`, F172): `language` → `en` → the native name the source
+  knew. `city_geonameid` is written next to it whenever the bundled base found the
+  place, and it is what the sorter names the FOLDER by (F99) — so a change of
+  `language` renames the layout without a geo run, and one geonameid can never answer
+  to two spellings.
 - Idempotency: re-running geo fully recomputes the rows. A place the USER assigned is
   therefore not stored here at all — see `manual_places`.
 
@@ -94,6 +100,14 @@ Switching the sort mode does not require re-running the pipelines.
   thresholds are deliberately not part of `quality_prompt_fingerprint` (hashing them would
   re-run the whole cascade on every edit), so a label read as a verdict froze the config of
   whichever run last wrote it.
+- F160: the detector (F154) is a tier of that same expression — between the F130 answer and
+  the CLIP score, over the `detections` row this detector left, and read off the stored
+  BOXES so `features.detector_threshold` is re-chosen without a run like the two thresholds
+  above it. With `detect.enabled` or `features.detector` off the expression is byte-for-byte
+  the F137 one. The rule is written twice — `junk.pet_label` for the stage,
+  `sorter.animal_auto_sql` for every reader — and since F160 a case table is run through
+  both and asserted equal, because four sources decide this label and nothing was checking
+  that each reached both halves.
 - Wiped by `reset_index` like every other manual decision.
 
 ### geo_cache (written only by geo, online provider) — F93

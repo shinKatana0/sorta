@@ -219,20 +219,20 @@ class TestSearchText(SearchTestBase):
     def test_the_limit_defaults_to_the_configured_sample_size(self):
         for _i in range(5):
             self.add_photo(unit(1.0))
-        cfg = Config(database=self.cfg.database, features=FeaturesConfig(search_limit=2))
+        cfg = Config(database=self.cfg.database, features=FeaturesConfig(search_page=2))
         hits = search.search_text(cfg, self.conn, "cake", encoder=encoder_for({}))
         self.assertEqual(len(hits), 2)
 
     def test_an_explicit_limit_wins_over_the_config(self):
         for _i in range(5):
             self.add_photo(unit(1.0))
-        cfg = Config(database=self.cfg.database, features=FeaturesConfig(search_limit=2))
+        cfg = Config(database=self.cfg.database, features=FeaturesConfig(search_page=2))
         hits = search.search_text(cfg, self.conn, "cake", limit=4,
                                   encoder=encoder_for({}))
         self.assertEqual(len(hits), 4)
 
     def test_file_paths_survives_more_ids_than_sqlite_binds_at_once(self):
-        # `features.search_limit` is a user-set number, so the result list can be longer
+        # `features.search_page` is a user-set number, so the result list can be longer
         # than the parameter ceiling of a single statement.
         self.conn.executemany(
             "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "

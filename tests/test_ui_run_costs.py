@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import threading
+from unittest import mock
 
 import yaml
 
-from sorta import ui
+from sorta import runlog, ui
 from sorta.config import load_config
 
 from tests.test_ui_process import ProcessTestBase, _poll_until
@@ -41,6 +43,14 @@ class RunCostsTestBase(ProcessTestBase):
         # payload — fixtures of a previous case must not answer this one.
         ui._estimate_cache_clear()
         self.addCleanup(ui._estimate_cache_clear)
+        # F159: the estimate now also reads the run log. Every case gets a path of its
+        # own and does not create the file, so these cases keep pricing a run the way
+        # they always did — with the shipped defaults, on a machine that has no timings.
+        self.log_path = self.root / "runlog" / "sorta.log"
+        patcher = mock.patch.dict(os.environ,
+                                  {runlog.ENV_LOG_FILE: str(self.log_path)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.config_path = self.root / "config.yaml"
         self.config_path.write_text(
             "language: en\n"
@@ -76,9 +86,12 @@ class RunCostsTestBase(ProcessTestBase):
         seen: list[object] = []
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                      progress=None):
-            self.calls.append("junk")
-            seen.append(cfg)
+                      verdicts_only=False, progress=None):
+            # F165: the knobs under test are settings of the half AFTER faces, so
+            # that is the call whose config is captured.
+            self.calls.append("classify" if verdicts_only else "junk")
+            if not verdicts_only:
+                seen.append(cfg)
 
         self.patch_fast_stages()
         self._patch("classify_junk", fake_junk)
@@ -393,9 +406,8 @@ class TestEstimateEndpoint(RunCostsTestBase):
                                round(2 * ui._SEC_PER_VLM_FRAME, 1))
 
     def test_the_keeper_question_is_priced_per_group_not_per_frame(self):
-        """F132 measured 1.32 s for a call carrying up to five frames — multiplying a
-        per-frame rate by the frames of a group is the arithmetic that turns "ten
-        minutes" into an hour.
+        """The keeper line is counted in GROUPS, not in the frames they hold: the
+        question is asked once per group, whatever the answer costs.
 
         The pair is deliberate and so is the pinned `keeper_min_group_size`: this case is
         about the ARITHMETIC over a group, and it must not move when the product default
@@ -403,6 +415,11 @@ class TestEstimateEndpoint(RunCostsTestBase):
 
         Three branches rewrote this fixture independently on 2026-08-02, each chasing the
         default instead of pinning it. Pinning is why it stops.
+
+        F159 replaced the flat 1.32 s a group used to be priced at — the measured price of
+        a PAIR, applied to every size — with `estimate.keeper_call_sec` plus a cost per
+        frame in the prompt. What that price IS lives in
+        `test_estimate_from_measurements.py`; what this case still pins is the population.
         """
         for i in range(2):
             self.add_photo(f"dup{i}.jpg", phash="f" * 16)
@@ -411,8 +428,10 @@ class TestEstimateEndpoint(RunCostsTestBase):
         self.start_server()
         data = self.estimate()
         self.assertEqual(data["counts"]["keeper"], 1)
-        self.assertAlmostEqual(data["seconds"]["keeper"],
-                               round(ui._SEC_PER_VLM_GROUP, 1))
+        self.assertAlmostEqual(
+            data["seconds"]["keeper"],
+            round(self.cfg.estimate.keeper_call_sec
+                  + 2 * self.cfg.estimate.keeper_frame_sec, 1))
         # The same grouping is what `quality_scope: groups` asks about — by frames.
         self.assertEqual(data["counts"]["quality_groups"], 2)
 
@@ -461,9 +480,11 @@ class TestEstimateEndpoint(RunCostsTestBase):
 
     def test_counts_travel_with_the_seconds(self):
         """A number somebody is asked to plan an evening around should be checkable
-        against the collection it came from."""
+        against the collection it came from — and, since F159, against the machine the
+        rate behind it was measured on."""
         self.add_photo("a.jpg")
         self.start_server()
         data = self.estimate()
-        self.assertEqual(set(data), {"seconds", "counts"})
+        self.assertEqual(set(data), {"seconds", "counts", "sources", "measured_at"})
         self.assertEqual(set(data["seconds"]), set(data["counts"]))
+        self.assertEqual(set(data["seconds"]), set(data["sources"]))

@@ -52,7 +52,6 @@ FOLDER_KEYS: tuple[str, ...] = (
     "memes",
     "blurred",
     "eyes_closed",
-    "no_subject",
     "people",
     "group_photos",
     "portraits",
@@ -69,6 +68,13 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     # F78: neither junk nor a lost shot — forwarded/downloaded pictures the user may
     # well want to look through, so the name must not read as a verdict.
     "downloaded": {"ru": "скачанное", "en": "downloaded", "ja": "ダウンロード"},
+    # F175: this folder is the DOWNLOADED-FILM one and nothing else — `files.not_personal`
+    # is set by a heuristic over the file NAME (`S01E05`, `1080p`, a rip group; see
+    # indexer.is_not_personal_video) and marks three files out of 38 485 on the live
+    # collection. It has nothing to do with the «Служебные кадры» slice of the web app,
+    # which is about what is IN the frame (product/screenshot/document/meme, some five
+    # thousand frames, computed by the `junk` stage). Two different questions, two
+    # different stages, two different folders — and, until F175, almost the same name.
     "not_personal": {"ru": "не_личное", "en": "not_personal", "ja": "非個人"},
     "no_event": {"ru": "без_события", "en": "no_event", "ja": "イベント不明"},
     "no_faces": {"ru": "без_лиц", "en": "no_faces", "ja": "顔なし"},
@@ -87,7 +93,6 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     "memes": {"ru": "_Мемы", "en": "_Memes", "ja": "_ミーム"},
     "blurred": {"ru": "_Размытые", "en": "_Blurred", "ja": "_ぼやけ"},
     "eyes_closed": {"ru": "_Закрытые_глаза", "en": "_Closed_eyes", "ja": "_目を閉じた"},
-    "no_subject": {"ru": "_Без_сюжета", "en": "_No_subject", "ja": "_被写体なし"},
     # F152: the three face slices have no selector either — the collection holds exactly
     # one of each — so their album folders are named the same way the animal one is.
     # "People" here is the question "is there a face in this frame", not "who is it":
@@ -659,13 +664,13 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     "cli.album.selector_required": {
         "ru": "альбому person/event/query нужен селектор: имя человека, имя или id "
               "события либо слова запроса. Срезы animal, product, screenshot, meme, "
-              "blurred, eyes_closed и no_subject собираются без селектора",
+              "blurred и eyes_closed собираются без селектора",
         "en": "a person/event/query album needs a selector: a person's name, an event's "
               "name or id, or the words to search for. The animal, product, screenshot, "
-              "meme, blurred, eyes_closed and no_subject slices are gathered without one",
+              "meme, blurred and eyes_closed slices are gathered without one",
         "ja": "person/event/query のアルバムにはセレクタが必要です: 人物の名前、"
               "イベントの名前か id、または検索する語。animal・product・screenshot・"
-              "meme・blurred・eyes_closed・no_subject のスライスはセレクタなしで"
+              "meme・blurred・eyes_closed のスライスはセレクタなしで"
               "作成できます",
     },
     # F129: search by words — the engine's two refusals and the sentence that closes a
@@ -779,6 +784,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     "cli.progress.junk": {
         "ru": "junk: классификация", "en": "junk: classification", "ja": "junk: 分類",
     },
+    # F165: the front half of the junk stage, run before faces — the verdicts alone.
+    "cli.progress.classify": {
+        "ru": "classify: вердикты", "en": "classify: verdicts", "ja": "classify: 判定",
+    },
     "cli.progress.events": {
         "ru": "events: кластеризация", "en": "events: clustering",
         "ja": "events: クラスタリング",
@@ -855,14 +864,12 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "なりません。フラグなしの場合は config.yaml のとおり",
     },
     "cli.help.opt.quality": {
-        "ru": "Вопросы VLM о качестве кадра на этот прогон (vlm.quality): открыты ли "
-              "глаза, есть ли сюжет; нужен `uv sync --extra vlm`; без флага — как в "
-              "config.yaml",
-        "en": "The VLM frame-quality questions on this run (vlm.quality): are the eyes "
-              "open, is there a subject at all; needs `uv sync --extra vlm`; without "
-              "the flag — as in config.yaml",
+        "ru": "Вопрос VLM о качестве кадра на этот прогон (vlm.quality): открыты ли "
+              "глаза; нужен `uv sync --extra vlm`; без флага — как в config.yaml",
+        "en": "The VLM frame-quality question on this run (vlm.quality): are the eyes "
+              "open; needs `uv sync --extra vlm`; without the flag — as in config.yaml",
         "ja": "この実行で VLM にフレームの品質を問い合わせます (vlm.quality): "
-              "目が開いているか、被写体があるか。`uv sync --extra vlm` が必要です。"
+              "目が開いているか。`uv sync --extra vlm` が必要です。"
               "フラグなしの場合は config.yaml のとおり",
     },
     "cli.help.opt.quality_scope": {
@@ -942,6 +949,24 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "Посчитать pHash для почти-дубликатов (для `dupes --near`).",
         "en": "Compute the pHash for near-duplicates (for `dupes --near`).",
         "ja": "類似写真のための pHash を計算します（`dupes --near` 用）。",
+    },
+    # classify
+    "cli.help.classify": {
+        "ru": "Вердикты классификатора (screenshot|meme|document|product) — до лиц.\n"
+              "\n"
+              "Передняя половина стадии junk: только вердикты, без качества кадра и\n"
+              "каскадов. Стадия `faces` пропускает всё, что здесь названо не фотографией;\n"
+              "кадр без вердикта проходит детекцию лиц как обычно.",
+        "en": "The classifier verdicts (screenshot|meme|document|product) — before faces.\n"
+              "\n"
+              "The front half of the junk stage: the verdicts alone, without the frame\n"
+              "quality and the cascades. The `faces` stage skips whatever is called a\n"
+              "non-photograph here; a frame with no verdict is detected as usual.",
+        "ja": "分類器の判定 (screenshot|meme|document|product) — 顔検出の前に。\n"
+              "\n"
+              "junk ステージの前半です。判定のみを行い、フレーム品質やカスケードは\n"
+              "実行しません。`faces` ステージはここで写真ではないとされたものを\n"
+              "スキップします。判定のないフレームは通常どおり処理されます。",
     },
     # junk
     "cli.help.junk": {
@@ -1189,11 +1214,11 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     "cli.help.album.kind": {
         "ru": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject | people | group | portrait",
+              "blurred | eyes_closed | people | group | portrait",
         "en": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject | people | group | portrait",
+              "blurred | eyes_closed | people | group | portrait",
         "ja": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject | people | group | portrait",
+              "blurred | eyes_closed | people | group | portrait",
     },
     "cli.help.album.selector": {
         "ru": "имя человека / имя или id события / слова запроса; для animal, срезов "
@@ -1285,17 +1310,17 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # run
     "cli.help.run": {
-        "ru": "Анализ одним прогоном: index -> geo -> landmarks -> junk "
+        "ru": "Анализ одним прогоном: index -> geo -> landmarks -> classify -> junk "
               "(+faces/+events с флагами).\n"
               "\n"
               "Ничего не перемещает. С --by в конце строит dry-run план (в --dest либо\n"
               "in-place в корень источника, если --dest не задан).",
-        "en": "The whole analysis in one run: index -> geo -> landmarks -> junk "
-              "(+faces/+events behind flags).\n"
+        "en": "The whole analysis in one run: index -> geo -> landmarks -> classify -> "
+              "junk (+faces/+events behind flags).\n"
               "\n"
               "Moves nothing. With --by it builds a dry-run plan at the end (into "
               "--dest, or in place into the source root if --dest is not given).",
-        "ja": "分析を 1 回の実行で: index -> geo -> landmarks -> junk"
+        "ja": "分析を 1 回の実行で: index -> geo -> landmarks -> classify -> junk"
               "（フラグで +faces/+events）。\n"
               "\n"
               "何も移動しません。--by を指定すると、最後に dry-run のプランを作成します"

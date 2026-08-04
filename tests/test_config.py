@@ -124,6 +124,31 @@ class TestFeaturesSection(unittest.TestCase):
         self.assertAlmostEqual(cfg.features.sharpness_band_max, 500.0)
         self.assertAlmostEqual(cfg.features.subject_score_min, 0.75)
 
+    def test_the_face_sharpness_threshold_is_read_and_defaults_to_the_measured_one(self):
+        # F155: 200 is the row of the measurement where recall quadruples (62% against 15%
+        # for the whole frame) at a comparable number of frames flagged. Provisional by
+        # construction — 13 blurred frames in the sample — so it has to be overridable.
+        self.assertAlmostEqual(FeaturesConfig().face_sharpness_max, 200.0)
+        cfg = self._load("features:\n  face_sharpness_max: 350\n")
+        self.assertAlmostEqual(cfg.features.face_sharpness_max, 350.0)
+        self.assertAlmostEqual(
+            self._load("features:\n  face_sharpness_max: sharp\n"
+                       ).features.face_sharpness_max, 200.0)
+
+    def test_the_restore_ceiling_is_a_setting_and_not_a_constant(self):
+        # F169: the longer side a frame is scaled to before the x4 model — the one number
+        # that decides whether a person gets their own detail back or a plausible
+        # redrawing of it. It lived in `restore.py` until this feature, where nobody could
+        # move it and nobody was told it existed.
+        self.assertEqual(FeaturesConfig().restore_max_edge, 1024)
+        self.assertEqual(self._load("features:\n  restore_max_edge: 2048\n"
+                                    ).features.restore_max_edge, 2048)
+        for garbage in ("wide", 0, -1, "true"):
+            with self.subTest(value=garbage):
+                self.assertEqual(
+                    self._load(f"features:\n  restore_max_edge: {garbage}\n"
+                               ).features.restore_max_edge, 1024)
+
     def test_a_quoted_false_does_not_switch_the_feature_on(self):
         self.assertFalse(self._load('features:\n  pets: "false"\n').features.pets)
 
@@ -152,6 +177,34 @@ class TestFeaturesSection(unittest.TestCase):
         cfg = self._load("features:\n  pet_candidate_threshold: wide\n")
         self.assertAlmostEqual(cfg.features.pet_candidate_threshold,
                                FeaturesConfig().pet_candidate_threshold)
+
+    def test_the_detector_numbers_have_the_measured_defaults(self):
+        # F162: both are rows of the tables `scripts/measure_detector.py` prints, re-read
+        # on 500 hand-labelled frames (36 animals) after F154 shipped numbers taken on 200.
+        # The confidence: 0.60 marks 25 of 29 frames correctly where 0.50 marks 25 of 32 —
+        # the same recall for three false marks fewer, so it dominates instead of trading.
+        # The depth: 4 000 candidates is where the query's own recall ceiling reaches 100%
+        # (83% at 2 000), and costs 5.6 minutes at the measured 83.8 ms per frame.
+        cfg = self._load("")
+        self.assertAlmostEqual(cfg.features.detector_threshold, 0.6)
+        self.assertEqual(cfg.features.detector_candidates, 4000)
+
+    def test_the_detector_numbers_are_read_from_the_file(self):
+        cfg = self._load("features:\n"
+                         "  detector_threshold: 0.45\n"
+                         "  detector_candidates: 250\n")
+        self.assertAlmostEqual(cfg.features.detector_threshold, 0.45)
+        self.assertEqual(cfg.features.detector_candidates, 250)
+
+    def test_garbage_detector_numbers_fall_back_to_the_defaults(self):
+        # A depth read as 0 would show the detector nothing at all, and a threshold read
+        # as 0 would make every box above the storage floor an animal.
+        cfg = self._load("features:\n"
+                         "  detector_threshold: confident\n"
+                         "  detector_candidates: 0\n")
+        d = FeaturesConfig()
+        self.assertAlmostEqual(cfg.features.detector_threshold, d.detector_threshold)
+        self.assertEqual(cfg.features.detector_candidates, d.detector_candidates)
 
     def test_the_face_slice_numbers_have_the_documented_defaults(self):
         # F152: geometry, not confidence — a count of face boxes and a share of the frame.

@@ -98,6 +98,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # v22 (search_embeddings, F141) — a new table, created by executescript below.
     # v23 (detections, F154) — a new table, created by executescript below.
     # v24 (restored_files, F149) — a new table, created by executescript below.
+    if 15 <= version <= 24:  # v25: frame_quality.face_sharpness (F155 — inside the face)
+        conn.execute("ALTER TABLE frame_quality ADD COLUMN face_sharpness REAL")
+    if 15 <= version <= 25:  # v26: the retired "is there a subject" answers (F177)
+        # The only migration so far that changes DATA rather than shape, and it is needed
+        # because nothing else would ever reach these rows. The question is gone from the
+        # prompt, so the stage will not overwrite them; the quality toggle is off, so the
+        # stage will not run at all; and the fingerprint that marks a row stale only
+        # decides whether it is RECOMPUTED, never that a stored answer is wrong. Left
+        # alone, 212 frames would keep showing up in a slice that no longer exists.
+        #
+        # `eyes_open` is deliberately untouched. Editing the prompt does make every stored
+        # quality answer formally stale, this one included — but dropping the second
+        # question does not change the answer to the first, and those answers are the only
+        # ones a person has checked by eye. If quality is ever switched on again the
+        # fingerprint will have them re-asked; that is recomputation, not deletion.
+        conn.execute("UPDATE frame_quality SET has_subject = NULL "
+                     "WHERE has_subject IS NOT NULL")
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

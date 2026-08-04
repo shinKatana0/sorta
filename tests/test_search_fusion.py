@@ -70,7 +70,7 @@ class FusionTestBase(SearchTestBase):
 
     def cfg_with(self, mode: str, limit: int = 10) -> Config:
         return Config(database=self.cfg.database, raw={"language": "en"},
-                      features=FeaturesConfig(search_fusion=mode, search_limit=limit))
+                      features=FeaturesConfig(search_fusion=mode, search_page=limit))
 
     def add_class_vector(self, file_id: int, vec: np.ndarray,
                          model: str | None = None) -> int:

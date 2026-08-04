@@ -2,7 +2,7 @@
 
 The slice is what makes this kind different from the other three: it is not written down
 anywhere in the database, it is the top of a CLIP ranking computed on the spot
-(`search.search_text`), `features.search_limit` frames deep. Everything else — dry-run
+(`search.search_text`), `features.search_page` frames deep. Everything else — dry-run
 semantics, the journal-before-the-operation invariant, `_resolve_dst` on a repeat gather —
 is inherited from F34/F97 and pinned here for the new kind, because inheritance that is
 not checked is a plan rather than a property.
@@ -55,7 +55,7 @@ class QueryAlbumTestBase(SorterTestBase):
                               encoder=encoder_for({}), **kwargs)
 
     def limit(self, n: int) -> None:
-        self.cfg.features = FeaturesConfig(search_limit=n)
+        self.cfg.features = FeaturesConfig(search_page=n)
 
 
 class TestQueryAlbumSelection(QueryAlbumTestBase):
@@ -67,7 +67,7 @@ class TestQueryAlbumSelection(QueryAlbumTestBase):
         report = self.gather()
         self.assertEqual({it.file_id for it in report.plan}, {near, middle})
 
-    def test_search_limit_bounds_the_sample(self):
+    def test_search_page_bounds_the_sample(self):
         for i in range(5):
             self.add_photo(f"{i}.jpg", unit(1.0, 0.1 * i))
         self.limit(3)

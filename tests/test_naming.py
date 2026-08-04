@@ -1,13 +1,12 @@
 """F6: naming settings, the template provider, provider selection, name_events."""
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
 
-from sorta.config import Config, _naming_from
+from sorta.config import REMOVED_NAMING_PROVIDERS, Config, _naming_from
 from sorta.db import connect
 from sorta.naming import (
-    ClaudeNamer,
     EventContext,
     LocalVLMNamer,
     TemplateNamer,
@@ -32,21 +31,18 @@ class TestSettings(unittest.TestCase):
 
     def test_overrides_from_raw(self):
         s = naming_settings(cfg_with({
-            "provider": "claude",
+            "provider": "local_vlm",
             "landmark_threshold": 0.5,
             "junk_threshold": 0.8,
             "clip": {"model": "ViT-B-32", "pretrained": "laion2b_s34b_b79k"},
             "local_vlm": {"base_url": "http://gpu:11434/", "model": "qwen2.5vl"},
-            "claude": {"model": "claude-haiku-4-5", "api_key_env": "MY_KEY"},
         }))
-        self.assertEqual(s.provider, "claude")
+        self.assertEqual(s.provider, "local_vlm")
         self.assertAlmostEqual(s.landmark_threshold, 0.5)
         self.assertAlmostEqual(s.junk_threshold, 0.8)
         self.assertEqual(s.clip_model, "ViT-B-32")
         self.assertEqual(s.vlm_base_url, "http://gpu:11434")  # without a trailing /
         self.assertEqual(s.vlm_model, "qwen2.5vl")
-        self.assertEqual(s.claude_model, "claude-haiku-4-5")
-        self.assertEqual(s.claude_api_key_env, "MY_KEY")
 
 
 class TestTemplateNamer(unittest.TestCase):
@@ -86,13 +82,15 @@ class TestMakeNamer(unittest.TestCase):
         namer = make_namer(naming_settings(cfg_with({"provider": "local_vlm"})))
         self.assertIsInstance(namer, LocalVLMNamer)
 
-    def test_claude_requires_api_key(self):
-        s = naming_settings(cfg_with({"provider": "claude"}))
-        with patch.dict("os.environ", {}, clear=True):
-            with self.assertRaises(RuntimeError):
-                make_namer(s)
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}):
-            self.assertIsInstance(make_namer(s), ClaudeNamer)
+    def test_a_removed_provider_falls_back_to_the_template(self):
+        """F170: a NamingConfig built in code, i.e. without load_config's normalization."""
+        for provider in REMOVED_NAMING_PROVIDERS:
+            with self.subTest(provider=provider):
+                settings = replace(naming_settings(cfg_with()), provider=provider)
+                with self.assertLogs("sorta.naming", level="WARNING") as logs:
+                    namer = make_namer(settings)
+                self.assertIsInstance(namer, TemplateNamer)
+                self.assertIn(provider, "\n".join(logs.output))
 
     def test_unknown_provider(self):
         with self.assertRaises(ValueError):

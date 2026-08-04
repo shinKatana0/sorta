@@ -2,7 +2,7 @@
 Duplicates (incl. batch saving) + deleting a single frame + a "People" tab (managing
 face clusters) + person/event albums ("Collect into folder", on top of the F34
 engine) + the "Process" entry point — running the pipeline
-index→geo→landmarks→faces→events→junk→phash from the web, on a background server thread.
+index→geo→landmarks→classify→faces→events→junk→phash from the web, on a background server thread.
 
 Most routes are READ-ONLY (reading originals/decoding thumbnails by file_id from the
 index). Writes go through six narrowly-scoped paths: (1) `dedup_choice` — the user's
@@ -28,7 +28,7 @@ from the DB itself). `apply=False` — a preview (writes nothing), the client co
 and re-sends with `apply=True`.
 
 (7) `POST /api/process` (F36) — starts a background THREAD running the stages
-index→geo→landmarks→faces→events→junk→phash (the leaf functions indexer/geo/
+index→geo→landmarks→classify→faces→events→junk→phash (the leaf functions indexer/geo/
 landmarks/faces/events/junk/dedup/naming — NOT imported from cli.py, to avoid a
 cycle); the body accepts `source_dir: str` (required) + optional
 `deep: bool`/`geo_online: bool` (F50/#34, default False) — which override
@@ -196,7 +196,7 @@ for `source_dir` is compared against `files.path` as a string and never opened (
 plan cache IS dropped afterwards (unlike an F77 correction, an assignment changes the
 target folder of every file of the group).
 
-(16) `GET /api/junk` (F103, the "Not personal photos" tab) — the buckets the classifier
+(16) `GET /api/junk` (F103, the "Utility frames" slice) — the buckets the classifier
 carries out of the collection, shown AS buckets: every frame whose `media_class.verdict`
 is not `photo`, with per-verdict counters and one bounded page of one bucket
 (`?bucket=&offset=&limit=`, the plan-page bounds). Read-only and reclassifying nothing.
@@ -267,13 +267,13 @@ route that marks a whole band at once: the feature exists because somebody LOOKE
 frame, and a threshold is already there for the other case.
 
 (21) `GET /api/review` + `POST /api/review/mark` (F126, the "Review" tab, which replaces
-the "Duplicates" tab) — the four things a person looks at in order to decide what stays:
-near-duplicates, blurred frames, closed eyes, frames with no subject. One workspace with
-four SLICES rather than four tabs, because it is one job. Duplicates are the only GROUPED
+the "Duplicates" tab) — the three things a person looks at in order to decide what stays:
+near-duplicates, blurred frames, closed eyes. One workspace with three SLICES rather than
+three tabs, because it is one job. Duplicates are the only GROUPED
 slice and keep their own route and their own rendering untouched — `/api/dupes` and the
 four write routes above answer exactly as they did, since that is the one path in the
 product that deletes files and the one that has been run against a live collection. The
-GET carries the counters of all four slices (a slice with nothing in it stays in the
+GET carries the counters of all three slices (a slice with nothing in it stays in the
 switcher with a zero — an empty slice is an answer, a missing one is a riddle) plus one
 bounded page of the current flat slice, over photographs only (`media_class.verdict =
 'photo'`, F120) that are canonical and readable. The blurred list is ordered by ascending
@@ -288,11 +288,13 @@ route that marks a whole slice at once: reviewed by eye, blurred frames turn up 
 band up to 400, so sharpness ranks the list and a person decides each frame.
 
 (22) `GET /api/search` (F134, the query line of the "Slices" tab) — the F129 engine
-behind the field F133 drew and left disabled: `q` is the words, `limit` a SAMPLE SIZE
-(`features.search_limit` by default, clamped, never a similarity threshold — there is
-none and there will not be one), and the answer is the ranking as cards with a score on
-each. Every answer also carries the STATE of the index — `state` (empty / other_model /
-partial / ready), `available`, `indexed`, `total` and `index_model` — because the failure
+behind the field F133 drew and left disabled: `q` is the words, `offset`/`limit` a PAGE of
+the ranking (`features.search_page` frames by default, clamped, never a similarity
+threshold — there is none and there will not be one), and the answer is that page as cards
+with a score on each, plus `total`/`has_more` like every other paged slice (F173: the
+ranking does not end where the page does, and the counter has to say so). Every answer also
+carries the STATE of the index — `state` (empty / other_model / partial / ready),
+`available`, `indexed`, `photos` and `index_model` — because the failure
 this route exists to avoid is answering "nothing was found" when the truth is "nothing was
 ever computed": the two are the same empty list on screen, and only one of them is a fact
 about the person's photographs. An empty `q` returns that state and nothing else, without
@@ -319,6 +321,18 @@ Without a faces run the answer is `reason='no_faces_run'` and counters of `null`
 F125 rule, since a zero would read as a claim about the person's photographs. Sensitive
 classes follow the F133 rule unchanged (listed, but no `thumb_url`). The one action these
 slices offer is the existing `POST /api/album` with `kind='people'|'group'|'portrait'`.
+
+(24) F174 adds no route and changes no storage: `/api/junk` and `/api/animals` now carry
+`dest`/`dest_reason`/`dest_group` on every card — WHERE that frame ends up. Two marks the
+slices offer read as one movement to the person making it ("this frame does not belong
+here") and neither said where the frame goes: taking an animal mark off changes a
+membership and moves no file, while returning a product to the photos is a real transfer
+into a city on the next apply. So the button reads the same in both (`slice_return_button`)
+and the difference is stated under it — `dest_goes_to` there, `dest_stays_in` here — and a
+bulk return states the SPREAD of the selection ("12 frames: 7 into cities, 5 into
+no_place"), because one folder name out of twelve deceives a person who ticked dozens. The
+folder is `sorter.destinations`, i.e. the code that builds the plan, asked with the
+correction already assumed; nothing is applied any earlier than before.
 
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
@@ -367,12 +381,17 @@ from . import db, faces, i18n, imaging, restore
 from .config import (
     VLM_QUALITY_SCOPES,
     Config,
+    # F160 replaced its own uses of FeaturesConfig with Config and dropped the import;
+    # F149 landed `_restore_frame(db_path, features: FeaturesConfig, ...)` in main
+    # meanwhile. Different lines, so git merged both without a word and left a name with
+    # no import behind — the kind of break only a gate on the SUM can find.
     FeaturesConfig,
     save_language,
     save_setting,
 )
 from .dedup import (KEEPER_SOURCE_SHARPNESS, assign_duplicates, compute_phashes,
                     group_key, near_duplicate_groups, read_group_keepers)
+from .detect import detector_settings
 from .diagnostics import warn_if_geo_data_missing
 from .events import build_events
 from .faces import detect_and_cluster
@@ -382,6 +401,9 @@ from .indexer import excludes_path, index as run_index, load_excludes, normalize
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
 from .junk import (
+    CLASSIFY_PHASE_VLM,
+    CLASSIFY_STAGE,
+    VERDICTS_STAGE,
     faces_stage_ran,
     quality_scope_ids,
     search_index_model,
@@ -390,13 +412,20 @@ from .junk import (
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .landmarks import batched
 from .naming import name_events, naming_settings
-from .runlog import log_environment, stage_timer
+from .runlog import (
+    Measurement,
+    log_environment,
+    measurement_files,
+    measurement_unit,
+    read_measurements,
+    stage_timer,
+)
 from .search import (
     REASON_EMPTY,
     REASON_OTHER_MODEL,
     EmbeddingsMissing,
     TextEncoder,
-    search_text,
+    rank_text,
     text_encoder,
 )
 from .sorter import (
@@ -407,9 +436,11 @@ from .sorter import (
     QUALITY_FROM,
     SELECTORLESS_ALBUM_KINDS,
     AlbumReport,
+    Destination,
     PlanItem,
     animal_auto_sql,
     animal_ids_sql,
+    destinations,
     face_slice_ids_sql,
     plan_album,
     plan_and_sort,
@@ -738,23 +769,52 @@ class PlanCache:
         }
 
 
-def _parse_page_window(query: dict[str, list[str]]) -> tuple[int, int] | None:
-    """(offset, limit) for a `/api/plan` category page, or None -> 400.
+def _parse_page_window(query: dict[str, list[str]],
+                       default_limit: int = _PLAN_PAGE_DEFAULT_LIMIT
+                       ) -> tuple[int, int] | None:
+    """(offset, limit) for any paged route, or None -> 400.
 
     A missing parameter falls back to the default; a non-integer or negative one is
     rejected rather than coerced — the one outcome that must never happen is quietly
     serving the whole category. A limit above the maximum is clamped, not rejected:
     an over-eager client gets less data, not an error.
+
+    F173: `default_limit` is an argument because one route's page size is a setting rather
+    than a constant — search opens to `features.search_page`. Everything else about the
+    window is the same rule for every list, which is the point: a slice added tomorrow
+    gets a validated window by calling this, not by writing a fourth copy of it.
     """
     raw_offset = (query.get("offset") or ["0"])[0]
-    raw_limit = (query.get("limit") or [str(_PLAN_PAGE_DEFAULT_LIMIT)])[0]
+    raw_limit = (query.get("limit") or [str(default_limit)])[0].strip()
     try:
-        offset, limit = int(raw_offset), int(raw_limit)
+        offset, limit = int(raw_offset), int(raw_limit or default_limit)
     except ValueError:
         return None
     if offset < 0 or limit < 0:
         return None
     return offset, min(limit, _PLAN_PAGE_MAX_LIMIT)
+
+
+def _page_payload(items: list[dict], *, total: int, offset: int, limit: int) -> dict:
+    """The five keys every paged slice answers with — F173's shared half on the server.
+
+    Two of them are the feature. `total` is the length of the LIST, never the length of
+    this page: "showing 200" and "there are 200" read identically, and for a ranking the
+    second is almost never true. `has_more` is computed here, from the window the server
+    actually served, so the button on the screen cannot disagree with the data behind it —
+    a client deciding for itself would have to keep a running count and would be wrong the
+    first time a page came back short.
+
+    A slice merges its own keys into the result (`animals`, `counts`, the state of the
+    search index): what is shared is the paging, not the payload.
+    """
+    return {
+        "items": items,
+        "total": int(total),
+        "offset": int(offset),
+        "limit": int(limit),
+        "has_more": int(offset) + len(items) < int(total),
+    }
 
 
 def _resolve_path(db_path: Path, file_id: int) -> Path | None:
@@ -1411,7 +1471,73 @@ def _apply_overrides(db_path: Path, file_ids: list[int], action: str,
     return known
 
 
-# --- F103: the "Not personal photos" view -------------------------------------------
+# --- F174: an action says WHERE the frame goes --------------------------------------
+# Two of the marks the slices offer read as one movement to the person making it ("this
+# frame does not belong in this slice"), and neither of them said where the frame ends
+# up. Worse, they are not the same movement at all: taking an animal mark off changes
+# a MEMBERSHIP and moves no file, while returning a product to the photos is a real
+# transfer out of «_Товары» into a city on the next `sort --apply`. The fix is language,
+# not storage — `manual_pet` and `manual_overrides` stay two tables.
+#
+# The folder name comes from `sorter.destinations`, i.e. from the code that builds the
+# plan, never from a rule spelled a second time here. `city` is the mode because it is
+# the mode the web app applies (see `_run_sort`), so the caption is about the layout the
+# button will actually produce.
+_DEST_MODE = "city"
+
+# The plan's reason codes, grouped into the handful of answers a BULK caption can state:
+# "12 frames will return: 7 into cities, 5 into no_place" is what the person needs before
+# selecting dozens at once, and one folder name out of twelve would simply mislead them.
+# A reason nobody grouped lands in `other` rather than being dropped — a group that
+# silently loses frames would make the counts stop adding up to the selection.
+_DEST_GROUPS: dict[str, str] = {
+    "city": "city",
+    "manual_reassign": "city",
+    "country_only": "country",
+    "no_place": "no_place",
+    "low_date": "undated",
+    "downloaded": "undated",
+}
+
+
+def _destination_json(dest: Destination | None) -> dict:
+    """The three fields a card needs to name its destination, or empty for an unknown id.
+
+    `folder` is what the caption prints, `reason` is what the explanation under it is
+    looked up by (`dest_why_<reason>`, the `junk_bucket_<verdict>` pattern), and `group`
+    is what the bulk breakdown counts. All three are decided HERE: a client that derived
+    the group from the folder name would be a second copy of the layout rules, in JS.
+    """
+    if dest is None:
+        return {}
+    return {
+        "dest": dest.folder,
+        "dest_reason": dest.reason,
+        "dest_group": _DEST_GROUPS.get(dest.reason, "other"),
+    }
+
+
+def _destinations_for(cfg: Config, conn: sqlite3.Connection, rows: list[sqlite3.Row],
+                      assume_action: str | None = None) -> dict[int, Destination]:
+    """`sorter.destinations` over the ids of one PAGE of cards, on the open connection.
+
+    Bounded by the page the client asked for, so the cost does not grow with the archive.
+    A failure to compute it is not a failure to show the page: geo data may be missing
+    (`GeoResolver`) or the layout may raise on a config the slice has no say over, and a
+    grid that 500s because a caption could not be phrased is worse than a grid without
+    the caption. The cards then simply carry no `dest` field.
+    """
+    if not rows:
+        return {}
+    try:
+        return destinations(cfg, conn, _DEST_MODE, [int(r["id"]) for r in rows],
+                            assume_action)
+    except (ValueError, sqlite3.Error, OSError) as exc:
+        _log.warning("ui: не удалось вычислить назначение кадров: %s", exc)
+        return {}
+
+
+# --- F103: the "Utility frames" slice ------------------------------------------------
 # The deep VLM tier carries away roughly every tenth frame of the collection into
 # service folders (2 202 `product` alone on the live 24k run), and until now those
 # buckets were visible only indirectly, as folders of the layout plan. A handful of
@@ -1435,7 +1561,8 @@ _JUNK_NO_PREVIEW = ("document",)
 
 
 def _junk_item_to_json(row: sqlite3.Row, restored: bool,
-                       no_preview: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
+                       no_preview: frozenset[str] = frozenset(_JUNK_NO_PREVIEW),
+                       dest: Destination | None = None) -> dict:
     """One card of the junk view. `thumb_url` is ABSENT for a no-preview bucket."""
     path = Path(row["path"])
     verdict = row["verdict"]
@@ -1444,9 +1571,17 @@ def _junk_item_to_json(row: sqlite3.Row, restored: bool,
         "verdict": verdict,
         "name": path.name,
         "date": row["taken_at"],
+        # F175: said out loud, per card, for the same reason the page-level list is —
+        # a card the person must not delete has to be visible AS one before the "select
+        # everything" button is pressed, and a client inferring it from the missing
+        # `thumb_url` would be a second copy of the privacy rule in JS.
+        "sensitive": verdict in no_preview,
         # F77/F103: the frame already carries a manual "this is a photo" correction —
         # the card says so instead of offering the same action twice.
         "restored": restored,
+        # F174: where the frame lands if it IS returned — the folder the plan will build
+        # for it once the `photo` mark is in the table, not a folder named by this file.
+        **_destination_json(dest),
     }
     if verdict not in no_preview:
         payload["thumb_url"] = f"/thumb/{int(row['id'])}"
@@ -1454,7 +1589,7 @@ def _junk_item_to_json(row: sqlite3.Row, restored: bool,
     return payload
 
 
-def _junk_payload(db_path: Path, bucket: str | None,
+def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
                   offset: int, limit: int,
                   sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
     """`GET /api/junk` — the buckets with their counts + one page of one bucket.
@@ -1517,6 +1652,10 @@ def _junk_payload(db_path: Path, bucket: str | None,
                       {clause}
                 ORDER BY f.path
                 LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
+        # F174: what the button on these cards will do — asked with the correction it
+        # writes already assumed, so the caption names the city the frame goes back to
+        # and not the service folder it is sitting in right now.
+        dests = _destinations_for(cfg, conn, rows, "photo")
     finally:
         conn.close()
     marks = _overrides_map(db_path) if rows else {}
@@ -1537,7 +1676,8 @@ def _junk_payload(db_path: Path, bucket: str | None,
         "limit": limit,
         "items": [
             _junk_item_to_json(
-                r, (marks.get(int(r["id"])) or ("", None))[0] == "photo", sensitive)
+                r, (marks.get(int(r["id"])) or ("", None))[0] == "photo", sensitive,
+                dests.get(int(r["id"])))
             for r in rows
         ],
     }
@@ -1552,7 +1692,7 @@ def _junk_payload(db_path: Path, bucket: str | None,
 # finds where that border sits, so the score travels to the card and is shown on it.
 
 
-def _animal_item_to_json(row: sqlite3.Row) -> dict:
+def _animal_item_to_json(row: sqlite3.Row, dest: Destination | None = None) -> dict:
     """One card of the animal view: a thumbnail, a name, a date and the pet score.
 
     F124: plus the two facts a card has to state about the mark itself — whether the
@@ -1576,6 +1716,10 @@ def _animal_item_to_json(row: sqlite3.Row) -> dict:
         "manual": None if row["manual"] is None else bool(row["manual"]),
         "thumb_url": f"/thumb/{int(row['id'])}",
         "video": imaging.is_video_path(path),
+        # F174: where the frame ALREADY lies. This slice is a view over the canon, not an
+        # extraction from it, so the mark moves no file — and the card can only say so
+        # convincingly by naming the folder the frame is in either way.
+        **_destination_json(dest),
     }
 
 
@@ -1583,7 +1727,15 @@ _ANIMALS_JOIN = ("FROM files f LEFT JOIN frame_quality fq ON fq.file_id = f.id "
                  "LEFT JOIN manual_pet mp ON mp.file_id = f.id")
 
 
-def _animals_population(features: FeaturesConfig) -> str:
+# F160: the animal rule now has a tier whose switches live outside `features:` — the
+# detector's master switch `detect.enabled` (F145) and the model that wrote the boxes. So
+# the helpers of this slice take the WHOLE live config, the way `_overview_payload` already
+# does, and resolve both switches through the one function that ANDs them
+# (`detector_settings`).
+# Reading half of the pair here is exactly the mistake F145 was written about, and a slice
+# still counting the boxes of a detector the user has switched off is the same bug in the
+# other direction.
+def _animals_population(cfg: Config) -> str:
     """What the TAB LISTS: the model's marks plus every frame a person has touched.
 
     Deliberately wider than the slice — a frame marked "not an animal" is no longer in the
@@ -1594,29 +1746,30 @@ def _animals_population(features: FeaturesConfig) -> str:
     not the `frame_quality.pet` cache — a threshold edit has to take frames OFF this page
     too, or the list and the counter it carries would disagree about the same collection.
     """
-    return (f"({animal_auto_sql(features, 'fq')} OR mp.file_id IS NOT NULL) "
-            "AND f.dup_of IS NULL AND f.error IS NULL")
+    return (f"({animal_auto_sql(cfg.features, 'fq', detector_settings(cfg))} "
+            "OR mp.file_id IS NOT NULL) AND f.dup_of IS NULL AND f.error IS NULL")
 
 
-def _animals_count_sql(features: FeaturesConfig) -> str:
+def _animals_count_sql(cfg: Config) -> str:
     """What COUNTS as an animal: `sorter.animal_ids_sql` and nothing else, over the
     canonical, readable files every other counter in this file is built on. Used by this
     tab and by the "Overview" number, so the two cannot disagree with the album or with
     each other."""
+    ids = animal_ids_sql(cfg.features, detector_settings(cfg))
     return f"""SELECT COUNT(*) FROM files f
-    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.id IN ({animal_ids_sql(features)})"""
+    WHERE f.dup_of IS NULL AND f.error IS NULL AND f.id IN ({ids})"""
 
 
-def _animals_select(features: FeaturesConfig) -> str:
+def _animals_select(cfg: Config) -> str:
     """One card, one row shape — the page and the answer to a mark are the same SELECT, so
     a card redrawn after an edit says exactly what the same card would say on a reload."""
+    ids = animal_ids_sql(cfg.features, detector_settings(cfg))
     return f"""SELECT f.id, f.path, f.taken_at, fq.pet_score,
-           mp.is_animal AS manual, f.id IN ({animal_ids_sql(features)}) AS is_animal
+           mp.is_animal AS manual, f.id IN ({ids}) AS is_animal
     {_ANIMALS_JOIN}"""
 
 
-def _animals_payload(db_path: Path, features: FeaturesConfig,
-                     offset: int, limit: int) -> dict:
+def _animals_payload(db_path: Path, cfg: Config, offset: int, limit: int) -> dict:
     """`GET /api/animals` — one page of the animal slice, most confident first.
 
     Two numbers, because after F124 they are two different questions: `total` is the
@@ -1631,29 +1784,33 @@ def _animals_payload(db_path: Path, features: FeaturesConfig,
     reader is walking down a list sorted by confidence, and a list that reshuffles under
     the frame just marked is a list nobody can finish reading.
 
-    `features` is the LIVE config's, for the reason `/api/junk` reads its sensitive
-    classes off it: the thresholds this page is drawn with are the ones in force at the
-    moment of the request, not the ones some run wrote into the database (F137).
+    `cfg` is the LIVE config, for the reason `/api/junk` reads its sensitive classes off
+    it: the thresholds this page is drawn with — and, since F160, whether the detector's
+    tier counts at all — are the ones in force at the moment of the request, not the ones
+    some run wrote into the database (F137).
     """
-    population = _animals_population(features)
+    population = _animals_population(cfg)
     conn = _connect(db_path)
     try:
         total = conn.execute(
             f"SELECT COUNT(*) {_ANIMALS_JOIN} WHERE {population}").fetchone()[0]
-        animals = conn.execute(_animals_count_sql(features)).fetchone()[0]
+        animals = conn.execute(_animals_count_sql(cfg)).fetchone()[0]
         rows = conn.execute(
-            f"""{_animals_select(features)}
+            f"""{_animals_select(cfg)}
                 WHERE {population}
                 ORDER BY fq.pet_score DESC, f.id
                 LIMIT ? OFFSET ?""", (limit, offset)).fetchall()
+        # F174: no assumed correction — the question here is where the frame lies NOW,
+        # which is the same folder it will lie in after the mark, because the mark
+        # changes a membership and not a route.
+        dests = _destinations_for(cfg, conn, rows)
     finally:
         conn.close()
     return {
-        "total": int(total),
         "animals": int(animals),
-        "offset": offset,
-        "limit": limit,
-        "items": [_animal_item_to_json(r) for r in rows],
+        **_page_payload([_animal_item_to_json(r, dests.get(int(r["id"])))
+                         for r in rows],
+                        total=int(total), offset=offset, limit=limit),
     }
 
 
@@ -1682,7 +1839,7 @@ def _validate_animal_mark_payload(payload: object) -> tuple[list[int], str] | No
     return ids, action
 
 
-def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
+def _apply_animal_mark(db_path: Path, cfg: Config,
                        ids: list[int], action: str) -> dict:
     """Write the user's verdict into `manual_pet`; answer with the redrawn cards.
 
@@ -1704,7 +1861,7 @@ def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
     altogether — and the client drops those cards.
     """
     now = datetime.now(timezone.utc).isoformat()
-    count_sql = _animals_count_sql(features)
+    count_sql = _animals_count_sql(cfg)
     conn = _connect(db_path)
     try:
         placeholders = ",".join("?" * len(ids))
@@ -1729,17 +1886,21 @@ def _apply_animal_mark(db_path: Path, features: FeaturesConfig,
                            updated_at = excluded.updated_at""",
                     [(fid, is_animal, now) for fid in known])
         rows = conn.execute(
-            f"""{_animals_select(features)}
-                WHERE {_animals_population(features)}
+            f"""{_animals_select(cfg)}
+                WHERE {_animals_population(cfg)}
                   AND f.id IN ({known_placeholders})""",
             known).fetchall()
         animals = conn.execute(count_sql).fetchone()[0]
+        # F174: the redrawn card has to say what a reload would say, and after F174 that
+        # includes the folder the frame lies in — a caption that vanished on the first
+        # click would look like the mark had moved the file after all.
+        dests = _destinations_for(cfg, conn, rows)
     finally:
         conn.close()
     return {
         "marked": len(known),
         "animals": int(animals),
-        "items": [_animal_item_to_json(r) for r in rows],
+        "items": [_animal_item_to_json(r, dests.get(int(r["id"]))) for r in rows],
     }
 
 
@@ -1850,10 +2011,7 @@ def _face_slices_payload(cfg: Config, db_path: Path, slice_: str, offset: int,
         # rule the numbers were produced by instead of repeating a default in JS.
         "group_min": int(cfg.features.group_photo_faces),
         "portrait_share": float(cfg.features.portrait_face_share),
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "items": items,
+        **_page_payload(items, total=total, offset=offset, limit=limit),
     }
 
 
@@ -1873,14 +2031,19 @@ def _parse_face_slice_query(query: dict[str, list[str]]) -> tuple[str, int, int]
     return slice_, window[0], window[1]
 
 
-# --- F126: the "Review" workspace — duplicates, blur, closed eyes, no subject -------
-# Four signals, one job: look at a frame and decide whether it stays. Duplicates have had
-# a tab with the whole viewing-and-deleting machinery since U3; the other three have been
+# --- F126: the "Review" workspace — duplicates, blur, closed eyes ------------------
+# Three signals, one job: look at a frame and decide whether it stays. Duplicates have had
+# a tab with the whole viewing-and-deleting machinery since U3; the other two have been
 # computed into `frame_quality` since F113 and were not visible anywhere. So this is one
-# place with four SLICES rather than four tabs — and the duplicates half is deliberately
-# untouched: `/api/dupes` and its four write routes answer exactly as before, because that
+# place with SLICES rather than tabs — and the duplicates half is deliberately untouched:
+# `/api/dupes` and its four write routes answer exactly as before, because that
 # is the one path in the product that deletes files and it is the one path that has been
 # run against the live collection.
+#
+# F177 removed a fourth slice, "no subject". The model was asked about 6 111 frames and
+# called 212 of them subjectless; looked at by eye, those 212 are ordinary photographs, so
+# the slice was showing a list assembled by nothing. It is deleted rather than hidden: a
+# hidden slice comes back at the first edit of this file.
 #
 # Two rules the slices are built on:
 #
@@ -1893,7 +2056,7 @@ def _parse_face_slice_query(query: dict[str, list[str]]) -> tuple[str, int, int]
 #   threshold" route here, and the measurement is why: reviewed by eye in bands, blurred
 #   frames turn up in every band up to 400, and the blurred frame that gets kept is the
 #   only photograph of a person or a place. Sharpness ranks the list; a human decides.
-_REVIEW_SLICES = ("dupes", "blurred", "eyes", "subject")
+_REVIEW_SLICES = ("dupes", "blurred", "eyes")
 
 # F139: which album kind each flat slice gathers into — and, read the other way, the map
 # that keeps the list and the album on one rule. The names differ because the switcher's
@@ -1901,15 +2064,13 @@ _REVIEW_SLICES = ("dupes", "blurred", "eyes", "subject")
 # renaming either half would move an API parameter for nothing. Duplicates have no kind:
 # they are the grouped slice, the one where a keeper is chosen, and the one path in the
 # program that deletes files — collecting them into a folder is not what they are for.
-_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed",
-                      "subject": "no_subject"}
+_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed"}
 
-# Blurred is ranked by the number the slice exists for; the other two have no ranking of
-# their own, so they go in index order — stable between pages, which is what paging needs.
+# Blurred is ranked by the number the slice exists for; the other one has no ranking of
+# its own, so it goes in index order — stable between pages, which is what paging needs.
 _REVIEW_SLICE_ORDER = {
     "blurred": "fq.sharpness ASC, f.id",
     "eyes": "f.id",
-    "subject": "f.id",
 }
 
 # The membership rule itself lives in sorter.py (`quality_slice_where`, `QUALITY_FROM`)
@@ -1937,7 +2098,7 @@ def _review_count(conn: sqlite3.Connection, slice_: str,
 
 
 def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, int]:
-    """The three flat slice counters — plain aggregates, cheap enough for "Overview".
+    """The flat slice counters — plain aggregates, cheap enough for "Overview".
 
     Blurred is counted INSIDE the window, so the chip, the "Overview" row and the length
     of the list the tab opens with are the same number.
@@ -1945,11 +2106,10 @@ def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, 
     return {
         "blurred": _review_count(conn, "blurred", blur_max),
         "eyes": _review_count(conn, "eyes", None),
-        "subject": _review_count(conn, "subject", None),
     }
 
 
-# F133: the same three slices again, counting only the frames NOBODY has decided about.
+# F133: the same flat slices again, counting only the frames NOBODY has decided about.
 # "Decided" is a row in `dedup_choice` and nothing else — the rule the marks are written
 # by — so a slice empties as the person works through it, which is what makes the warning
 # on the "Layout" tab disappear on its own.
@@ -1970,7 +2130,6 @@ def _review_pending_counts(conn: sqlite3.Connection, blur_max: float) -> dict[st
     return {
         "blurred": _review_pending_count(conn, "blurred", blur_max),
         "eyes": _review_pending_count(conn, "eyes", None),
-        "subject": _review_pending_count(conn, "subject", None),
     }
 
 
@@ -2197,6 +2356,18 @@ def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
     return item
 
 
+def _restore_notice(src: Path, max_edge: int) -> dict:
+    """F169: what the answer owes about the ceiling — `rebuilt` and the two numbers.
+
+    Recomputed from the source rather than remembered, because the same sentence is owed
+    on the press that REUSES a copy: the frame and the ceiling are what they are, so the
+    second press must not quietly drop the warning the first one carried.
+    """
+    edge = restore.source_edge(src)
+    return {"rebuilt": edge > int(max_edge) > 0, "source_edge": edge,
+            "max_edge": int(max_edge)}
+
+
 def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dict:
     """`POST /api/review/restore` for ONE id -> the card of the copy, or the reason.
 
@@ -2205,6 +2376,13 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
     reason travels as a CODE (`restore.ERROR_*`), which the client translates: the weights
     come from the network and offline is an ordinary state for this product, so "the model
     is not here" has to be an answer a person can read rather than an empty result.
+
+    F169: the ceiling comes from `features.restore_max_edge` and is PASSED — it used to be
+    a constant the engine defaulted to, i.e. one number for every frame with nobody told —
+    and the answer carries `rebuilt` whenever the frame was larger than it. The action is
+    not refused for such a frame: what should happen to a 12 Mpx one is the measurement's
+    decision (`scripts/measure_restore.py`), and until it is made the honest thing is to
+    do the work and say what was done.
     """
     conn = _connect(db_path)
     try:
@@ -2212,18 +2390,22 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
         if row is None:
             return {"ok": False, "error": "file not found"}
         model = features.restore_model
+        notice = _restore_notice(Path(row["path"]), features.restore_max_edge)
         existing = restore.existing_copy(conn, file_id, model)
         if existing is not None:
             copy_id, copy_path = existing
             if Path(copy_path).exists():
-                return {"ok": True, "reused": True,
+                return {"ok": True, "reused": True, **notice,
                         "item": _restored_item_to_json(_restored_row(conn, copy_id), file_id)}
             # The person deleted it in their file manager. Answering "you already have one"
             # and drawing a card for a file that is gone is worse than doing the work again.
             restore.forget_copy(conn, copy_id)
-        result = restore.restore_frame(Path(row["path"]), model)
+        result = restore.restore_frame(Path(row["path"]), model,
+                                       max_edge=features.restore_max_edge)
         if not result.ok or result.path is None:
             return {"ok": False, "reason": result.error, "detail": result.detail}
+        notice = {"rebuilt": result.rebuilt, "source_edge": result.source_edge,
+                  "max_edge": int(features.restore_max_edge)}
         copy_id = restore.record_restored(conn, file_id, result.path, model=model)
         item = _restored_item_to_json(_restored_row(conn, copy_id), file_id)
     finally:
@@ -2232,7 +2414,7 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
     # layout no longer describe the collection. It is never a duplicate of its source
     # (`dedup`), which is a statement about the GROUPS and not about the cache.
     _dupes_cache_clear()
-    return {"ok": True, "reused": False, "item": item}
+    return {"ok": True, "reused": False, "item": item, **notice}
 
 
 def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
@@ -2675,7 +2857,7 @@ def _events_payload(db_path: Path,
     ]
 
 
-def _tabs_visibility_payload(db_path: Path, features: FeaturesConfig) -> dict[str, bool]:
+def _tabs_visibility_payload(db_path: Path, cfg: Config) -> dict[str, bool]:
     """F54: visibility of the "People"/"Events"/"Animals" tabs — by data presence
     (variant B, without a meta table). person ⇔ there is a faces row with a non-empty
     cluster_id (the same source as `_clusters_payload`); event ⇔ non-empty `events`;
@@ -2713,7 +2895,7 @@ def _tabs_visibility_payload(db_path: Path, features: FeaturesConfig) -> dict[st
         ).fetchone()[0])
         animal = bool(conn.execute(
             f"SELECT EXISTS(SELECT 1 {_ANIMALS_JOIN} "
-            f"WHERE {_animals_population(features)})"
+            f"WHERE {_animals_population(cfg)})"
         ).fetchone()[0])
         face = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files WHERE dup_of IS NULL AND error IS NULL "
@@ -2858,7 +3040,7 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
     so. `cfg` (rather than the single `blur_max` this used to take) is what carries the
     thresholds those three rules read.
 
-    F126: the three flat review slices are counted here too, by the SAME queries the
+    F126: the flat review slices are counted here too, by the SAME queries the
     workspace itself uses (`_review_flat_counts`) — a counter that disagrees with the
     list it links to is worse than no counter. The blur window comes from the same
     `features` (`blur_review_max`), so this row and that list say one number. The
@@ -2884,7 +3066,7 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
         # (`_animals_count_sql` -> `sorter.animal_ids_sql`) — a frame the user unmarked
         # leaves this number exactly as it leaves the album. F137: and a threshold the
         # user edited moves it here, in the tab and in the album together.
-        animals = conn.execute(_animals_count_sql(features)).fetchone()[0]
+        animals = conn.execute(_animals_count_sql(cfg)).fetchone()[0]
         faces_ran = faces_stage_ran(conn)
         faces_counts: dict[str, int | None] = {
             name: (_face_slice_count(conn, cfg, name) if faces_ran else None)
@@ -2932,7 +3114,6 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
             "faces_reason": None if faces_ran else "no_faces_run",
             "blurred": review["blurred"],
             "eyes_closed": review["eyes"],
-            "no_subject": review["subject"],
         },
         "place": place,
         "classes": classes,
@@ -3082,9 +3263,10 @@ _SEARCH_ROWS_SQL = """SELECT f.id, f.path, f.taken_at, mc.verdict
     FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
     WHERE f.id IN ({marks})"""
 
-# A limit is a SAMPLE SIZE (search.py), so a client asking for more than the server is
-# willing to render gets less rather than an error — the `_parse_page_window` rule.
-_SEARCH_MAX_LIMIT = 1000
+# F173: a limit is a SAMPLE SIZE (search.py) and a page of one at that, so the ceiling on
+# how much may be rendered at once is `_PLAN_PAGE_MAX_LIMIT` like everywhere else — a
+# client asking for more gets less rather than an error. It used to be a constant of its
+# own with the same value, which is one more place a rule could drift.
 
 
 def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
@@ -3096,7 +3278,7 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
     and the row count is how the name is chosen, because a table can hold leftovers of
     several models and only the dominant one is worth putting in front of a reader.
 
-    `indexed` counts vectors of THIS model within the searchable population, `total` the
+    `indexed` counts vectors of THIS model within the searchable population, `photos` the
     population itself. The pair is the "we are searching N of M photographs" line, and it
     is computed here, once, so the line and the availability of the field cannot disagree.
     """
@@ -3124,7 +3306,12 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
         "model": model,
         "index_model": model if stored else (max(others)[1] if others else None),
         "indexed": indexed,
-        "total": photos,
+        # F173: `photos`, not `total`. This route answers with a PAGE of a ranking now, and
+        # in every paged payload of this server `total` means the length of the list being
+        # walked. Two numbers called the same thing in one answer is how a counter starts
+        # saying "showing 200 of 19 753 photographs in the collection" about a list of
+        # 4 000 — so the coverage line's denominator got the name of what it counts.
+        "photos": photos,
     }
 
 
@@ -3171,56 +3358,61 @@ def _search_items(conn: sqlite3.Connection, hits: Sequence[tuple[int, float]],
             for fid, score in hits if fid in rows]
 
 
-def _search_payload(cfg: Config, db_path: Path, text: str, limit: int,
+def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: int,
                     encoder: TextEncoder | None = None) -> dict:
-    """`GET /api/search` — the state of the index always, the ranking when there is one.
+    """`GET /api/search` — the state of the index always, a page of the ranking when there
+    is one.
 
     The model is not asked anything unless there is a reason to: an empty query and an
-    unavailable index both return before `search_text`, which is what keeps a stray
+    unavailable index both return before `rank_text`, which is what keeps a stray
     keystroke from loading CLIP and what makes "the line is disabled" cheap to render.
 
     `EmbeddingsMissing` is still caught, because the state was read a moment earlier and a
     run can empty the table in between; the answer then carries the engine's own reason
     rather than an empty `items` list, which is the one thing this route must never send.
+
+    F173: a page rather than the whole answer, in the shape `_page_payload` gives every
+    other paged slice. `total` is the length of the RANKING — the number the counter says
+    and the number the "show more" button is decided by — and it comes back from the engine
+    with the page, so the two cannot be computed out of step with each other. A state that
+    ranks nothing still carries `total: 0` and `has_more: false`: the client draws the same
+    controls whatever happened, and they are simply not there when there is nothing below.
     """
     conn = _connect(db_path)
     try:
         model = search_index_model(cfg)  # F141: the search model, not the classifier's
         payload = _search_index_state(conn, model)
-        payload.update({"query": text, "limit": limit, "items": []})
+        payload.update({"query": text,
+                        **_page_payload([], total=0, offset=offset, limit=limit)})
         if not text.strip() or not payload["available"]:
             return payload
         try:
-            hits = search_text(cfg, conn, text, limit=limit, encoder=encoder)
+            page = rank_text(cfg, conn, text, limit=limit, offset=offset, encoder=encoder)
         except EmbeddingsMissing as exc:
             payload["state"] = exc.reason
             payload["available"] = False
             return payload
-        payload["items"] = _search_items(
-            conn, hits, frozenset(cfg.vlm.exclude_classes))
+        payload.update(_page_payload(
+            _search_items(conn, page.hits, frozenset(cfg.vlm.exclude_classes)),
+            total=page.total, offset=page.offset, limit=page.limit))
         return payload
     finally:
         conn.close()
 
 
 def _parse_search_query(query: dict[str, list[str]],
-                        default_limit: int) -> tuple[str, int] | None:
-    """(query text, limit) for `GET /api/search`, or None -> 400.
+                        default_limit: int) -> tuple[str, int, int] | None:
+    """(query text, offset, limit) for `GET /api/search`, or None -> 400.
 
     An absent/empty `q` is NOT an error: the client asks with one on purpose, to learn the
-    state of the index without spending a model on it. `limit` follows the
-    `_parse_page_window` rule — a non-integer or a negative one is rejected, an
-    over-eager one is clamped.
+    state of the index without spending a model on it. The window is the shared
+    `_parse_page_window` — a non-integer or a negative number is rejected, an over-eager
+    limit is clamped — with `features.search_page` as the default size of a page.
     """
-    text = (query.get("q") or [""])[0]
-    raw_limit = (query.get("limit") or [str(default_limit)])[0].strip()
-    try:
-        limit = int(raw_limit or default_limit)
-    except ValueError:
+    window = _parse_page_window(query, default_limit)
+    if window is None:
         return None
-    if limit < 0:
-        return None
-    return text, min(limit, _SEARCH_MAX_LIMIT)
+    return (query.get("q") or [""])[0], window[0], window[1]
 
 
 class _LazyTextEncoder:
@@ -3249,14 +3441,19 @@ class _LazyTextEncoder:
         return encoder(texts)
 
 
-# --- F36: "Process" — the background pipeline index→geo→landmarks→faces→events→
-# junk→phash from the web (POST /api/process), pollable progress (GET
+# --- F36: "Process" — the background pipeline index→geo→landmarks→classify→faces→
+# events→junk→phash from the web (POST /api/process), pollable progress (GET
 # /api/process/status), cancel (POST /api/process/cancel). NOT imported from cli.py
 # (to avoid a cli<->ui cycle) — the same leaf functions as `cli._pipeline_steps` are
 # called directly from indexer/geo/landmarks/faces/events/junk/dedup/naming, +
 # compute_phashes (dedup) as the last step.
 
-_PIPELINE_STAGE_NAMES = ("index", "geo", "landmarks", "faces", "events", "junk", "phash")
+# F165: `classify` — the front half of the junk stage (the verdicts, `verdicts_only`),
+# placed before `faces` so that the faces stage skips the frames the classifier has
+# already called screenshots, documents, memes or products. The back half keeps its
+# place: everything left in it reads what `faces` writes.
+_PIPELINE_STAGE_NAMES = ("index", "geo", "landmarks", "classify", "faces", "events",
+                         "junk", "phash")
 
 # F53/#39: faces and events — the heaviest/longest steps, opt-in via the "Process"
 # checkboxes, default off. `_pipeline_steps()` still builds the FULL list (see the
@@ -3372,6 +3569,11 @@ def _pipeline_steps() -> list[tuple[str, _StageFn]]:
         name_events(cfg, conn)
         return None
 
+    def _classify(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
+        stats = classify_junk(cfg, conn, classifier=_clip(cfg), verdicts_only=True,
+                              progress=cb)
+        return _stage_stats(stats, ("processed",), "skipped_incremental")
+
     def _junk(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         stats = classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb)
         return _stage_stats(stats, ("processed",), "skipped_incremental")
@@ -3382,7 +3584,8 @@ def _pipeline_steps() -> list[tuple[str, _StageFn]]:
 
     steps: list[tuple[str, _StageFn]] = [
         ("index", _index), ("geo", _geo), ("landmarks", _landmarks),
-        ("faces", _faces), ("events", _events), ("junk", _junk), ("phash", _phash),
+        ("classify", _classify), ("faces", _faces), ("events", _events),
+        ("junk", _junk), ("phash", _phash),
     ]
     assert tuple(name for name, _fn in steps) == _PIPELINE_STAGE_NAMES
     return steps
@@ -3803,9 +4006,16 @@ def _process_defaults_payload(cfg: Config) -> dict:
 # answer is None and the screen draws a dash. A zero would read as "free", and the one
 # thing an estimate may not do is promise twenty minutes with two hours coming.
 #
-# The rates, each with the measurement it comes from:
+# F159: the rates below are no longer THE price. They are the price until this machine
+# has measured its own, which after F147 it does on every run — the run log holds
+# `stage=<s>[ phase=<p>] elapsed=<sec> processed=<n>` for everything the pipeline does,
+# and a second per frame taken from there beats a second per frame measured once on
+# somebody else's collection and shipped in a wheel. The screen says which of the two it
+# used, because a person deciding whether to wait four hours needs to tell "this is how
+# it went for YOU last time" from "this is how it went for the developer".
+#
+# The defaults, each with the measurement it comes from:
 _SEC_PER_VLM_FRAME = 0.78    # F113: one frame in one prompt
-_SEC_PER_VLM_GROUP = 1.32    # F132: one comparative question over a whole group
 # The faces stage over the reference collection — the ~17 minutes the changelog and the
 # F123 note both quote — spread over its 19 757 photographs.
 _SEC_PER_FACES_FRAME = 17 * 60 / 19757
@@ -3815,6 +4025,81 @@ _SEC_PER_BASE_FRAME = 5 * 60 / 19757
 # events: a grouping pass over rows the DB already holds — under a minute there, and it
 # is scaled per frame for the same reason as the others rather than pinned at "fast".
 _SEC_PER_EVENTS_FRAME = 15.0 / 19757
+
+# Where a rate comes from, as it travels to the browser next to the seconds it produced.
+# `fixed` is neither: the animal line costs 0 because the prompts ride inside a CLIP call
+# that runs anyway, and a structural zero has no pedigree to state.
+_RATE_MEASURED = "measured"
+_RATE_DEFAULT = "default"
+_RATE_FIXED = "fixed"
+
+# Which units of the run log price which rate, and the default each falls back to. A rate
+# counts as measured only when EVERY unit behind it is: `base` covers four stages, and
+# three measured ones plus a guessed fourth is a guess wearing a measurement's clothes.
+#
+# The model questions are read from TWO units, because F165 split the stage that asks them
+# in half: the deep tier decides what a frame IS and runs ahead of faces (`classify`),
+# while the quality and animal questions read what faces wrote and stay behind it
+# (`junk`). Both phases are called `junk_vlm`, so pricing the deep line off the wrong one
+# would quietly charge it the rate of a different population.
+#
+# The keeper question is deliberately absent. It is asked inside the junk stage's VLM
+# phase, next to the per-frame questions, so the log cannot separate its seconds from
+# theirs — it is priced from `estimate:` in the config instead (see `_keeper_seconds`).
+_RATE_UNITS: dict[str, tuple[str, ...]] = {
+    "base": tuple(measurement_unit(stage)
+                  for stage in ("index", "geo", "landmarks", "phash")),
+    "faces": (measurement_unit("faces"),),
+    "events": (measurement_unit("events"),),
+    "vlm_verdict": (measurement_unit(VERDICTS_STAGE, CLASSIFY_PHASE_VLM),),
+    "vlm_frame": (measurement_unit(CLASSIFY_STAGE, CLASSIFY_PHASE_VLM),),
+}
+_DEFAULT_RATES: dict[str, float] = {
+    "base": _SEC_PER_BASE_FRAME,
+    "faces": _SEC_PER_FACES_FRAME,
+    "events": _SEC_PER_EVENTS_FRAME,
+    "vlm_verdict": _SEC_PER_VLM_FRAME,
+    "vlm_frame": _SEC_PER_VLM_FRAME,
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class _Rate:
+    """Seconds per unit, and where that number came from (F159)."""
+
+    seconds: float
+    source: str
+    at: datetime | None = None
+
+
+def _resolve_rates(measurements: dict[str, Measurement]) -> dict[str, _Rate]:
+    """The run log's rates where it has them, the shipped defaults where it does not."""
+    rates: dict[str, _Rate] = {}
+    for name, units in _RATE_UNITS.items():
+        found = [measurements[unit] for unit in units if unit in measurements]
+        if len(found) == len(units):
+            rates[name] = _Rate(sum(m.seconds_per_unit for m in found),
+                                _RATE_MEASURED, max(m.at for m in found))
+        else:
+            rates[name] = _Rate(_DEFAULT_RATES[name], _RATE_DEFAULT)
+    return rates
+
+
+def _keeper_seconds(cfg: Config, groups: Sequence[Sequence[Any]]) -> float:
+    """What the comparative question costs over THESE groups (F159).
+
+    Summed over the actual sizes rather than an average times a count, because the price
+    is linear in the frames a prompt carries — 0.45 s plus 1.03 s each, measured — and a
+    collection whose groups run to nine and eleven frames is not described by its mean.
+    Only the frames that are really sent are counted: `dedup.keeper_max_frames` caps what
+    one question may hold, and the rest of a group is never shown to the model.
+    """
+    per_call = float(cfg.estimate.keeper_call_sec)
+    per_frame = float(cfg.estimate.keeper_frame_sec)
+    cap = int(cfg.dedup.keeper_max_frames)
+    smallest = int(cfg.dedup.keeper_min_group_size)
+    return sum(per_call + per_frame * min(len(group), cap)
+               for group in groups if len(group) >= smallest)
 
 # The photographs a run actually works on: `sorta` skips a duplicate and a file it could
 # not read, so counting them in would price frames nobody looks at. Same predicate the
@@ -3857,6 +4142,8 @@ def _quality_scope_counts(cfg: Config, conn: sqlite3.Connection,
 # Keyed like the Duplicates payload — any write to the index changes the fingerprint —
 # plus the config values the arithmetic reads, so moving a threshold in the settings
 # column re-prices immediately instead of serving the number the old one produced.
+# F159 adds the run log to that list for the same reason: a run that has just written its
+# own timings is exactly the moment the old prices stop being the right answer.
 _ESTIMATE_CACHE_MAX_ITEMS = 2
 _estimate_cache: OrderedDict[tuple, dict] = OrderedDict()
 _estimate_cache_lock = threading.Lock()
@@ -3866,6 +4153,18 @@ def _estimate_cache_clear() -> None:
     """Drop the cached estimates (test isolation)."""
     with _estimate_cache_lock:
         _estimate_cache.clear()
+
+
+def _run_log_fingerprint() -> tuple:
+    """(mtime, size) of every file the measurements are read out of (F159)."""
+    stats: list[tuple[str, int, int]] = []
+    for path in measurement_files():
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        stats.append((str(path), st.st_mtime_ns, st.st_size))
+    return tuple(stats)
 
 
 def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
@@ -3879,10 +4178,19 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
     `pets` is 0.0 rather than None when there is anything to count: the animal prompts
     ride inside the CLIP call the junk stage makes anyway (F123), so the line genuinely
     adds nothing to the run — the one place a zero here is the truth.
+
+    F159 adds `sources` and `measured_at`, on the same keys again. A rate is either
+    `measured` — read out of this machine's own run log — or `default`, a number measured
+    once elsewhere and shipped with the tool, and the difference is the whole point:
+    somebody deciding whether to start a four-hour run is entitled to know whose four
+    hours the estimate is describing. `fixed` is the third value and belongs to the one
+    line that is structurally free.
     """
     key = (str(db_path), _db_fingerprint(db_path), cfg.index.phash_max_distance,
-           int(cfg.dedup.keeper_min_group_size),
-           float(cfg.features.pet_candidate_threshold))
+           int(cfg.dedup.keeper_min_group_size), int(cfg.dedup.keeper_max_frames),
+           float(cfg.features.pet_candidate_threshold),
+           float(cfg.estimate.keeper_call_sec), float(cfg.estimate.keeper_frame_sec),
+           float(cfg.estimate.measurement_max_age_days), _run_log_fingerprint())
     with _estimate_cache_lock:
         cached = _estimate_cache.get(key)
         if cached is not None:
@@ -3907,15 +4215,19 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         hashed = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files WHERE phash IS NOT NULL)").fetchone()[0])
         keeper: int | None = None
+        keeper_seconds: float | None = None
         group_frames: int | None = None
         if hashed:
             groups = near_duplicate_groups(conn, cfg.index.phash_max_distance)
             keeper = sum(1 for g in groups
                          if len(g) >= int(cfg.dedup.keeper_min_group_size))
+            keeper_seconds = _keeper_seconds(cfg, groups)
             group_frames = sum(len(g) for g in groups)
         scopes = _quality_scope_counts(cfg, conn, photos, group_frames)
     finally:
         conn.close()
+    rates = _resolve_rates(read_measurements(
+        max_age_days=float(cfg.estimate.measurement_max_age_days)))
     counts: dict[str, int | None] = {
         "base": _positive_or_none(photos),
         "faces": _positive_or_none(photos),
@@ -3926,19 +4238,33 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         "keeper": keeper,
         **{f"quality_{scope}": value for scope, value in scopes.items()},
     }
-    rates = {
-        "base": _SEC_PER_BASE_FRAME,
-        "faces": _SEC_PER_FACES_FRAME,
-        "events": _SEC_PER_EVENTS_FRAME,
-        "pets": 0.0,
-        "pets_verify": _SEC_PER_VLM_FRAME,
-        "deep": _SEC_PER_VLM_FRAME,
-        "keeper": _SEC_PER_VLM_GROUP,
-        **{f"quality_{scope}": _SEC_PER_VLM_FRAME for scope in scopes},
+    per_line: dict[str, _Rate] = {
+        "base": rates["base"],
+        "faces": rates["faces"],
+        "events": rates["events"],
+        "pets": _Rate(0.0, _RATE_FIXED),
+        "pets_verify": rates["vlm_frame"],
+        # F165 moved the deep tier ahead of faces, into a stage of its own — so this is
+        # the one model line whose rate comes from `classify` rather than from `junk`.
+        "deep": rates["vlm_verdict"],
+        # The keeper line is the one that is not a rate times a count at all — see
+        # `_keeper_seconds`. It carries the config's constants, so it is a `default`
+        # until the day the log can tell its seconds from the per-frame ones.
+        "keeper": _Rate(0.0, _RATE_DEFAULT),
+        **{f"quality_{scope}": rates["vlm_frame"] for scope in scopes},
     }
-    seconds = {name: (None if count is None else round(count * rates[name], 1))
-               for name, count in counts.items()}
-    payload = {"seconds": seconds, "counts": counts}
+    seconds: dict[str, float | None] = {}
+    for name, rate in per_line.items():
+        count = counts[name]
+        seconds[name] = None if count is None else round(count * rate.seconds, 1)
+    seconds["keeper"] = None if keeper_seconds is None else round(keeper_seconds, 1)
+    measured = [rate.at for rate in per_line.values() if rate.at is not None]
+    payload = {
+        "seconds": seconds,
+        "counts": counts,
+        "sources": {name: rate.source for name, rate in per_line.items()},
+        "measured_at": max(measured).date().isoformat() if measured else None,
+    }
     with _estimate_cache_lock:
         _estimate_cache[key] = payload
         _estimate_cache.move_to_end(key)
@@ -4663,8 +4989,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "tab_event": {"ru": "События", "en": "Events", "ja": "イベント"},
     "tab_animal": {"ru": "Животные", "en": "Animals", "ja": "動物"},
     "tab_moves": {"ru": "Перемещения", "en": "Moves", "ja": "移動"},
-    "tab_junk": {"ru": "Не личные фото", "en": "Not personal photos",
-                 "ja": "個人写真ではない"},
+    # F175: the slice used to be called "Not personal photos", and that name was wrong
+    # twice over. A photograph of a receipt, a screenshot of a conversation with your
+    # wife and a passport are all personal — they are simply not photographs taken FOR
+    # MEMORY, which is a different thing; and read as "not personal" the slice invites
+    # deleting it, while a thousand of the frames in it are documents that must not be
+    # deleted. The old name also sat one letter away from `files.not_personal`, the flag
+    # for downloaded films (three files of 38 485), which is about where a file came
+    # from and not about what is in the frame — see the note in i18n._FOLDERS.
+    "tab_junk": {"ru": "Служебные кадры", "en": "Utility frames",
+                 "ja": "実用目的のコマ"},
     "process_intro": {
         "ru": "Укажите папку с фото и нажмите «Обработать» — индекс наполнится "
               "(гео, лица, события, мусор, почти-дубликаты). Файлы не перемещаются.",
@@ -4771,6 +5105,27 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "のコマ数）。約束ではありません。ダッシュは「このインデックスでは算出でき"
               "ない」という意味です。",
     },
+    # F159: where the numbers came from, said next to them. A person deciding whether to
+    # wait four hours needs to tell "this is how it went for YOU last time" from "this is
+    # how it went for the developer" — the second is an honest guess, and calling it one
+    # is what keeps the first believable.
+    "costs_source_measured": {
+        "ru": "Числа — по вашему прошлому прогону ({date}).",
+        "en": "The numbers come from your own last run ({date}).",
+        "ja": "数値は前回のご自身の実行（{date}）に基づいています。",
+    },
+    "costs_source_default": {
+        "ru": "Оценка по умолчанию: своих замеров на этой машине ещё нет.",
+        "en": "A default estimate: this machine has no measurements of its own yet.",
+        "ja": "既定の見積もりです。この端末での実測値はまだありません。",
+    },
+    "costs_source_mixed": {
+        "ru": "Часть чисел — по вашему прошлому прогону ({date}), остальные — оценка "
+              "по умолчанию.",
+        "en": "Some numbers come from your own last run ({date}), the rest are default "
+              "estimates.",
+        "ja": "一部の数値は前回のご自身の実行（{date}）に基づき、残りは既定の見積もりです。",
+    },
     "costs_base_label": {
         "ru": "Города, места и дубли", "en": "Cities, places and duplicates",
         "ja": "都市・場所・重複",
@@ -4821,13 +5176,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Качество кадров", "en": "Frame quality", "ja": "コマの品質",
     },
     "process_quality_hint": {
-        "ru": "Открыты ли глаза, есть ли сюжет, не случаен ли кадр — то, чего не "
-              "решить дёшево. Нужен `uv sync --extra vlm`.",
-        "en": "Whether the eyes are open, whether there is a subject, whether the shot "
-              "was an accident — what nothing cheap can decide. Needs "
+        "ru": "Открыты ли глаза — то, чего не решить дёшево. Нужен "
               "`uv sync --extra vlm`.",
-        "ja": "目が開いているか、被写体があるか、意図しない撮影ではないか — 安価な手段"
-              "では決められないものです。`uv sync --extra vlm` が必要です。",
+        "en": "Whether the eyes are open — what nothing cheap can decide. Needs "
+              "`uv sync --extra vlm`.",
+        "ja": "目が開いているか — 安価な手段では決められないものです。"
+              "`uv sync --extra vlm` が必要です。",
     },
     "process_quality_scope_label": {
         "ru": "У каких кадров спрашивать",
@@ -4838,12 +5192,24 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Лучший кадр в группе", "en": "Best frame of a group",
         "ja": "グループ内のベストショット",
     },
+    # F159 rewrote the second sentence. It used to sell the group question as the cheap
+    # way to ask — one call instead of one per frame — and the 2026-08-03 measurement
+    # took that away: the price is linear in the frames the prompt carries, so from three
+    # frames up the group question costs what the separate ones cost. What is left is the
+    # honest reason to switch it on, which was never the price.
     "process_keeper_hint": {
         "ru": "Один сравнительный вопрос модели на группу почти-дублей: какой кадр "
-              "оставить. Ничего не удаляет — только подсказка на вкладке «Разбор».",
+              "оставить. Время растёт с размером группы — на группу из пяти уходит "
+              "примерно столько же, сколько на пять отдельных вопросов, зато отдельные "
+              "вопросы не говорят, который кадр лучше. Ничего не удаляет — только "
+              "подсказка на вкладке «Разбор».",
         "en": "One comparative question per near-duplicate group: which frame to keep. "
-              "It deletes nothing — it is a recommendation on the Review tab.",
+              "The time grows with the group — five frames take about what five separate "
+              "questions take, but separate questions do not say which frame is the best "
+              "one. It deletes nothing — it is a recommendation on the Review tab.",
         "ja": "類似写真のグループごとに 1 回、どのコマを残すかをモデルに比較させます。"
+              "所要時間はグループの大きさに比例し、5 コマなら個別に 5 回尋ねるのとほぼ"
+              "同じです。ただし個別の質問ではどれが最良かは分かりません。"
               "削除は行いません —「確認」タブでの推奨にとどまります。",
     },
     # F145: said next to every option that asks the SAME model the "Deep analysis"
@@ -5101,6 +5467,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_stage_index": {"ru": "индексация", "en": "indexing", "ja": "インデックス作成"},
     "process_stage_geo": {"ru": "гео", "en": "geo", "ja": "位置情報"},
     "process_stage_landmarks": {"ru": "места", "en": "landmarks", "ja": "ランドマーク"},
+    # F165: the two halves of the classification, and the chips have to tell them apart —
+    # the first one decides WHAT a frame is (and lets the faces stage skip what is not a
+    # photograph), the second one measures the photographs it left.
+    "process_stage_classify": {"ru": "вердикты", "en": "verdicts", "ja": "判定"},
     "process_stage_faces": {"ru": "лица", "en": "faces", "ja": "顔"},
     "process_stage_events": {"ru": "события", "en": "events", "ja": "イベント"},
     "process_stage_junk": {"ru": "классификация", "en": "classification", "ja": "分類"},
@@ -5286,6 +5656,32 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "План пуст — нечего раскладывать.",
         "en": "The plan is empty — nothing to lay out.",
         "ja": "プランは空です — 整理する対象がありません。",
+    },
+    # --- F173: the three captions of the shared pager (`makePager`) --------------------
+    # One button, one counter, one warning, for every ordered slice there is and every one
+    # there will be. They are not per-slice keys because the fifth copy of "Показать ещё"
+    # is how a new slice ships without the button at all: a slice that has to add a string
+    # to get one has a reason to skip it, and search shipped without one for that reason.
+    "slice_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
+    # THE fix of the counter. "Показано 200" is indistinguishable from "нашлось ровно 200",
+    # and for a ranking the second is almost never true — so the denominator is the length
+    # of the list, always, and the numerator only says how far down it the reader is.
+    "slice_shown_label": {
+        "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
+        "ja": "{total} 件中 {shown} 件を表示",
+    },
+    # The price of depth, in one line and only where something is actually ranked. Measured
+    # on 2026-08-02/03: doubling the list adds ~25 points of completeness on average, and
+    # the query «дети» goes from 61% to 89% — while the frames that arrive with the second
+    # page are exactly the ones the model was least sure about. Pressing the button buys
+    # coverage with precision, and a person choosing that has to know it is a trade.
+    "slice_depth_hint": {
+        "ru": "Дальше по списку — больше находок и больше промахов: вторая половина "
+              "заметно полнее, но модель в ней уверена меньше.",
+        "en": "Further down the list means more found and more missed: the second half is "
+              "noticeably more complete, and the model is less sure of it.",
+        "ja": "リストを下るほど、見つかる数は増え、外れも増えます。後半は網羅性が高い"
+              "一方で、モデルの確信度は低くなります。",
     },
     "error_loading_moves": {
         "ru": "Ошибка загрузки перемещений: ", "en": "Error loading moves: ",
@@ -5990,18 +6386,59 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось назначить место: ", "en": "Could not assign the place: ",
         "ja": "場所を指定できません: ",
     },
-    # F103: the "Not personal photos" view — the buckets the classifier carries out of
+    # F103: the "Utility frames" view — the buckets the classifier carries out of
     # the collection, and the bulk way back for the frames it got wrong.
+    # F175: the caption of the WHOLE slice names no percentage, and deliberately. Behind
+    # one name lie four buckets measured separately (products 78%, screenshots 59%,
+    # documents and memes not measured at all), and a single number over them would be
+    # honest about none of them. What it does say is the thing a person has to know
+    # before ticking everything: one of the four is not to be deleted.
     "junk_intro": {
-        "ru": "Кадры, которые классификатор посчитал не личными фото. Отметьте те, "
-              "что попали сюда зря, и верните их — они снова разложатся по городам. "
-              "Вердикт модели при этом не переписывается.",
-        "en": "Frames the classifier judged not to be personal photos. Tick the ones "
-              "that landed here by mistake and return them — they go back into the "
-              "city layout. The model's verdict itself is not rewritten.",
-        "ja": "分類器が個人写真ではないと判断したフレームです。誤って入ったものに"
+        "ru": "Кадры, снятые не ради памяти: товары, скриншоты, документы, мемы. Это "
+              "четыре разные корзины с разной надёжностью — откройте любую, и подпись "
+              "назовёт её точность. Документы удалять нельзя: там паспорта, справки и "
+              "чеки. Отметьте кадры, попавшие сюда зря, и верните их — они снова "
+              "разложатся по городам. Вердикт модели при этом не переписывается.",
+        "en": "Frames that were not taken for memory: products, screenshots, documents, "
+              "memes. These are four different buckets of different reliability — open "
+              "any one of them and the caption names its precision. The documents are "
+              "not to be deleted: passports, certificates and receipts live there. Tick "
+              "the frames that landed here by mistake and return them — they go back "
+              "into the city layout. The model's verdict itself is not rewritten.",
+        "ja": "思い出のためではなく実用のために撮られたコマです: 商品、"
+              "スクリーンショット、書類、ミーム。信頼度の異なる 4 つの別々のバケットで、"
+              "いずれかを開くとその精度が説明に出ます。書類は削除できません — "
+              "パスポート、証明書、レシートが入っています。誤って入ったコマに"
               "チェックを入れて戻すと、再び都市ごとに振り分けられます。モデルの"
               "判定自体は書き換えません。",
+    },
+    # F175: precision belongs to a CLASS, not to the slice. Each line below is one
+    # measurement with its date and its sample size, shown when that bucket is the one
+    # open. A class nobody has measured gets `junk_accuracy_unmeasured` — the lookup in
+    # the client falls back to it, so a class added later says "not measured" instead of
+    # quietly inheriting somebody else's number.
+    "junk_accuracy_product": {
+        "ru": "Точность 78% при полноте 81% (замер 2026-08-03, 999 кадров): примерно "
+              "каждый пятый кадр здесь — не товар.",
+        "en": "Precision 78% at 81% recall (measured 2026-08-03 on 999 frames): about "
+              "one frame in five here is not a product.",
+        "ja": "精度 78%、再現率 81%（2026-08-03、999 コマで測定）: ここにあるコマの"
+              "およそ 5 枚に 1 枚は商品ではありません。",
+    },
+    "junk_accuracy_screenshot": {
+        "ru": "Точность 59% при полноте 83% (замер 2026-08-03, 350 кадров): каждый "
+              "третий кадр здесь — обычная фотография.",
+        "en": "Precision 59% at 83% recall (measured 2026-08-03 on 350 frames): every "
+              "third frame here is an ordinary photograph.",
+        "ja": "精度 59%、再現率 83%（2026-08-03、350 コマで測定）: ここにあるコマの"
+              "3 枚に 1 枚は普通の写真です。",
+    },
+    "junk_accuracy_unmeasured": {
+        "ru": "Точность этой корзины не измерена — сколько здесь ошибок, неизвестно.",
+        "en": "The precision of this bucket has not been measured — how many frames "
+              "here are wrong is not known.",
+        "ja": "このバケットの精度は測定されていません — 誤りがどれだけあるかは"
+              "分かりません。",
     },
     "junk_bucket_product": {"ru": "Товары", "en": "Products", "ja": "商品"},
     "junk_bucket_document": {"ru": "Документы", "en": "Documents", "ja": "書類"},
@@ -6013,19 +6450,19 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Nothing here — there are no such frames.",
         "ja": "ここは空です。該当するフレームはありません。",
     },
-    "junk_restore_button": {
-        "ru": "Вернуть в фото", "en": "Return to photos", "ja": "写真に戻す",
-    },
     "junk_restore_confirm": {
-        "ru": "Вернуть в обычную раскладку по городам: {n}?",
-        "en": "Return to the normal city layout: {n}?",
-        "ja": "通常の都市別振り分けに戻します: {n} 件？",
+        "ru": "{n} кадров вернутся в раскладку: {breakdown}. Продолжить?",
+        "en": "{n} frames will return to the layout: {breakdown}. Continue?",
+        "ja": "{n} 件が振り分けに戻ります: {breakdown}。続けますか？",
     },
     "junk_undo_restore_button": {
         "ru": "Отменить возврат", "en": "Undo the return", "ja": "戻すのを取り消す",
     },
+    # F174: nothing has moved yet — the mark applies on the next `sort --apply`, and a
+    # past tense here would promise a transfer that has not happened.
     "junk_restored_mark": {
-        "ru": "возвращено в фото", "en": "returned to photos", "ja": "写真に戻しました",
+        "ru": "вернётся в раскладку", "en": "will return to the layout",
+        "ja": "振り分けに戻ります",
     },
     "junk_select_all": {"ru": "Выбрать всё на странице",
                         "en": "Select everything on this page",
@@ -6040,15 +6477,26 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "junk_document_no_preview": {
         "ru": "без превью", "en": "no preview", "ja": "プレビューなし",
     },
+    # F175: the hint says what a document IS before it says how it is shown. This slice
+    # reads as "junk, select all, delete", and the frames the sentence is about are the
+    # ones a person needs most — so the warning has to arrive above the grid, before the
+    # selection, and not as an explanation of a missing thumbnail.
     "junk_document_hint": {
-        "ru": "Документы не открываются и не показываются: в этой корзине паспорта, "
-              "справки и медицинские бланки. Видно имя файла и дату — этого хватает, "
-              "чтобы решить.",
-        "en": "Documents are neither opened nor rendered: this bucket holds passports, "
-              "certificates and medical forms. The file name and the date are shown — "
-              "enough to decide.",
-        "ja": "書類は開かず表示もしません。このバケットにはパスポート、証明書、"
-              "診断書が含まれます。判断にはファイル名と日付で十分です。",
+        "ru": "Документы здесь — не на удаление: это паспорта, справки, чеки и "
+              "медицинские бланки, и они помечены отдельно. Sorta их не открывает и не "
+              "показывает; видно имя файла и дату — этого хватает, чтобы решить.",
+        "en": "The documents here are not for deletion: they are passports, "
+              "certificates, receipts and medical forms, and they are marked out "
+              "separately. Sorta neither opens nor renders them; the file name and the "
+              "date are shown — enough to decide.",
+        "ja": "ここにある書類は削除の対象ではありません: パスポート、証明書、"
+              "レシート、診断書であり、別に印が付いています。Sorta はそれらを開かず"
+              "表示もしません。判断にはファイル名と日付で十分です。",
+    },
+    # The same warning ON the card, because the hint above the grid is read once and the
+    # selection is made card by card.
+    "junk_document_mark": {
+        "ru": "не удалять", "en": "not for deletion", "ja": "削除しない",
     },
     "junk_error_prefix": {
         "ru": "Не удалось вернуть кадры: ", "en": "Could not return the frames: ",
@@ -6058,17 +6506,96 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось загрузить корзины: ", "en": "Could not load the buckets: ",
         "ja": "バケットを読み込めません: ",
     },
+    # --- F174: the action names its destination ---------------------------------------
+    # ONE name for one intention. "This is not an animal" and "return to the photos" are
+    # the same movement to the person making it — the frame does not belong in this slice
+    # — so the button reads the same in both, and what differs (a real transfer versus a
+    # membership) is said UNDER it, in `dest_goes_to` / `dest_stays_in`. Two buttons for
+    # one intention was the whole complaint.
+    "slice_return_button": {
+        "ru": "Вернуть в раскладку", "en": "Return to the layout", "ja": "振り分けに戻す",
+    },
+    "dest_goes_to": {
+        "ru": "попадёт в {folder}", "en": "goes into {folder}",
+        "ja": "{folder} に入ります",
+    },
+    "dest_stays_in": {
+        "ru": "уберём из среза; кадр и так лежит в {folder}, файл не двинется",
+        "en": "we take it out of the slice; the frame already lies in {folder}, "
+              "the file will not move",
+        "ja": "区分から外すだけです。コマはすでに {folder} にあり、ファイルは動きません",
+    },
+    "dest_unknown": {
+        "ru": "папку назначения посчитать не удалось",
+        "en": "the destination folder could not be computed",
+        "ja": "保存先フォルダーを計算できませんでした",
+    },
+    # Looked up as `dest_why_<reason>` — the plan's own reason codes. A reason without a
+    # key simply gets no explanation, the way an unknown bucket gets no chip label.
+    "dest_why_no_place": {
+        "ru": "у кадра нет геоданных", "en": "the frame carries no geodata",
+        "ja": "このコマに位置情報がありません",
+    },
+    "dest_why_country_only": {
+        "ru": "город не определился — известна только страна",
+        "en": "no city resolved — only the country is known",
+        "ja": "都市は不明で、国だけが分かっています",
+    },
+    "dest_why_low_date": {
+        "ru": "у кадра нет надёжной даты съёмки",
+        "en": "the frame carries no reliable capture date",
+        "ja": "このコマに信頼できる撮影日がありません",
+    },
+    "dest_why_downloaded": {
+        "ru": "ни даты съёмки, ни следов камеры — это скачанный кадр",
+        "en": "no capture date and no camera trace — a downloaded frame",
+        "ja": "撮影日もカメラの痕跡もありません。ダウンロードされたコマです",
+    },
+    # The bulk caption groups by destination instead of naming one folder: a person
+    # selects dozens at a time, and one folder name out of twelve deceives them.
+    "dest_bulk_summary": {
+        "ru": "{n} кадров вернутся: {breakdown}",
+        "en": "{n} frames will return: {breakdown}",
+        "ja": "{n} 件が戻ります: {breakdown}",
+    },
+    "dest_bulk_item": {"ru": "{n} {group}", "en": "{n} {group}", "ja": "{n} 件 {group}"},
+    "dest_group_city": {"ru": "в города", "en": "into cities", "ja": "都市へ"},
+    "dest_group_country": {
+        "ru": "на уровень страны", "en": "to the country level", "ja": "国のレベルへ",
+    },
+    "dest_group_no_place": {
+        "ru": "в «без места»", "en": "into “no place”", "ja": "「場所不明」へ",
+    },
+    "dest_group_undated": {
+        "ru": "в «без даты»", "en": "into “no date”", "ja": "「日付不明」へ",
+    },
+    "dest_group_other": {
+        "ru": "в другие папки", "en": "into other folders", "ja": "その他のフォルダーへ",
+    },
     # --- F123: the "Animals" tab -----------------------------------------------------
+    # F160: the caption states BOTH measurements, because the slice is two different
+    # promises and a config switch chooses between them. The cascade alone is 82%
+    # precision at 64% recall; with the object detector on (`features.detector` +
+    # `detect.enabled`) it is 62% at 87% — a quarter more animals found and a fifth of the
+    # confidence given up for them. A caption naming one number while the other rule is in
+    # force buys recall with the reader's trust, which is the mistake F158 measured on the
+    # very same line.
     "animals_intro": {
         "ru": "Кадры с животными, сверху — те, в которых модель уверена больше. "
-              "Точность около 82%: ниже по списку начинают попадаться шубы и игрушки, "
-              "и видно, где проходит граница.",
+              "Точность около 82% при полноте 64%; с включённым детектором объектов "
+              "(features.detector) размен другой — точность около 62% при полноте 87%: "
+              "животных находится заметно больше, а шуб и игрушек среди них тоже. "
+              "Ниже по списку видно, где проходит граница.",
         "en": "Frames with animals, the ones the model is most confident about first. "
-              "Precision is about 82%: fur coats and plush toys start showing up "
-              "further down, which is where the border of confidence is.",
-        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 82% "
-              "で、下に行くほど毛皮のコートやぬいぐるみが混じり始め、そこが確信度の"
-              "境目です。",
+              "Precision is about 82% at 64% recall; with the object detector on "
+              "(features.detector) the trade is a different one — about 62% precision at "
+              "87% recall: noticeably more animals found, and more fur coats and plush "
+              "toys among them. Further down the list is where the border of confidence "
+              "runs.",
+        "ja": "動物が写ったコマです。モデルの確信度が高い順に並びます。精度は約 82%、"
+              "再現率は 64% です。物体検出を有効にすると (features.detector) 精度は約 "
+              "62%、再現率は 87% になり、見つかる動物は増えますが毛皮のコートや"
+              "ぬいぐるみも増えます。下に行くほど確信度の境目が見えてきます。",
     },
     "animals_empty": {
         "ru": "Здесь пусто — животные не найдены.",
@@ -6078,11 +6605,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "animals_score_label": {
         "ru": "уверенность {score}", "en": "confidence {score}", "ja": "確信度 {score}",
     },
-    "animals_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
-    "animals_shown_label": {
-        "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
-        "ja": "{total} 件中 {shown} 件を表示",
-    },
+    # F173: the button and the counter of this slice are `slice_load_more` /
+    # `slice_shown_label` now — the shared pager's, like every other ordered list.
     "error_loading_animals": {
         "ru": "Не удалось загрузить животных: ", "en": "Could not load the animals: ",
         "ja": "動物を読み込めません: ",
@@ -6091,9 +6615,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # The two buttons are one toggle: the card offers the answer the frame does NOT have
     # right now. The third string is the way back to the automatic verdict, which is a
     # different thing from "not an animal" and therefore says so in words.
-    "animals_mark_not_animal": {
-        "ru": "Это не животное", "en": "Not an animal", "ja": "動物ではない",
-    },
+    # F174: the "take it off this frame" half is `slice_return_button` now — the same
+    # words the junk view uses, because it is the same intention. What the two do differ
+    # in is stated under the button (`dest_stays_in` here, `dest_goes_to` there).
     "animals_mark_animal": {
         "ru": "Это животное", "en": "This is an animal", "ja": "これは動物",
     },
@@ -6114,12 +6638,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "マークを保存できません: ",
     },
     # --- F126: the "Review" workspace -------------------------------------------------
-    # The switcher labels are the four slices; the duplicates one keeps the wording the
-    # tab had, because that is what the user has been calling it since U3.
+    # The switcher labels are the slices; the duplicates one keeps the wording the tab
+    # had, because that is what the user has been calling it since U3.
     "review_slice_dupes": {"ru": "Дубли", "en": "Duplicates", "ja": "重複"},
     "review_slice_blurred": {"ru": "Размытые", "en": "Blurred", "ja": "ぼやけ"},
     "review_slice_eyes": {"ru": "Закрытые глаза", "en": "Closed eyes", "ja": "目を閉じた"},
-    "review_slice_subject": {"ru": "Без сюжета", "en": "No subject", "ja": "被写体なし"},
     "review_intro": {
         "ru": "Одно место для всего, что надо просмотреть глазами и частью удалить. "
               "Отметка «удалить» — это пометка, а не удаление: файлы уедут в папку "
@@ -6152,14 +6675,6 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Frames where the people have their eyes closed. The question is only "
               "asked where a face was found.",
         "ja": "人物が目を閉じているコマです。この質問は顔が検出されたコマにのみ行われます。",
-    },
-    "review_hint_subject": {
-        "ru": "Кадры, в которых модель не нашла осмысленного сюжета: снятый пол, "
-              "смазанная стена, случайное нажатие.",
-        "en": "Frames where the model found no subject at all: a shot of the floor, a "
-              "smeared wall, an accidental press.",
-        "ja": "モデルが被写体を見つけられなかったコマです。床の写り込み、ぶれた壁、"
-              "誤操作などです。",
     },
     "review_eyes_no_faces": {
         "ru": "Данных нет: стадия «лица» не запускалась, а про глаза спрашивают только "
@@ -6237,6 +6752,28 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Такая копия уже была — показываем её, второй не делаем.",
         "en": "That copy already existed — here it is; a second one is not made.",
         "ja": "その複製はすでに存在します。既存のものを表示し、二つ目は作りません。",
+    },
+    # F169: the sentence a full-sized frame is owed. The model is x4 and cannot be shown
+    # the whole frame, so a big one is REDUCED first and blown back up to about its own
+    # size — the copy comes out the same size and holds less of what was really there.
+    # Said next to "done", every time it happens, because it is the one outcome a person
+    # cannot see by looking: the copy usually looks sharper, and sharper is not truer.
+    "review_restore_rebuilt": {
+        "ru": "Внимание: кадр больше предела ({max_edge} px по длинной стороне, здесь "
+              "{source_edge}). Копия пересобрана из уменьшенной: настоящая детализация "
+              "оригинала не попала в модель, и на её месте дорисована правдоподобная. "
+              "Это не улучшение оригинала — предел меняется ключом "
+              "features.restore_max_edge.",
+        "en": "Note: this frame is larger than the limit ({max_edge} px on the longer "
+              "side, this one is {source_edge}). The copy was rebuilt from a reduced "
+              "frame: the real detail of the original never reached the model, and "
+              "plausible detail was drawn in its place. This is not an improved original "
+              "— the limit is the features.restore_max_edge key.",
+        "ja": "注意: このコマは上限 (長辺 {max_edge} px、このコマは {source_edge} px) を"
+              "超えています。複製は縮小した画像から作り直されました。元の写真の本当の"
+              "細部はモデルに渡らず、代わりにそれらしい細部が描き足されています。"
+              "元の写真が良くなったわけではありません。上限は "
+              "features.restore_max_edge で変えられます。",
     },
     "review_restore_error_model_unavailable": {
         "ru": "Модель не загрузилась. Веса качаются из сети и нужен дополнительный "
@@ -6316,13 +6853,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "overview_with_people": {"ru": "С людьми", "en": "With people", "ja": "人物あり"},
     "overview_group_photos": {"ru": "Групповых", "en": "Group photos", "ja": "集合写真"},
     "overview_portraits": {"ru": "Портретов", "en": "Portraits", "ja": "ポートレート"},
-    # F126: the three review slices that have a number of their own. Blurred is counted
+    # F126: the review slices that have a number of their own. Blurred is counted
     # inside the window the list opens to, so the row and the list agree.
     "overview_blurred": {"ru": "Размытых", "en": "Blurred", "ja": "ぼやけ"},
     "overview_eyes_closed": {"ru": "С закрытыми глазами", "en": "With closed eyes",
                              "ja": "目を閉じた"},
-    "overview_no_subject": {"ru": "Без сюжета", "en": "With no subject",
-                            "ja": "被写体なし"},
     "overview_place_exact_gps": {"ru": "Точный GPS", "en": "Exact GPS", "ja": "正確なGPS"},
     "overview_place_manual": {"ru": "Указано вручную", "en": "Set by hand", "ja": "手動指定"},
     "overview_place_session_inferred": {
@@ -6512,10 +7047,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "search_score_label": {
         "ru": "близость {score}", "en": "closeness {score}", "ja": "近さ {score}",
     },
+    # F173: the numerator AND the denominator. The old wording ("{n} frames") was true of
+    # the page and read as a fact about the collection — «200 кадров» for a query whose
+    # ranking is four thousand long, with the half that matters below the fold.
     "search_shown_label": {
-        "ru": "Запрос «{q}»: {n} кадров, от самого близкого",
-        "en": "Query “{q}”: {n} frames, closest first",
-        "ja": "クエリ「{q}」: {n} 件（近い順）",
+        "ru": "Запрос «{q}»: показано {shown} из {total}, от самого близкого",
+        "en": "Query “{q}”: showing {shown} of {total}, closest first",
+        "ja": "クエリ「{q}」: {total} 件中 {shown} 件を表示（近い順）",
     },
     # An available index always ranks everything it holds, so an empty list means the
     # index itself is empty of frames a search may return — never "there are no such
@@ -6591,12 +7129,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "face_count_label": {
         "ru": "лиц: {n}", "en": "{n} faces", "ja": "顔 {n}",
     },
-    "face_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
-    "face_shown_label": {
-        "ru": "Показано {shown} из {total}",
-        "en": "Showing {shown} of {total}",
-        "ja": "{total} 件中 {shown} 件を表示",
-    },
+    # F173: the shared pager's button and counter here too. What this slice does NOT take
+    # from it is `slice_depth_hint` — nothing is ranked here (a frame is in the slice
+    # because the detector found a face), so there is no precision to trade for depth and
+    # a line saying otherwise would be a warning about a risk this list does not carry.
     "error_loading_face_slices": {
         "ru": "Не удалось загрузить срезы по лицам: ",
         "en": "Could not load the face slices: ",
@@ -6992,9 +7528,9 @@ label { cursor: pointer; }
 .thumb-name { display: block; font-size: 0.8rem; color: var(--muted); word-break: break-all; margin-top: 2px; }
 .event-name-input { width: 100%; margin-bottom: var(--space-sm); box-sizing: border-box; }
 
-/* --- F103: корзины «не личные фото» ----------------------------------- */
-/* Сетка плиток, а не таблица: здесь смотрят глазами — «это правда товар?» —
-   и решение принимается по картинке, а не по колонкам. */
+/* --- F103: the buckets of «Служебные кадры» ---------------------------- */
+/* A grid of tiles rather than a table: the decision here is made by looking — «это
+   правда товар?» — from the picture and not from the columns. */
 #junk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
       gap: var(--space-md); }
 .junk-card { border: 1px solid var(--line); border-radius: var(--radius-md);
@@ -7011,6 +7547,13 @@ label { cursor: pointer; }
 .junk-card-name { font-size: 0.8rem; word-break: break-all; }
 .junk-card-meta { font-size: 0.75rem; color: var(--muted); }
 .junk-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
+/* F175: the one bucket in this slice that must not be deleted is told apart from the
+   other three BEFORE anything is selected — a border of its own and a mark on the card,
+   not merely a stub where a thumbnail would have been. Accent and not danger red: red
+   on this grid would read as "these are the ones to throw away", which is the exact
+   opposite of what the mark means. */
+.junk-card.sensitive { border-color: var(--accent); border-left-width: 3px; }
+.junk-card .chip { align-self: flex-start; }
 
 /* --- F123: the "Animals" tab -------------------------------------------- */
 /* The same tile grid as the junk buckets: the decision is made by looking. The one
@@ -7034,6 +7577,12 @@ label { cursor: pointer; }
 .animal-card-manual { font-size: 0.75rem; color: var(--muted); }
 .animal-card-actions { display: flex; gap: var(--space-xs); flex-wrap: wrap;
       align-items: center; }
+
+/* --- F174: the destination the action names ------------------------------
+   Under the button, never instead of it: the line answers "and where does the frame
+   end up", which is a different question from "what does this button do". */
+.dest-line { font-size: 0.75rem; color: var(--muted); word-break: break-all; }
+.dest-summary { font-size: 0.8rem; color: var(--muted); }
 
 /* --- F152: the face slices -------------------------------------------------
    The same tile as the animal grid; no score line, because these slices have no
@@ -7430,6 +7979,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div class="cost-block" id="process-costs">
 <div class="cost-head">{{costs_title}}</div>
 <span class="process-toggle-hint">{{costs_estimate_note}}</span>
+<span class="process-toggle-hint" id="process-costs-source"></span>
 <span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
 <div class="cost-row">
 <span class="cost-name">{{costs_base_label}}</span>
@@ -7633,7 +8183,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" class="btn btn-sm review-slice-btn active" id="review-slice-dupes">{{review_slice_dupes}}<span class="review-slice-count" id="review-count-dupes"></span></button>
 <button type="button" class="btn btn-sm review-slice-btn" id="review-slice-blurred">{{review_slice_blurred}}<span class="review-slice-count" id="review-count-blurred"></span></button>
 <button type="button" class="btn btn-sm review-slice-btn" id="review-slice-eyes">{{review_slice_eyes}}<span class="review-slice-count" id="review-count-eyes"></span></button>
-<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-subject">{{review_slice_subject}}<span class="review-slice-count" id="review-count-subject"></span></button>
 </div>
 <div id="review-dupes">
 <div class="dupes-controls">
@@ -7686,7 +8235,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="search-album" class="album-controls"></div>
 <div id="search-grid"></div>
 <div class="process-actions">
+<button type="button" id="search-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
 <span id="search-shown" class="override-hint"></span>
+<span id="search-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
 </div>
 </div>
 
@@ -7711,7 +8262,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="face-album" class="album-controls"></div>
 <div id="face-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
-<button type="button" id="face-more-btn" class="btn btn-ghost" style="display:none">{{face_load_more}}</button>
+<button type="button" id="face-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
 <span id="face-shown" class="override-hint"></span>
 </div>
 </div>
@@ -7721,8 +8272,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="animals-album" class="album-controls"></div>
 <div id="animals-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
-<button type="button" id="animals-more-btn" class="btn btn-ghost" style="display:none">{{animals_load_more}}</button>
+<button type="button" id="animals-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
 <span id="animals-shown" class="override-hint"></span>
+<span id="animals-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
 <span id="animals-counted" class="override-hint"></span>
 <span id="animals-mark-status" class="album-status"></span>
 </div>
@@ -7730,14 +8282,16 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
 <div id="tab-junk" class="slice-panel">
 <p class="process-intro">{{junk_intro}}</p>
+<p id="junk-accuracy" class="override-hint" style="display:none"></p>
+<div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
 <div class="override-controls">
-<button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{junk_restore_button}}<span id="junk-selected-count"></span></button>
+<button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{slice_return_button}}<span id="junk-selected-count"></span></button>
 <button type="button" id="junk-select-all-btn" class="btn btn-ghost">{{junk_select_all}}</button>
 <button type="button" id="junk-select-none-btn" class="btn btn-ghost">{{junk_select_none}}</button>
 <span id="junk-status" class="override-status"></span>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
-<div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
+<div id="junk-dest-summary" class="override-hint dest-summary"></div>
 <div id="junk-album" class="album-controls"></div>
 <div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
@@ -7898,6 +8452,113 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return template.replace(/\\{(\\w+)\\}/g, function (_, key) {
       return Object.prototype.hasOwnProperty.call(vals, key) ? vals[key] : "";
     });
+  }
+
+  // --- F173: "show more", once, for every ordered slice ----------------------
+  // The measurements of 2026-08-02/03 left exactly one confirmed lever of completeness —
+  // the DEPTH of the list. Doubling it adds ~25 points on average, and the query «дети»
+  // goes from 61% to 89%: the second half of a ranking holds nearly a third of what the
+  // reader is looking for. Four slices had a button for that and search, the one slice
+  // built by a query rather than by a model's marks, did not — it stopped dead at
+  // `features.search_limit` frames with a caption that read like an answer.
+  //
+  // So this is the organ itself, written once. A slice hands over its grid, the URL of a
+  // page and the way to draw a card; it gets appending pages, a button that hides itself
+  // at the end of the list, a counter that says how many there are IN TOTAL and — where
+  // something is actually ranked — the one line about what depth costs. A slice added
+  // tomorrow (a saved query, a low-resolution list) gets all of that by calling this, and
+  // that is the point: the fifth copy of the same twenty lines is how a new list ships
+  // without the button again.
+  //
+  // Deliberately NOT an infinite scroll. A page arrives when a person asks for one,
+  // because depth is a trade against precision and the person making it has to be making
+  // it on purpose.
+  function makePager(opts) {
+    var total = 0;
+    var offset = 0;
+    var hasMore = false;
+
+    function grid() { return document.getElementById(opts.grid); }
+
+    // The number on screen is counted off the DOM rather than accumulated, so a card that
+    // leaves the grid (a mark that takes a frame out of the list) cannot desynchronize the
+    // counter from what the reader can see — and the next page starts where the list ends.
+    function shown() { return grid().querySelectorAll(opts.cardSelector).length; }
+
+    function paint(data) {
+      var n = shown();
+      offset = n;
+      var counter = document.getElementById(opts.shown);
+      if (counter) {
+        counter.textContent = n
+            ? (opts.shownText ? opts.shownText(n, total, data)
+                              : fmt(I18N.slice_shown_label, { shown: n, total: total }))
+            : "";
+      }
+      var visible = hasMore && n > 0;
+      var btn = document.getElementById(opts.moreBtn);
+      if (btn) btn.style.display = visible ? "" : "none";
+      // The warning belongs to the button: with nothing left to load there is no trade to
+      // warn about, and a permanent line about precision is a line nobody reads.
+      var hint = opts.hint ? document.getElementById(opts.hint) : null;
+      if (hint) hint.style.display = visible ? "" : "none";
+    }
+
+    function renderPage(data, append) {
+      var box = grid();
+      if (!append) box.textContent = "";
+      (data.items || []).forEach(function (it) { box.appendChild(opts.card(it)); });
+      total = Number(data.total) || 0;
+      // `has_more` is the server's, computed from the window it actually served: a client
+      // guessing from its own running count is wrong the first time a page comes back
+      // short, and the wrong direction of that mistake is a button that promises a page
+      // which does not exist.
+      hasMore = !!data.has_more;
+      if (!shown()) box.appendChild(stateEl("empty", opts.emptyText(data)));
+      paint(data);
+      // Whatever else this slice prints beside the shared counter — the animal tab's
+      // second number, for one. It runs after the page is in the DOM, because the number
+      // it is about is usually a number of cards.
+      if (opts.after) opts.after(data, shown());
+    }
+
+    function fetchPage(from, append) {
+      var box = grid();
+      if (!append) {
+        box.textContent = "";
+        box.appendChild(stateEl("loading", I18N.loading));
+      }
+      return fetch(opts.url(from, opts.pageSize))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (opts.onData) opts.onData(data, append);
+          renderPage(data, append);
+          return data;
+        })
+        .catch(function (err) {
+          box.textContent = "";
+          box.appendChild(stateEl("error", opts.errorText() + err));
+        });
+    }
+
+    var moreBtn = document.getElementById(opts.moreBtn);
+    if (moreBtn) {
+      moreBtn.addEventListener("click", function () { fetchPage(offset, true); });
+    }
+
+    return {
+      load: function () { return fetchPage(0, false); },
+      more: function () { return fetchPage(offset, true); },
+      // The grid changed under the pager (a mark redrew or removed a card): recount and
+      // restate, without asking the server for a page it already sent.
+      sync: function (newTotal) {
+        if (newTotal !== null && newTotal !== undefined) total = Number(newTotal) || 0;
+        hasMore = shown() < total;
+        paint(null);
+        return shown();
+      },
+      shown: shown,
+    };
   }
 
   function applyTheme(theme) {
@@ -8331,9 +8992,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       tr.removeAttribute("title");
       return;
     }
-    // F103: третье состояние — «возвращено в фото» (правка из вкладки «Не личные
-    // фото»). Строка плана должна показывать его отдельно: это не «не трогать» и не
-    // «перенесено в папку», а снятие вердикта классификатора.
+    // F103: a third state — "returned to the photos" (a correction made in the
+    // «Служебные кадры» slice). The plan row has to show it apart from the other two:
+    // this is neither "leave alone" nor "moved to a folder", it is the classifier's
+    // verdict being taken off.
     var excluded = action === "exclude";
     var restored = action === "photo";
     tr.classList.add(excluded ? "override-exclude"
@@ -9159,40 +9821,58 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     appendAlbumBusyHint(box);
   }
 
-  function renderSearchResults(data) {
-    applySearchState(data);
-    var grid = document.getElementById("search-grid");
-    grid.textContent = "";
-    var items = data.items || [];
-    items.forEach(function (it) { grid.appendChild(renderSearchCard(it)); });
-    if (!items.length) {
-      // Never "nothing was found": a usable index ranks everything it holds, so an empty
-      // list is a fact about the index and the answer says which one.
-      grid.appendChild(stateEl("empty",
-          data.available ? I18N.search_no_frames : searchStateText(data)));
-    }
-    document.getElementById("search-shown").textContent = items.length
-        ? fmt(I18N.search_shown_label, { q: data.query, n: items.length }) : "";
-    renderSearchAlbumControls(items.length ? data.query : "");
-  }
+  // F173: the words the pages belong to. A "show more" that read the input field would
+  // fetch the continuation of a ranking nobody is looking at as soon as somebody starts
+  // typing the next query — the button continues the list on screen, not the field.
+  var searchQuery = "";
+
+  // The hole this feature was written for. Search was the one user-facing slice with no
+  // way past the first page, and the caption said "200 frames" where the truth was "the
+  // first 200 of a ranking that does not end here" — over the very slice the measurement
+  // found is best built by a query rather than by faces (94% against 64%, F152).
+  //
+  // No `pageSize`: the size of a page is `features.search_page` and it is the server's to
+  // know. Asking without a `limit` is what makes the setting reach the screen — a number
+  // repeated in JS is a second copy of the setting, and the copy is the one that goes stale.
+  var searchPager = makePager({
+    grid: "search-grid",
+    cardSelector: ".search-card",
+    moreBtn: "search-more-btn",
+    shown: "search-shown",
+    hint: "search-depth-hint",
+    url: function (offset) {
+      return "/api/search?q=" + encodeURIComponent(searchQuery) + "&offset=" + offset;
+    },
+    card: renderSearchCard,
+    // Never "nothing was found": a usable index ranks everything it holds, so an empty
+    // list is a fact about the index and the answer says which one.
+    emptyText: function (data) {
+      return data.available ? I18N.search_no_frames : searchStateText(data);
+    },
+    errorText: function () { return I18N.error_loading_search; },
+    shownText: function (n, total) {
+      return fmt(I18N.search_shown_label,
+                 { q: searchQuery, shown: n, total: total });
+    },
+    onData: function (data, append) {
+      applySearchState(data);
+      // The album gathers the QUERY, not the page, so it is built once per search — and
+      // rebuilding it on every "show more" would wipe the destination somebody typed.
+      if (!append) {
+        renderSearchAlbumControls((data.items || []).length ? data.query : "");
+      }
+    },
+  });
 
   function runSearch() {
     var q = document.getElementById("slice-query").value.trim();
     // An empty query goes nowhere near the model — not from here and not on the server.
     if (!q || !(searchState && searchState.available)) return;
+    searchQuery = q;
     showSearchPanel();
-    var grid = document.getElementById("search-grid");
-    grid.textContent = "";
-    grid.appendChild(stateEl("loading", I18N.loading));
     document.getElementById("search-shown").textContent = "";
     renderSearchAlbumControls("");
-    return fetch("/api/search?q=" + encodeURIComponent(q))
-      .then(function (r) { return r.json(); })
-      .then(function (data) { renderSearchResults(data); })
-      .catch(function (err) {
-        grid.textContent = "";
-        grid.appendChild(stateEl("error", I18N.error_loading_search + err));
-      });
+    return searchPager.load();
   }
 
   document.getElementById("slice-query-btn").addEventListener("click", runSearch);
@@ -9437,13 +10117,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     if (c.faces_reason === "no_faces_run") {
       card.appendChild(overviewNote(I18N.face_no_faces_run));
     }
-    // F126: the three slices of the review workspace that have a number of their own.
+    // F126: the slices of the review workspace that have a number of their own.
     card.appendChild(overviewRow(I18N.overview_blurred,
                                  overviewCount(c.blurred, "review", "blurred")));
     card.appendChild(overviewRow(I18N.overview_eyes_closed,
                                  overviewCount(c.eyes_closed, "review", "eyes")));
-    card.appendChild(overviewRow(I18N.overview_no_subject,
-                                 overviewCount(c.no_subject, "review", "subject")));
     return card;
   }
 
@@ -9620,7 +10298,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // A missing price is null, and null is a DASH, never a zero: a zero reads as "free",
   // and this screen may not promise twenty minutes with two hours coming. The same rule
   // carries into the sum — an unknown line makes it a floor ("at least"), not a total.
+  //
+  // F159: `sources` travels with the seconds and says, per line, whether the rate behind
+  // it was read out of this machine's own run log or is the default shipped with the
+  // tool. The note under the block reports that over the lines actually SWITCHED ON — it
+  // describes the total standing above the button, and a caveat about a stage nobody
+  // asked for would be a caveat about nothing.
   var costEstimate = null;
+  var costSources = null;
+  var costMeasuredAt = null;
   var COST_ROWS = [
     { key: "base", always: true },
     { key: "faces", id: "process-faces-checkbox" },
@@ -9683,6 +10369,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return (typeof value === "number") ? value : null;
   }
 
+  // "measured", "default" or "fixed" — see the server payload. Null when this index has
+  // not answered yet, and for a line the master switch has turned off: a line that does
+  // not run has no rate to have a pedigree.
+  function costSource(row) {
+    if (!costSources) return null;
+    if (row.vlm && !vlmMasterOn()) return null;
+    return costSources[row.scoped ? "quality_" + currentQualityScope() : row.key] || null;
+  }
+
   function formatCost(seconds) {
     if (seconds === null) return I18N.costs_unknown;
     if (seconds <= 0) return I18N.costs_free;
@@ -9710,6 +10405,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     updateVlmSubordinatesDisabled();
     var total = 0;
     var unknown = false;
+    var measured = false;
+    var byDefault = false;
     var vlmOff = !vlmMasterOn();
     COST_ROWS.forEach(function (row) {
       var seconds = costSeconds(row);
@@ -9721,14 +10418,30 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         cell.textContent = (row.vlm && vlmOff) ? I18N.costs_off : formatCost(seconds);
       }
       if (!costRowEnabled(row)) return;
-      if (seconds === null) unknown = true;
-      else total += seconds;
+      if (seconds === null) { unknown = true; return; }
+      total += seconds;
+      var source = costSource(row);
+      if (source === "measured") measured = true;
+      else if (source === "default") byDefault = true;
     });
     var value = document.getElementById("process-budget-value");
     if (unknown && total <= 0) value.textContent = I18N.costs_unknown;
     else if (unknown) {
       value.textContent = fmt(I18N.costs_total_at_least, { time: formatCost(total) });
     } else value.textContent = formatCost(total);
+    renderCostSource(measured, byDefault);
+  }
+
+  function renderCostSource(measured, byDefault) {
+    var note = document.getElementById("process-costs-source");
+    var when = costMeasuredAt || "";
+    if (measured && byDefault) {
+      note.textContent = fmt(I18N.costs_source_mixed, { date: when });
+    } else if (measured) {
+      note.textContent = fmt(I18N.costs_source_measured, { date: when });
+    } else if (byDefault) {
+      note.textContent = I18N.costs_source_default;
+    } else note.textContent = "";  // nothing priced yet — nothing to have a pedigree
   }
 
   function loadCostEstimate() {
@@ -9736,6 +10449,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .then(function (r) { return r.json(); })
       .then(function (data) {
         costEstimate = (data && data.seconds) || null;
+        costSources = (data && data.sources) || null;
+        costMeasuredAt = (data && data.measured_at) || null;
         renderCosts();
       })
       .catch(function () { renderCosts(); });
@@ -9774,7 +10489,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // faces/events opt-in — currentProcessStages фиксируется по чекбоксам в
   // момент запуска (сервер фильтрует steps так же), иначе индексы чипов
   // разъедутся со stage_index отфильтрованного прогона.
-  var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "faces", "events", "junk", "phash"];
+  var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "classify", "faces", "events",
+                            "junk", "phash"];
   var OPTIONAL_PROCESS_STAGES = { faces: true, events: true };
   var currentProcessStages = ALL_PROCESS_STAGES.slice();
 
@@ -11452,24 +12168,86 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       });
   }
 
-  // --- F103: вкладка «Не личные фото» -------------------------------------
-  // Корзины классификатора видно КАК корзины: чипы-фильтры со счётчиком, сетка
-  // плиток, отметка нескольких кадров и ОДИН возврат на всё выделение (по одному
-  // это десятки кликов на «пару штук из 2 202»). Возврат — это POST /api/overrides
-  // с action="photo" (готовый механизм F77): вердикт в media_class не переписывается,
-  // поэтому повторный прогон яруса не сотрёт правку.
+  // --- F174: the action names its destination ------------------------------
+  // The folder is the server's answer, computed by the code that builds the plan
+  // (`sorter.destinations`). NOTHING here derives a path: a second spelling of the
+  // layout rules, in JS, is exactly how a caption starts disagreeing with the plan it
+  // is describing — and the caption is the whole feature.
+
+  function destLine(item, template) {
+    var line = document.createElement("div");
+    line.className = "dest-line";
+    if (!item.dest) {
+      line.textContent = I18N.dest_unknown;
+      return line;
+    }
+    var why = I18N["dest_why_" + item.dest_reason];
+    var text = fmt(template, { folder: item.dest });
+    line.textContent = why ? text + ": " + why : text;
+    return line;
+  }
+
+  // A bulk action states the SPREAD, not the first destination of the selection: the
+  // person ticks dozens at a time, and one folder name out of twelve deceives them.
+  // The groups come from the server (`_DEST_GROUPS`) — this only counts them.
+  var DEST_GROUP_ORDER = ["city", "country", "no_place", "undated", "other"];
+
+  function destBreakdown(items) {
+    var counts = {};
+    items.forEach(function (it) {
+      var group = (it && it.dest_group) || "other";
+      counts[group] = (counts[group] || 0) + 1;
+    });
+    return DEST_GROUP_ORDER.filter(function (g) { return counts[g]; })
+      .map(function (g) {
+        return fmt(I18N.dest_bulk_item,
+                   { n: counts[g], group: I18N["dest_group_" + g] || g });
+      })
+      .join(", ");
+  }
+
+  function destSummary(items) {
+    return fmt(I18N.dest_bulk_summary,
+               { n: items.length, breakdown: destBreakdown(items) });
+  }
+
+  // --- F103: the «Служебные кадры» slice -----------------------------------
+  // The classifier's buckets are visible AS buckets: filter chips with a counter, a
+  // grid of tiles, several frames ticked at once and ONE return for the whole selection
+  // (one at a time is dozens of clicks for "a couple out of 2 202"). The return is a
+  // POST /api/overrides with action="photo" (the F77 mechanism, already there): the
+  // verdict in media_class is not rewritten, so re-running the tier does not wipe the
+  // correction.
 
   var JUNK_PAGE_SIZE = 200;
   var junkBucket = null;   // null — «Все»
   var junkOffset = 0;
   var junkSelected = {};
+  // F174: the cards currently on screen, by file_id — the selection is made of them, so
+  // the destinations the server sent with the page are what the bulk caption counts.
+  // Nothing is fetched again for it: the answer is already here.
+  var junkItems = {};
 
   function junkBucketLabel(verdict) {
     return I18N["junk_bucket_" + verdict] || verdict;
   }
 
+  // F175: precision is a property of a CLASS, so it is shown only when a class is the
+  // one open — the "all" view names no number at all, because four buckets measured
+  // separately have no shared one. A class with no measurement of its own falls back to
+  // "not measured": inheriting the neighbour's percentage would be the lie this whole
+  // caption exists to stop.
+  function junkAccuracyText(verdict) {
+    if (!verdict) return "";
+    return I18N["junk_accuracy_" + verdict] || I18N.junk_accuracy_unmeasured;
+  }
+
   function junkSelectedIds() {
     return Object.keys(junkSelected).map(Number);
+  }
+
+  function junkSelectedItems() {
+    return junkSelectedIds().map(function (id) { return junkItems[id] || {}; });
   }
 
   function refreshJunkControls() {
@@ -11477,6 +12255,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     document.getElementById("junk-selected-count").textContent = n ? " (" + n + ")" : "";
     // F145: "back to photos" rewrites `media_class` — the table the run in flight owns.
     document.getElementById("junk-restore-btn").disabled = uiBusy() || n === 0;
+    // Where the selection goes, restated on every tick: the spread changes with it, and
+    // a number that only appears in the confirmation dialog is seen too late to help.
+    document.getElementById("junk-dest-summary").textContent =
+        n ? destSummary(junkSelectedItems()) : "";
   }
 
   registerBusyRefresh(refreshJunkControls);
@@ -11489,8 +12271,19 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   function renderJunkCard(item) {
+    junkItems[item.file_id] = item;
     var card = document.createElement("div");
-    card.className = "junk-card" + (item.restored ? " restored" : "");
+    card.className = "junk-card" + (item.restored ? " restored" : "") +
+        (item.sensitive ? " sensitive" : "");
+    // F175: the mark goes at the TOP of the card, above the picture — a bucket that must
+    // not be deleted has to be readable while the eye runs over the grid, before the
+    // checkbox at the bottom is anywhere near being ticked.
+    if (item.sensitive) {
+      var mark = document.createElement("span");
+      mark.className = "chip chip-accent";
+      mark.textContent = I18N.junk_document_mark;
+      card.appendChild(mark);
+    }
     if (item.thumb_url) {
       card.appendChild(
           clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
@@ -11516,6 +12309,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       chip.className = "chip chip-good";
       chip.textContent = I18N.junk_restored_mark;
       card.appendChild(chip);
+      // F174: the mark is written, the move is not — so the card keeps naming the
+      // folder the frame is headed for until the layout actually runs.
+      card.appendChild(destLine(item, I18N.dest_goes_to));
       var undoBtn = makeBtn("ghost", null, I18N.junk_undo_restore_button, "btn-sm");
       undoBtn.addEventListener("click", function () { applyJunkAction([item.file_id], "clear"); });
       card.appendChild(undoBtn);
@@ -11534,8 +12330,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       refreshJunkControls();
     });
     label.appendChild(box);
-    label.appendChild(document.createTextNode(I18N.junk_restore_button));
+    label.appendChild(document.createTextNode(I18N.slice_return_button));
     card.appendChild(label);
+    // F174: this bucket is an EXTRACTION from the canon — the frame is not lying in a
+    // city right now, and returning it is a real transfer on the next apply. So the
+    // card says which folder, and why, before anything is ticked.
+    card.appendChild(destLine(item, I18N.dest_goes_to));
     return card;
   }
 
@@ -11546,7 +12346,16 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // preview nor an album). The "back to photos" row above is untouched: one movement
     // must not be able to both gather and delete.
     renderSliceAlbumControls("junk-album", data.album_kind);
-    if (!append) grid.textContent = "";
+    // F175: which bucket is open decides which measurement is true here, so the line is
+    // rewritten with every page — including the empty one, where "not measured" is still
+    // the honest answer about the bucket a person is looking at.
+    var accuracy = document.getElementById("junk-accuracy");
+    accuracy.textContent = junkAccuracyText(data.bucket);
+    accuracy.style.display = accuracy.textContent ? "" : "none";
+    if (!append) {
+      grid.textContent = "";
+      junkItems = {};      // the cards go, their destinations go with them
+    }
     var items = data.items || [];
     items.forEach(function (it) { grid.appendChild(renderJunkCard(it)); });
     var shown = grid.querySelectorAll(".junk-card").length;
@@ -11556,10 +12365,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         shown ? fmt(I18N.junk_shown_label, { shown: shown, total: data.total }) : "";
     document.getElementById("junk-more-btn").style.display =
         shown && shown < data.total ? "" : "none";
-    // Пояснение про документы — только там, где карточки без превью реально есть
-    // (считаем по всей сетке, а не по последней подгруженной странице).
+    // The note about documents — only where such cards are actually on screen (counted
+    // over the whole grid, not over the page that was just appended). F175: counted by
+    // the mark the cards carry, so the note and the marks appear and disappear together.
     document.getElementById("junk-doc-hint").style.display =
-        grid.querySelector(".junk-doc-box") ? "" : "none";
+        grid.querySelector(".junk-card.sensitive") ? "" : "none";
     junkOffset = shown;
   }
 
@@ -11609,7 +12419,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   document.getElementById("junk-restore-btn").addEventListener("click", function () {
     var ids = junkSelectedIds();
     if (!ids.length) return;
-    if (!window.confirm(fmt(I18N.junk_restore_confirm, { n: ids.length }))) return;
+    // F174: the question names the spread of the selection, not just its size — "12
+    // frames" and "12 frames, 5 of them into no_place" are different decisions.
+    if (!window.confirm(fmt(I18N.junk_restore_confirm,
+                            { n: ids.length,
+                              breakdown: destBreakdown(junkSelectedItems()) }))) return;
     applyJunkAction(ids, "photo");
   });
   document.getElementById("junk-select-all-btn").addEventListener("click", function () {
@@ -11639,7 +12453,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // is to read down a list that is sorted by exactly that number.
 
   var ANIMALS_PAGE_SIZE = 200;
-  var animalsOffset = 0;
   // The length of the LIST, kept so a card redrawn after a mark can restate "showing
   // N of M" without asking the server for a page it already has.
   var animalsTotal = 0;
@@ -11681,12 +12494,18 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                                        : I18N.animals_manual_excluded;
       card.appendChild(manual);
     }
+    // F174: this slice is a VIEW over the canon — the frame is lying in its city folder
+    // and stays there whatever is decided here. Said out loud, with the folder named,
+    // because the fear the wording has to answer is "will this delete something".
+    if (item.is_animal) card.appendChild(destLine(item, I18N.dest_stays_in));
     var actions = document.createElement("div");
     actions.className = "animal-card-actions";
     // One toggle offering the answer the frame does NOT have right now, per card and
     // never over a band: the whole feature is that somebody looked at this frame.
+    // F174: taking the mark off is the same intention as returning a product to the
+    // photos, so it carries the same words — the difference is the line above.
     var toggle = makeBtn("ghost", null,
-        item.is_animal ? I18N.animals_mark_not_animal : I18N.animals_mark_animal,
+        item.is_animal ? I18N.slice_return_button : I18N.animals_mark_animal,
         "btn-sm animal-mark-btn");
     toggle.addEventListener("click", function () {
       markAnimal(item.file_id, item.is_animal ? "not_animal" : "animal");
@@ -11707,30 +12526,36 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                                  fileId + '"]');
   }
 
-  // Both numbers of the page: how much of the LIST is on screen, and how many of it
-  // count as animals. After a manual mark those are different questions — the card
-  // stays in the list and leaves the count.
-  function renderAnimalsCounts(shown, total, animals) {
-    document.getElementById("animals-shown").textContent =
-        shown ? fmt(I18N.animals_shown_label, { shown: shown, total: total }) : "";
+  // The second number of the page, the one the shared pager knows nothing about: how many
+  // of what is on screen count as animals. After a manual mark that is a different
+  // question from "how much of the list is shown" — the card stays in the list and leaves
+  // the count.
+  function renderAnimalsCounted(shown, animals) {
     document.getElementById("animals-counted").textContent =
         shown ? fmt(I18N.animals_counted_label, { n: animals }) : "";
   }
 
-  function renderAnimalsPage(data, append) {
-    var grid = document.getElementById("animals-grid");
-    if (!append) grid.textContent = "";
-    (data.items || []).forEach(function (it) {
-      grid.appendChild(renderAnimalCard(it));
-    });
-    var shown = grid.querySelectorAll(".animal-card").length;
-    if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
-    animalsTotal = data.total;
-    renderAnimalsCounts(shown, data.total, data.animals);
-    document.getElementById("animals-more-btn").style.display =
-        shown && shown < data.total ? "" : "none";
-    animalsOffset = shown;
-  }
+  // F173: the paging, the button, the "showing N of M" line and the depth warning are the
+  // shared pager's now — this slice is ranked by confidence, so the trade the button makes
+  // is exactly the one `slice_depth_hint` describes.
+  var animalsPager = makePager({
+    grid: "animals-grid",
+    cardSelector: ".animal-card",
+    moreBtn: "animals-more-btn",
+    shown: "animals-shown",
+    hint: "animals-depth-hint",
+    pageSize: ANIMALS_PAGE_SIZE,
+    url: function (offset, limit) {
+      return "/api/animals?offset=" + offset + "&limit=" + limit;
+    },
+    card: renderAnimalCard,
+    emptyText: function () { return I18N.animals_empty; },
+    errorText: function () { return I18N.error_loading_animals; },
+    after: function (data, shown) {
+      animalsTotal = data.total;
+      renderAnimalsCounted(shown, data.animals);
+    },
+  });
 
   // The answer redraws the card in place instead of reloading the page: this list is
   // read top-down until the confidence runs out, and a reload after every decision
@@ -11754,27 +12579,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           animalsTotal = Math.max(0, animalsTotal - 1);
         }
         var grid = document.getElementById("animals-grid");
-        var shown = grid.querySelectorAll(".animal-card").length;
+        // The pager recounts the grid and restates both the counter and the button; the
+        // page is not re-fetched, because a reload after every decision would send the
+        // reader back to the first screen.
+        var shown = animalsPager.sync(animalsTotal);
         if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
-        animalsOffset = shown;
-        renderAnimalsCounts(shown, animalsTotal, resp.animals);
+        renderAnimalsCounted(shown, resp.animals);
       })
       .catch(function (err) { status.textContent = I18N.animals_error_prefix + err; });
-  }
-
-  function fetchAnimals(offset, append) {
-    var grid = document.getElementById("animals-grid");
-    if (!append) {
-      grid.textContent = "";
-      grid.appendChild(stateEl("loading", I18N.loading));
-    }
-    return fetch("/api/animals?offset=" + offset + "&limit=" + ANIMALS_PAGE_SIZE)
-      .then(function (r) { return r.json(); })
-      .then(function (data) { renderAnimalsPage(data, append); })
-      .catch(function (err) {
-        grid.textContent = "";
-        grid.appendChild(stateEl("error", I18N.error_loading_animals + err));
-      });
   }
 
   // The album controls of the People/Events cards, one per tab instead of one per
@@ -11802,12 +12614,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function loadAnimals() {
     renderAnimalsAlbumControls();
-    return fetchAnimals(0, false);
+    return animalsPager.load();
   }
-
-  document.getElementById("animals-more-btn").addEventListener("click", function () {
-    fetchAnimals(animalsOffset, true);
-  });
 
   // --- F152: the face slices -----------------------------------------------
   // Three pins over one panel — the junk-bucket arrangement, because these are three
@@ -11824,7 +12632,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var FACE_SLICES = ["people", "group", "portrait"];
   var FACE_PAGE_SIZE = 200;
   var faceSlice = "people";
-  var faceOffset = 0;
   var faceLoaded = false;
   var faceReason = null;
 
@@ -11876,42 +12683,33 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return card;
   }
 
-  function renderFacePage(data, append) {
-    var grid = document.getElementById("face-grid");
-    if (!append) grid.textContent = "";
-    (data.items || []).forEach(function (it) { grid.appendChild(renderFaceCard(it)); });
-    var shown = grid.querySelectorAll(".face-card").length;
-    if (!shown) {
-      grid.appendChild(stateEl("empty",
-          faceReason === "no_faces_run" ? I18N.face_no_faces_run : I18N.face_empty));
-    }
-    document.getElementById("face-shown").textContent =
-        shown ? fmt(I18N.face_shown_label, { shown: shown, total: data.total }) : "";
-    document.getElementById("face-more-btn").style.display =
-        shown && shown < data.total ? "" : "none";
-    faceOffset = shown;
-  }
-
-  function fetchFaceSlice(offset, append) {
-    var grid = document.getElementById("face-grid");
-    if (!append) {
-      grid.textContent = "";
-      grid.appendChild(stateEl("loading", I18N.loading));
-    }
-    return fetch("/api/face-slices?slice=" + faceSlice + "&offset=" + offset +
-                 "&limit=" + FACE_PAGE_SIZE)
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        applyFaceCounts(data);
-        renderSlicePins();
-        document.getElementById("face-hint").textContent = faceHintText(data);
-        renderFacePage(data, append);
-      })
-      .catch(function (err) {
-        grid.textContent = "";
-        grid.appendChild(stateEl("error", I18N.error_loading_face_slices + err));
-      });
-  }
+  // F173: the same pager as everywhere else, minus the depth hint. These slices are not
+  // ranked — a frame is here because the detector found a face on it — so "further down
+  // the list the model is less sure" would be a warning about a risk this list does not
+  // have, and the caption above the grid already says the slice is a fact and not an
+  // estimate.
+  var facePager = makePager({
+    grid: "face-grid",
+    cardSelector: ".face-card",
+    moreBtn: "face-more-btn",
+    shown: "face-shown",
+    pageSize: FACE_PAGE_SIZE,
+    url: function (offset, limit) {
+      return "/api/face-slices?slice=" + faceSlice + "&offset=" + offset +
+             "&limit=" + limit;
+    },
+    card: renderFaceCard,
+    emptyText: function () {
+      return faceReason === "no_faces_run" ? I18N.face_no_faces_run : I18N.face_empty;
+    },
+    errorText: function () { return I18N.error_loading_face_slices; },
+    onData: function (data) {
+      // Before the cards, because the empty state and the hint both read `faceReason`.
+      applyFaceCounts(data);
+      renderSlicePins();
+      document.getElementById("face-hint").textContent = faceHintText(data);
+    },
+  });
 
   // One album per slice, the animal arrangement: the selector goes out empty and the
   // server ignores it (the collection holds a single slice of each kind), and the album
@@ -11940,25 +12738,21 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   function loadFaceSlice() {
-    return fetchFaceSlice(0, false).then(function () { renderFaceAlbumControls(); });
+    return facePager.load().then(function () { renderFaceAlbumControls(); });
   }
 
-  document.getElementById("face-more-btn").addEventListener("click", function () {
-    fetchFaceSlice(faceOffset, true);
-  });
-
   // --- F126: the "Review" workspace ----------------------------------------
-  // One tab, four slices, one job: look and decide. The switcher keeps every slice in
+  // One tab, three slices, one job: look and decide. The switcher keeps every slice in
   // place at zero, because "you have no closed eyes" is an answer and a vanished entry
   // is a riddle. Duplicates are rendered by the code below this block, untouched — they
   // are the only grouped slice, the only one where a keeper is chosen, and the only path
-  // in the program that deletes files. The three flat slices share the tile grid and the
+  // in the program that deletes files. The two flat slices share the tile grid and the
   // one action they afford: a mark in `dedup_choice`, which the sorter already reads.
   // Paged like every other grid since F70 — 530 cards with previews do not go into the
   // DOM at once.
 
   var REVIEW_PAGE_SIZE = 200;
-  var REVIEW_SLICES = ["dupes", "blurred", "eyes", "subject"];
+  var REVIEW_SLICES = ["dupes", "blurred", "eyes"];
   var reviewSlice = "dupes";
   var reviewOffset = 0;
   // Blur opens to `features.blur_review_max` and continues past it only when asked:
@@ -12005,14 +12799,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // it is also where the F125 answer lands: without a faces run there is no data, and
   // saying so beats showing a zero that reads as "nobody blinked".
   function reviewHintText(data) {
-    if (reviewSlice === "blurred") {
-      return fmt(I18N.review_hint_blurred, { max: data.blur_max });
-    }
     if (reviewSlice === "eyes") {
       return data.eyes_reason === "no_faces_run"
           ? I18N.review_eyes_no_faces : I18N.review_hint_eyes;
     }
-    return I18N.review_hint_subject;
+    return fmt(I18N.review_hint_blurred, { max: data.blur_max });
   }
 
   function renderReviewCard(item) {
@@ -12218,6 +13009,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           insertRestoredCard(resp.item);
           status.textContent = resp.reused ? I18N.review_restore_reused
                                            : I18N.review_restore_done;
+          // F169: a frame above the ceiling is reduced before the model and blown back
+          // up, so the copy is the same size and holds less of what was really there.
+          // Said in the same breath as "done" — the copy looks sharper either way, and
+          // this is the part nobody can see by looking at it.
+          if (resp.rebuilt) {
+            status.textContent += " " + fmt(I18N.review_restore_rebuilt, {
+              max_edge: resp.max_edge, source_edge: resp.source_edge });
+          }
         } else {
           // A reason, never an empty result: the weights come off the network and being
           // offline is an ordinary state for this program.
@@ -12616,7 +13415,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             elif path == "/api/sort/summary":
                 self._serve_sort_summary(parse_qs(parts.query))
             elif path == "/api/tabs/visibility":
-                self._send_json(_tabs_visibility_payload(db_path, cfg.features))
+                self._send_json(_tabs_visibility_payload(db_path, cfg))
             elif path == "/api/overview":
                 # F108: plain aggregates, computed per request. The plan cache is not
                 # touched on purpose — building a layout here would cost minutes.
@@ -12774,7 +13573,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # settings panel can change `vlm.exclude_classes` without a restart, and a
             # privacy list that needs one is not a privacy list.
             self._send_json(_junk_payload(
-                db_path, bucket, offset, limit,
+                db_path, cfg, bucket, offset, limit,
                 frozenset(cfg.vlm.exclude_classes)))
 
         def _serve_animals(self, query: dict[str, list[str]]) -> None:
@@ -12790,7 +13589,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # F137: the thresholds off the LIVE config, for the reason `/api/junk` reads
             # its sensitive classes off it — the settings panel edits `pet_threshold`
             # without a restart, and a threshold that needs one is not a threshold.
-            self._send_json(_animals_payload(db_path, cfg.features, offset, limit))
+            self._send_json(_animals_payload(db_path, cfg, offset, limit))
 
         def _serve_face_slices(self, query: dict[str, list[str]]) -> None:
             # F152: read-only. Nothing about these slices is decided here — the rules are
@@ -12828,13 +13627,13 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # F134: read-only, and read-only in the strong sense — an empty `q` asks for
             # the state of the index alone and never reaches the model. The sensitive
             # classes come off the LIVE config for the reason `/api/junk` does that.
-            parsed = _parse_search_query(query, cfg.features.search_limit)
+            parsed = _parse_search_query(query, cfg.features.search_page)
             if parsed is None:
-                self._send_json({"error": "invalid limit"},
+                self._send_json({"error": "invalid offset/limit"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            text, limit = parsed
-            self._send_json(_search_payload(cfg, db_path, text, limit,
+            text, offset, limit = parsed
+            self._send_json(_search_payload(cfg, db_path, text, offset, limit,
                                             encoder=query_encoder))
 
         def _serve_places_search(self, query: dict[str, list[str]]) -> None:
@@ -12938,7 +13737,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 return
             ids, action = parsed
             self._send_json({"ok": True,
-                             **_apply_animal_mark(db_path, cfg.features, ids, action)})
+                             **_apply_animal_mark(db_path, cfg, ids, action)})
 
         def _handle_photo_trash(self) -> None:
             file_id = _validate_file_id_payload(self._read_json_body())

@@ -347,11 +347,12 @@ happens to the files:
    time. Enter the path, tick **"Detect faces"** and **"Detect events"** if you want
    them (both **unchecked by default** — the pipeline's slowest stages, opt‑in on
    purpose, see §8) and click **Process**: it runs in the background with per‑stage
-   progress (index → geo → landmarks → [faces] → [events] → junk → near‑duplicates).
+   progress (index → geo → landmarks → classify → [faces] → [events] → junk →
+   near‑duplicates).
    You can close the tab; processing continues.
 2. **Review** tab → one workspace for everything that has to be looked at by eye and
-   partly deleted: **Duplicates**, **Blurred**, **Closed eyes**, **No subject** — four
-   slices of a single tab, described in §22.
+   partly deleted: **Duplicates**, **Blurred**, **Closed eyes** — three slices of a
+   single tab, described in §22.
 3. **Layout** tab → the canon: the proposed structure (`Country/City/Year/District`),
    where to lay it out, move or copy, and the button that starts it. Always visible.
 4. **Slices** tab → everything built **on top of** the canon: **With people**, **Group
@@ -382,7 +383,8 @@ happens to the files:
 
 **Where the familiar tabs went.** Nothing was removed, the grouping changed: Process
 moved inside Overview, Cities is now called Layout, Duplicates became the first slice of
-Review, and People, Events and "Not personal photos" became panels of Slices. Inside
+Review, and People, Events and the classifier's buckets (now **Utility frames**, §14)
+became panels of Slices. Inside
 Slices, People and Events appear only once face clusters or events exist — that is,
 after a run with faces/events enabled (or after `sorta faces`/`sorta events`).
 
@@ -555,9 +557,10 @@ new/changed files):
 | Index | `sorta index [dir]` | always | Scan files, read EXIF/dates, compute blake3 hashes, mark exact duplicates. |
 | Geo | `sorta geo` | always | Resolve each file's place from GPS; infer place for GPS‑less files from time‑adjacent neighbours, then from the whole trip when its GPS frames agree on the city and surround the file in time (offline GeoNames, or online Nominatim if enabled). |
 | Landmarks | `sorta landmarks` | always | Visual place guess for GPS‑less scenes, conservative threshold — fills in city for e.g. an indoor landmark photo with no GPS. |
+| Classify | `sorta classify` | always | Decide what each photo IS: `photo` / `screenshot` / `meme` / `document` / `product` (heuristics + CLIP + text‑density). The `product` class (an item photographed for sale) comes from the deep VLM tier only — the fast tier never produces it, see §14. Runs **before** faces so that the faces stage does not look for people in screenshots and receipts; a photo with no verdict yet is detected as usual. |
 | Faces | `sorta faces` | **opt‑in** (`--faces`) | Detect faces (insightface), compute embeddings, cluster people (HDBSCAN). The slowest stage; skipped unless you ask for it. |
 | Events | `sorta events` | **opt‑in** (`--events`) | Group photos into events by time gaps + city; name them by date + city. Independent of faces — enable either, both, or neither. |
-| Junk | `sorta junk` | always | Classify each photo: `photo` / `screenshot` / `meme` / `document` / `product` (heuristics + CLIP + text‑density). The `product` class (an item photographed for sale) comes from the deep VLM tier only — the fast tier never produces it, see §14. |
+| Junk | `sorta junk` | always | Everything the verdicts leave: frame quality (sharpness, and the sharpness inside each face — which is why this half runs **after** faces), animals, the near‑duplicate keeper, the search index. Run on its own it also does the classification above, so `sorta junk` alone is still the whole stage. |
 | Near‑dup hashes | `sorta phash` | always (UI); separate command in the CLI (`sorta run` doesn't call it — run `sorta phash` yourself) | Compute perceptual hashes for near‑duplicate detection. |
 
 **`sorta run` flags** (all optional, all overrides for *this run only* — nothing is
@@ -576,8 +579,7 @@ written to `config.yaml`):
 --pets / --no-pets         Look for animals this run (features.pets, §24). CLIP answers
                             it on a pass that runs anyway, so it is cheap.
 --quality / --no-quality   Ask the model about frame quality this run (vlm.quality):
-                            are the eyes open, is there a subject at all. Needs the
-                            `vlm` extra.
+                            are the eyes open. Needs the `vlm` extra.
 --quality-scope groups|events|faces|all
                            Which frames reach those questions (vlm.quality_scope). The
                             price is measured: `all` ≈ 4.3 hours on 20 thousand frames,
@@ -892,7 +894,6 @@ sorta album meme --dest /path/to/albums --apply
 # A quality slice of the Review workspace (§22) — no selector either:
 sorta album blurred --dest /path/to/albums --apply
 sorta album eyes_closed --dest /path/to/albums --apply
-sorta album no_subject --dest /path/to/albums --apply
 
 # The face slices (§6) — also without a selector: the collection has exactly one of
 # each. Every frame a face was found on, the group photographs, the portraits:
@@ -902,9 +903,8 @@ sorta album portrait --dest /path/to/albums --apply
 ```
 
 - **Slices without a selector**: `animal`, `product`, `screenshot`, `meme`, `blurred`,
-  `eyes_closed`, `no_subject`, `people`, `group`, `portrait`. There is nothing to choose
-  inside them — the collection has exactly one products bucket and exactly one blurred
-  list — so `sorta album <kind> --dest …` is the whole command, and the folder is named
+  `eyes_closed`, `people`, `group`, `portrait`. There is nothing to choose inside them
+  — the collection has exactly one products bucket and exactly one blurred list — so `sorta album <kind> --dest …` is the whole command, and the folder is named
   after the slice unless `--name` says otherwise.
 - **`person` / `event` / `query`** require the selector, because the selector *is* the
   subject of the album (a person's name, an event's name, the words themselves). A
@@ -926,8 +926,8 @@ sorta album portrait --dest /path/to/albums --apply
   into one album (ambiguous) — those are blocked; use link/copy.
 - In the UI, use **Collect into folder** — on the People/Events cards, on the
   **Animals** slice, on a classifier bucket (Products, Screenshots, Memes) and on the
-  three quality slices of **Review** (Blurred, Closed eyes, No subject). It is the same
-  row everywhere: mode, an optional folder name, a destination. The marking buttons
+  two quality slices of **Review** (Blurred, Closed eyes). It is the same row
+  everywhere: mode, an optional folder name, a destination. The marking buttons
   ("Return to photos", "To trash") stay in their own block — one movement never both
   gathers and deletes.
 
@@ -973,10 +973,41 @@ city/person/event folders:
 pull out; a real document leaking into your city memories is worse). Review it
 manually.
 
-These buckets are easier to review from the web UI: the **Not personal photos** tab
-(§6) shows them side by side, returns the frames you tick back into the normal layout
-in bulk, and **renders no thumbnails for documents** — deliberately, because that
-bucket is where personal papers are.
+These buckets are easier to review from the web UI: the **Utility frames** slice (§6)
+shows them side by side, returns the frames you tick back into the normal layout in
+bulk, and **renders no thumbnails for documents** — deliberately, because that bucket
+is where personal papers are.
+
+**Why "utility frames".** A photograph of a shop receipt is personal. A screenshot of
+a conversation with your wife is personal. A passport is more personal than either.
+None of them is a photograph taken *for memory*, and that is a different thing — which
+is why the slice is named after it. The distinction is not academic: a name that reads
+as "junk, select everything, delete" is expensive here, because about a fifth of what
+is in the slice are documents that must not be deleted. In the web app those cards are
+marked out, and the note above the grid says so before you select anything.
+
+**How reliable each bucket is.** Four buckets under one name are four different
+measurements, so the slice as a whole names no percentage and each bucket names its
+own:
+
+| bucket | precision | recall | measured |
+|---|---|---|---|
+| `product` | 78% | 81% | 2026‑08‑03, 999 frames |
+| `screenshot` | 59% | 83% | 2026‑08‑03, 350 frames |
+| `document` | — | — | not measured |
+| `meme` | — | — | not measured |
+
+Every third "screenshot" is an ordinary photograph and every fifth "product" is not a
+product; for documents and memes nobody has counted yet, and the app says exactly that
+rather than borrowing a neighbour's number.
+
+**This is not the same thing as `_Unsorted/not_personal/`.** That folder holds
+downloaded films and series, recognised by the *file name* (`S01E05`, `1080p`, a rip
+group) at indexing time — the `files.not_personal` flag, a question about where a file
+came from. The Utility frames slice is a question about what is *in* the frame,
+answered by the `sorta junk` stage. Different stages, different folders (`_Products/`,
+`_Documents/`, `_Unsorted/junk/`), and no overlap: on a live collection of 38,485
+files the flag marks three of them.
 
 > **Privacy:** documents may contain personal data. Sorta processes them **locally**
 > and never uploads them (unless you enable an online provider). See §15.
@@ -1016,12 +1047,15 @@ Classification: 12/12 processed (photo: 11, screenshot: 1)
   get `_1`, `_2`.
 - **Originals untouched with copy/link.** With move, files relocate but content and
   EXIF are unchanged.
-- **Local by default.** Face/scene/text models run on your machine. Online providers
-  are **opt‑in** in `config.yaml`: `geo.provider: online` (Nominatim) sends only GPS
-  coordinates, never images; `naming.provider: claude` sends a handful of sample
-  photos per event to the Claude API (the one feature that does leave your machine
-  with real photo content) — see [SECURITY.md](../../SECURITY.md) for exactly what
-  each provider sends. Keep them off for maximum privacy.
+- **Local by default, and there is no way out for a photograph.** Face/scene/text
+  models run on your machine, and **sorta never sends your images anywhere.** That is
+  not a default you have to keep: the cloud naming provider that used to upload a few
+  sample photos per event was **deleted** (F170), and no code capable of sending an
+  image to an outside service is left in the package. The one online provider that
+  remains is **opt‑in** in `config.yaml`: `geo.provider: online` (Nominatim) sends GPS
+  **coordinates**, never images — see [SECURITY.md](../../SECURITY.md) for exactly what
+  it sends. `naming.provider: local_vlm` does put sample frames on the network, but only
+  towards the ollama endpoint you run yourself (`localhost` unless you change it).
 - The web UI binds to `127.0.0.1` only.
 
 ---
@@ -1036,7 +1070,7 @@ sorta index --refresh-exif        Re-read metadata of already-indexed files (§1
 sorta run [--src DIR] [--faces/--no-faces] [--events/--no-events] [--deep/--no-deep]
           [--geo offline|online] [--pets/--no-pets] [--quality/--no-quality]
           [--quality-scope groups|events|faces|all] [--by city|person|event] [--dest DIR]
-                                  Base pipeline (index→geo→landmarks→junk); --src
+                                  Base pipeline (index→geo→landmarks→classify→junk); --src
                                   overrides config sources for this run; --faces/
                                   --events opt into the slow stages (default: off,
                                   independent of each other); --deep/--geo/--pets/
@@ -1054,9 +1088,13 @@ sorta faces sheet <cluster> <out.html> Contact sheet to identify a cluster
 sorta events                      (Re)build events
 sorta events add <name> <from> <to>    Manual event over a date range
 sorta events rename <id> <name>        Manual event name
+sorta classify                    Verdicts only (photo/screenshot/meme/document/product),
+                                  the half of the junk stage that runs BEFORE faces so
+                                  that faces are not looked for in screenshots (§8)
 sorta junk [--pets/--no-pets] [--quality/--no-quality]
            [--quality-scope groups|events|faces|all]
-                                  Classify photo/screenshot/meme/document/product; the
+                                  Frame quality, animals, keeper, search index — and the
+                                  classification above when run on its own; the
                                   frame-quality flags override config for this run (§24)
 sorta phash                       Perceptual hashes (for near-duplicates)
 sorta stats                       Index coverage (GPS, date sources, duplicates)
@@ -1070,7 +1108,7 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
 sorta album person|event|query <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album animal --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album product|screenshot|meme --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
-sorta album blurred|eyes_closed|no_subject --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album blurred|eyes_closed --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album people|group|portrait --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   Collect a slice into a named folder (hardlink by
                                   default); only person/event/query take a selector,
@@ -1491,9 +1529,13 @@ entirely.
 | `naming.vlm_base_url` | `http://localhost:11434` | The ollama address — used only with `naming.provider: local_vlm`. |
 | `naming.vlm_model` | `llava` | The ollama model for that same provider. |
 | `naming.vlm_timeout` | `120` | Timeout of an ollama request, in seconds. |
-| `naming.claude_model` | `claude-opus-5` | The cloud provider's model — used only with `naming.provider: claude`. |
-| `naming.claude_api_key_env` | `ANTHROPIC_API_KEY` | The name of the environment variable holding the key. The key itself is never written into the config. |
-| `naming.claude_timeout` | `60` | Timeout of a cloud request, in seconds. |
+
+The cloud naming provider and its three keys (the model, the environment variable with
+the API key, the timeout) were **removed** in F170 — it was the only feature that
+uploaded photographs to an outside service, and deleting it is what turns "your images
+stay here" from a default into a property of the program. A `config.yaml` that still
+selects it keeps working: the run says the provider is gone, lists `template` / `vlm` /
+`local_vlm`, and names events by the template.
 
 **`features:` — per-frame quality signals (F113, all off by default)**
 
@@ -1505,9 +1547,9 @@ entirely.
 | `features.pet_candidate_threshold` | `0.3` | Who is shown to the model when `features.pets_verify` is on — the second, much lower threshold. `0.7` above is high because nothing was checking CLIP's answer; once something is, the selection can be widened, and that is where the missing recall lives (about 466 animals sit below `0.3`). **Measured** on 500 random hand-labelled frames, scored by the rule the product itself applies: the bare `0.7` threshold marks 18 frames at 94% precision and 47% recall, the cascade at `0.5` marks 20 at 90% and 50%, the cascade at `0.3` marks 28 at 82% and 64%. `0.3` is the value the cascade exists for — seventeen points of recall for twelve of precision — and the check earns its place there: it removed 6 of the 11 false marks and lost no correct one. **Precision is deliberately lower than the bare threshold gives**; recall is what you are buying. Counted on the stored scores of a 19 757-photo collection at the measured 0.78 s per frame: `0.7` selects 805 frames (10.5 min), `0.5` — 993 (12.9 min), `0.3` — 1 331 (17.3 min), `0.2` — 1 679 (21.8 min), everything — 19 757 (4.3 hours). Ignored when the check is off. |
 | `features.junk_rescue` | `false` | Whether to look for the **screenshots, photographed screens and receipts this stage has already filed as photographs**. A search by words put memes and screenshots at the top of its results while every row of the embedding table said `photo` — so those frames were not junk leaking into the index, they were a few percent of the "photographs" being misclassified, and they go into the city layout, the duplicates and the albums like ordinary pictures. They are found with a zero-shot query over the vectors `features.store_embeddings` already keeps: `junk_score = max(looks like a screenshot / meme / text / receipt) - max(looks like a photograph)`, written to `frame_quality.junk_score` for every photograph that has a vector (NULL without one). It costs no pass over any image — the vectors are on disk and the prompts are five short strings. **With the deep tier (`vlm.enabled`) off no verdict changes at all**: the score is stored, the candidates are counted, and the run is otherwise the one you had. With it on, the frames above the threshold below are shown to the model, and only the model's answer moves a verdict — a candidate it calls a photograph stays one. |
 | `features.junk_rescue_threshold` | `0.02` | Who is shown to the model. Reviewed by eye on a 19 753-photo collection: `+0.05` selects 93 frames (0.5%) and they are junk outright; `+0.02` selects 955 (4.8%), and the band between the two still holds about 17% real photographs; `0.00` selects 5 688 (28.8%), where junk is down to single figures. This is a **selection** threshold and not a verdict: at about 85% precision, reclassifying by it directly would take some 150 living photographs out of the layout, which is exactly the mistake measured for the animal label — so the model gets the last word. 955 frames is ~12 minutes at the measured 0.78 s per frame. Read it off your own collection first: `python scripts/measure_junk_rescue.py` prints the distribution and what every threshold would select, before anything is switched on. |
-| `features.detector` | `false` | Whether the animal label gets a **third tier: an object detector** (COCO, torchvision) over the candidates a query selects. It needs `detect.enabled` — its own master switch, not `vlm.enabled`, because a detector is not a VLM. It exists for **one measured slice out of three**: on 200 hand-labelled frames at confidence 0.5 the detector is 62% precision / 87% recall on animals, against 71% / 33% for the label the pipeline writes today — while on people it is 42% precision against ~100% from the face boxes (§6), and on food 20% / 15%, because COCO has no `food` class at all (it has a banana, a pizza, a sandwich). So people and food are deliberately **not** detected here. It is a cascade and never a pass: a full run of the detector over 22 096 photographs is 30.8 minutes at the measured 83.8 ms per frame, while the ~2 000 candidates of the query cost ~3 minutes. The answer overrides the CLIP label in **both** directions — an animal found where the score was too low is labelled, a frame CLIP called an animal with nothing on it loses the label — and every refusal (no stored vectors, no weights, an error on one frame) falls back to the label you already had, never to "no animal". What was found is stored with its class, confidence and box (table `detections`), so a "cats apart from dogs" slice is a query and not another pass. Needs `features.store_embeddings`: without stored vectors there are no candidates, and the stage says so instead of falling back to a pass over everything. |
-| `features.detector_candidates` | `2000` | How deep into the query ranking the candidate list goes — the **one** number that decides what this costs, because the detector sees nothing else. 2 000 frames is ~3 minutes at the measured 83.8 ms per frame. Recall is bounded by the query's own recall at this depth (87% on the labelled sample), so raising it buys the animals the query ranked lower and costs time linearly; `python scripts/measure_detector.py` prints that ceiling per depth on your own collection. |
-| `features.detector_threshold` | `0.5` | The confidence at which a detected box counts as an animal. **Choose it from the table, not in advance:** `python scripts/measure_detector.py` prints precision and recall at 0.3 / 0.5 / 0.7 over a labelled sample of your own, next to what the current CLIP label scores on the same frames. `0.5` is the row that was measured (62% / 87%). The lesson behind that rule is `features.pet_candidate_threshold`, where the value a brief proposed in advance turned out to be the worst row of its table. Every box is stored with its score, so re-choosing this costs a query and no new pass over any image. |
+| `features.detector` | `false` | Whether the animal label gets a **third tier: an object detector** (COCO, torchvision) over the candidates a query selects. It needs `detect.enabled` — its own master switch, not `vlm.enabled`, because a detector is not a VLM. It exists for **one measured slice out of three**: on 200 hand-labelled frames at confidence 0.5 the detector is 62% precision / 87% recall on animals, against 71% / 33% for the label the pipeline writes today (the animal row was re-measured on 500 frames and reads 78% / 69% at that same confidence — see `features.detector_threshold`; what did not move is the boundary between the three slices, which is what this table is kept for) — while on people it is 42% precision against ~100% from the face boxes (§6), and on food 20% / 15%, because COCO has no `food` class at all (it has a banana, a pizza, a sandwich). So people and food are deliberately **not** detected here. It is a cascade and never a pass: a full run of the detector over 22 096 photographs is 30.8 minutes at the measured 83.8 ms per frame, while the 4 000 candidates of the query cost 5.6 minutes. The answer overrides the CLIP label in **both** directions — an animal found where the score was too low is labelled, a frame CLIP called an animal with nothing on it loses the label — and every refusal (no stored vectors, no weights, an error on one frame) falls back to the label you already had, never to "no animal". What was found is stored with its class, confidence and box (table `detections`), so a "cats apart from dogs" slice is a query and not another pass. Needs `features.store_embeddings`: without stored vectors there are no candidates, and the stage says so instead of falling back to a pass over everything. |
+| `features.detector_candidates` | `4000` | How deep into the query ranking the candidate list goes — the **one** number that decides what this costs, because the detector sees nothing else. **Measured** on 500 hand-labelled frames (36 animals), where the last figure is the share of the known animals that depth shows the detector at all: 500 candidates — 0.7 min — 25% ceiling; 1 000 — 1.4 min — 50%; 2 000 — 2.8 min — 83%; 4 000 — 5.6 min — 100%; 10 000 — 14.0 min — 100%. That ceiling bounds every recall below it: a frame the query never showed is not found at any threshold, and at 2 000 candidates 17% of the animals were out of reach in principle. `4000` costs **5.6 minutes** at the measured 83.8 ms per frame — 2.8 minutes more than the previous default, against the ~19 minutes the animal stage already spends on the VLM — and 10 000 buys nothing, the same ceiling for three times the time. `python scripts/measure_detector.py` prints this table for your own collection. |
+| `features.detector_threshold` | `0.6` | The confidence at which a detected box counts as an animal. **Choose it from the table, not in advance:** `python scripts/measure_detector.py` prints precision and recall over a labelled sample of your own, next to what the current CLIP label scores on the same frames. On 500 hand-labelled frames: the CLIP label 94% precision / 47% recall; the detector at `0.50` — 78% / 69%; at **`0.60` — 86% / 69%**; at `0.70` — 86% / 67%. `0.60` **dominates** `0.50` with nothing traded away: the same recall, 25 correct marks out of 29 instead of 25 out of 32. The 62% / 87% this tier shipped with was read off 200 frames, where fifteen animals made each one worth 6.7 points of recall, and both figures moved by two dozen points on the larger sample — which is what a thin class does to a small one, and why `features.pet_candidate_threshold` is the standing lesson about values chosen in advance. Every box is stored with its score, so re-choosing this costs a query and no new pass over any image. |
 | `features.landmarks_verify` | `false` | Whether to **check each landmark CLIP proposes with the local VLM** before the place is written: the model is asked what well-known place the frame shows, and only a proposal it names itself goes on. The order does not bend — CLIP proposes, the model checks, the corroboration behind `naming.landmark_threshold` decides; agreement between the two models never overrules a country named in the path. It exists because CLIP's failure here is not one of perception but of knowledge: the wrong cities scored 0.980 against 0.991 for the right one, and no threshold splits them. That is also why it was measured before it was built. On 104 frames with a known answer — 24 of them proposals CLIP believed and corroboration threw away — the model confirmed a wrong city zero times, at 92% accuracy; not because it knows every landmark but because it stays silent when it does not (71 of the 104 answers named nothing). Needs the `[vlm]` extra; if the weights will not load, the run behaves exactly as it does with this off, and with it off it is unchanged in every respect. |
 | `features.landmark_candidate_threshold` | `0.5` | Who is shown to the model when `features.landmarks_verify` is on — the second, much lower threshold, exactly like the pair above. `naming.landmark_threshold` is high because nothing was checking CLIP's proposal; once something is, the selection widens. Measured on the 7 619 place-less frames of a live collection: `0.85` gives 10 proposals (8 kept by corroboration, 2 dropped), `0.7` — 66 (52 / 14), `0.5` — 151 (127 / 24). 151 questions is a couple of minutes of VLM. Never set above `naming.landmark_threshold` — the check is there to widen the band, not to narrow it, and a higher value is clamped back down. Ignored when the check is off. |
 | `features.group_photo_faces` | `3` | How many detected faces make a photograph a **group photograph** — the second of the three face slices (§6). Not a confidence threshold: those slices are read straight off the `faces` table, so a frame is in one because the detector found a box on it. Three, because two people in a frame are a couple or a passer-by and the slice exists to find the gatherings. Raise it to keep only the crowds. |
@@ -1517,12 +1559,14 @@ entirely.
 | `features.sharpness_band_max` | `300` | Above this it is plainly sharp. Between the two lies the band of uncertainty, and only that band reaches the VLM. |
 | `features.subject_score_min` | `0.9` | The "there is a subject in this frame at all" threshold — what separates a shot from a pocket accident. |
 | `features.blur_review_max` | `90.0` | How far down the blur review list opens by default. **Not a "blurred" verdict** — the measurement says the opposite. Reviewed by eye in bands, blurred frames turned up in **every** band up to 400: sharpness ranks, it does not classify, and no cutoff separates junk from a soft but wanted photograph. What the bands did show is where the yield falls off, around 90–120 (below 70: 378 frames, below 90: 530, below 120: 785, below 160: 1215, on a 19 757-photo collection). The list opens here and continues on demand. **Nothing is ever deleted by this number.** |
+| `features.face_sharpness_max` | `200.0` | The same laplacian, measured **inside the face boxes** of a frame (column `frame_quality.face_sharpness`), and the number below which such a frame is a blur candidate. It exists because the whole-frame number answers "how much detail is in this picture", which is a different question from "is it in focus": a detailed sharp street and a smooth blurred face score alike, and on a hand-checked sample of 200 frames the whole-frame filter found 2 of the 33 blurred ones — 6%. Measured on the 68 frames of that sample that have a face (13 blurred): over the whole frame at 300 → 10 flagged, 2 right (15% recall); over the face crop at 100 → 17 flagged, 5 right (38%); at 200 → 33 flagged, 8 right (62%); at 400 → 44 flagged, 10 right (77%). So 200 quadruples recall for a comparable number of frames flagged. **Provisional**: 13 blurred frames means one frame is worth ~8 points of recall, so the direction was measured and the figure was not — `python scripts/measure_frame_quality.py --features sharpness` prints the sweep on your own collection. Two limits worth knowing: it covers only frames a face was found on (about a third of a typical archive — landscapes and objects have no such signal at all), and its precision is ~25% at every threshold above, i.e. three of four flagged frames are not blurred. **It ranks the blur list; nothing is deleted or reclassified by it.** |
 | `features.store_embeddings` | `true` | Whether to keep the CLIP vector of every canonical photograph (table `clip_embeddings`) instead of discarding it once the junk stage has read its scores off it. Nothing is shown for it: it is what lets a later feature — search by words, an album from a query, "frames like this one" — work without a fresh CLIP pass over the whole collection. On by default, because the price is small (~60 MB per 20 000 photos, written inside a pass that runs anyway) and the off state is the one where each such feature costs a full pass. Turn it off on very large collections: 300 000 photos are ~920 MB. Vectors are stored L2-normalized in float32 together with the model that produced them — change `naming.clip.model` or `naming.clip.pretrained` and the stored rows are recomputed rather than used, because vectors of different models are not comparable. |
-| `features.search_limit` | `200` | How many frames a search by words takes: `sorta search "cake"` prints this many, and `sorta album query "cake" --dest …` gathers this many. **Not a similarity threshold**, and there will not be one, for the same reason sharpness has none — a CLIP score orders frames against each other and means nothing in absolute terms, so "this really is a cake" is not a line anybody can draw. What this number chooses is the size of the sample a person then looks through: raise it to see further down the ranking, lower it for a shorter list. Two limits of the method are worth knowing before you rely on it — compound queries ("a cake with candles on a table by the window") are weak while single subjects are what CLIP does well, and the population is personal photographs only (a screenshot or a document has no vector at all). Needs `features.search_index`. |
+| `features.search_page` | `200` | How many frames a search by words takes at a time: `sorta search "cake"` prints this many, and `sorta album query "cake" --dest …` gathers this many. **Not a similarity threshold**, and there will not be one, for the same reason sharpness has none — a CLIP score orders frames against each other and means nothing in absolute terms, so "this really is a cake" is not a line anybody can draw. What this number chooses is the size of the sample a person then looks through: raise it to see further down the ranking, lower it for a shorter list — and in the web interface the list does not end there anyway: **Show more** loads the next page of the same ranking. Renamed from `features.search_limit`, which still works and still means this. Two limits of the method are worth knowing before you rely on it — compound queries ("a cake with candles on a table by the window") are weak while single subjects are what CLIP does well, and the population is personal photographs only (a screenshot or a document has no vector at all). Needs `features.search_index`. |
 | `features.search_index` | `false` | Whether to build the **search index**: a second CLIP vector per photograph (table `search_embeddings`), computed by a multilingual model and read by search alone. **Off by default because it is not free** — unlike `features.store_embeddings` it is a second CLIP pass over the collection, 19 753 frames in 635 seconds (~10.5 minutes) on the machine it was measured on, plus ~40 MB per 20 000 photographs. What it buys was measured on 217 hand-labelled judgements over 8 concepts: Russian queries go from 22% to 98% precision at top-5, and four of the eight (cake, food, mountains, children) go from returning **nothing at all** to working, while English does not regress (95% against 98%). With it off `sorta search` and `sorta album query "…"` have nothing to rank and say so — the classification vectors are deliberately not used instead, because a ranking produced by the wrong model looks exactly like a good one. |
 | `features.search_model` | `xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k` | The model of the search side, `<open_clip architecture>/<weights>`. A key of its own rather than `naming.clip.*`, and that separation is the whole feature: the landmark (0.85), animal (0.70) and cascade (0.50) thresholds are calibrated on the classification model's numbers, so search is not allowed to change it. Change this one and every stored search vector goes stale — the next run recomputes them, and vectors of two models are never mixed. |
 | `features.restore_model` | `caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr` | The model behind **“Try to improve”** in the **Review** tab — the button that makes a model-processed **copy** of **one** frame you opened and chose. There is no on/off key for it because there is nothing to switch on: nothing is loaded until you press the button, and pressing it is the opt-in. The price is stated rather than hidden — ~400 MB of weights, downloaded from the network once (they need the `[vlm]` extra for `transformers`), and ~1 second per frame on the card this was measured on; offline with no cached weights the button says so instead of returning an empty result. `realworld` and not `classical`, which is the whole measurement: `swin2SR-classical` is trained on clean bicubic downscaling — a degradation a real archive does not contain — and lost to a plain unsharp mask, while `realworld-sr-x4` beat the mask outright. **Read this before using it: the model does not bring back what was lost, it draws something plausible.** That is why the result is always a new file marked as processed (`<name>_restored.jpg`, beside the original, never over an existing file), why the original is never touched, and why there is no way to run this over more than one frame at a time — no bulk button, no stage, no CLI command. The copy is indexed like any other file (it goes into the layout, the slices and albums), its link to the original is stored, and the pair is never shown as a duplicate to sort out. |
 | `features.search_fusion` | `off` | Whether one query is answered by **both indexes at once** — the search index above and the classification vectors kept by `features.store_embeddings` — and how the two lists are put together. `off` ranks the search index alone, exactly as before, and does not read the other table at all. `rank` merges **by position** (reciprocal rank fusion): a frame both models rank highly beats a frame only one of them liked. `union` merges the two lists **as sets**: every frame keeps its best position, so a frame only one model found is not pushed out. The scores themselves are never added up in either mode, and cannot be — a cosine of ViT-L-14 and a cosine of the multilingual model are numbers of two different spaces that look comparable and are not. The price is one extra matmul over a stored table (~1 ms of query time) and no pass over any image; it needs `features.search_index`, because without a second index there is nothing to merge. **Off by default because the number that would choose otherwise does not exist yet**: the two models measure the same at the top (88/96/98% at ranks 1/3/5) while returning different frames, so what a merge is expected to raise is recall — and recall has never been measured for either of them. Measure it on your own labelled sample first: `python scripts/measure_search.py --fusion --queries-file queries.txt --labels marks.json` prints precision and recall at every depth for all four variants. |
+| `features.restore_max_edge` | `1024` | The longer side a frame is scaled to **before** that model, and the single number that decides what you get back. A frame **below** it goes to the model untouched — 800 px in, 3200 px out, nothing given up, and that is the case the button was built for (a scan, a downloaded picture, an old small shot). A frame **above** it is reduced first, and the ×4 brings it back to about its own size: `4032 → 1024 → 4096`. Same size out, but the real detail of the original never reached the model and plausible detail was drawn in its place — so the **Review** tab says exactly that beside the copy instead of calling it an improvement. The limit exists because the model works at the **upscaled** resolution: a full 4000 px frame would be 16 000 px wide inside it, around 780 megapixels, which does not fit on 32 GB. Raising it costs memory as the **square** of the number. Before you move it, run `python scripts/measure_restore.py`: it prints time, weight and peak memory per frame population (< 1024 px, 1024–2500 px, > 2500 px), always against the original as the baseline, and lays out blind pairs of “original / processed” — the only honest judge of whether the copy is better is a person looking at it, and “sharper” is not “better”. |
 
 ### The `vlm:` section
 
@@ -1537,7 +1581,7 @@ copy per process, so the settings are shared.
 | `vlm.model` | The model id. Default `Qwen/Qwen2.5-VL-3B-Instruct`. |
 | `vlm.workers` | Threads preparing frames (decode + preprocessing) while the GPU classifies the previous one. Default `min(4, cores)`. It does not affect verdicts — labels are applied in candidate order whatever it is set to. |
 | `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |
-| `vlm.quality` | A toggle of its own for the questions about a frame's quality: are the eyes open, is there a subject worth keeping. Default `false`. A third question — is this an accidental shot — was asked until F122 and has been retired: on a labelled sample it was right 5% of the time, which is noise. The eyes answer is believed only where the face detector found a face. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
+| `vlm.quality` | A toggle of its own for the question about a frame's quality: are the eyes open. Default `false`. Another question — is this an accidental shot — was asked until F122 and has been retired: on a labelled sample it was right 5% of the time, which is noise. The eyes answer is believed only where the face detector found a face. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
 | `vlm.quality_scope` | Who gets asked: `groups` (frames of near-duplicate groups, the default), `events` (plus a sample from every event), `all` (every live photo). On 20 000 frames `all` means hours of GPU, which is why the default is narrow. |
 | `vlm.exclude_classes` | **Privacy:** classes no VLM is ever shown. The default is `[document]` — that bucket holds passports, medical forms and bank papers, and the project already refuses to DECODE them for display. The model is local and nothing leaves the machine, but the call is yours. **The cost is real:** the deep tier is what *corrects* a wrong `document` verdict (a beach photo scored 0.95 as a document on a live run), so an excluded class keeps whatever the fast tier decided. Accepted: `document`, `product`, `screenshot`, `meme`; `[]` shows everything. `photo` cannot be excluded. |
 
@@ -1667,7 +1711,7 @@ named as a verdict — forwarded pictures are often worth looking through.
 ## 22. The Review workspace
 
 The **Review** tab (§6) is one workspace for everything that has to be looked at by eye
-and partly deleted. Four slices, switched by the buttons at the top, and each button
+and partly deleted. Three slices, switched by the buttons at the top, and each button
 carries the number of frames still undecided:
 
 - **Duplicates** — near‑duplicate groups, with the recommended keeper (★) pre‑selected
@@ -1678,16 +1722,14 @@ carries the number of frames still undecided:
 - **Closed eyes** — the model's answers about frame quality (`vlm.quality`, §24). The
   question is only asked where the detector found a face, so without a `faces` run this
   slice is empty and says so.
-- **No subject** — frames where the model found no subject at all: a shot of the floor,
-  a smeared wall, an accidental press.
 
 **The decision goes into one shared journal, one per file.** There are three buttons:
 **Mark for deletion**, **Keep**, **Clear the mark**. Marking "delete" is a mark, not a
 deletion: those files leave for the `_delete` folder on the next layout (§9), and until
 then nothing happens. A **Keep survives a recompute** — a frame you have decided about
 is not asked about a second time, even if the next run scores it as blurred again. The
-journal is shared by all four slices, so a file that turns up both in "blurred" and in
-"no subject" has one decision, not two.
+journal is shared by all three slices, so a file that turns up both in "blurred" and in
+"closed eyes" has one decision, not two.
 
 **A third action: "Try to improve"** (`features.restore_model`, §21). Select **exactly
 one** frame and press it: a model makes a **processed copy** and it appears as a **second
@@ -1707,6 +1749,11 @@ Press it twice on the same frame and you get the copy you already have, not a se
 The copy is an ordinary member of the collection — it is indexed, it goes into the layout,
 the slices and albums, it carries the capture date of its source, and the pair is never
 shown to you as a duplicate to sort out.
+**On a full-sized frame you are told what the copy really is.** The model is ×4 and cannot
+be shown a whole 12‑megapixel shot, so such a frame is scaled to `features.restore_max_edge`
+(§21) first and comes back at about its own size — rebuilt from a reduced copy of itself
+rather than sharpened from the original. That is not silent: the answer says so, with both
+numbers, next to "done". On a frame under the limit nothing is given up and nothing is said.
 
 **There is no "delete everything below the threshold" button, and there will not be
 one.** That follows from a measurement rather than from caution: reviewing by sharpness
@@ -1741,8 +1788,13 @@ like any other slice.
 **It is a ranking, not a filter.** The list is sorted by closeness to the query and there
 is no "this really is it" threshold, nor will there be one: the CLIP score orders frames
 against each other and means nothing in absolute terms. Read top‑down and stop where the
-resemblance runs out. `features.search_limit` (default `200`) is a sample size, not a
-similarity threshold.
+resemblance runs out. `features.search_page` (default `200`) is the size of a PAGE, not a
+similarity threshold and not a ceiling: **Show more** continues the same ranking further
+down, without reordering it and without repeating a frame. Depth is worth the press — on
+a hand-checked collection, doubling the list took the query for children from 61% to 89%
+completeness — and it is a trade: the frames that arrive with the second page are the ones
+the model was least sure about. The counter above says how many frames the ranking holds
+in total, not how many are on screen.
 
 **Four states of the search index.** The line under the input always says which one it
 is in:
@@ -1799,6 +1851,16 @@ on either by a flag for one run (§8) or by a key in `config.yaml` (§21).
   cascade at all. The wide gate buys recall with precision on purpose — expect about one
   wrong mark in five — and costs roughly 19 minutes against 12 on a collection of 20
   thousand photographs.
+- **The object detector, when it is on, changes what this slice is.** With
+  `features.detector` and `detect.enabled` on, a detection outranks the CLIP score in both
+  directions — an animal found where the score was too low is in the slice, a frame CLIP
+  called an animal with nothing detected on it leaves it — and the tab, the counter and
+  the album all move together, without a run, the moment either switch is flipped. The
+  trade is real and goes both ways: **62% precision at 87% recall** against the cascade's
+  **82% at 64%**, which is roughly a quarter more animals found and a fifth of the
+  confidence given up for them. The caption of the tab states both numbers. The F130
+  answer still outranks the detector where there is one (a box detector calls a drawn cat
+  a cat), and a frame the detector never examined keeps the verdict it had.
 - **A false mark can be taken off by hand.** The card offers **Not an animal** / **This
   is an animal** / **Back to automatic**. The correction is stored in the index and
   **survives any recompute**: the next run will not put back a mark you removed. The
@@ -1808,8 +1870,8 @@ on either by a flag for one run (§8) or by a key in `config.yaml` (§21).
 ### Frame quality
 
 Sharpness is the variance of a Laplacian, computed with no model at all, while "are the
-eyes open" and "is there a subject" are asked of the local VLM (`vlm.quality`) — those
-are the ones that cost time. Who gets asked is decided by `vlm.quality_scope`:
+eyes open" is asked of the local VLM (`vlm.quality`) — that is the one that costs
+time. Who gets asked is decided by `vlm.quality_scope`:
 
 | Value | Who is asked | Price |
 |---|---|---|

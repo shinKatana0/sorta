@@ -60,6 +60,19 @@ def configure_logging(level: str) -> None:
 
 
 @dataclass
+class LoggingConfig:
+    """F166: the `logging:` section — how the run log paces itself.
+
+    Separate from the top-level `log_level`, which decides WHAT gets written; this
+    decides how often a stage that is still running repeats where it has got to.
+    """
+
+    # Seconds between the periodic `stage=... progress ...` lines. 0 switches them off;
+    # the start and summary lines are not affected either way.
+    progress_interval_sec: float = 60.0
+
+
+@dataclass
 class IndexConfig:
     extensions: dict[str, list[str]] = field(default_factory=lambda: {
         "photo": ["jpg", "jpeg", "png", "heic", "heif", "webp", "tif", "tiff", "bmp"],
@@ -136,6 +149,70 @@ def _dedup_from(raw: dict) -> DedupConfig:
             raw.get("keeper_max_frames"), d.keeper_max_frames),
         keeper_min_group_size=_as_positive_int(
             raw.get("keeper_min_group_size"), d.keeper_min_group_size),
+    )
+
+
+@dataclass
+class EstimateConfig:
+    """F159: what the run screen prices a run with when it has nothing measured here.
+
+    The rest of the budget is read out of the run log — after F147 the file holds how
+    fast every stage ran ON THIS MACHINE, and that beats any number measured once
+    somewhere else. The comparative keeper question is the exception, and it is why this
+    section exists: it is asked inside the junk stage's VLM phase, so the log cannot
+    separate its seconds from the per-frame questions asked in the same phase. It gets
+    the only two numbers here, and they are settings rather than constants in `ui.py`
+    because the last set of constants sat there for two features being wrong.
+    """
+
+    # Measured 2026-08-03 over a live collection, one question per group, seconds:
+    #
+    #     frames in the group   median   min    max    asked one by one
+    #             2              1.47    1.40   2.03         1.54
+    #             3              2.45     2.31   2.96         2.31
+    #             4              3.46     3.34   4.65         3.08
+    #             5              4.56     4.37   5.05         3.85
+    #
+    # The slope through those four points is 1.03 s per frame, and the fixed cost is
+    # 0.45 s. The 1.32 s this replaced was the price of a PAIR, quoted for groups "of up
+    # to five" — on the collection above it estimated the stage at half a minute against
+    # a measured 1.9.
+    #
+    # Read the line honestly: `0.45 + 1.03 x frames` sits about a second above each
+    # median (the same four points also fit `0.45 + 1.03 x (frames - 1)`). The higher of
+    # the two is the one that ships, because the two errors are not symmetric — an
+    # estimate that runs long is a warning, and one that runs short is a broken promise.
+    # Both numbers are settings for the same reason: a machine that disagrees can say so.
+    #
+    # The same table also retires the premise the option was built on: from three frames
+    # up, one question over the group is NOT cheaper than asking about the frames one at
+    # a time. The stage still answers something separate questions cannot ("which of
+    # these is the best one"), and that is now the only thing said for it.
+    keeper_call_sec: float = 0.45
+    keeper_frame_sec: float = 1.03
+    # How many days a timing from the run log is worth trusting. Mirrors
+    # `runlog.DEFAULT_MEASUREMENT_MAX_AGE_DAYS`; 0 or less switches the expiry off. The
+    # guard that does the real work is the build check inside `read_measurements` — this
+    # one only catches the same version running months later on a machine that has moved
+    # on since.
+    measurement_max_age_days: float = 90.0
+
+
+def _estimate_from(raw: dict) -> EstimateConfig:
+    """The `estimate:` section — garbage-tolerant like every section around it."""
+    d = EstimateConfig()
+
+    def price(key: str, default: float) -> float:
+        # A negative price is not a cheap stage, it is a typo — and it would make the
+        # total shrink as options are switched on.
+        value = _as_float(raw.get(key), default)
+        return value if value >= 0 else default
+
+    return EstimateConfig(
+        keeper_call_sec=price("keeper_call_sec", d.keeper_call_sec),
+        keeper_frame_sec=price("keeper_frame_sec", d.keeper_frame_sec),
+        measurement_max_age_days=_as_float(
+            raw.get("measurement_max_age_days"), d.measurement_max_age_days),
     )
 
 
@@ -221,6 +298,48 @@ DEFAULT_VLM_MAX_EDGE = 896
 # The workers cap is deliberately modest and NOT "all your cores": the machine that runs
 # this may well have two, the GPU half is a single consumer that only needs to be kept
 # fed, and every worker in flight holds a preprocessed frame in RAM (F101).
+#
+# F164 was sent to raise it and MEASURED THAT IT MUST NOT BE RAISED. The case for more
+# threads was arithmetic from the F101 profile — ~0.6 s of CPU to prepare a frame against
+# ~0.19 s of GPU to answer about it, so a card needs three preparing threads to stay fed —
+# plus the live run of 2026-08-03, where `junk_vlm` held the card at 51% on a machine with
+# 24 cores and four threads. Both are true and the conclusion drawn from them is not,
+# because the premise expired: F105 gave the runtime the FAST image processor, and the
+# 0.6 s of one core became ~0.12 s of about seven. Four threads on a 24-core machine
+# therefore already ask for more cores than exist.
+#
+# Measured with scripts/measure_vlm_workers.py (120 frames of the live collection, the
+# real decode and the real processor, the model's turn replaced by a sleep of the measured
+# 0.19 s — see the script for what that mode can and cannot say):
+#
+#     threads   ms/frame   frames/s   vs 1 thread   model half busy   peak RSS
+#           1        290       3,45         x1,00               66%      551 MB
+#           2        230       4,35         x1,26               83%      954 MB
+#           4        249       4,01         x1,16               79%     1299 MB
+#           6        274       3,66         x1,06               70%     1645 MB
+#           8        295       3,39         x0,98               66%     2061 MB
+#          12        334       2,99         x0,87               57%     2599 MB
+#
+# More threads are SLOWER from two on, monotonically, and a second run of the sweep gives
+# the same curve to within 2%. Nothing here is a queue that grew too long: it is ONE
+# preparation saturating the machine on its own (the row's own CPU column reads 7.6 cores
+# busy with a single worker), so the next thread takes cores from the previous one. The
+# 51% of the live run has the same cause and is not a starving card — 0.12 s of
+# preparation against 0.19 s of generation is 66% busy with NO overlap at all, which is
+# exactly what the one-thread row measures.
+#
+# The last column is the brief's third question, answered: the frames in flight are real
+# memory (~2 per worker, CPU tensors), and the pool costs ~170 MB per thread — 2.6 GB at
+# twelve of them, next to a model that already holds 20.5 GB of VRAM.
+#
+# So the default stays min(4, cores) — a function of the machine, as it always was, and
+# four is inside 8% of the best row of a curve whose peak was measured against a STUBBED
+# model half. Moving it to two on that evidence would be the same mistake in the other
+# direction: a sleep releases the interpreter lock for its whole duration and a real
+# `generate()` does not, so where the peak sits is a question for
+# `scripts/measure_vlm_workers.py --full` on a free card. What would actually make this
+# pass faster is a CHEAPER preparation, not a wider one. `vlm.workers` remains the way to
+# say otherwise: it is the default that is capped here, never what a user may ask for.
 _VLM_WORKERS_CAP = 4
 
 
@@ -296,8 +415,8 @@ class VlmConfig:
     model: str = DEFAULT_VLM_MODEL
     workers: int = field(default_factory=default_vlm_workers)
     max_edge: int = DEFAULT_VLM_MAX_EDGE
-    # F113: the SECOND consumer of the same runtime — the frame-quality questions the
-    # cheap tiers cannot answer (eyes open, a subject at all, an accidental shot). Its
+    # F113: the SECOND consumer of the same runtime — the frame-quality question the
+    # cheap tiers cannot answer (eyes open; F122 and F177 retired the other two). Its
     # own toggle, deliberately not `enabled`: the deep junk tier and the quality band
     # are different populations and a user may well want one without the other.
     quality: bool = False
@@ -325,6 +444,11 @@ class VlmConfig:
 #
 # vlm.max_edge has no old address: it was a constant in the code.
 #
+# F173 put a second rename through the same set, inside one section this time
+# (`features.search_page` <- `features.search_limit`, see `_renamed_value`); it registers
+# its alias by the full `section.key` address, so two sections can retire a key of the
+# same name without silencing each other's warning.
+#
 # Process-wide on purpose — "once per run", not once per load_config call (the web app
 # reloads the config on every request). Tests clear it.
 _ALIAS_WARNED: set[str] = set()
@@ -347,6 +471,29 @@ def _vlm_value(new: dict, old: dict, new_key: str, old_key: str) -> Any:
             "config: ключ naming.%s устарел — переименуйте его в vlm.%s "
             "(пока читается по-старому)", old_key, new_key)
     return old[old_key]
+
+
+def _renamed_value(raw: dict, section: str, new_key: str, old_key: str) -> Any:
+    """The raw value of a knob that was renamed INSIDE one section: new spelling wins.
+
+    The `_vlm_value` rule with one section instead of two, and it exists for the same
+    reason: a key that moved must not take somebody's setting with it. A live config.yaml
+    holds the old name, silently ignoring it would hand that machine the default, and a
+    default is exactly what the person edited the file to get away from. The warning is
+    once per process (`_ALIAS_WARNED`) — this is read at startup, and the web app reloads
+    the config on every request.
+    """
+    if new_key in raw:
+        return raw[new_key]
+    if old_key not in raw:
+        return None
+    alias = f"{section}.{old_key}"
+    if alias not in _ALIAS_WARNED:
+        _ALIAS_WARNED.add(alias)
+        _log.warning(
+            "config: ключ %s.%s устарел — переименуйте его в %s.%s "
+            "(пока читается по-старому)", section, old_key, section, new_key)
+    return raw[old_key]
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -409,6 +556,42 @@ def _as_scope(value: Any, default: str) -> str:
         _log.warning("config: vlm.quality_scope=%r не из %s — использую %r",
                      value, "/".join(VLM_QUALITY_SCOPES), default)
     return default
+
+
+# F170: who may name an event — and every one of them runs on this machine. The cloud
+# provider that used to be the fourth name here uploaded the sample frames of an event to
+# a vendor API, which made it the only code in the product capable of putting a photograph
+# on the network; it is deleted rather than defaulted off, so "no code sends images
+# anywhere" is a property of the sources instead of a promise about a setting.
+NAMING_PROVIDERS = ("template", "vlm", "local_vlm")
+# A value that named a REAL feature until it was removed. Not a typo and not treated as
+# one: a config.yaml carrying it is somebody's working file, so it earns a sentence
+# saying what happened and a fallback, never a crash on the first line of a run.
+REMOVED_NAMING_PROVIDERS = ("claude",)
+
+
+def removed_provider_message(provider: str) -> str:
+    """What a run says about a `naming.provider` that no longer exists."""
+    return (
+        f"config: naming.provider={provider!r} удалён — этот провайдер отправлял "
+        f"фотографии в облако, теперь в продукте нет кода, отправляющего изображения "
+        f"наружу. Доступны {' | '.join(NAMING_PROVIDERS)}; использую 'template'"
+    )
+
+
+def _as_provider(value: Any, default: str) -> str:
+    """`naming.provider`, with a removed provider answered rather than obeyed.
+
+    Anything else — including a typo — is passed through untouched: `make_namer` is the
+    one place that decides what a provider name means, and an unknown one is still an
+    error there. Only the values this feature deleted are answered here, because only
+    they used to work.
+    """
+    name = value.strip().lower() if isinstance(value, str) else value
+    if name in REMOVED_NAMING_PROVIDERS:
+        _log.warning("%s", removed_provider_message(str(name)))
+        return default
+    return str(value)
 
 
 def _as_repo_id(key: str, value: Any, default: str) -> str:
@@ -668,24 +851,54 @@ class FeaturesConfig:
     #     people    42% precision, 96% recall   against ~100% precision from faces (F152)
     #     food      20% precision, 15% recall   COCO has a banana and a pizza, not a meal
     #
+    # The animal row was re-measured on 500 frames (2026-08-03) and reads 78% / 69% at that
+    # same confidence — see the table at `detector_threshold` below for what the numbers are
+    # now and which row is the default. What did not move is the boundary this table draws,
+    # and that is what it is kept here for.
+    #
     # So animals only — see detect.ANIMAL_CLASSES, where the boundary is written down
     # again next to the classes it draws. With it off nothing is loaded and the label is
     # what F122/F130 make it.
     detector: bool = False
     # How deep into the query ranking the candidate list goes — the ONE number that decides
-    # what this feature costs, because the detector never sees anything else. 2 000 frames
-    # at the measured 83.8 ms is ~3 minutes, against 30.8 minutes for the 22 096-frame pass
-    # the same detector would need to reach the same animals. Recall is bounded by the
-    # query's own recall at this depth (87% on the measured sample), so raising it buys
-    # animals the query ranked lower and costs time linearly; lowering it does the reverse.
-    detector_candidates: int = 2000
+    # what this feature costs, because the detector never sees anything else. MEASURED
+    # (2026-08-03, 500 hand-labelled frames, 36 animals), where the last column is the share
+    # of the known animals the query put in front of the detector at all:
+    #
+    #     depth   candidates     time    recall ceiling
+    #       500          500   0.7 min        25%
+    #      1000         1000   1.4 min        50%
+    #      2000         2000   2.8 min        83%   <- the F154 default
+    #      4000         4000   5.6 min       100%   <- chosen
+    #     10000        10000  14.0 min       100%
+    #
+    # THE CEILING BOUNDS EVERY RECALL BELOW IT: a frame the query never showed is not found
+    # at any threshold, and at 2 000 candidates 17% of the animals were unreachable in
+    # principle. 4 000 frames is 5.6 minutes at the measured 83.8 ms per frame — 2.8 minutes
+    # more than the old default bought the whole remaining ceiling, against the ~19 minutes
+    # the animal stage already spends on the VLM and the 30.8 a pass over all 22 096 frames
+    # would cost. 10 000 buys nothing: the same ceiling for three times the time.
+    detector_candidates: int = 4000
     # The confidence at which a detected box counts. CHOSEN FROM A TABLE, not in advance:
-    # `python scripts/measure_detector.py` prints precision and recall at 0.3 / 0.5 / 0.7
-    # over a labelled sample, and 0.5 is the row that was measured (62% / 87%). The lower
-    # rows are where a detector's precision collapses — the F130 lesson about 0.30 being
-    # the worst row of its table — and the boxes are stored with their scores, so
-    # re-choosing this needs no new pass over any image.
-    detector_threshold: float = 0.5
+    # `python scripts/measure_detector.py` prints precision and recall over a labelled
+    # sample. The rows, on the same 500 frames:
+    #
+    #                            precision   recall
+    #     the CLIP label today       94%       47%
+    #     detector at 0.50           78%       69%   <- the F154 default
+    #     detector at 0.60           86%       69%   <- chosen
+    #     detector at 0.70           86%       67%
+    #
+    # 0.60 DOMINATES 0.50 WITH NOTHING TRADED AWAY: the same recall, 25 correct marks out of
+    # 29 instead of 25 out of 32 — three false ones gone for free, which is a clean win and
+    # not a trade. F154 shipped 62% / 87% here, read off 200 frames where fifteen animals
+    # made every one of them worth 6.7 points of recall; both figures moved by two dozen
+    # points on the larger sample. That spread is what a thin class does to a small sample,
+    # and it is the reason a row is not chosen off one. The lower rows are where a
+    # detector's precision collapses — the F130 lesson about 0.30 being the worst row of its
+    # table — and the boxes are stored with their scores, so re-choosing this needs no new
+    # pass over any image.
+    detector_threshold: float = 0.6
     # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
     # what place the frame shows, and only a proposal the model names itself goes on to
     # F75 corroboration. Its own toggle, default off, and with it off the stage is
@@ -744,6 +957,30 @@ class FeaturesConfig:
     # number: "almost everything is blurred and I would delete it, except a couple I keep
     # for the memory" — a frame this cannot know about is exactly why the human marks.
     blur_review_max: float = 90.0
+    # F155: the same laplacian measured INSIDE the face boxes of a frame, and the number
+    # below which such a frame is a blur candidate. A separate setting from
+    # `blur_review_max` because the two are not on one scale: one is a variance over a
+    # whole preview, the other over a 100-200 px crop of it, and no factor converts them.
+    #
+    # MEASURED (2026-08-02, the 68 frames of a 200-frame hand-checked sample that have a
+    # face; 13 of them blurred):
+    #
+    #     measured over    threshold  flagged  right  precision  recall
+    #     the whole frame        300       10      2       20%      15%
+    #     the face crop          100       17      5       29%      38%
+    #     the face crop          200       33      8       24%      62%
+    #     the face crop          400       44     10       23%      77%
+    #
+    # 200 is the row that quadruples recall for a comparable number of frames flagged, and
+    # it is where this starts rather than where it ends: the sample holds 13 blurred frames,
+    # so one frame is worth ~8 points of recall and the direction is what was measured, not
+    # the figure. `python scripts/measure_frame_quality.py --features sharpness` prints the
+    # sweep on a real collection — read it before moving this.
+    #
+    # NOT A VERDICT. Precision is ~25% at every row above: three of four flagged frames are
+    # not blurred. It orders the blur list; nothing in the pipeline deletes or reclassifies
+    # anything by it.
+    face_sharpness_max: float = 200.0
     # F128: keep the CLIP vector the junk stage already computes instead of discarding it
     # (table `clip_embeddings`). ON by default, which is the deliberate half of this
     # setting: the price is small — ~60 MB per 20 000 photos, written inside a pass that
@@ -752,14 +989,21 @@ class FeaturesConfig:
     # full CLIP pass over the collection. The switch is for very large collections, where
     # 300 000 photos mean ~920 MB.
     store_embeddings: bool = True
-    # F129: how many frames a search by words takes — `sorta search` prints this many and
-    # an album from a query gathers this many. NOT a similarity threshold, and there will
-    # not be one, for the same reason sharpness has none: a CLIP score orders frames against
-    # each other and means nothing in absolute terms, so "this really is a cake" is not a
-    # line anybody can draw. What this number chooses is the SIZE OF THE SAMPLE a person
-    # then looks through — raise it to see further down the ranking, lower it for a shorter
-    # list. 200 is a folder a human can actually go through in one sitting.
-    search_limit: int = 200
+    # F129: how many frames a search by words takes at a time — `sorta search` prints this
+    # many and an album from a query gathers this many. NOT a similarity threshold, and
+    # there will not be one, for the same reason sharpness has none: a CLIP score orders
+    # frames against each other and means nothing in absolute terms, so "this really is a
+    # cake" is not a line anybody can draw.
+    #
+    # F173 renamed it from `search_limit`, and the name is the fix. A CEILING cuts the
+    # result off; a PAGE only decides how much arrives first, and the rest is one press
+    # away. That difference is the whole feature: depth is the single measured lever of
+    # completeness (2026-08-02/03 — doubling the list adds ~25 points on average, and the
+    # query «дети» goes from 61% to 89%), so a number that quietly ended the list was
+    # taking away the one handle that works. The old spelling keeps working (see
+    # `_features_from`): a config file on somebody's machine must not lose its setting to
+    # a rename. 200 is a screenful a human can actually go through in one sitting.
+    search_page: int = 200
     # F152: the two numbers the face slices need, and the only two they have. Everything
     # else about those slices is a FACT of the `faces` table — either the detector found
     # a face on this frame or it did not — so these are not confidence thresholds and
@@ -811,6 +1055,19 @@ class FeaturesConfig:
     # "classical" is trained on clean bicubic downscaling, a degradation an archive of
     # real photographs does not contain. Against `realworld-sr-x4` the mask lost outright.
     restore_model: str = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+    # F169: the longer side the frame is scaled to BEFORE that model — and, until this
+    # key existed, a constant in `restore.py` that decided for everybody. The model is x4
+    # and works at the UPSCALED resolution, so 1024 becomes 4096 in memory and a full 12
+    # Mpx frame would become 16 000 px, which fits on no card here.
+    #
+    # What that costs is the reason the number is a setting. A frame BELOW it is handed to
+    # the model as it is — a small scan, a downloaded picture, the case the action was
+    # built for, pure gain. A frame ABOVE it is reduced first and the x4 brings it back to
+    # roughly its own size: same pixels count, real detail dropped, plausible detail drawn
+    # in its place. The interface says so on such a frame instead of calling it an
+    # improvement, and `scripts/measure_restore.py` prints what raising this costs in time
+    # and memory on the three frame populations separately.
+    restore_max_edge: int = 1024
     # F153: how a query uses the two indexes at once — `off` | `rank` | `union` (see
     # SEARCH_FUSION_MODES above for what each does). The price is one extra matmul over a
     # stored table, ~0.9 ms per index, and no pass over any image: this is query time and
@@ -853,8 +1110,11 @@ def _features_from(raw: dict) -> FeaturesConfig:
         sharpness_band_max=_as_float(raw.get("sharpness_band_max"), d.sharpness_band_max),
         subject_score_min=_as_float(raw.get("subject_score_min"), d.subject_score_min),
         blur_review_max=_as_float(raw.get("blur_review_max"), d.blur_review_max),
+        face_sharpness_max=_as_float(
+            raw.get("face_sharpness_max"), d.face_sharpness_max),
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
-        search_limit=_as_positive_int(raw.get("search_limit"), d.search_limit),
+        search_page=_as_positive_int(
+            _renamed_value(raw, "features", "search_page", "search_limit"), d.search_page),
         group_photo_faces=_as_positive_int(
             raw.get("group_photo_faces"), d.group_photo_faces),
         portrait_face_share=_as_float(
@@ -863,6 +1123,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         search_model=_as_model_name(raw.get("search_model"), d.search_model),
         restore_model=_as_repo_id(
             "features.restore_model", raw.get("restore_model"), d.restore_model),
+        restore_max_edge=_as_positive_int(
+            raw.get("restore_max_edge"), d.restore_max_edge),
         search_fusion=_as_fusion(raw.get("search_fusion"), d.search_fusion),
     )
 
@@ -870,8 +1132,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
 @dataclass(frozen=True)
 class NamingConfig:
     """Phase 5 (F6): places without GPS, event names, junk. A flat view of the
-    nested naming section of config.yaml (clip.*/local_vlm.*/claude.* — see load_config)."""
-    provider: str = "template"           # template | vlm | local_vlm | claude
+    nested naming section of config.yaml (clip.*/local_vlm.* — see load_config)."""
+    provider: str = "template"           # template | vlm | local_vlm (NAMING_PROVIDERS)
     #                                      F95: `vlm` describes the event with the local
     #                                      Qwen2.5-VL of classify_vlm_model (the junk model,
     #                                      one copy per run); opt-in, template stays the default
@@ -914,18 +1176,14 @@ class NamingConfig:
     vlm_base_url: str = "http://localhost:11434"
     vlm_model: str = "llava"
     vlm_timeout: float = 120.0
-    claude_model: str = "claude-opus-5"
-    claude_api_key_env: str = "ANTHROPIC_API_KEY"
-    claude_timeout: float = 60.0
 
 
 def _naming_from(raw: dict) -> NamingConfig:
     clip = raw.get("clip") or {}
     vlm = raw.get("local_vlm") or {}
-    claude = raw.get("claude") or {}
     d = NamingConfig()
     return NamingConfig(
-        provider=str(raw.get("provider", d.provider)),
+        provider=_as_provider(raw.get("provider", d.provider), d.provider),
         landmark_threshold=float(raw.get("landmark_threshold", d.landmark_threshold)),
         landmark_group_min=int(raw.get("landmark_group_min", d.landmark_group_min)),
         landmark_group_dominance=float(
@@ -949,9 +1207,6 @@ def _naming_from(raw: dict) -> NamingConfig:
         vlm_base_url=str(vlm.get("base_url", d.vlm_base_url)).rstrip("/"),
         vlm_model=str(vlm.get("model", d.vlm_model)),
         vlm_timeout=float(vlm.get("timeout", d.vlm_timeout)),
-        claude_model=str(claude.get("model", d.claude_model)),
-        claude_api_key_env=str(claude.get("api_key_env", d.claude_api_key_env)),
-        claude_timeout=float(claude.get("timeout", d.claude_timeout)),
     )
 
 
@@ -985,6 +1240,8 @@ class Config:
     features: FeaturesConfig = field(default_factory=FeaturesConfig)  # F113: frame quality
     language: str = "en"  # folder/name language (ru|en|ja), normalized in load_config (F25/F27)
     log_level: str = "WARNING"  # DEBUG|INFO|WARNING|ERROR; validated in configure_logging (F52)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)  # F166: run-log pacing
+    estimate: EstimateConfig = field(default_factory=EstimateConfig)  # F159: run budget
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
 
 
@@ -1018,6 +1275,21 @@ def detector_allowed(cfg: Config) -> bool:
     differ is the RULE — a subordinate key never raises a model by itself.
     """
     return bool(getattr(getattr(cfg, "detect", None), "enabled", False))
+
+
+def _apply_logging_config(cfg: LoggingConfig) -> None:
+    """Hand the `logging:` section to the run log (F166).
+
+    Pushed the same way `_apply_imaging_config` pushes the imaging keys, and for the
+    same reason: `runlog` is a leaf module that everything else imports, so it cannot
+    read the config back. Never fatal — pacing a log is not worth a crash.
+    """
+    try:
+        from .runlog import set_progress_interval
+
+        set_progress_interval(cfg.progress_interval_sec)
+    except Exception as exc:  # noqa: BLE001 — logging is never worth crashing over
+        _log.warning("config: не удалось применить logging: %s", exc)
 
 
 def _known(cls, raw: dict) -> dict:
@@ -1055,9 +1327,12 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         features=_features_from(_mapping(data.get("features"))),
         language=i18n.normalize_lang(data.get("language")),
         log_level=str(data.get("log_level", "WARNING")),
+        logging=LoggingConfig(**_known(LoggingConfig, data.get("logging") or {})),
+        estimate=_estimate_from(_mapping(data.get("estimate"))),
         raw=data,
     )
     _apply_imaging_config(data.get("imaging") or {})
+    _apply_logging_config(cfg.logging)
     # sources may be empty: the source is given positionally (sorta index <dir>).
     # The non-empty requirement is at the point of use (index / in-place sort).
     return cfg

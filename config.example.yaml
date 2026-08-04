@@ -17,6 +17,34 @@ language: en
 # Does not affect folder/name language — only the verbosity of technical messages.
 log_level: WARNING
 
+# F166: how the run log paces itself. `log_level` above decides what is written; this
+# decides how often a stage that is STILL RUNNING repeats where it has got to, so the
+# file answers "what is happening now" and not only "what happened".
+logging:
+  # Seconds between the `stage=... progress elapsed=... processed=...` lines a running
+  # stage (and each phase inside it) writes. 0 switches them off; the `started` lines
+  # and the summaries of finished stages/phases are written either way.
+  progress_interval_sec: 60
+
+# F159: the run screen says how long a run will take before it starts. Every stage it
+# can price is priced from the run log above — the real speed of THIS machine, from the
+# last time that stage ran here — and the screen says which numbers came from there and
+# which are still defaults. These are the defaults that cannot be read back, because the
+# comparative keeper question shares a log phase with the per-frame questions.
+estimate:
+  # One comparative question over a near-duplicate group: a fixed cost plus a cost per
+  # frame that goes into it. Measured 2026-08-03 on a live collection (median seconds):
+  # 2 frames — 1.47, 3 — 2.45, 4 — 3.46, 5 — 4.56: a slope of 1.03 s per frame on top of
+  # 0.45 s of fixed cost. The line deliberately sits about a second above each median —
+  # an estimate that runs long is a warning, one that runs short is a broken promise.
+  # Move them if this machine disagrees; they are settings so that it can.
+  keeper_call_sec: 0.45
+  keeper_frame_sec: 1.03
+  # How many days a timing from the run log stays trustworthy. 0 switches the expiry
+  # off. A timing written by another version of sorta is discarded whatever this says —
+  # the stage behind it may have been rewritten since.
+  measurement_max_age_days: 90
+
 index:
   # F81: folders that must not be SCANNED at all — no stat, no hash, no later
   # stage. Different from sort.exclude_dirs, which indexes the files and only
@@ -52,9 +80,12 @@ dedup:
   # prefer_exif_then_largest — the file with an EXIF date first, then the larger one
   canonical_strategy: prefer_exif_then_largest
   # F132: ask the local VLM which frame of a near-duplicate group is the one to keep —
-  # ONE comparative question over the whole group ("which of these is best"), which a
+  # one comparative question over the whole group ("which of these is best"), which a
   # model answers far more reliably than it scores frames one at a time. It sees what
   # sharpness cannot: closed eyes, a face turned away, a hand across the lens.
+  # F159 measured what it costs: 0.45 s plus 1.03 s per frame in the question, so from
+  # three frames up it is not cheaper than asking about the frames one at a time. What
+  # it buys is an answer separate questions do not give — which of them is the best one.
   # Needs the VLM extra installed; off by default. A RECOMMENDATION only — it is stored
   # in `group_keeper` and nothing is ever deleted or marked by it. With this off the
   # interface keeps recommending by sharpness, exactly as before — and F145 made
@@ -162,10 +193,15 @@ faces:
   decode_workers: 8
 
 # Phase 5 (F6): places without GPS, event naming, junk classification.
-# Event-name provider: template (offline, default) | local_vlm (ollama)
-# | claude (Anthropic API, only when explicitly chosen — outbound traffic).
+# Event-name provider: template (offline, default) | vlm (the local Qwen2.5-VL)
+# | local_vlm (ollama, an endpoint you run yourself).
+# F170: all three run on your machine. The cloud provider that used to be a fourth
+# choice here uploaded a few sample photos of every event to a vendor API — it is
+# REMOVED, not switched off, so no setting in this file can make the product send an
+# image anywhere. A config.yaml that still selects the removed provider keeps working:
+# it logs one line saying the provider is gone and names events by the template.
 naming:
-  # template | vlm | local_vlm | claude — what gives an event its name.
+  # template | vlm | local_vlm — what gives an event its name.
   # F95: `vlm` adds WHAT the event was ("2025-04-24..05-06 Тайланд пляжный отдых") to
   # the dates and the place, which the template already knows exactly, and asks the
   # model for nothing else. It runs the local Qwen2.5-VL of `classify_vlm_model` —
@@ -221,7 +257,7 @@ naming:
   # Leave this out to use it; set a path only to supply your OWN list — a path that
   # does not exist is an error, not a silent fallback.
   # landmarks_file: my-landmarks.yaml
-  max_samples: 4             # how many event frames to pass to the VLM/Claude (3–5)
+  max_samples: 4             # how many event frames to pass to the local VLM (3–5)
   clip:
     model: ViT-L-14-quickgelu  # the quickgelu variant is required for the openai weights
     pretrained: openai
@@ -230,10 +266,6 @@ naming:
     base_url: http://localhost:11434
     model: llava
     timeout: 120
-  claude:                    # if provider: claude
-    model: claude-opus-5
-    api_key_env: ANTHROPIC_API_KEY
-    timeout: 60
 
 # F102: the local VLM (Qwen2.5-VL) as a runtime. Two stages use it — the deep junk
 # classification tier (memory/document/product) and the `vlm` event-name provider above
@@ -263,15 +295,21 @@ vlm:
   enabled: false
   model: "Qwen/Qwen2.5-VL-3B-Instruct"
   # F101: threads that prepare frames (decode + image preprocessing) for the deep tier
-  # while the GPU classifies the previous one. The pass was not heavy but sequential —
-  # ~0.6 s of CPU then ~0.19 s of GPU per frame, one core busy out of 24 and the card
-  # idle three quarters of the time. Verdicts do not depend on this number: the labels
-  # are applied in the candidate order whatever it is set to. Default min(4, cores) —
-  # modest on purpose (a two-core machine is a real machine), and the frames in flight
-  # (~2 per worker) are held in RAM, not in VRAM.
+  # while the GPU classifies the previous one — the pass is not heavy but sequential,
+  # a frame is prepared and only then answered about. Verdicts do not depend on this
+  # number: the labels are applied in the candidate order whatever it is set to, and
+  # the frames in flight (~2 per worker) are held in RAM, not in VRAM.
+  # Default min(4, cores) — modest on purpose (a two-core machine is a real machine).
+  # F164 measured whether it should be more, on the machine that asked the question
+  # (24 cores, the card at 51% during the pass): it should not. Preparing one frame
+  # already uses about seven cores since the fast image processor arrived (F105), so a
+  # second thread takes them from the first — 6, 8 and 12 threads all came out SLOWER
+  # than 4 on the live collection, and each of them holds ~170 MB more of prepared
+  # frames (scripts/measure_vlm_workers.py). Raise it only against a sweep of your own;
+  # the value written here is respected whatever a sweep says.
   # workers: 4
-  # F113: the second consumer of these weights — the frame-quality questions no cheap
-  # tool answers (are the eyes open, is there a subject at all, is this a pocket shot).
+  # F113: the second consumer of these weights — the frame-quality question no cheap
+  # tool answers (are the eyes open; F177 retired the rest).
   # Its own toggle, separate from `enabled` above: the deep junk tier and the quality
   # band are different populations, and wanting one says nothing about the other.
   # F145: subordinate to `enabled` above — with the deep tier off this asks nothing.
@@ -300,8 +338,7 @@ vlm:
   #            read them as a ratio rather than a promise about yours.
   #            IT NEEDS THE FACES STAGE: without one there are no faces to ask about, and
   #            the quality VLM then does not run at all (it says so in the log; sharpness
-  #            and animals are still measured). The trade is deliberate — `has_subject` is
-  #            not collected on frames without people, because the model never sees them.
+  #            and animals are still measured).
   #   all    — no restriction. READ THE PRICE FIRST: ~0.78 s per frame, so a 20 000-frame
   #            collection is about 4.3 hours of GPU. It is a weekend job, not a default.
   quality_scope: groups
@@ -418,9 +455,13 @@ features:
   # So ANIMALS ONLY. People stay on the face boxes and food stays a query — adding either
   # here is a claim that the measurement changed, and it needs a table of its own first.
   #
+  # The animal row was re-measured on 500 frames (2026-08-03) and reads 78% / 69% at the
+  # same confidence — the table under `detector_threshold` below is the current one. The
+  # boundary between the three slices did not move, which is what this table is kept for.
+  #
   # It is a CASCADE and never a pass: a zero-shot query over the vectors that
   # `store_embeddings` already keeps ranks the collection, and only the top
-  # `detector_candidates` frames are shown to the detector — ~3 minutes instead of the ~31
+  # `detector_candidates` frames are shown to the detector — 5.6 minutes instead of the ~31
   # a full pass costs at 83.8 ms per frame.
   # The answer overrides the CLIP label in both directions, and every refusal (no vectors,
   # no weights, an error on a frame) falls back to the label you already have — never to
@@ -429,16 +470,36 @@ features:
   # rather than another pass.
   detector: false
   # How deep into the query ranking the candidates go — the ONE number that decides what
-  # this costs, because the detector sees nothing else. 2 000 frames is ~3 minutes at the
-  # measured 83.8 ms. Recall is bounded by the query's own recall at this depth (87% on the
-  # labelled sample), so raising it buys the animals the query ranked lower, linearly.
-  detector_candidates: 2000
+  # this costs, because the detector sees nothing else. Measured on 500 labelled frames
+  # (36 animals), where the last column is the share of the known animals this depth shows
+  # the detector at all:
+  #     depth   candidates     time    recall ceiling
+  #       500          500   0.7 min        25%
+  #      1000         1000   1.4 min        50%
+  #      2000         2000   2.8 min        83%   <- the previous default
+  #      4000         4000   5.6 min       100%   <- chosen
+  #     10000        10000  14.0 min       100%
+  # The ceiling bounds every recall below it: a frame the query never showed is not found at
+  # any threshold, and at 2 000 candidates 17% of the animals were out of reach in
+  # principle. 4 000 frames costs 5.6 minutes at the measured 83.8 ms per frame — 2.8
+  # minutes more than before, against the ~19 the animal stage already spends on the VLM.
+  # 10 000 buys nothing: the same ceiling for three times the time. `python
+  # scripts/measure_detector.py` prints this table for your own collection.
+  detector_candidates: 4000
   # The confidence at which a box counts. CHOSEN FROM A TABLE, not in advance: `python
-  # scripts/measure_detector.py` prints precision and recall at 0.3 / 0.5 / 0.7 on your own
-  # labelled sample, next to what the CLIP label scores on the same frames. 0.5 is the row
-  # that was measured (62% / 87%). Every box is stored with its score, so re-choosing this
-  # costs a query and no new pass over any image.
-  detector_threshold: 0.5
+  # scripts/measure_detector.py` prints precision and recall on your own labelled sample,
+  # next to what the CLIP label scores on the same frames. The rows, on the same 500:
+  #                            precision   recall
+  #     the CLIP label today       94%       47%
+  #     detector at 0.50           78%       69%   <- the previous default
+  #     detector at 0.60           86%       69%   <- chosen
+  #     detector at 0.70           86%       67%
+  # 0.60 dominates 0.50 with nothing traded away: the same recall, 25 correct marks out of
+  # 29 instead of 25 out of 32. The 62% / 87% this shipped with came off 200 frames, where
+  # fifteen animals made each one worth 6.7 points of recall; both numbers moved by two
+  # dozen points on the larger sample — what a thin class does to a small one. Every box is
+  # stored with its score, so re-choosing this costs a query and no new pass over any image.
+  detector_threshold: 0.6
   # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
   # what place the frame shows, and only a proposal the model names itself goes on. The
   # order does not bend: CLIP proposes → the model checks → the corroboration of
@@ -490,6 +551,30 @@ features:
   # < 160: 1215 — on a 19 757-photo collection). So the list opens here and continues on
   # demand, and nothing is ever deleted by this number.
   blur_review_max: 90.0
+  # F155: the same laplacian, measured INSIDE the face boxes of a frame (column
+  # `frame_quality.face_sharpness`), and the number below which such a frame is a blur
+  # candidate. It exists because the whole-frame number answers "how much detail is in this
+  # picture", which is a different question from "is it in focus": a detailed sharp street
+  # and a smooth blurred face score alike. On a hand-checked sample of 200 frames the
+  # whole-frame filter found 2 of the 33 blurred ones — 6%.
+  #
+  # Measured on the 68 frames of that sample that have a face (13 of them blurred):
+  #
+  #   over the whole frame, 300 → 10 flagged,  2 right (20% precision, 15% recall)
+  #   over the face crop,   100 → 17 flagged,  5 right (29%, 38%)
+  #   over the face crop,   200 → 33 flagged,  8 right (24%, 62%)
+  #   over the face crop,   400 → 44 flagged, 10 right (23%, 77%)
+  #
+  # 200 quadruples recall for a comparable number of frames flagged. Provisional: 13
+  # blurred frames means one frame is worth ~8 points of recall, so what was measured is
+  # the direction, not the figure — `python scripts/measure_frame_quality.py --features
+  # sharpness` prints the sweep on your own collection.
+  #
+  # Two limits worth knowing. It covers only frames a face was found on (a third of a
+  # typical archive; landscapes and objects have no such signal at all), and its precision
+  # is ~25% at every threshold above — three of four flagged frames are not blurred. It
+  # RANKS the blur list; nothing is deleted or reclassified by it.
+  face_sharpness_max: 200.0
   # F128: keep the CLIP vector of every canonical photograph (table `clip_embeddings`)
   # instead of throwing it away once its three scores have been read off. Nothing is shown
   # for it — it is what lets a later feature (search by words, an album from a query,
@@ -500,18 +585,25 @@ features:
   # naming.clip.model or naming.clip.pretrained and the stored rows are recomputed rather
   # than used, because vectors of different models are not comparable.
   store_embeddings: true
-  # F129: how many frames a search by words takes — `sorta search "торт"` prints this many
-  # and `sorta album query "торт"` gathers this many.
+  # F129: how many frames a search by words takes at a time — `sorta search "торт"` prints
+  # this many and `sorta album query "торт"` gathers this many.
   # This is NOT a similarity threshold, and there will not be one, for the same reason
   # sharpness has none: a CLIP score orders frames against each other and means nothing in
   # absolute terms, so "this really is a cake" is not a line anybody can draw. What this
   # number chooses is the size of the SAMPLE a person then looks through — raise it to see
   # further down the ranking, lower it for a shorter list.
+  # F173 renamed this from `search_limit`, because a ceiling and a page are different
+  # things: in the interface the list continues past this number by pressing "show more",
+  # and it does not continue past a ceiling. Depth is the one measured lever of
+  # completeness there is — doubling the list adds ~25 points on average, and the query
+  # "дети" goes from 61% to 89% — so the number decides where the FIRST portion ends, not
+  # where the answer does. The old spelling still works and still means this; renaming it
+  # in your own file only silences a warning in the log.
   # Two limits of the method worth knowing before choosing it: compound queries ("a cake
   # with candles on a table by the window") are weak, single subjects are what CLIP does
   # well; and the population is personal photographs only (screenshots and documents have
   # no vector at all).
-  search_limit: 200
+  search_page: 200
   # F152: the two numbers the FACE SLICES need — "photographs with people", "group
   # photographs", "portraits" in the Slices tab, and `sorta album people|group|portrait`.
   # Nothing here is a confidence threshold: those slices are read off the `faces` table,
@@ -567,6 +659,25 @@ features:
   # photograph. Its link to the original is stored, and the pair is never shown as a
   # duplicate to sort out.
   restore_model: "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+  # F169: the longer side the frame is scaled to BEFORE the model, and the single number
+  # that decides what you get back. It used to be a constant in the code; it is a setting
+  # now because the trade it makes is not the same for every frame:
+  #
+  #   a frame BELOW it (a scan, a downloaded picture, an old small shot) goes to the model
+  #     untouched — 800 px in, 3200 px out, nothing given up, the case this was built for;
+  #   a frame ABOVE it is reduced first, and the x4 brings it back to about its own size:
+  #     4032 px -> 1024 px -> 4096 px. Same size out, but the real detail of the original
+  #     was dropped on the way in and the model drew plausible detail instead. The Review
+  #     tab says exactly that when it happens, rather than calling the copy an improvement.
+  #
+  # Raising it costs memory as the SQUARE of the number and on the x4 OUTPUT, not on the
+  # input: 2048 is four times the pixels of 1024, and a full 4000 px frame would be 16 000
+  # px wide inside the model — around 780 megapixels, which does not fit on 32 GB. Before
+  # you move it, run `python scripts/measure_restore.py`: it prints time, weight and peak
+  # memory per frame population (< 1024 px, 1024-2500 px, > 2500 px) at each candidate
+  # ceiling, and lays out blind pairs of "original / processed" — the only honest judge of
+  # whether the copy is better is a person looking at it, and "sharper" is not "better".
+  restore_max_edge: 1024
   # F153: answer one query with BOTH indexes — the search one above and the classification
   # vectors of `store_embeddings` — and merge the two lists. off | rank | union.
   # It costs one extra matmul over a stored table (~1 ms) and no pass over any image, so

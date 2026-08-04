@@ -285,7 +285,7 @@ class TestTheSkipIsNotSilent(unittest.TestCase):
     def classify(self, **kwargs):
         return junk.classify(self.cfg, self.conn, classifier=FakeClassifier({}),
                              text_detector=NO_OCR,
-                             sharpness_detector=lambda _path: 100.0, **kwargs)
+                             sharpness_detector=lambda _path, _faces: junk.Sharpness(100.0), **kwargs)
 
     def test_a_classifier_without_features_leaves_the_reason_in_the_log(self):
         self.cfg.features = FeaturesConfig(store_embeddings=True)
