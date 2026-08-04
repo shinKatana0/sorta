@@ -64,8 +64,14 @@ and `scripts/measure_ocr_gate.py` follow.
 The originals are opened read-only and never written: this script measures the action, it
 does not perform it (nothing is saved beside anybody's photograph).
 
+A candidate is named either as a HuggingFace repository (loaded through transformers) or
+as a path to weights on disk — which is what F187 had to add, because the only 1:1
+deblurring weights runnable here at all are an ONNX export (`scripts/deblur_candidate.py`
+says which one and what else was tried).
+
 Usage (from the repo root, with a GPU venv — `uv sync --extra gpu --extra vlm`):
     python scripts/measure_deblur.py --models <repo/weights> [<repo/weights> ...]
+    python scripts/measure_deblur.py --models C:/AI/deblur/nafnet_deblur.onnx
     python scripts/measure_deblur.py --models <weights> --sample 16 --out measure_deblur
     python scripts/measure_deblur.py --models <weights> --no-baseline --megapixels 1 4 12
 """
@@ -98,6 +104,7 @@ from sorta.config import FeaturesConfig, load_config  # noqa: E402
 # version of "the same middle of both pictures at native scale" would differ in some detail
 # and the two verdicts would stop being comparable, which is the whole reason this feature
 # exists at all.
+from deblur_candidate import loader_for  # noqa: E402
 from measure_restore import (  # noqa: E402
     CROP_BOX,
     ORIGINAL,
@@ -362,7 +369,25 @@ def probe_one_to_one(process: RestoreFn, size: tuple[int, int] = PROBE_SIZE) -> 
     return Probe(scale=scale, changed=float(np.abs(after - before).mean()))
 
 
-def load_restorer(model_name: str) -> RestoreFn:  # pragma: no cover — ML, needs weights
+def load_restorer(model_name: str) -> RestoreFn:
+    """Load the candidate named on the command line -> process(image) -> image.
+
+    Two ways in, and the second one is what F187 added. A HuggingFace name goes through
+    transformers, as everything in this project does; a path to a file on disk goes
+    through the loader that knows its format (`deblur_candidate`), because the only 1:1
+    deblurring weights that exist in a format this project can already run are an ONNX
+    export and transformers has no way to open one.
+
+    The dispatch is on the extension and nothing else. It is not an extension point: the
+    brief asks for ONE working candidate, and if the measurement's answer is "not closer
+    to what was there", both the loader and this branch go away with the question.
+    """
+    load = loader_for(model_name)
+    return load(model_name) if load is not None else load_transformers_restorer(model_name)
+
+
+def load_transformers_restorer(
+        model_name: str) -> RestoreFn:  # pragma: no cover — ML, needs weights
     """Load a 1:1 restoration model through transformers -> process(image) -> image.
 
     Lazy-import, like every model in this project (`restore.load_swin2sr`): the module
@@ -929,8 +954,9 @@ def main() -> int:  # pragma: no cover — needs the weights and a collection
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--models", nargs="+", required=True,
-                    help="candidate 1:1 restoration weights (deblur / denoise / artifacts). "
-                         "The brief names NONE on purpose — name them here")
+                    help="candidate 1:1 restoration weights (deblur / denoise / artifacts): "
+                         "a HuggingFace name or a path to an .onnx file. The brief names "
+                         "NONE on purpose — name them here")
     ap.add_argument("--sample", type=int, default=12, help="frames to measure (default 12)")
     ap.add_argument("--seed", type=int, default=20260804)
     ap.add_argument("--megapixels", nargs="+", type=float, default=list(COST_MEGAPIXELS),
