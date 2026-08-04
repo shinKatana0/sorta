@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **An action says where the frame will land, instead of «return to the photos»** (F174).
+  Two of the marks the slices offer read as one movement to the person making it — "this
+  frame does not belong here" — and the interface gave them two different names while
+  saying nothing about what either one does. They are not the same movement. «This is not
+  an animal» edits a MEMBERSHIP (`manual_pet`): the frame has been lying in its city folder
+  the whole time, it is shown in the slice as a view over the canon, and the mark moves no
+  file, ever. «Return to the photos» edits a route (`manual_overrides`): such a frame is
+  **not** in the city layout at all, and returning it is a real transfer out of `_Products`
+  on the next `sort --apply`. The button now reads the same in both slices, and what
+  differs is stated **under** it: "goes into `Russia/Samara/2023`" there, "we take it out
+  of the slice; the frame already lies in `Russia/Samara/2023`, the file will not move"
+  here — which is the sentence that answers the fear the wording has to answer, that a mark
+  deletes something. Where the frame lands is **not a guess**: the layout is a pure
+  function of rows that are already in the database, so `sorter.destinations` answers for a
+  page of cards with one query, through the same `_target_parts` and the same SELECT that
+  `plan_and_sort` builds the plan from — and for the junk view it is asked with the
+  correction **already assumed**, so the caption names the city the frame goes back to and
+  not the service folder it is sitting in. A frame with no geodata is told so by name
+  (`_Unsorted/no_place`, a third of the live collection) instead of being promised a city,
+  and a country without a city is told the country level. A **bulk** return states the
+  spread of the selection — "12 frames will return: 7 into cities, 5 into no_place" —
+  because a person ticks dozens at a time and one folder name out of twelve deceives them;
+  the count updates as the selection does, rather than appearing in the confirmation dialog
+  where it is seen too late. Nothing is applied any earlier than before: the marks still
+  pile up and land on `sort --apply`, the two tables stay two tables, and the layout rules
+  are untouched. The test that matters is the one that pins the caption to the plan — the
+  folder a card names is compared against what `plan_and_sort` builds for the same file,
+  before and after the correction is written, so the two cannot drift apart.
 - **Every ordered slice can be walked past its first page — search included** (F173). A
   query for «дети» came back with **exactly 200 frames** and no way further:
   `features.search_limit` was 200, and search had no paging at all, only a caption saying

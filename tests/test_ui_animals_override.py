@@ -302,7 +302,7 @@ class TestMarkUiHtml(AnimalMarkTestBase):
         self.assertNotIn("animals-mark-all", html)
 
     def test_every_new_string_is_translated_three_ways(self):
-        keys = ("animals_mark_not_animal", "animals_mark_animal", "animals_mark_clear",
+        keys = ("slice_return_button", "animals_mark_animal", "animals_mark_clear",
                 "animals_manual_excluded", "animals_manual_included",
                 "animals_counted_label", "animals_error_prefix")
         for key in keys:
@@ -315,9 +315,12 @@ class TestMarkUiHtml(AnimalMarkTestBase):
             self.assertIn("{n}", ui._UI_STRINGS["animals_counted_label"][lang])
 
     def test_the_buttons_are_rendered_in_the_page_language(self):
+        # F174: the "take the mark off" half is the shared `slice_return_button` now —
+        # one name for one intention, the same words the junk view uses.
         self.start_server()
-        for lang, expected in (("ru", "Это не животное"), ("en", "Not an animal"),
-                               ("ja", "動物ではない")):
+        for lang, expected in (("ru", "Вернуть в раскладку"),
+                               ("en", "Return to the layout"),
+                               ("ja", "振り分けに戻す")):
             with self.subTest(lang=lang):
                 _status, body, _ctype = self.get(f"/?lang={lang}")
                 self.assertIn(expected, body.decode("utf-8"))

@@ -322,6 +322,18 @@ F125 rule, since a zero would read as a claim about the person's photographs. Se
 classes follow the F133 rule unchanged (listed, but no `thumb_url`). The one action these
 slices offer is the existing `POST /api/album` with `kind='people'|'group'|'portrait'`.
 
+(24) F174 adds no route and changes no storage: `/api/junk` and `/api/animals` now carry
+`dest`/`dest_reason`/`dest_group` on every card — WHERE that frame ends up. Two marks the
+slices offer read as one movement to the person making it ("this frame does not belong
+here") and neither said where the frame goes: taking an animal mark off changes a
+membership and moves no file, while returning a product to the photos is a real transfer
+into a city on the next apply. So the button reads the same in both (`slice_return_button`)
+and the difference is stated under it — `dest_goes_to` there, `dest_stays_in` here — and a
+bulk return states the SPREAD of the selection ("12 frames: 7 into cities, 5 into
+no_place"), because one folder name out of twelve deceives a person who ticked dozens. The
+folder is `sorter.destinations`, i.e. the code that builds the plan, asked with the
+correction already assumed; nothing is applied any earlier than before.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -414,9 +426,11 @@ from .sorter import (
     QUALITY_FROM,
     SELECTORLESS_ALBUM_KINDS,
     AlbumReport,
+    Destination,
     PlanItem,
     animal_auto_sql,
     animal_ids_sql,
+    destinations,
     face_slice_ids_sql,
     plan_album,
     plan_and_sort,
@@ -1447,6 +1461,72 @@ def _apply_overrides(db_path: Path, file_ids: list[int], action: str,
     return known
 
 
+# --- F174: an action says WHERE the frame goes --------------------------------------
+# Two of the marks the slices offer read as one movement to the person making it ("this
+# frame does not belong in this slice"), and neither of them said where the frame ends
+# up. Worse, they are not the same movement at all: taking an animal mark off changes
+# a MEMBERSHIP and moves no file, while returning a product to the photos is a real
+# transfer out of «_Товары» into a city on the next `sort --apply`. The fix is language,
+# not storage — `manual_pet` and `manual_overrides` stay two tables.
+#
+# The folder name comes from `sorter.destinations`, i.e. from the code that builds the
+# plan, never from a rule spelled a second time here. `city` is the mode because it is
+# the mode the web app applies (see `_run_sort`), so the caption is about the layout the
+# button will actually produce.
+_DEST_MODE = "city"
+
+# The plan's reason codes, grouped into the handful of answers a BULK caption can state:
+# "12 frames will return: 7 into cities, 5 into no_place" is what the person needs before
+# selecting dozens at once, and one folder name out of twelve would simply mislead them.
+# A reason nobody grouped lands in `other` rather than being dropped — a group that
+# silently loses frames would make the counts stop adding up to the selection.
+_DEST_GROUPS: dict[str, str] = {
+    "city": "city",
+    "manual_reassign": "city",
+    "country_only": "country",
+    "no_place": "no_place",
+    "low_date": "undated",
+    "downloaded": "undated",
+}
+
+
+def _destination_json(dest: Destination | None) -> dict:
+    """The three fields a card needs to name its destination, or empty for an unknown id.
+
+    `folder` is what the caption prints, `reason` is what the explanation under it is
+    looked up by (`dest_why_<reason>`, the `junk_bucket_<verdict>` pattern), and `group`
+    is what the bulk breakdown counts. All three are decided HERE: a client that derived
+    the group from the folder name would be a second copy of the layout rules, in JS.
+    """
+    if dest is None:
+        return {}
+    return {
+        "dest": dest.folder,
+        "dest_reason": dest.reason,
+        "dest_group": _DEST_GROUPS.get(dest.reason, "other"),
+    }
+
+
+def _destinations_for(cfg: Config, conn: sqlite3.Connection, rows: list[sqlite3.Row],
+                      assume_action: str | None = None) -> dict[int, Destination]:
+    """`sorter.destinations` over the ids of one PAGE of cards, on the open connection.
+
+    Bounded by the page the client asked for, so the cost does not grow with the archive.
+    A failure to compute it is not a failure to show the page: geo data may be missing
+    (`GeoResolver`) or the layout may raise on a config the slice has no say over, and a
+    grid that 500s because a caption could not be phrased is worse than a grid without
+    the caption. The cards then simply carry no `dest` field.
+    """
+    if not rows:
+        return {}
+    try:
+        return destinations(cfg, conn, _DEST_MODE, [int(r["id"]) for r in rows],
+                            assume_action)
+    except (ValueError, sqlite3.Error, OSError) as exc:
+        _log.warning("ui: не удалось вычислить назначение кадров: %s", exc)
+        return {}
+
+
 # --- F103: the "Not personal photos" view -------------------------------------------
 # The deep VLM tier carries away roughly every tenth frame of the collection into
 # service folders (2 202 `product` alone on the live 24k run), and until now those
@@ -1471,7 +1551,8 @@ _JUNK_NO_PREVIEW = ("document",)
 
 
 def _junk_item_to_json(row: sqlite3.Row, restored: bool,
-                       no_preview: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
+                       no_preview: frozenset[str] = frozenset(_JUNK_NO_PREVIEW),
+                       dest: Destination | None = None) -> dict:
     """One card of the junk view. `thumb_url` is ABSENT for a no-preview bucket."""
     path = Path(row["path"])
     verdict = row["verdict"]
@@ -1483,6 +1564,9 @@ def _junk_item_to_json(row: sqlite3.Row, restored: bool,
         # F77/F103: the frame already carries a manual "this is a photo" correction —
         # the card says so instead of offering the same action twice.
         "restored": restored,
+        # F174: where the frame lands if it IS returned — the folder the plan will build
+        # for it once the `photo` mark is in the table, not a folder named by this file.
+        **_destination_json(dest),
     }
     if verdict not in no_preview:
         payload["thumb_url"] = f"/thumb/{int(row['id'])}"
@@ -1490,7 +1574,7 @@ def _junk_item_to_json(row: sqlite3.Row, restored: bool,
     return payload
 
 
-def _junk_payload(db_path: Path, bucket: str | None,
+def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
                   offset: int, limit: int,
                   sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
     """`GET /api/junk` — the buckets with their counts + one page of one bucket.
@@ -1553,6 +1637,10 @@ def _junk_payload(db_path: Path, bucket: str | None,
                       {clause}
                 ORDER BY f.path
                 LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
+        # F174: what the button on these cards will do — asked with the correction it
+        # writes already assumed, so the caption names the city the frame goes back to
+        # and not the service folder it is sitting in right now.
+        dests = _destinations_for(cfg, conn, rows, "photo")
     finally:
         conn.close()
     marks = _overrides_map(db_path) if rows else {}
@@ -1573,7 +1661,8 @@ def _junk_payload(db_path: Path, bucket: str | None,
         "limit": limit,
         "items": [
             _junk_item_to_json(
-                r, (marks.get(int(r["id"])) or ("", None))[0] == "photo", sensitive)
+                r, (marks.get(int(r["id"])) or ("", None))[0] == "photo", sensitive,
+                dests.get(int(r["id"])))
             for r in rows
         ],
     }
@@ -1588,7 +1677,7 @@ def _junk_payload(db_path: Path, bucket: str | None,
 # finds where that border sits, so the score travels to the card and is shown on it.
 
 
-def _animal_item_to_json(row: sqlite3.Row) -> dict:
+def _animal_item_to_json(row: sqlite3.Row, dest: Destination | None = None) -> dict:
     """One card of the animal view: a thumbnail, a name, a date and the pet score.
 
     F124: plus the two facts a card has to state about the mark itself — whether the
@@ -1612,6 +1701,10 @@ def _animal_item_to_json(row: sqlite3.Row) -> dict:
         "manual": None if row["manual"] is None else bool(row["manual"]),
         "thumb_url": f"/thumb/{int(row['id'])}",
         "video": imaging.is_video_path(path),
+        # F174: where the frame ALREADY lies. This slice is a view over the canon, not an
+        # extraction from it, so the mark moves no file — and the card can only say so
+        # convincingly by naming the folder the frame is in either way.
+        **_destination_json(dest),
     }
 
 
@@ -1692,11 +1785,16 @@ def _animals_payload(db_path: Path, cfg: Config, offset: int, limit: int) -> dic
                 WHERE {population}
                 ORDER BY fq.pet_score DESC, f.id
                 LIMIT ? OFFSET ?""", (limit, offset)).fetchall()
+        # F174: no assumed correction — the question here is where the frame lies NOW,
+        # which is the same folder it will lie in after the mark, because the mark
+        # changes a membership and not a route.
+        dests = _destinations_for(cfg, conn, rows)
     finally:
         conn.close()
     return {
         "animals": int(animals),
-        **_page_payload([_animal_item_to_json(r) for r in rows],
+        **_page_payload([_animal_item_to_json(r, dests.get(int(r["id"])))
+                         for r in rows],
                         total=int(total), offset=offset, limit=limit),
     }
 
@@ -1778,12 +1876,16 @@ def _apply_animal_mark(db_path: Path, cfg: Config,
                   AND f.id IN ({known_placeholders})""",
             known).fetchall()
         animals = conn.execute(count_sql).fetchone()[0]
+        # F174: the redrawn card has to say what a reload would say, and after F174 that
+        # includes the folder the frame lies in — a caption that vanished on the first
+        # click would look like the mark had moved the file after all.
+        dests = _destinations_for(cfg, conn, rows)
     finally:
         conn.close()
     return {
         "marked": len(known),
         "animals": int(animals),
-        "items": [_animal_item_to_json(r) for r in rows],
+        "items": [_animal_item_to_json(r, dests.get(int(r["id"]))) for r in rows],
     }
 
 
@@ -6090,19 +6192,19 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Nothing here — there are no such frames.",
         "ja": "ここは空です。該当するフレームはありません。",
     },
-    "junk_restore_button": {
-        "ru": "Вернуть в фото", "en": "Return to photos", "ja": "写真に戻す",
-    },
     "junk_restore_confirm": {
-        "ru": "Вернуть в обычную раскладку по городам: {n}?",
-        "en": "Return to the normal city layout: {n}?",
-        "ja": "通常の都市別振り分けに戻します: {n} 件？",
+        "ru": "{n} кадров вернутся в раскладку: {breakdown}. Продолжить?",
+        "en": "{n} frames will return to the layout: {breakdown}. Continue?",
+        "ja": "{n} 件が振り分けに戻ります: {breakdown}。続けますか？",
     },
     "junk_undo_restore_button": {
         "ru": "Отменить возврат", "en": "Undo the return", "ja": "戻すのを取り消す",
     },
+    # F174: nothing has moved yet — the mark applies on the next `sort --apply`, and a
+    # past tense here would promise a transfer that has not happened.
     "junk_restored_mark": {
-        "ru": "возвращено в фото", "en": "returned to photos", "ja": "写真に戻しました",
+        "ru": "вернётся в раскладку", "en": "will return to the layout",
+        "ja": "振り分けに戻ります",
     },
     "junk_select_all": {"ru": "Выбрать всё на странице",
                         "en": "Select everything on this page",
@@ -6134,6 +6236,72 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "error_loading_junk": {
         "ru": "Не удалось загрузить корзины: ", "en": "Could not load the buckets: ",
         "ja": "バケットを読み込めません: ",
+    },
+    # --- F174: the action names its destination ---------------------------------------
+    # ONE name for one intention. "This is not an animal" and "return to the photos" are
+    # the same movement to the person making it — the frame does not belong in this slice
+    # — so the button reads the same in both, and what differs (a real transfer versus a
+    # membership) is said UNDER it, in `dest_goes_to` / `dest_stays_in`. Two buttons for
+    # one intention was the whole complaint.
+    "slice_return_button": {
+        "ru": "Вернуть в раскладку", "en": "Return to the layout", "ja": "振り分けに戻す",
+    },
+    "dest_goes_to": {
+        "ru": "попадёт в {folder}", "en": "goes into {folder}",
+        "ja": "{folder} に入ります",
+    },
+    "dest_stays_in": {
+        "ru": "уберём из среза; кадр и так лежит в {folder}, файл не двинется",
+        "en": "we take it out of the slice; the frame already lies in {folder}, "
+              "the file will not move",
+        "ja": "区分から外すだけです。コマはすでに {folder} にあり、ファイルは動きません",
+    },
+    "dest_unknown": {
+        "ru": "папку назначения посчитать не удалось",
+        "en": "the destination folder could not be computed",
+        "ja": "保存先フォルダーを計算できませんでした",
+    },
+    # Looked up as `dest_why_<reason>` — the plan's own reason codes. A reason without a
+    # key simply gets no explanation, the way an unknown bucket gets no chip label.
+    "dest_why_no_place": {
+        "ru": "у кадра нет геоданных", "en": "the frame carries no geodata",
+        "ja": "このコマに位置情報がありません",
+    },
+    "dest_why_country_only": {
+        "ru": "город не определился — известна только страна",
+        "en": "no city resolved — only the country is known",
+        "ja": "都市は不明で、国だけが分かっています",
+    },
+    "dest_why_low_date": {
+        "ru": "у кадра нет надёжной даты съёмки",
+        "en": "the frame carries no reliable capture date",
+        "ja": "このコマに信頼できる撮影日がありません",
+    },
+    "dest_why_downloaded": {
+        "ru": "ни даты съёмки, ни следов камеры — это скачанный кадр",
+        "en": "no capture date and no camera trace — a downloaded frame",
+        "ja": "撮影日もカメラの痕跡もありません。ダウンロードされたコマです",
+    },
+    # The bulk caption groups by destination instead of naming one folder: a person
+    # selects dozens at a time, and one folder name out of twelve deceives them.
+    "dest_bulk_summary": {
+        "ru": "{n} кадров вернутся: {breakdown}",
+        "en": "{n} frames will return: {breakdown}",
+        "ja": "{n} 件が戻ります: {breakdown}",
+    },
+    "dest_bulk_item": {"ru": "{n} {group}", "en": "{n} {group}", "ja": "{n} 件 {group}"},
+    "dest_group_city": {"ru": "в города", "en": "into cities", "ja": "都市へ"},
+    "dest_group_country": {
+        "ru": "на уровень страны", "en": "to the country level", "ja": "国のレベルへ",
+    },
+    "dest_group_no_place": {
+        "ru": "в «без места»", "en": "into “no place”", "ja": "「場所不明」へ",
+    },
+    "dest_group_undated": {
+        "ru": "в «без даты»", "en": "into “no date”", "ja": "「日付不明」へ",
+    },
+    "dest_group_other": {
+        "ru": "в другие папки", "en": "into other folders", "ja": "その他のフォルダーへ",
     },
     # --- F123: the "Animals" tab -----------------------------------------------------
     # F160: the caption states BOTH measurements, because the slice is two different
@@ -6178,9 +6346,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # The two buttons are one toggle: the card offers the answer the frame does NOT have
     # right now. The third string is the way back to the automatic verdict, which is a
     # different thing from "not an animal" and therefore says so in words.
-    "animals_mark_not_animal": {
-        "ru": "Это не животное", "en": "Not an animal", "ja": "動物ではない",
-    },
+    # F174: the "take it off this frame" half is `slice_return_button` now — the same
+    # words the junk view uses, because it is the same intention. What the two do differ
+    # in is stated under the button (`dest_stays_in` here, `dest_goes_to` there).
     "animals_mark_animal": {
         "ru": "Это животное", "en": "This is an animal", "ja": "これは動物",
     },
@@ -7112,6 +7280,12 @@ label { cursor: pointer; }
 .animal-card-actions { display: flex; gap: var(--space-xs); flex-wrap: wrap;
       align-items: center; }
 
+/* --- F174: the destination the action names ------------------------------
+   Under the button, never instead of it: the line answers "and where does the frame
+   end up", which is a different question from "what does this button do". */
+.dest-line { font-size: 0.75rem; color: var(--muted); word-break: break-all; }
+.dest-summary { font-size: 0.8rem; color: var(--muted); }
+
 /* --- F152: the face slices -------------------------------------------------
    The same tile as the animal grid; no score line, because these slices have no
    confidence to print — a frame is in one because a face was detected on it. */
@@ -7810,12 +7984,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="tab-junk" class="slice-panel">
 <p class="process-intro">{{junk_intro}}</p>
 <div class="override-controls">
-<button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{junk_restore_button}}<span id="junk-selected-count"></span></button>
+<button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{slice_return_button}}<span id="junk-selected-count"></span></button>
 <button type="button" id="junk-select-all-btn" class="btn btn-ghost">{{junk_select_all}}</button>
 <button type="button" id="junk-select-none-btn" class="btn btn-ghost">{{junk_select_none}}</button>
 <span id="junk-status" class="override-status"></span>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
+<div id="junk-dest-summary" class="override-hint dest-summary"></div>
 <div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
 <div id="junk-album" class="album-controls"></div>
 <div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
@@ -11654,6 +11829,49 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       });
   }
 
+  // --- F174: the action names its destination ------------------------------
+  // The folder is the server's answer, computed by the code that builds the plan
+  // (`sorter.destinations`). NOTHING here derives a path: a second spelling of the
+  // layout rules, in JS, is exactly how a caption starts disagreeing with the plan it
+  // is describing — and the caption is the whole feature.
+
+  function destLine(item, template) {
+    var line = document.createElement("div");
+    line.className = "dest-line";
+    if (!item.dest) {
+      line.textContent = I18N.dest_unknown;
+      return line;
+    }
+    var why = I18N["dest_why_" + item.dest_reason];
+    var text = fmt(template, { folder: item.dest });
+    line.textContent = why ? text + ": " + why : text;
+    return line;
+  }
+
+  // A bulk action states the SPREAD, not the first destination of the selection: the
+  // person ticks dozens at a time, and one folder name out of twelve deceives them.
+  // The groups come from the server (`_DEST_GROUPS`) — this only counts them.
+  var DEST_GROUP_ORDER = ["city", "country", "no_place", "undated", "other"];
+
+  function destBreakdown(items) {
+    var counts = {};
+    items.forEach(function (it) {
+      var group = (it && it.dest_group) || "other";
+      counts[group] = (counts[group] || 0) + 1;
+    });
+    return DEST_GROUP_ORDER.filter(function (g) { return counts[g]; })
+      .map(function (g) {
+        return fmt(I18N.dest_bulk_item,
+                   { n: counts[g], group: I18N["dest_group_" + g] || g });
+      })
+      .join(", ");
+  }
+
+  function destSummary(items) {
+    return fmt(I18N.dest_bulk_summary,
+               { n: items.length, breakdown: destBreakdown(items) });
+  }
+
   // --- F103: вкладка «Не личные фото» -------------------------------------
   // Корзины классификатора видно КАК корзины: чипы-фильтры со счётчиком, сетка
   // плиток, отметка нескольких кадров и ОДИН возврат на всё выделение (по одному
@@ -11665,6 +11883,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var junkBucket = null;   // null — «Все»
   var junkOffset = 0;
   var junkSelected = {};
+  // F174: the cards currently on screen, by file_id — the selection is made of them, so
+  // the destinations the server sent with the page are what the bulk caption counts.
+  // Nothing is fetched again for it: the answer is already here.
+  var junkItems = {};
 
   function junkBucketLabel(verdict) {
     return I18N["junk_bucket_" + verdict] || verdict;
@@ -11674,11 +11896,19 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return Object.keys(junkSelected).map(Number);
   }
 
+  function junkSelectedItems() {
+    return junkSelectedIds().map(function (id) { return junkItems[id] || {}; });
+  }
+
   function refreshJunkControls() {
     var n = junkSelectedIds().length;
     document.getElementById("junk-selected-count").textContent = n ? " (" + n + ")" : "";
     // F145: "back to photos" rewrites `media_class` — the table the run in flight owns.
     document.getElementById("junk-restore-btn").disabled = uiBusy() || n === 0;
+    // Where the selection goes, restated on every tick: the spread changes with it, and
+    // a number that only appears in the confirmation dialog is seen too late to help.
+    document.getElementById("junk-dest-summary").textContent =
+        n ? destSummary(junkSelectedItems()) : "";
   }
 
   registerBusyRefresh(refreshJunkControls);
@@ -11691,6 +11921,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   function renderJunkCard(item) {
+    junkItems[item.file_id] = item;
     var card = document.createElement("div");
     card.className = "junk-card" + (item.restored ? " restored" : "");
     if (item.thumb_url) {
@@ -11718,6 +11949,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       chip.className = "chip chip-good";
       chip.textContent = I18N.junk_restored_mark;
       card.appendChild(chip);
+      // F174: the mark is written, the move is not — so the card keeps naming the
+      // folder the frame is headed for until the layout actually runs.
+      card.appendChild(destLine(item, I18N.dest_goes_to));
       var undoBtn = makeBtn("ghost", null, I18N.junk_undo_restore_button, "btn-sm");
       undoBtn.addEventListener("click", function () { applyJunkAction([item.file_id], "clear"); });
       card.appendChild(undoBtn);
@@ -11736,8 +11970,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       refreshJunkControls();
     });
     label.appendChild(box);
-    label.appendChild(document.createTextNode(I18N.junk_restore_button));
+    label.appendChild(document.createTextNode(I18N.slice_return_button));
     card.appendChild(label);
+    // F174: this bucket is an EXTRACTION from the canon — the frame is not lying in a
+    // city right now, and returning it is a real transfer on the next apply. So the
+    // card says which folder, and why, before anything is ticked.
+    card.appendChild(destLine(item, I18N.dest_goes_to));
     return card;
   }
 
@@ -11748,7 +11986,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // preview nor an album). The "back to photos" row above is untouched: one movement
     // must not be able to both gather and delete.
     renderSliceAlbumControls("junk-album", data.album_kind);
-    if (!append) grid.textContent = "";
+    if (!append) {
+      grid.textContent = "";
+      junkItems = {};      // the cards go, their destinations go with them
+    }
     var items = data.items || [];
     items.forEach(function (it) { grid.appendChild(renderJunkCard(it)); });
     var shown = grid.querySelectorAll(".junk-card").length;
@@ -11811,7 +12052,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   document.getElementById("junk-restore-btn").addEventListener("click", function () {
     var ids = junkSelectedIds();
     if (!ids.length) return;
-    if (!window.confirm(fmt(I18N.junk_restore_confirm, { n: ids.length }))) return;
+    // F174: the question names the spread of the selection, not just its size — "12
+    // frames" and "12 frames, 5 of them into no_place" are different decisions.
+    if (!window.confirm(fmt(I18N.junk_restore_confirm,
+                            { n: ids.length,
+                              breakdown: destBreakdown(junkSelectedItems()) }))) return;
     applyJunkAction(ids, "photo");
   });
   document.getElementById("junk-select-all-btn").addEventListener("click", function () {
@@ -11882,12 +12127,18 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                                        : I18N.animals_manual_excluded;
       card.appendChild(manual);
     }
+    // F174: this slice is a VIEW over the canon — the frame is lying in its city folder
+    // and stays there whatever is decided here. Said out loud, with the folder named,
+    // because the fear the wording has to answer is "will this delete something".
+    if (item.is_animal) card.appendChild(destLine(item, I18N.dest_stays_in));
     var actions = document.createElement("div");
     actions.className = "animal-card-actions";
     // One toggle offering the answer the frame does NOT have right now, per card and
     // never over a band: the whole feature is that somebody looked at this frame.
+    // F174: taking the mark off is the same intention as returning a product to the
+    // photos, so it carries the same words — the difference is the line above.
     var toggle = makeBtn("ghost", null,
-        item.is_animal ? I18N.animals_mark_not_animal : I18N.animals_mark_animal,
+        item.is_animal ? I18N.slice_return_button : I18N.animals_mark_animal,
         "btn-sm animal-mark-btn");
     toggle.addEventListener("click", function () {
       markAnimal(item.file_id, item.is_animal ? "not_animal" : "animal");
@@ -12947,7 +13198,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # settings panel can change `vlm.exclude_classes` without a restart, and a
             # privacy list that needs one is not a privacy list.
             self._send_json(_junk_payload(
-                db_path, bucket, offset, limit,
+                db_path, cfg, bucket, offset, limit,
                 frozenset(cfg.vlm.exclude_classes)))
 
         def _serve_animals(self, query: dict[str, list[str]]) -> None:

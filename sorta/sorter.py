@@ -1242,6 +1242,116 @@ def _precheck_hash(conn: sqlite3.Connection, batch_id: int, item: PlanItem,
     return src_hash
 
 
+# The rows every layout decision is made from — ONE select, used by the plan itself and
+# by the destination preview below (F174).
+#
+# F85c: `mp.file_id IS NULL` (not COALESCE per column) decides between the two sources of
+# a place — a manual row wins as a WHOLE, so a hand-picked city can never end up under an
+# inferred country, and the district of the automatic place cannot survive under a city
+# the user replaced. `country_name` is dropped for a manual row on purpose: it is the
+# provider's spelling of the OLD country, and _target_parts localizes the cc through
+# i18n.country when it is absent.
+#
+# F174: the FIRST placeholder is the manual action to assume for these files instead of
+# the one the table holds — NULL for the plan (it reads the marks as they are), 'photo'
+# for the preview that answers "and where would this frame go if I returned it". It sits
+# in the SELECT list, so it is bound before the parameters of `{cond}`.
+_PLAN_ROWS_SQL = _CTE + """SELECT f.id, f.path, f.taken_at, f.taken_at_confidence,
+           f.hash, f.hash_algo, f.not_personal, f.gps_lat, f.gps_lon,
+           f.camera_make, f.camera_model,
+           CASE WHEN mp.file_id IS NULL THEN p.country ELSE mp.country END AS country,
+           CASE WHEN mp.file_id IS NULL THEN p.country_name END AS country_name,
+           CASE WHEN mp.file_id IS NULL THEN p.city ELSE mp.city END AS city,
+           CASE WHEN mp.file_id IS NULL THEN p.confidence
+                ELSE 'manual' END AS place_confidence,
+           CASE WHEN mp.file_id IS NULL THEN p.city_geonameid
+                ELSE mp.city_geonameid END AS city_geonameid,
+           CASE WHEN mp.file_id IS NULL THEN p.district_geonameid END AS district_geonameid,
+           CASE WHEN mp.file_id IS NULL THEN p.district_name END AS district_name,
+           mc.verdict AS junk_verdict, mc.source AS junk_source,
+           dc.action AS dedup_action,
+           COALESCE(?, mo.action) AS manual_action, mo.target AS manual_target
+       FROM files f
+       LEFT JOIN places p ON p.file_id = f.id
+       LEFT JOIN manual_places mp ON mp.file_id = f.id
+       LEFT JOIN media_class mc ON mc.file_id = f.id
+       LEFT JOIN dedup_choice dc ON dc.file_id = f.id
+       LEFT JOIN manual_overrides mo ON mo.file_id = f.id
+       WHERE f.dup_of IS NULL AND f.error IS NULL AND {cond}
+       ORDER BY f.path"""
+
+
+@dataclass(frozen=True)
+class Destination:
+    """Where one file will lie after the next apply — the layout segments and the reason.
+
+    `reason` is the plan's own stable English code (`city`, `country_only`, `no_place`,
+    `low_date`, ...), not a sentence: the caller phrases it, the way `PlanItem.reason` is
+    phrased by the CSV and by the web app.
+    """
+    file_id: int
+    parts: tuple[str, ...]
+    reason: str
+
+    @property
+    def folder(self) -> str:
+        """The target DIRECTORY relative to the sort root, POSIX separators — the same
+        string `Path(PlanItem.target_rel).parent` carries (target_rel adds the file name,
+        which only `_resolve_dst` knows, because it depends on what is already there)."""
+        return "/".join(self.parts)
+
+
+def destinations(cfg: Config, conn: sqlite3.Connection, mode: str,
+                 file_ids: Sequence[int],
+                 assume_action: str | None = None) -> dict[int, Destination]:
+    """F174: where the given files will go, computed WITHOUT planning the collection.
+
+    The web app has two actions that read as one — "this is not an animal" and "return
+    this to the photos" — and neither of them used to say where the frame ends up. It is
+    not a guess: the layout is a pure function of rows that are already in the database,
+    so the answer for a handful of files costs one query. What it must not become is a
+    SECOND copy of the layout rules — a caption computed by its own code starts lying at
+    the first edit of `_target_parts`. Hence this reads `_PLAN_ROWS_SQL` and calls
+    `_target_parts`, exactly as `plan_and_sort` does, and nothing else.
+
+    `assume_action` is the `manual_overrides.action` to pretend these files carry
+    ('photo' — "the classifier is wrong, this IS a photo"), so the caption can state the
+    destination of a correction BEFORE it is written. None reads the marks as they stand,
+    which is the question the animals slice asks: where does this frame lie already.
+
+    Deliberately NOT answered here, because they are decisions of a whole run rather than
+    of a frame: the `--exclude` directories, the near-duplicate roles (`--dedupe`) and the
+    name-conflict suffix `_resolve_dst` gives the file inside that folder. This is the
+    target FOLDER, which is what the user is being asked about.
+
+    Nothing is written and no file is touched — the marks still apply on `sort --apply`.
+    """
+    if mode not in MODES:
+        raise ValueError(f"неизвестный режим {mode!r}; допустимы: {', '.join(MODES)}")
+    ids = [int(fid) for fid in file_ids]
+    if not ids:
+        return {}
+    lang = i18n.normalize_lang(cfg.raw.get("language"))
+    drop_unlocalized_district = bool(
+        getattr(cfg.sort, "drop_unlocalized_district", True))
+    resolver = GeoResolver()
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(_PLAN_ROWS_SQL.format(cond=f"f.id IN ({placeholders})"),
+                        [assume_action, *ids]).fetchall()
+    # Both loaders walk the whole table, and only their own mode reads the result — a
+    # caption under a page of cards must not cost a scan of every face in the archive.
+    persons = _load_persons(conn) if mode == "person" else {}
+    events = _load_events(conn) if mode == "event" else {}
+    strategy = str(cfg.sort.multi_person)
+    out: dict[int, Destination] = {}
+    for r in rows:
+        parts, reason = _target_parts(mode, strategy, r, persons.get(r["id"], []),
+                                      events.get(r["id"]), lang, resolver,
+                                      drop_unlocalized_district)
+        out[int(r["id"])] = Destination(int(r["id"]), tuple(parts), reason)
+    return out
+
+
 def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                   dest: Path | None, apply: bool = False,
                   copy: bool = False,
@@ -1365,36 +1475,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                               csv_path=placeholder.with_suffix(".csv"),
                               html_path=placeholder.with_suffix(".html"))
 
-    # F85c: `mp.file_id IS NULL` (not COALESCE per column) decides between the two
-    # sources of a place — a manual row wins as a WHOLE, so a hand-picked city can never
-    # end up under an inferred country, and the district of the automatic place cannot
-    # survive under a city the user replaced. `country_name` is dropped for a manual row
-    # on purpose: it is the provider's spelling of the OLD country, and _target_parts
-    # localizes the cc through i18n.country when it is absent.
-    rows = conn.execute(
-        _CTE + f"""SELECT f.id, f.path, f.taken_at, f.taken_at_confidence,
-               f.hash, f.hash_algo, f.not_personal, f.gps_lat, f.gps_lon,
-               f.camera_make, f.camera_model,
-               CASE WHEN mp.file_id IS NULL THEN p.country ELSE mp.country END AS country,
-               CASE WHEN mp.file_id IS NULL THEN p.country_name END AS country_name,
-               CASE WHEN mp.file_id IS NULL THEN p.city ELSE mp.city END AS city,
-               CASE WHEN mp.file_id IS NULL THEN p.confidence
-                    ELSE 'manual' END AS place_confidence,
-               CASE WHEN mp.file_id IS NULL THEN p.city_geonameid
-                    ELSE mp.city_geonameid END AS city_geonameid,
-               CASE WHEN mp.file_id IS NULL THEN p.district_geonameid END AS district_geonameid,
-               CASE WHEN mp.file_id IS NULL THEN p.district_name END AS district_name,
-               mc.verdict AS junk_verdict, mc.source AS junk_source,
-               dc.action AS dedup_action,
-               mo.action AS manual_action, mo.target AS manual_target
-           FROM files f
-           LEFT JOIN places p ON p.file_id = f.id
-           LEFT JOIN manual_places mp ON mp.file_id = f.id
-           LEFT JOIN media_class mc ON mc.file_id = f.id
-           LEFT JOIN dedup_choice dc ON dc.file_id = f.id
-           LEFT JOIN manual_overrides mo ON mo.file_id = f.id
-           WHERE f.dup_of IS NULL AND f.error IS NULL AND {cond}
-           ORDER BY f.path""", params).fetchall()
+    rows = conn.execute(_PLAN_ROWS_SQL.format(cond=cond), [None, *params]).fetchall()
 
     excludes = _resolve_excludes(cfg, exclude)
     excluded_count = 0
