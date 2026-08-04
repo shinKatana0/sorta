@@ -146,7 +146,7 @@ class ManualPetTestBase(AnimalAlbumTestBase):
         paraphrase of it: after F120 a run whose prompts differ rewrites every row it
         owns. `manual_pet` is not junk's, and that is the whole feature.
         """
-        source = f"clip#{quality_prompt_fingerprint(True, with_vlm=True)}"
+        source = f"clip#{quality_prompt_fingerprint(True)}"
         now = "2026-08-02"
         with self.conn:
             self.conn.execute("DELETE FROM frame_quality")
