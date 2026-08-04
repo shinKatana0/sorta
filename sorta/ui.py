@@ -3516,6 +3516,14 @@ _SEARCH_COVERED_SQL = """SELECT COUNT(*) FROM search_embeddings e
     JOIN files f ON f.id = e.file_id
     WHERE e.model = ? AND f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'"""
 
+# F189: whether anybody in this collection has a NAME — the roots of the `merged_into`
+# chains, which is where `search.match_person` looks. It travels with the state because the
+# line is DISABLED while the index cannot rank, and a name needs no index at all:
+# `features.search_index` is off by default, so without this the feature would be invisible
+# on a fresh collection — a person typing the name of their own daughter into a dead field.
+_SEARCH_NAMES_SQL = """SELECT EXISTS(
+    SELECT 1 FROM face_clusters WHERE merged_into IS NULL AND label IS NOT NULL)"""
+
 # One card, and the same shape whichever state produced it. LEFT JOIN because a photograph
 # usually has no `media_class` row at all — the class is what the privacy rule below reads.
 _SEARCH_ROWS_SQL = """SELECT f.id, f.path, f.taken_at, mc.verdict
@@ -3565,6 +3573,10 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
         "model": model,
         "index_model": model if stored else (max(others)[1] if others else None),
         "indexed": indexed,
+        # F189: not part of `available` — the index is still in whatever state it is in,
+        # and the sentence about it does not change. What this adds is that the line has
+        # something to answer even so.
+        "names": bool(conn.execute(_SEARCH_NAMES_SQL).fetchone()[0]),
         # F173: `photos`, not `total`. This route answers with a PAGE of a ranking now, and
         # in every paged payload of this server `total` means the length of the list being
         # walked. Two numbers called the same thing in one answer is how a counter starts
@@ -7886,6 +7898,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "検索を実行できません: ",
     },
     # --- F189: the same line, answering with a person ----------------------------------
+    # Said in front of the index's own reason rather than instead of it: the ranking still
+    # cannot run and the way to fix that is still on screen — what changes is that the
+    # field is not dead while there is somebody to find in it.
+    "search_state_names_only": {
+        "ru": "Имя названного человека здесь найдётся и без индекса — наберите имя.",
+        "en": "The name of a person you have labelled is found here without the index — "
+              "type a name.",
+        "ja": "名前を付けた人物は、インデックスがなくてもここで見つかります — "
+              "名前を入力してください。",
+    },
     # The caption is the feature as much as the selection is. A reader who cannot tell an
     # exact answer from the top of a ranking has been handed one thing and shown another,
     # so this sentence says what it is and the ranking's sentence stays where it was.
@@ -10841,9 +10863,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function applySearchState(state) {
     searchState = state;
     var available = !!(state && state.available);
-    document.getElementById("slice-query").disabled = !available;
-    document.getElementById("slice-query-btn").disabled = !available;
-    document.getElementById("slice-query-hint").textContent = searchStateText(state);
+    // F189: a NAME is answered without the index, so the line stays usable while there is
+    // somebody named — otherwise the whole feature would be behind a disabled field on the
+    // default config, which is the one a person has on the day they name their first
+    // cluster. The reason the ranking cannot run is still said, with the name sentence in
+    // front of it: both facts are true at once.
+    var usable = available || !!(state && state.names);
+    document.getElementById("slice-query").disabled = !usable;
+    document.getElementById("slice-query-btn").disabled = !usable;
+    document.getElementById("slice-query-hint").textContent =
+        (!available && usable ? I18N.search_state_names_only + " " : "") +
+        searchStateText(state);
     // The way out of both unavailable states is a run of the collection, and the run
     // lives on "Overview" — a reason without the way to it is a dead end.
     document.getElementById("slice-query-goto").style.display =
@@ -11047,7 +11077,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function runSearch() {
     var q = document.getElementById("slice-query").value.trim();
     // An empty query goes nowhere near the model — not from here and not on the server.
-    if (!q || !(searchState && searchState.available)) return;
+    // F189: `names` is the other reason there is something to ask; a string that turns out
+    // not to be a name then comes back with the state of the index as its answer, which is
+    // the sentence this line has always given.
+    if (!q || !(searchState && (searchState.available || searchState.names))) return;
     searchQuery = q;
     // A new string is asked as itself: the "search by words instead" of the previous one
     // must not silently carry over to the next name somebody types.

@@ -150,6 +150,57 @@ class TestANameAnswersWithThePerson(PersonUiTestBase):
         self.assertFalse(tail["has_more"])
 
 
+class TestTheLineIsReachableWithoutAnIndex(PersonUiTestBase):
+    """`features.search_index` is off by default — the field must not be dead anyway.
+
+    The line is disabled while the index cannot rank (F134), and a name needs no index. On
+    the config a person actually has on the day they name their first cluster, those two
+    facts together would have hidden this whole feature behind a greyed-out field.
+    """
+
+    def test_the_state_says_somebody_is_named(self):
+        self.add_named_photo("a.jpg", "Ирина")
+        self.conn.execute("DELETE FROM search_embeddings")
+        self.conn.commit()
+        self.start_server()
+        data = self.search()
+        self.assertTrue(data["names"])
+        self.assertFalse(data["available"])   # and the index is still what it is
+
+    def test_a_collection_with_no_names_says_so(self):
+        file_id = self.add_indexed_photo("a.jpg", unit(1.0))
+        self.add_person(file_id, None)
+        self.start_server()
+        self.assertFalse(self.search()["names"])
+
+    def test_a_cluster_merged_away_does_not_count_as_a_name(self):
+        # Its label names nobody (the album selects by the root's), so it must not keep
+        # the line alive on a collection where nothing can be found.
+        _first, cluster = self.add_named_photo("a.jpg", "Ирина")
+        self.conn.execute("UPDATE face_clusters SET merged_into = NULL, label = NULL")
+        self.conn.execute("UPDATE face_clusters SET label = 'Ира' WHERE id = ?",
+                          (cluster,))
+        self.conn.execute(
+            "INSERT INTO face_clusters (label, merged_into) VALUES (NULL, NULL)")
+        root = int(self.conn.execute(
+            "SELECT MAX(id) FROM face_clusters").fetchone()[0])
+        self.conn.execute("UPDATE face_clusters SET merged_into = ? WHERE id = ?",
+                          (root, cluster))
+        self.conn.commit()
+        self.start_server()
+        self.assertFalse(self.search()["names"])
+        self.assertIsNone(self.search("Ира")["person"])
+
+    def test_the_page_keeps_the_line_alive_for_a_name(self):
+        self.assertIn("state.names", ui._INDEX_HTML_TEMPLATE)
+        self.assertIn("I18N.search_state_names_only", ui._INDEX_HTML_TEMPLATE)
+
+    def test_the_sentence_exists_in_all_three_languages(self):
+        texts = {lang: ui._t("search_state_names_only", lang)
+                 for lang in ("ru", "en", "ja")}
+        self.assertEqual(len(set(texts.values())), 3)
+
+
 class TestTheWordSearchDoesNotDisappear(PersonUiTestBase):
     """Requirement 4: a name that is also a word keeps both answers."""
 
