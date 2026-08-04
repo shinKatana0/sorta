@@ -296,9 +296,12 @@ class TestProcessPetsOverride(ProcessTestBase):
         captured: dict = {}
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                      progress=None):
-            captured["cfg"] = cfg
-            self.calls.append("junk")
+                      verdicts_only=False, progress=None):
+            # F165: the same function is the `classify` stage too — the config under
+            # test is the one the half AFTER faces gets, so only that call is captured.
+            if not verdicts_only:
+                captured["cfg"] = cfg
+            self.calls.append("classify" if verdicts_only else "junk")
 
         self.patch_fast_stages()
         self._patch("classify_junk", fake_junk)
@@ -353,8 +356,10 @@ class TestProcessPetsOverride(ProcessTestBase):
         final = _poll_until(self.status, lambda d: d["finished"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "junk", "phash"])
-        self.assertEqual(final["stage_total"], 5)  # index/geo/landmarks/junk/phash
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "junk",
+             "phash"])
+        # index/geo/landmarks/classify/junk/phash
+        self.assertEqual(final["stage_total"], 6)
         self.assertNotIn("pets", ui._PIPELINE_STAGE_NAMES)
         self.assertNotIn("pets", ui._OPTIONAL_STAGES)
 
@@ -408,9 +413,12 @@ class TestRerunOptionalWithPets(ProcessTestBase):
         captured: dict = {}
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                      progress=None):
-            captured["cfg"] = cfg
-            self.calls.append("junk")
+                      verdicts_only=False, progress=None):
+            # F165: the same function is the `classify` stage too — the config under
+            # test is the one the half AFTER faces gets, so only that call is captured.
+            if not verdicts_only:
+                captured["cfg"] = cfg
+            self.calls.append("classify" if verdicts_only else "junk")
 
         self.patch_fast_stages()
         self._patch("classify_junk", fake_junk)
@@ -466,8 +474,8 @@ class TestPetsCheckboxHtml(ProcessTestBase):
         self.assertIn("pets: pets,", html)
         self.assertIn('"process-pets-checkbox"', html)
         # and it is NOT a stage in the client's model of the run either
-        self.assertIn('var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "faces", '
-                      '"events", "junk", "phash"];', html)
+        self.assertIn('var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", '
+                      '"classify", "faces", "events",', html)
         self.assertNotIn('OPTIONAL_PROCESS_STAGES = { faces: true, events: true, pets',
                          html)
 

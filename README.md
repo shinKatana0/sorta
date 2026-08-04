@@ -36,7 +36,8 @@ app**.
 - **Offline geolocation** (bundled GeoNames) with GPS + session inference; optional
   online Nominatim/OSM.
 - **Fast basic run by default:** `sorta run` / the UI **Process** button do city‑level
-  sorting + duplicate detection (index → geo → landmarks → junk → near‑dup hashes).
+  sorting + duplicate detection (index → geo → landmarks → classify → junk →
+  near‑dup hashes).
   **Faces and events are opt‑in** (`--faces`/`--events`, or the matching checkboxes) —
   they're the slowest stages and not everyone needs them.
 - **Faces & people:** local detection + clustering (insightface), once enabled; name
