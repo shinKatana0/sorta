@@ -2541,6 +2541,60 @@ def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
     return item
 
 
+# --- F168: the second entrance — the expanded frame, in every slice ------------------
+# F149 drew the button in ONE place, the "blurred" slice, and the measurement of
+# 2026-08-03 says that place is almost empty: the Laplacian filter at its threshold finds
+# 8% of the frames a person calls soft (it answers "how much detail is in the frame", not
+# "is it in focus"). So the action sat behind a detector we had measured to be nearly
+# blind, and the only way to reach it was to be lucky enough to be in that list.
+#
+# The second measurement (F169, 80 blind pairs) says where the action really belongs. The
+# gain is not about blur at all — it is about SIZE:
+#
+#     < 640 px    66% |  640-1024  58%  |  1024-1280  52%
+#
+# — a clean win on small frames, a coin toss by 1280. Hence the shape of this entrance:
+# ONE input, on the frame a person has already expanded (the lightbox, which every slice
+# opens), and offered only while the frame is below `features.restore_max_edge`. Above the
+# ceiling the offer is withdrawn AND the reason is said out loud (`_restore_offer`): a
+# button there would promise what the measurement did not find, and a frame silently
+# rebuilt from a quarter of itself is exactly the trade F169 exists to disclose.
+#
+# The two bans below are enforced HERE, in the route, and not by not drawing a button —
+# the F133 rule: a hidden control is not a rule, and a request made past the interface
+# collects the same thing.
+RESTORE_ERROR_SENSITIVE = "sensitive_class"
+RESTORE_ERROR_VIDEO = "video"
+
+
+def _restore_refusal(path: Path, verdict: str | None, media_type: str | None,
+                     sensitive: frozenset[str]) -> str | None:
+    """The code this frame may not be processed under, or None — the server-side bans.
+
+    A private class (`vlm.exclude_classes`, `document` by default) is refused because
+    processing one means decoding a passport or a medical form and drawing it four times
+    larger — the one thing the product deliberately never renders. Video is refused
+    because the engine is about images: a clip has no single frame to be the answer.
+    """
+    if verdict is not None and verdict in sensitive:
+        return RESTORE_ERROR_SENSITIVE
+    if media_type == "video" or imaging.is_video_path(path):
+        return RESTORE_ERROR_VIDEO
+    return None
+
+
+def _restore_source_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row | None:
+    """The source's path and the two facts the bans are decided from, or None.
+
+    A LEFT JOIN on purpose: a frame nobody has classified yet (`media_class` is written by
+    a run that may not have happened) is an ordinary photograph, not a refusal.
+    """
+    return conn.execute(
+        """SELECT f.id, f.path, f.media_type, mc.verdict AS verdict
+           FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
+           WHERE f.id = ?""", (file_id,)).fetchone()
+
+
 def _restore_notice(src: Path, max_edge: int) -> dict:
     """F169: what the answer owes about the ceiling — `rebuilt` and the two numbers.
 
@@ -2553,7 +2607,8 @@ def _restore_notice(src: Path, max_edge: int) -> dict:
             "max_edge": int(max_edge)}
 
 
-def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dict:
+def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int,
+                   sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
     """`POST /api/review/restore` for ONE id -> the card of the copy, or the reason.
 
     Reads the source's path from the index (never from the request — the same rule every
@@ -2568,12 +2623,25 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
     not refused for such a frame: what should happen to a 12 Mpx one is the measurement's
     decision (`scripts/measure_restore.py`), and until it is made the honest thing is to
     do the work and say what was done.
+
+    F168: `sensitive` is `vlm.exclude_classes`, and the two bans it and `media_type` carry
+    are refused HERE rather than by not drawing a button — this route is now reachable
+    from every slice, and a rule that lives in the markup is a rule a request made past
+    the interface never meets. The default is the fallback list for the same reason
+    `_junk_payload` has one: a privacy guard must not switch itself off through an
+    omission. Both refusals are ordinary reasons (200 + a code the client translates),
+    not errors: the person pointed at a frame this action does not apply to, which is
+    something the interface has to be able to say.
     """
     conn = _connect(db_path)
     try:
-        row = conn.execute("SELECT id, path FROM files WHERE id = ?", (file_id,)).fetchone()
+        row = _restore_source_row(conn, file_id)
         if row is None:
             return {"ok": False, "error": "file not found"}
+        refusal = _restore_refusal(Path(row["path"]), row["verdict"], row["media_type"],
+                                   sensitive)
+        if refusal is not None:
+            return {"ok": False, "reason": refusal}
         model = features.restore_model
         notice = _restore_notice(Path(row["path"]), features.restore_max_edge)
         existing = restore.existing_copy(conn, file_id, model)
@@ -2618,6 +2686,70 @@ def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     return conn.execute(
         "SELECT id, path, taken_at, NULL AS sharpness, width, height "
         "FROM files WHERE id = ?", (file_id,)).fetchone()
+
+
+def _restored_source_json(conn: sqlite3.Connection, file_id: int) -> dict | None:
+    """Where this frame was processed FROM, or None if it is not a copy at all.
+
+    The badge on the expanded frame is drawn from this, and the link comes out of
+    `restored_files` rather than out of the name: the copy is an ordinary member of the
+    collection now — it lies in the city folder beside its source, it can be gathered
+    into an album — so wherever it turns up it has to say what it is, or it reads as a
+    second similar photograph that came from nowhere.
+    """
+    row = conn.execute(
+        """SELECT r.source_file_id AS file_id, f.path AS path
+           FROM restored_files r JOIN files f ON f.id = r.source_file_id
+           WHERE r.file_id = ?""", (file_id,)).fetchone()
+    if row is None:
+        return None
+    return {"file_id": int(row["file_id"]), "name": Path(row["path"]).name}
+
+
+def _restore_offer(db_path: Path, features: FeaturesConfig, file_id: int,
+                   sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict | None:
+    """`GET /api/restore/offer` — what the expanded frame affords; None -> 404.
+
+    Read-only, and it is NOT a second implementation of the action: pressing still goes
+    to the one route, and a reason still travels as the same code. This answers the two
+    questions the expanded frame has to answer before anything is offered —
+
+    * `available`: may this frame be processed at all (the bans the route enforces). A
+      client that worked that out for itself would be a second copy of the privacy rule,
+      which is the mistake F133 named;
+    * `rebuilt`: is the frame ABOVE `features.restore_max_edge`, i.e. would the copy be
+      rebuilt from a reduced version of itself. The measurement found the gain on small
+      frames and nothing by 1280 px, so above the ceiling the offer is withdrawn and the
+      two numbers are handed over for the sentence that says why. Silence there would be
+      a promise the measurement does not support.
+
+    `restored_from` is the other direction: this frame IS a copy, and here is the frame it
+    was made from.
+    """
+    conn = _connect(db_path)
+    try:
+        row = _restore_source_row(conn, file_id)
+        if row is None:
+            return None
+        path = Path(row["path"])
+        refusal = _restore_refusal(path, row["verdict"], row["media_type"], sensitive)
+        return {
+            "file_id": int(row["id"]),
+            "available": refusal is None,
+            "reason": refusal,
+            "restored_from": _restored_source_json(conn, file_id),
+            **_restore_notice(path, features.restore_max_edge),
+        }
+    finally:
+        conn.close()
+
+
+def _parse_file_id_query(query: dict[str, list[str]]) -> int | None:
+    """`?file_id=` as a positive int, or None -> 400 (the same rule as the POST body)."""
+    raw = (query.get("file_id") or [""])[0].strip()
+    if not raw.isdigit():
+        return None
+    return int(raw)
 
 
 def _parse_junk_query(query: dict[str, list[str]]) -> tuple[str | None, int, int] | None:
@@ -7591,6 +7723,63 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "元の写真が良くなったわけではありません。上限は "
               "features.restore_max_edge で変えられます。",
     },
+    # --- F168: the same action, reached from the expanded frame in any slice ----------
+    # The hint says the same things as `review_restore_hint` minus the one sentence that
+    # belongs to the Review grid ("select exactly one"): here the frame IS the one being
+    # looked at, and there is nothing to select.
+    "review_restore_expanded_hint": {
+        "ru": "Модель НЕ возвращает утраченное — она дорисовывает правдоподобное. Рядом "
+              "с оригиналом появится помеченная копия, а оригинал останется как есть. "
+              "Первое нажатие качает веса (~400 МБ), дальше — около секунды на кадр.",
+        "en": "The model does NOT bring back what was lost — it draws something "
+              "plausible — so what appears beside the original is a marked copy, and the "
+              "original stays as it is. The first press downloads the weights (~400 MB), "
+              "after that it is about a second per frame.",
+        "ja": "モデルは失われた情報を復元するのではなく、それらしく描き足します。その"
+              "ため元の写真の隣には印の付いた複製が現れ、元の写真はそのまま残ります。"
+              "初回は重み (約 400 MB) を取得し、その後は 1 枚あたり約 1 秒です。",
+    },
+    # F168/F169: why the action is NOT offered on a big frame. The gain the measurement
+    # found belongs to small frames (66% under 640 px, a coin toss by 1280), and above the
+    # ceiling the copy would be rebuilt from a quarter of the original. Withdrawing the
+    # button without a word would be the silent half of the same promise.
+    "review_restore_too_large": {
+        "ru": "Кадр крупнее предела ({max_edge} px по длинной стороне, здесь "
+              "{source_edge}): копию пришлось бы пересобирать из уменьшенной, а на таких "
+              "кадрах замер пользы не показал. Поэтому здесь действие не предлагается — "
+              "предел меняется ключом features.restore_max_edge.",
+        "en": "This frame is larger than the limit ({max_edge} px on the longer side, "
+              "this one is {source_edge}): the copy would be rebuilt from a reduced "
+              "frame, and on frames this size the measurement found no gain. So the "
+              "action is not offered here — the limit is the features.restore_max_edge "
+              "key.",
+        "ja": "このコマは上限 (長辺 {max_edge} px、このコマは {source_edge} px) を超えて"
+              "います。複製は縮小した画像から作り直すことになり、この大きさのコマでは"
+              "効果が確認できませんでした。そのためここでは操作を提供しません。上限は "
+              "features.restore_max_edge で変えられます。",
+    },
+    # The copy is a canonical file: it lies in the city folder beside its source and turns
+    # up in every slice the source does. Wherever it is opened it says what it is and
+    # which frame it was made from — otherwise it reads as a second similar photograph
+    # that came from nowhere.
+    "review_restore_source_badge": {
+        "ru": "обработано моделью из {name}",
+        "en": "processed by a model from {name}",
+        "ja": "{name} をモデルで処理した複製",
+    },
+    "review_restore_error_sensitive_class": {
+        "ru": "Кадр отнесён к личным документам (vlm.exclude_classes): такие кадры "
+              "продукт не разворачивает и не обрабатывает. Ничего не создано.",
+        "en": "This frame is classed as a personal document (vlm.exclude_classes): the "
+              "product neither enlarges nor processes those. Nothing was created.",
+        "ja": "このコマは個人的な書類 (vlm.exclude_classes) に分類されています。"
+              "拡大も処理も行いません。何も作成されていません。",
+    },
+    "review_restore_error_video": {
+        "ru": "Это видео, а модель работает с изображениями. Ничего не создано.",
+        "en": "This is a video and the model works on images. Nothing was created.",
+        "ja": "これは動画で、モデルは画像を扱います。何も作成されていません。",
+    },
     "review_restore_error_model_unavailable": {
         "ru": "Модель не загрузилась. Веса качаются из сети и нужен дополнительный "
               "набор пакетов ([vlm]); офлайн и без скачанных весов эта кнопка работать "
@@ -8919,6 +9108,22 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       border: 1px solid rgba(255,255,255,.75); background: transparent; }
 .lightbox-dot.active { background: #fff; }
 
+/* --- F168: the one action the expanded frame offers, in every slice. A strip along the
+   bottom of the overlay rather than a control on every tile: F133 emptied the screen of
+   thirteen controls people reach for once a month, and this is one of them. Here it is
+   in context — the picture is already open and the thought "this one is soft" is the
+   reason it was opened. --- */
+.lightbox-restore { position: absolute; left: 0; right: 0; bottom: 0; cursor: default;
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+      gap: var(--space-sm); padding: var(--space-sm) var(--space-md);
+      background: rgba(10,14,22,.78); color: #fff; }
+.lightbox-restore[hidden] { display: none; }
+.lightbox-restore span { font-size: 0.82rem; max-width: 62ch; line-height: 1.4; }
+.lightbox-restore span[hidden] { display: none; }
+.lightbox-restore-badge { padding: 2px 9px; border-radius: var(--radius-pill);
+      border: 1px solid rgba(255,255,255,.45); background: rgba(255,255,255,.12); }
+.lightbox-restore button[hidden] { display: none; }
+
 @media (max-width: 1000px) {
   .settings-panel-box { width: 100%; }
 }
@@ -9440,6 +9645,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
         ><path d="M9 6l6 6-6 6"/></svg></button>
 <div id="lightbox-dots" class="lightbox-dots" hidden></div>
+<div id="lightbox-restore" class="lightbox-restore" hidden>
+<span id="lightbox-restore-badge" class="lightbox-restore-badge" hidden></span>
+<button type="button" id="lightbox-restore-btn" class="btn btn-sm" hidden
+        title="{{review_restore_expanded_hint}}">{{review_restore}}</button>
+<span id="lightbox-restore-note" hidden></span>
+<span id="lightbox-restore-status"></span>
+</div>
 </div>
 <script>window.I18N = {{i18n_json}};</script>
 <script>window.VIDEO_FRAMES = {{video_frames}};</script>
@@ -13404,6 +13616,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function showLightboxAt(index) {
     lightboxIndex = index;
+    loadLightboxOffer();
     if (lightboxFrames) { showLightboxFrame(0); return; }
     // /preview — крупный ДЕКОДИРОВАННЫЙ JPEG (HEIC/RAW рендерятся), не сырой /photo
     lightboxImg.src = "/preview/" + lightboxSamples[index];
@@ -13414,7 +13627,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   function openLightbox(samples, index, videoFrames) {
-    lightboxSamples = samples;
+    // A COPY of the caller's list: F168 splices the processed copy in beside the frame it
+    // was made from, and the array handed over belongs to a card that is still on screen.
+    lightboxSamples = (samples || []).slice();
     lightboxFrames = videoFrames || 0;
     lightboxFrame = 0;
     renderLightboxDots();
@@ -13429,7 +13644,140 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     lightboxFrames = 0;
     lightboxFrame = 0;
     renderLightboxDots();
+    forgetLightboxOffer();
   }
+
+  // --- F168: "try to improve" on the frame that is open, in every slice --------------
+  // The action itself is F149's and is not reimplemented here: the same POST, the same
+  // answer, the same reason codes. What is new is WHERE it can be reached from. It used
+  // to live in one slice, behind a blur filter measured to find 8% of the frames a person
+  // calls soft; the gain the second measurement found belongs to SMALL frames rather than
+  // to blurred ones, and small frames are everywhere — in the cities, in the people, in a
+  // search. So the entrance is the expanded frame, which every slice already opens, and
+  // there is deliberately no control on the tiles: thirteen of those are what F133 spent a
+  // feature removing, and this one is pressed a few times a year.
+  //
+  // Whether to offer it at all is the SERVER's answer (`/api/restore/offer`) — the private
+  // classes and the ceiling are one rule each, and a copy of them in JS would be the
+  // second place to forget to update.
+
+  var lightboxRestoreEl = document.getElementById("lightbox-restore");
+  var lightboxRestoreBtn = document.getElementById("lightbox-restore-btn");
+  var lightboxRestoreNote = document.getElementById("lightbox-restore-note");
+  var lightboxRestoreBadge = document.getElementById("lightbox-restore-badge");
+  var lightboxRestoreStatus = document.getElementById("lightbox-restore-status");
+  var lightboxOffer = null;      // the answer about the frame on screen, or null
+  var lightboxOfferFor = null;   // which id it was asked about — a late answer is dropped
+  var lightboxRestoring = false;
+
+  function lightboxFrameId() {
+    return lightboxSamples && lightboxSamples.length ? lightboxSamples[lightboxIndex] : null;
+  }
+
+  function renderLightboxRestore() {
+    var offer = lightboxOffer;
+    if (!offer) { lightboxRestoreEl.hidden = true; return; }
+    var source = offer.restored_from;
+    lightboxRestoreBadge.hidden = !source;
+    if (source) {
+      // Says PROCESSED and names the frame it came from: the copy is an ordinary member
+      // of the collection now, so anywhere it turns up it must not read as a second
+      // similar photograph nobody remembers taking.
+      lightboxRestoreBadge.textContent = fmt(I18N.review_restore_source_badge,
+                                             { name: source.name });
+      lightboxRestoreBadge.title = I18N.review_restore_badge_hint;
+    }
+    // The size decides, not the slice. Above `features.restore_max_edge` the copy would be
+    // rebuilt from a reduced frame and the measurement found no gain there, so the button
+    // goes and the sentence stays — a withdrawn offer without a word is the silent half of
+    // the same promise.
+    var offered = offer.available && !offer.rebuilt;
+    lightboxRestoreBtn.hidden = !offered;
+    lightboxRestoreBtn.disabled = uiBusy() || lightboxRestoring;   // F145
+    lightboxRestoreBtn.textContent = lightboxRestoring ? I18N.review_restore_running
+                                                       : I18N.review_restore;
+    var note = offer.available && offer.rebuilt
+        ? fmt(I18N.review_restore_too_large,
+              { max_edge: offer.max_edge, source_edge: offer.source_edge })
+        : "";
+    lightboxRestoreNote.hidden = !note;
+    lightboxRestoreNote.textContent = note;
+    lightboxRestoreEl.hidden = !(offered || note || source);
+  }
+
+  registerBusyRefresh(renderLightboxRestore);
+
+  function forgetLightboxOffer() {
+    lightboxOffer = null;
+    lightboxOfferFor = null;
+    lightboxRestoreStatus.textContent = "";
+    renderLightboxRestore();
+  }
+
+  function loadLightboxOffer() {
+    forgetLightboxOffer();
+    // A clip is not this action's business (the engine is about images, and the route
+    // refuses one anyway) — nothing is asked about it.
+    var id = lightboxFrames ? null : lightboxFrameId();
+    if (id === null) return;
+    lightboxOfferFor = id;
+    fetch("/api/restore/offer?file_id=" + encodeURIComponent(id))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (offer) {
+        if (lightboxOfferFor !== id) return;   // the person has already stepped on
+        lightboxOffer = offer;
+        renderLightboxRestore();
+      })
+      .catch(function () { /* the frame simply offers nothing */ });
+  }
+
+  function restoreLightboxFrame() {
+    var id = lightboxFrameId();
+    if (id === null || lightboxRestoring || uiBusy()) return;
+    lightboxRestoring = true;
+    renderLightboxRestore();
+    lightboxRestoreStatus.textContent = I18N.review_restore_running;
+    return postJson("/api/review/restore", { file_id: id })
+      .then(function (resp) {
+        if (resp && resp.ok && resp.item) {
+          // The copy appears WHERE THE PRESS WAS. In the Review grid that means a card
+          // beside the original; here it means the next frame of the strip the arrows
+          // step through, shown at once — a person who pressed and saw nothing change
+          // would have no reason to believe anything happened. (Closed meanwhile: the
+          // copy is made and indexed all the same, there is simply nothing to show it in.)
+          if (!lightboxSamples) return;
+          lightboxSamples.splice(lightboxIndex + 1, 0, resp.item.file_id);
+          showLightboxAt(lightboxIndex + 1);
+          lightboxRestoreStatus.textContent = resp.reused ? I18N.review_restore_reused
+                                                          : I18N.review_restore_done;
+          if (resp.rebuilt) {
+            lightboxRestoreStatus.textContent += " " + fmt(I18N.review_restore_rebuilt, {
+              max_edge: resp.max_edge, source_edge: resp.source_edge });
+          }
+          return;
+        }
+        // A reason, never an empty result — and the same codes the Review tab translates,
+        // including the two refusals this entrance made necessary (a private class, a
+        // clip), which the ROUTE decides and not the page.
+        var reason = resp && resp.reason
+            ? I18N["review_restore_error_" + resp.reason] : null;
+        lightboxRestoreStatus.textContent = reason
+            || (I18N.review_error_prefix + ((resp && (resp.detail || resp.error)) || ""));
+      })
+      .catch(function (err) {
+        lightboxRestoreStatus.textContent = I18N.review_error_prefix + err;
+      })
+      .then(function () {
+        lightboxRestoring = false;
+        renderLightboxRestore();
+      });
+  }
+
+  lightboxRestoreEl.addEventListener("click", function (e) { e.stopPropagation(); });
+  lightboxRestoreBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    restoreLightboxFrame();
+  });
 
   // Короткий ролик отдаёт меньше кадров, чем настроено, и недостающий индекс — это
   // честный 404. Обрезаем ленту по первому промаху и возвращаемся на прошлый кадр:
@@ -14997,6 +15345,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_face_slices(parse_qs(parts.query))
             elif path == "/api/review":
                 self._serve_review(parse_qs(parts.query))
+            elif path == "/api/restore/offer":
+                self._serve_restore_offer(parse_qs(parts.query))
             elif path == "/api/search":
                 self._serve_search(parse_qs(parts.query))
             elif path == "/api/saved-slices":
@@ -15238,6 +15588,24 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 features=cfg.features,
                 max_distance=cfg.index.phash_max_distance))
 
+        def _serve_restore_offer(self, query: dict[str, list[str]]) -> None:
+            # F168: read-only — what the expanded frame affords, asked once per frame the
+            # person opens. It writes nothing and loads no model: the answer is a row of
+            # the index plus the header of the file, so opening a photograph costs the
+            # same as it did. The sensitive classes come off the LIVE config for the
+            # reason `/api/junk` reads them that way.
+            file_id = _parse_file_id_query(query)
+            if file_id is None:
+                self._send_json({"error": "invalid file_id"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            payload = _restore_offer(db_path, cfg.features, file_id,
+                                     frozenset(cfg.vlm.exclude_classes))
+            if payload is None:
+                self._send_json({"error": "file not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(payload)
+
         def _serve_search(self, query: dict[str, list[str]]) -> None:
             # F134: read-only, and read-only in the strong sense — an empty `q` asks for
             # the state of the index alone and never reaches the model. The sensitive
@@ -15349,7 +15717,12 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             if file_id is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            payload = _restore_frame(db_path, cfg.features, file_id)
+            # F168: the private classes come off the LIVE config, for the reason
+            # `/api/junk` reads them that way — the settings panel can change
+            # `vlm.exclude_classes` without a restart, and a guard that needed one would
+            # be a guard the person thinks they have turned on.
+            payload = _restore_frame(db_path, cfg.features, file_id,
+                                     frozenset(cfg.vlm.exclude_classes))
             if payload.get("error") == "file not found":
                 self._send_json(payload, status=HTTPStatus.NOT_FOUND)
                 return
