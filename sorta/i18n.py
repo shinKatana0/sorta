@@ -718,6 +718,27 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "「確実にそれ」という閾値はありません — スコアが問い合わせから"
               "離れる位置を見てください",
     },
+    # F189: the OTHER kind of answer this command can give. A name is an exact selection,
+    # so the sentence under it must not read like the one above: no threshold to look for,
+    # no "where the scores stop" — the count is a count of somebody's photographs.
+    "cli.search.person_done": {
+        "ru": "Кадры человека: {name} — {n}. Это точный отбор по кластеру лиц, а не "
+              "ранжирование: кадр либо в кластере этого человека, либо нет",
+        "en": "Frames of a person: {name} — {n}. This is an exact selection by face "
+              "cluster, not a ranking: a frame is either in this person's cluster or not",
+        "ja": "人物のコマ: {name} — {n} 件。これは顔クラスタによる正確な抽出であり、"
+              "ランキングではありません: そのコマがこの人物のクラスタに入っているかどうかです",
+    },
+    # A name can also be an ordinary word («Роза», «Марк»), and the other answer must not
+    # disappear silently — the line says how to ask for it.
+    "cli.search.person_words_hint": {
+        "ru": "Это же слово можно поискать по картинке: "
+              '`sorta search --words "{query}"`',
+        "en": "The same word can be searched for as an image: "
+              '`sorta search --words "{query}"`',
+        "ja": "同じ語を画像として検索することもできます: "
+              '`sorta search --words "{query}"`',
+    },
     # reset
     "cli.reset.confirm": {
         "ru": "Стереть весь индекс? Имена людей/событий и решения по дублям "
@@ -1181,6 +1202,15 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "size, not a similarity threshold",
         "ja": "表示する枚数（既定は features.search_limit）— 類似度の閾値ではなく、"
               "取り出す標本の大きさです",
+    },
+    # F189: the way back to the ranking when the words are also somebody's name.
+    "cli.help.search.words": {
+        "ru": "Искать по словам, даже если строка совпала с именем человека "
+              "(по умолчанию имя даёт точный отбор кадров этого человека)",
+        "en": "Search by words even when the string is somebody's name (by default a "
+              "name gives the exact selection of that person's frames)",
+        "ja": "文字列が人物名と一致していても語として検索します"
+              "（既定では名前はその人物のコマの正確な抽出になります）",
     },
     # album
     "cli.help.album": {

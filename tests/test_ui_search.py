@@ -403,9 +403,12 @@ class TestSearchMarkup(SearchUiTestBase):
         html = body.decode("utf-8")
         self.assertIn('fetch("/api/search?q=")', html)
         self.assertIn('"/api/search?q=" + encodeURIComponent(searchQuery)', html)
-        # the reason and the way to fix it are both driven by `available`
-        self.assertIn('document.getElementById("slice-query").disabled = !available;',
-                      html)
+        # The reason and the way to fix it are both driven by `available`. F189: the field
+        # itself is driven by `usable` — `available` OR somebody named, because a name is
+        # answered out of the clusters and needs no index; the sentence about the index
+        # does not change, and the case is pinned in test_ui_search_person.py.
+        self.assertIn('document.getElementById("slice-query").disabled = !usable;', html)
+        self.assertIn("var usable = available || !!(state && state.names);", html)
         self.assertIn('activateTab("overview");', html)
         self.assertIn("I18N.search_state_empty", html)
         self.assertIn("I18N.search_state_other_model", html)

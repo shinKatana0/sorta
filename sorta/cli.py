@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Callable
@@ -17,7 +18,7 @@ else:
     _TYPER_AVAILABLE = True
 
 from . import __version__, imaging
-from .config import configure_logging, load_config
+from .config import Config, configure_logging, load_config
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import (
@@ -53,7 +54,14 @@ from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
 from .progress import progress_task
 from .runlog import default_log_path, log_environment, observe, stage_timer
-from .search import REASON_OTHER_MODEL, EmbeddingsMissing, file_paths, search_text
+from .search import (
+    REASON_OTHER_MODEL,
+    EmbeddingsMissing,
+    file_paths,
+    match_person,
+    person_page,
+    search_text,
+)
 from .sorter import SELECTORLESS_ALBUM_KINDS, plan_album, plan_and_sort
 from .sorter import undo as undo_batch
 
@@ -808,7 +816,29 @@ def _search_unavailable(exc: EmbeddingsMissing, lang: Lang) -> str:
     return _t("cli.search.no_embeddings", lang)
 
 
-def _cmd_search(config_path: str, query: str, limit: int | None = None) -> None:
+def _print_person_frames(conn: sqlite3.Connection, cfg: Config, person: str, query: str,
+                         lang: Lang, limit: int | None) -> None:
+    """F189: the frames of a named person — a LIST, printed as one.
+
+    No score column, and that is the visible difference from the ranking above: there is no
+    number to read here, because every frame is in this list for the same reason. `--limit`
+    stays what it is for the ranking — how many lines to print — except that here it cuts a
+    list whose length is a fact, so the sentence under it says the whole count and not the
+    number of lines.
+    """
+    page = person_page(conn, person,
+                       limit=int(limit if limit is not None else cfg.features.search_page))
+    paths = file_paths(conn, [file_id for file_id, _score in page.hits])
+    for place, (file_id, _score) in enumerate(page.hits, page.offset + 1):
+        print(f"{place:>4}. {paths.get(file_id, '')}")
+    print(_t("cli.search.person_done", lang, name=person, n=page.total))
+    # The other answer is still there, and the way to it is one flag: a name can be an
+    # ordinary word, and finding the person must not cost the ability to find the word.
+    print(_t("cli.search.person_words_hint", lang, query=query))
+
+
+def _cmd_search(config_path: str, query: str, limit: int | None = None,
+                words: bool = False) -> None:
     """F129: print the CLIP ranking for a query — paths and scores, best first.
 
     The scores are printed because they are the only thing that tells a reader how far down
@@ -816,6 +846,12 @@ def _cmd_search(config_path: str, query: str, limit: int | None = None) -> None:
     where a query runs out is something only a human can see. The lines themselves carry no
     words in any language (a rank, a score, a path — data, like the landmark names in
     `_summarize_landmarks`); the sentence around them goes through the catalog.
+
+    F189: one query string, one behaviour, whichever entry point it was typed into — so
+    this command asks `search.match_person` first, exactly as `GET /api/search` does. A
+    name gives the person's frames and says so; anything else goes on to the ranking
+    untouched. `--words` is the way back for a name that is also an ordinary word: the
+    second answer must not disappear because the first one exists.
     """
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
@@ -824,6 +860,10 @@ def _cmd_search(config_path: str, query: str, limit: int | None = None) -> None:
         raise SystemExit(_t("cli.search.empty_query", lang))
     conn = connect(cfg.database)
     try:
+        person = None if words else match_person(conn, query)
+        if person is not None:
+            _print_person_frames(conn, cfg, person, query, lang, limit)
+            return
         try:
             hits = search_text(cfg, conn, query, limit=limit)
         except EmbeddingsMissing as exc:
@@ -1063,9 +1103,10 @@ def build_app(lang: Lang) -> typer.Typer:
         query: str = typer.Argument(..., help=h("cli.help.search.query")),
         limit: int = typer.Option(None, "--limit", min=1,
                                   help=h("cli.help.search.limit")),
+        words: bool = typer.Option(False, "--words", help=h("cli.help.search.words")),
         config: str = cfg_opt,
     ):
-        _cmd_search(config, query, limit=limit)
+        _cmd_search(config, query, limit=limit, words=words)
 
     @app.command(help=h("cli.help.album"))
     def album(

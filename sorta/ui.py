@@ -476,6 +476,8 @@ from .search import (
     REASON_OTHER_MODEL,
     EmbeddingsMissing,
     TextEncoder,
+    match_person,
+    person_page,
     rank_queries,
     rank_text,
     text_encoder,
@@ -3512,6 +3514,14 @@ _SEARCH_COVERED_SQL = """SELECT COUNT(*) FROM search_embeddings e
     JOIN files f ON f.id = e.file_id
     WHERE e.model = ? AND f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'"""
 
+# F189: whether anybody in this collection has a NAME — the roots of the `merged_into`
+# chains, which is where `search.match_person` looks. It travels with the state because the
+# line is DISABLED while the index cannot rank, and a name needs no index at all:
+# `features.search_index` is off by default, so without this the feature would be invisible
+# on a fresh collection — a person typing the name of their own daughter into a dead field.
+_SEARCH_NAMES_SQL = """SELECT EXISTS(
+    SELECT 1 FROM face_clusters WHERE merged_into IS NULL AND label IS NOT NULL)"""
+
 # One card, and the same shape whichever state produced it. LEFT JOIN because a photograph
 # usually has no `media_class` row at all — the class is what the privacy rule below reads.
 _SEARCH_ROWS_SQL = """SELECT f.id, f.path, f.taken_at, mc.verdict
@@ -3561,6 +3571,10 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
         "model": model,
         "index_model": model if stored else (max(others)[1] if others else None),
         "indexed": indexed,
+        # F189: not part of `available` — the index is still in whatever state it is in,
+        # and the sentence about it does not change. What this adds is that the line has
+        # something to answer even so.
+        "names": bool(conn.execute(_SEARCH_NAMES_SQL).fetchone()[0]),
         # F173: `photos`, not `total`. This route answers with a PAGE of a ranking now, and
         # in every paged payload of this server `total` means the length of the list being
         # walked. Two numbers called the same thing in one answer is how a counter starts
@@ -3570,9 +3584,14 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
     }
 
 
-def _search_item_to_json(row: sqlite3.Row, score: float,
-                         sensitive: frozenset[str]) -> dict:
+def _search_item_to_json(row: sqlite3.Row, score: float, sensitive: frozenset[str],
+                         scored: bool = True) -> dict:
     """One card of the ranking: the score is always on it, the thumbnail sometimes.
+
+    F189: `scored=False` for a card of a SELECTION — a person's frames — and then the key
+    is absent rather than zero. The number explains an order; this list has no order to
+    explain, and «близость 0.000» under every frame of somebody's daughter would be a
+    measurement nobody made.
 
     F133's rule, unchanged: a frame whose class sits in `vlm.exclude_classes` (documents
     by default) gets no `thumb_url`, so the browser never asks `/thumb` for it and no
@@ -3581,14 +3600,15 @@ def _search_item_to_json(row: sqlite3.Row, score: float,
     the way around a protection the slices already apply.
     """
     path = Path(row["path"])
-    payload = {
+    payload: dict = {
         "file_id": int(row["id"]),
         "name": path.name,
         "date": row["taken_at"],
+    }
+    if scored:
         # A ranking, not a filter: the number is what lets a reader see where the
         # relevance ran out, and a card without it would hide exactly that.
-        "score": float(score),
-    }
+        payload["score"] = float(score)
     verdict = row["verdict"]
     if verdict is None or str(verdict) not in sensitive:
         payload["thumb_url"] = f"/thumb/{int(row['id'])}"
@@ -3597,7 +3617,7 @@ def _search_item_to_json(row: sqlite3.Row, score: float,
 
 
 def _search_items(conn: sqlite3.Connection, hits: Sequence[tuple[int, float]],
-                  sensitive: frozenset[str]) -> list[dict]:
+                  sensitive: frozenset[str], scored: bool = True) -> list[dict]:
     """The engine's (file_id, score) pairs -> cards, IN THE RANKING'S ORDER.
 
     The rows are fetched in chunks (a limit is user-set and SQLite has a ceiling on bound
@@ -3609,12 +3629,53 @@ def _search_items(conn: sqlite3.Connection, hits: Sequence[tuple[int, float]],
         marks = ",".join("?" * len(part))
         rows.update({int(r["id"]): r for r in conn.execute(
             _SEARCH_ROWS_SQL.format(marks=marks), tuple(part))})
-    return [_search_item_to_json(rows[fid], score, sensitive)
+    return [_search_item_to_json(rows[fid], score, sensitive, scored)
             for fid, score in hits if fid in rows]
 
 
+# --- F189: the search line answers a NAME with the person ------------------------------
+# The question this closes: a cluster somebody named, and merged another cluster into, was
+# reachable by `album person <name>` and by `sort --by person` and by no query anybody could
+# type. «Ирина» in the search line asked CLIP for frames resembling a WORD.
+#
+# The bridge is a parse of the query string and nothing else — no index, no threshold, no
+# cluster work — and it is deliberately in ONE place for the whole server: the typed line
+# (`/api/search`) and a pinned slice of the same words (`/api/saved-slices`, F156) have to
+# answer identically, or a pin becomes a second engine with a name.
+#
+# What travels to the client is two flags rather than a merged list:
+#
+#     person   the name this string is, whenever it is one — even when the answer being
+#              served is the ranking, because the offer of the other answer is the point
+#     exact    whether THIS payload is the person's frames. It decides the caption, and a
+#              caption is how a reader tells an exact selection from the top of a ranking
+#
+# Requirement 4 lives in that pair: a name that is also an ordinary word («Роза», «Марк»)
+# shows the person first and keeps the ranking one click away — the second answer never
+# disappears silently, which is what a search line quietly hijacked by a name would do.
+
+
+def _person_payload(conn: sqlite3.Connection, cfg: Config, label: str, offset: int,
+                    limit: int) -> dict:
+    """One page of a person's frames, in the shape every paged slice of this server has.
+
+    `exact: true` is the whole difference on the wire, and the client draws a different
+    sentence from it. The cards carry no score (`scored=False`): there is no order here to
+    explain.
+    """
+    page = person_page(conn, label, limit=limit, offset=offset)
+    return {
+        "person": label,
+        "exact": True,
+        **_page_payload(
+            _search_items(conn, page.hits, frozenset(cfg.vlm.exclude_classes),
+                          scored=False),
+            total=page.total, offset=page.offset, limit=page.limit),
+    }
+
+
 def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: int,
-                    encoder: TextEncoder | None = None) -> dict:
+                    encoder: TextEncoder | None = None, words: bool = False) -> dict:
     """`GET /api/search` — the state of the index always, a page of the ranking when there
     is one.
 
@@ -3632,13 +3693,26 @@ def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: i
     with the page, so the two cannot be computed out of step with each other. A state that
     ranks nothing still carries `total: 0` and `has_more: false`: the client draws the same
     controls whatever happened, and they are simply not there when there is nothing below.
+
+    F189: a string that IS somebody's name is answered with that person's frames, before
+    the index is consulted at all — a selection out of `face_clusters` needs no vector, so
+    a name still finds the person on a collection nobody has indexed yet. `words=True` is
+    how the client asks for the ranking anyway, which is the other half of the same rule:
+    the name never takes the word search away, it only goes first.
     """
     conn = _connect(db_path)
     try:
         model = search_index_model(cfg)  # F141: the search model, not the classifier's
         payload = _search_index_state(conn, model)
-        payload.update({"query": text,
+        payload.update({"query": text, "person": None, "exact": False,
                         **_page_payload([], total=0, offset=offset, limit=limit)})
+        # Computed even when the ranking is what gets served: the client offers the other
+        # answer, and it can only offer what the payload names.
+        person = match_person(conn, text)
+        payload["person"] = person
+        if person is not None and not words:
+            payload.update(_person_payload(conn, cfg, person, offset, limit))
+            return payload
         if not text.strip() or not payload["available"]:
             return payload
         try:
@@ -3656,18 +3730,23 @@ def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: i
 
 
 def _parse_search_query(query: dict[str, list[str]],
-                        default_limit: int) -> tuple[str, int, int] | None:
-    """(query text, offset, limit) for `GET /api/search`, or None -> 400.
+                        default_limit: int) -> tuple[str, int, int, bool] | None:
+    """(query text, offset, limit, words) for `GET /api/search`, or None -> 400.
 
     An absent/empty `q` is NOT an error: the client asks with one on purpose, to learn the
     state of the index without spending a model on it. The window is the shared
     `_parse_page_window` — a non-integer or a negative number is rejected, an over-eager
     limit is clamped — with `features.search_page` as the default size of a page.
+
+    F189: `words=1` asks for the ranking even when the string names somebody. Anything else
+    (absent, `0`, a typo) means the default, which is the person — a malformed flag must not
+    be a 400 on a route whose whole job is to answer.
     """
     window = _parse_page_window(query, default_limit)
     if window is None:
         return None
-    return (query.get("q") or [""])[0], window[0], window[1]
+    return ((query.get("q") or [""])[0], window[0], window[1],
+            (query.get("words") or [""])[0] == "1")
 
 
 # --- F151: the pinned queries of the "Slices" tab (`GET /api/saved-slices`) ------------
@@ -3723,6 +3802,13 @@ def _saved_slices_payload(cfg: Config, db_path: Path, name: str | None, offset: 
     `name=None` is the tab's own call on open: the pins and the state, no ranking, no
     model. The phrases travel with the page because the panel prints them — a slice whose
     words are invisible cannot be edited by the person it is wrong for.
+
+    F189: a pin whose single phrase is somebody's NAME answers with that person's frames,
+    exactly as the search line does for the same string. Pinning is how a named person
+    becomes an ordinary tab and it was supposed to cost nothing — but a pin that ranked
+    «Ирина» by CLIP while the search line selected her cluster would be two answers under
+    one word, and the divergence would be silent. A pin of SEVERAL phrases is a query and
+    stays one: a name averaged with other words is not a name.
     """
     # The LIVE config, in the file's own order — that order is the order of the pins.
     slices = cfg.features.saved_slices
@@ -3744,9 +3830,23 @@ def _saved_slices_payload(cfg: Config, db_path: Path, name: str | None, offset: 
             # It travels with every answer so the "pin this" button can say the limit is
             # reached BEFORE somebody types a name for a slice that will be refused.
             "max_pinned": int(cfg.features.max_pinned_slices),
+            # F189: the same two flags the search line sends, so the panel captions a
+            # pinned person the way it captions a typed one.
+            "person": None,
+            "exact": False,
             **_page_payload([], total=0, offset=offset, limit=limit),
         })
-        if current is None or not payload["available"]:
+        if current is None:
+            return payload
+        person = (match_person(conn, current.queries[0])
+                  if len(current.queries) == 1 else None)
+        if person is not None:
+            payload.update(_person_payload(conn, cfg, person, offset, limit))
+            # This list is a fact and not an estimate, and the word that says so is the
+            # one the panel prints beside every ranking on this tab.
+            payload["approximate"] = False
+            return payload
+        if not payload["available"]:
             return payload
         try:
             page = rank_queries(cfg, conn, current.queries, limit=limit, offset=offset,
@@ -7657,6 +7757,65 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось выполнить поиск: ", "en": "Could not run the search: ",
         "ja": "検索を実行できません: ",
     },
+    # --- F189: the same line, answering with a person ----------------------------------
+    # Said in front of the index's own reason rather than instead of it: the ranking still
+    # cannot run and the way to fix that is still on screen — what changes is that the
+    # field is not dead while there is somebody to find in it.
+    "search_state_names_only": {
+        "ru": "Имя названного человека здесь найдётся и без индекса — наберите имя.",
+        "en": "The name of a person you have labelled is found here without the index — "
+              "type a name.",
+        "ja": "名前を付けた人物は、インデックスがなくてもここで見つかります — "
+              "名前を入力してください。",
+    },
+    # The caption is the feature as much as the selection is. A reader who cannot tell an
+    # exact answer from the top of a ranking has been handed one thing and shown another,
+    # so this sentence says what it is and the ranking's sentence stays where it was.
+    "search_person_shown_label": {
+        "ru": "Кадры человека: {name} — показано {shown} из {total}",
+        "en": "Frames of a person: {name} — showing {shown} of {total}",
+        "ja": "人物のコマ: {name} — {total} 件中 {shown} 件を表示",
+    },
+    "search_person_hint": {
+        "ru": "Это точный отбор по кластеру лиц, а не ранжирование: кадр либо в кластере "
+              "этого человека, либо нет. Порога и «похожести» здесь нет, список полный — "
+              "он лишь показывается по частям.",
+        "en": "This is an exact selection by face cluster, not a ranking: a frame is "
+              "either in this person's cluster or it is not. There is no threshold and no "
+              "“closeness” here — the list is complete and merely shown in portions.",
+        "ja": "これはランキングではなく、顔クラスタによる正確な抽出です。コマがこの人物の"
+              "クラスタに入っているかどうかだけで決まります。しきい値も「近さ」もなく、"
+              "一覧は完全で、分割して表示しているだけです。",
+    },
+    # The depth warning of a ranking does not apply to a list: the next page is more of the
+    # same fact, not a worse guess.
+    "search_person_more_hint": {
+        "ru": "Дальше — продолжение того же списка: кадры не становятся менее «точными».",
+        "en": "Further on is the same list continued: the frames do not get less certain.",
+        "ja": "この先も同じ一覧の続きです。コマの確かさが下がることはありません。",
+    },
+    # Requirement 4 on screen: a name can be an ordinary word («Роза», «Марк»), and the
+    # other answer is one click away instead of gone.
+    "search_person_words_link": {
+        "ru": "Искать «{q}» по картинке",
+        "en": "Search for “{q}” as an image",
+        "ja": "「{q}」を画像として検索",
+    },
+    "search_words_person_link": {
+        "ru": "Показать кадры человека: {name}",
+        "en": "Show the frames of a person: {name}",
+        "ja": "人物のコマを表示: {name}",
+    },
+    # A named cluster all of whose frames are duplicates or unreadable. Rare, and still not
+    # "nothing was found": the person exists, the frames a search may show do not.
+    "search_person_no_frames": {
+        "ru": "У этого человека нет кадров, которые можно показать: все они дубли или "
+              "нечитаемые файлы.",
+        "en": "This person has no frame that can be shown: all of them are duplicates or "
+              "unreadable files.",
+        "ja": "この人物には表示できるコマがありません。すべて重複か読み取れない"
+              "ファイルです。",
+    },
     # --- F152: the three face slices ---------------------------------------------------
     # The labels are deliberately not the label of the cluster slice next to them: "Люди"
     # there answers "who is this", these answer "is anybody in the frame".
@@ -8969,7 +9128,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="slice-pins" class="review-slices" aria-label="{{slices_pinned_label}}"></div>
 
 <div id="tab-search" class="slice-panel">
-<p class="process-intro">{{search_ranking_hint}}</p>
+<p id="search-kind-hint" class="process-intro">{{search_ranking_hint}}</p>
+<div id="search-other" class="album-controls"></div>
 <div id="search-album" class="album-controls"></div>
 <div id="search-grid"></div>
 <div class="process-actions">
@@ -8980,7 +9140,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 </div>
 
 <div id="tab-query" class="slice-panel">
-<p class="process-intro">{{query_slice_intro}}</p>
+<p id="query-kind-hint" class="process-intro">{{query_slice_intro}}</p>
 <p id="query-phrases" class="override-hint"></p>
 <div class="override-controls">
 <button type="button" id="query-up-btn" class="btn btn-ghost btn-sm">{{pin_move_up}}</button>
@@ -10547,9 +10707,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function applySearchState(state) {
     searchState = state;
     var available = !!(state && state.available);
-    document.getElementById("slice-query").disabled = !available;
-    document.getElementById("slice-query-btn").disabled = !available;
-    document.getElementById("slice-query-hint").textContent = searchStateText(state);
+    // F189: a NAME is answered without the index, so the line stays usable while there is
+    // somebody named — otherwise the whole feature would be behind a disabled field on the
+    // default config, which is the one a person has on the day they name their first
+    // cluster. The reason the ranking cannot run is still said, with the name sentence in
+    // front of it: both facts are true at once.
+    var usable = available || !!(state && state.names);
+    document.getElementById("slice-query").disabled = !usable;
+    document.getElementById("slice-query-btn").disabled = !usable;
+    document.getElementById("slice-query-hint").textContent =
+        (!available && usable ? I18N.search_state_names_only + " " : "") +
+        searchStateText(state);
     // The way out of both unavailable states is a run of the collection, and the run
     // lives on "Overview" — a reason without the way to it is a dead end.
     document.getElementById("slice-query-goto").style.display =
@@ -10603,21 +10771,30 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     meta.className = "search-card-meta";
     meta.textContent = item.date || "";
     card.appendChild(meta);
-    // The score is on every card because it is the only thing that explains the order —
-    // this ranks, it does not classify, and the reader decides where the list stops
-    // being about their query.
-    var score = document.createElement("span");
-    score.className = "search-card-score";
-    score.textContent = fmt(I18N.search_score_label,
-                            { score: Number(item.score).toFixed(3) });
-    card.appendChild(score);
+    // The score is on every card of a RANKING because it is the only thing that explains
+    // the order — this ranks, it does not classify, and the reader decides where the list
+    // stops being about their query. F189: a selection has no order to explain and the
+    // server sends no score for one; a «близость 0.000» here would be a number nobody
+    // measured, on a list where every frame is present for the same reason.
+    if (item.score !== undefined && item.score !== null) {
+      var score = document.createElement("span");
+      score.className = "search-card-score";
+      score.textContent = fmt(I18N.search_score_label,
+                              { score: Number(item.score).toFixed(3) });
+      card.appendChild(score);
+    }
     return card;
   }
 
   // The album of a query is the album route that already exists: kind='query' and the
   // words themselves as the selector, through the same dry-run-then-confirm path every
   // other album goes through.
-  function renderSearchAlbumControls(query) {
+  //
+  // F189: when the answer on screen is a PERSON, the album is `kind='person'` with the
+  // name — the very selection the frames above came out of. Gathering `kind='query'`
+  // there would ask CLIP for a word and hand back a folder that does not match the list
+  // it was gathered from, under that person's name.
+  function renderSearchAlbumControls(query, person) {
     var box = document.getElementById("search-album");
     box.textContent = "";
     if (!query) return;
@@ -10630,18 +10807,52 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
-      gatherAlbum("query", query, modeSelect.value, null, null,
-          destInput.value.trim() || null, albumStatus);
+      if (person) {
+        gatherAlbum("person", person, modeSelect.value, null, null,
+            destInput.value.trim() || null, albumStatus);
+      } else {
+        gatherAlbum("query", query, modeSelect.value, null, null,
+            destInput.value.trim() || null, albumStatus);
+      }
     });
     box.appendChild(albumBtn);
     box.appendChild(albumStatus);
     appendAlbumBusyHint(box);
   }
 
+  // F189: the other answer, never gone. A string can be both a name and a word, and the
+  // rule is that finding the person does not cost the ability to find the word (nor the
+  // other way round) — so whichever of the two is on screen, the link to its counterpart
+  // is above it.
+  function renderSearchOtherAnswer(data) {
+    var box = document.getElementById("search-other");
+    box.textContent = "";
+    if (!data.person) return;
+    var label = data.exact
+        ? fmt(I18N.search_person_words_link, { q: data.query })
+        : fmt(I18N.search_words_person_link, { name: data.person });
+    var btn = makeBtn("ghost", null, label, "btn-sm");
+    btn.id = "search-other-btn";
+    btn.addEventListener("click", function () {
+      searchWords = !!data.exact;   // one is the ranking, the other the person
+      searchPager.load();
+    });
+    box.appendChild(btn);
+  }
+
   // F173: the words the pages belong to. A "show more" that read the input field would
   // fetch the continuation of a ranking nobody is looking at as soon as somebody starts
   // typing the next query — the button continues the list on screen, not the field.
   var searchQuery = "";
+
+  // F189: whether the reader has asked for the RANKING of a string that is also somebody's
+  // name. It belongs next to `searchQuery` and for the same reason — a "show more" has to
+  // continue the answer on screen, and the two answers to one string are different lists.
+  var searchWords = false;
+  // Whether what is on screen is a person's frames, and whose. Kept rather than read off
+  // the last payload, because the counter is repainted (`sync`) without one.
+  var searchExact = false;
+  var searchPerson = null;
 
   // The hole this feature was written for. Search was the one user-facing slice with no
   // way past the first page, and the caption said "200 frames" where the truth was "the
@@ -10658,29 +10869,51 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     shown: "search-shown",
     hint: "search-depth-hint",
     url: function (offset) {
-      return "/api/search?q=" + encodeURIComponent(searchQuery) + "&offset=" + offset;
+      return "/api/search?q=" + encodeURIComponent(searchQuery) + "&offset=" + offset +
+             (searchWords ? "&words=1" : "");
     },
     card: renderSearchCard,
     // Never "nothing was found": a usable index ranks everything it holds, so an empty
-    // list is a fact about the index and the answer says which one.
+    // list is a fact about the index and the answer says which one. F189: an exact answer
+    // has its own empty state — the person exists and none of their frames can be shown,
+    // which is not a fact about the index at all.
     emptyText: function (data) {
+      if (data.exact) return I18N.search_person_no_frames;
       return data.available ? I18N.search_no_frames : searchStateText(data);
     },
     errorText: function () { return I18N.error_loading_search; },
     shownText: function (n, total) {
+      // The caption is how a reader tells the two answers apart: an exact selection
+      // presented in the ranking's words would be read as the top of a list.
+      if (searchExact) {
+        return fmt(I18N.search_person_shown_label,
+                   { name: searchPerson || searchQuery, shown: n, total: total });
+      }
       return fmt(I18N.search_shown_label,
                  { q: searchQuery, shown: n, total: total });
     },
     onData: function (data, append) {
       applySearchState(data);
+      searchExact = !!data.exact;
+      searchPerson = data.person || null;
+      // Which KIND of answer this is, said above the grid: the ranking's warning about
+      // thresholds is false of a selection, and the depth trade under "show more" is too.
+      document.getElementById("search-kind-hint").textContent =
+          searchExact ? I18N.search_person_hint : I18N.search_ranking_hint;
+      document.getElementById("search-depth-hint").textContent =
+          searchExact ? I18N.search_person_more_hint : I18N.slice_depth_hint;
       // The album gathers the QUERY, not the page, so it is built once per search — and
       // rebuilding it on every "show more" would wipe the destination somebody typed.
       if (!append) {
-        renderSearchAlbumControls((data.items || []).length ? data.query : "");
+        var some = (data.items || []).length;
+        renderSearchAlbumControls(some ? data.query : "",
+                                  searchExact ? data.person : null);
         // F156: and the same condition offers to PIN it. A query with nothing under it is
         // not a slice yet, and the button that saves one appears when there is something
-        // to save.
-        showPinButton((data.items || []).length ? data.query : "");
+        // to save. A name is pinned the same way — that is the whole reason this feature
+        // lives in the parse of the query string.
+        showPinButton(some ? data.query : "");
+        renderSearchOtherAnswer(data);
       }
     },
   });
@@ -10688,12 +10921,21 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function runSearch() {
     var q = document.getElementById("slice-query").value.trim();
     // An empty query goes nowhere near the model — not from here and not on the server.
-    if (!q || !(searchState && searchState.available)) return;
+    // F189: `names` is the other reason there is something to ask; a string that turns out
+    // not to be a name then comes back with the state of the index as its answer, which is
+    // the sentence this line has always given.
+    if (!q || !(searchState && (searchState.available || searchState.names))) return;
     searchQuery = q;
+    // A new string is asked as itself: the "search by words instead" of the previous one
+    // must not silently carry over to the next name somebody types.
+    searchWords = false;
+    searchExact = false;
+    searchPerson = null;
     showSearchPanel();
     document.getElementById("search-shown").textContent = "";
-    renderSearchAlbumControls("");
+    renderSearchAlbumControls("", null);
     showPinButton("");
+    document.getElementById("search-other").textContent = "";
     return searchPager.load();
   }
 
@@ -10752,18 +10994,34 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // Never "there are no children in your archive": an index that cannot rank says which
     // of its states it is in, exactly as the typed query does (F134).
     emptyText: function (data) {
+      if (data.exact) return I18N.search_person_no_frames;
       return data.available ? I18N.search_no_frames : searchStateText(data);
     },
     errorText: function () { return I18N.error_loading_saved_slices; },
     shownText: function (n, total) {
+      // F189: a pinned NAME is captioned as a person and not as a slice of a ranking —
+      // the same sentence the search line prints for the same string.
+      if (querySliceExact) {
+        return fmt(I18N.search_person_shown_label,
+                   { name: querySlicePerson || savedSliceLabel(querySlice),
+                     shown: n, total: total });
+      }
       return fmt(I18N.query_slice_shown_label,
                  { name: savedSliceLabel(querySlice), shown: n, total: total });
     },
     onData: function (data, append) {
       applySearchState(data);
+      querySliceExact = !!data.exact;
+      querySlicePerson = data.person || null;
       // The phrases on screen are what makes "edit it without code" an offer rather than
-      // a claim — and they are the answer to "why is this frame here".
-      document.getElementById("query-phrases").textContent =
+      // a claim — and they are the answer to "why is this frame here". For a pinned name
+      // the answer to that question is the cluster, so the two lines that call this list
+      // an estimate say what it really is instead.
+      document.getElementById("query-kind-hint").textContent =
+          querySliceExact ? I18N.search_person_hint : I18N.query_slice_intro;
+      document.getElementById("query-depth-hint").textContent =
+          querySliceExact ? I18N.search_person_more_hint : I18N.slice_depth_hint;
+      document.getElementById("query-phrases").textContent = querySliceExact ? "" :
           fmt(I18N.query_slice_phrases,
               { phrases: (data.queries || []).join(" · ") });
       // F156: the actions belong to the SLICE and not to the page, so a "show more" leaves
@@ -10772,6 +11030,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       if (!append) renderQuerySliceActions(data);
     },
   });
+
+  // F189: whether the open pin is a person, and which one — the pinned twin of
+  // `searchExact`/`searchPerson`, kept for the same reason.
+  var querySliceExact = false;
+  var querySlicePerson = null;
 
   function loadSavedSlice() {
     return queryPager.load();
@@ -10878,8 +11141,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
-      gatherAlbum("query", one, modeSelect.value, null,
-          nameInput.value.trim() || null, destInput.value.trim() || null, albumStatus);
+      // F189: a pinned name gathers the PERSON album, for the reason the search line
+      // does — the folder has to hold the list the button was pressed under.
+      gatherAlbum(data.person ? "person" : "query", data.person || one, modeSelect.value,
+          null, nameInput.value.trim() || null, destInput.value.trim() || null,
+          albumStatus);
     });
     box.appendChild(albumBtn);
     box.appendChild(albumStatus);
@@ -14801,9 +15067,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "invalid offset/limit"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            text, offset, limit = parsed
+            text, offset, limit, words = parsed
             self._send_json(_search_payload(cfg, db_path, text, offset, limit,
-                                            encoder=query_encoder))
+                                            encoder=query_encoder, words=words))
 
         def _serve_saved_slices(self, query: dict[str, list[str]]) -> None:
             # F151: read-only, and the slices come off the LIVE config for the reason
