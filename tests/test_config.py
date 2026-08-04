@@ -162,6 +162,34 @@ class TestFeaturesSection(unittest.TestCase):
         self.assertAlmostEqual(cfg.features.pet_candidate_threshold,
                                FeaturesConfig().pet_candidate_threshold)
 
+    def test_the_detector_numbers_have_the_measured_defaults(self):
+        # F162: both are rows of the tables `scripts/measure_detector.py` prints, re-read
+        # on 500 hand-labelled frames (36 animals) after F154 shipped numbers taken on 200.
+        # The confidence: 0.60 marks 25 of 29 frames correctly where 0.50 marks 25 of 32 —
+        # the same recall for three false marks fewer, so it dominates instead of trading.
+        # The depth: 4 000 candidates is where the query's own recall ceiling reaches 100%
+        # (83% at 2 000), and costs 5.6 minutes at the measured 83.8 ms per frame.
+        cfg = self._load("")
+        self.assertAlmostEqual(cfg.features.detector_threshold, 0.6)
+        self.assertEqual(cfg.features.detector_candidates, 4000)
+
+    def test_the_detector_numbers_are_read_from_the_file(self):
+        cfg = self._load("features:\n"
+                         "  detector_threshold: 0.45\n"
+                         "  detector_candidates: 250\n")
+        self.assertAlmostEqual(cfg.features.detector_threshold, 0.45)
+        self.assertEqual(cfg.features.detector_candidates, 250)
+
+    def test_garbage_detector_numbers_fall_back_to_the_defaults(self):
+        # A depth read as 0 would show the detector nothing at all, and a threshold read
+        # as 0 would make every box above the storage floor an animal.
+        cfg = self._load("features:\n"
+                         "  detector_threshold: confident\n"
+                         "  detector_candidates: 0\n")
+        d = FeaturesConfig()
+        self.assertAlmostEqual(cfg.features.detector_threshold, d.detector_threshold)
+        self.assertEqual(cfg.features.detector_candidates, d.detector_candidates)
+
     def test_the_face_slice_numbers_have_the_documented_defaults(self):
         # F152: geometry, not confidence — a count of face boxes and a share of the frame.
         d = FeaturesConfig()
