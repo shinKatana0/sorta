@@ -384,7 +384,10 @@ class TestAnEmptyQueryIsNotASlice(PinTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('showPinButton((data.items || []).length ? data.query : "");', html)
+        # F189 gave the condition a name (`some`) because the same count now decides the
+        # album row and the offer of the other answer as well. The rule is unchanged.
+        self.assertIn("var some = (data.items || []).length;", html)
+        self.assertIn('showPinButton(some ? data.query : "");', html)
         self.assertIn('id="slice-pin-btn"', html)
         button = [ln for ln in html.splitlines() if 'id="slice-pin-btn"' in ln]
         self.assertEqual(len(button), 1)
@@ -474,7 +477,10 @@ class TestTheActionsOfAPinnedSlice(PinTestBase):
         album = html[html.index("function renderQuerySliceAlbum"):
                      html.index("function renderQuerySliceActions")]
         self.assertIn("albumModeSelect()", album)          # link / copy / move
-        self.assertIn('gatherAlbum("query", one', album)
+        # F189: a pinned NAME gathers the person's album instead — same row, same modes,
+        # and the kind follows what the slice actually answered.
+        self.assertIn('gatherAlbum(data.person ? "person" : "query", data.person || one',
+                      album)
         self.assertIn("appendAlbumDestControls(box)", album)
         self.assertIn('id="query-album"', html)
 

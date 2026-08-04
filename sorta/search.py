@@ -79,6 +79,20 @@ has measured, and the half a merge is expected to move. A merged ranking is page
 other (F173): the window is cut after the merge and the total is the length of the merged
 list, so «показано N из M» stays a fact about the list the reader is actually looking at.
 
+F189 puts something in this module that is NOT a ranking, and the whole feature is in
+keeping the two apart. `face_clusters.label` holds the names somebody gave the people in
+their own archive, and typing one of those names into the search line used to ask CLIP for
+frames that look like a WORD. The bridge is `match_person` + `person_page`: a name is an
+EXACT SELECTION — a frame is either in that person's cluster or it is not — and a selection
+has no threshold, no depth and no "show more by relevance", only pages of a list whose
+length is a fact. Mixing it into the ranking would hand a reader an exact answer and an
+approximate one as one homogeneous list, which is the failure F153 spent a whole feature
+avoiding between two indexes that at least share a notion of a score. Which frames belong
+to the person is not decided here either: `person_files` runs the album's own selection
+(`sorter.plan_album(kind='person')`, the `merged_into` roots of F31), because a pinned
+slice has to answer exactly what the search line answers, and two selections that agree
+today would part company silently.
+
 The real CLIP is loaded exactly once, in `text_encoder`; everything else takes an encoder
 as an argument, which is what lets the tests run the whole engine without a model.
 """
@@ -591,6 +605,118 @@ def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
     """
     return rank_text(cfg, conn, text, limit=limit, offset=offset, encoder=encoder,
                      class_encoder=class_encoder).hits
+
+
+# --- F189: a name is a selection, not a query ------------------------------------------
+# The owner's question that started this: "if I name a cluster and merge another into it,
+# can I then search by the name?" The capability was there and the bridge was not —
+# `album person <name>` and `sort --by person` both know the names, and the search line
+# knew only vectors, so «Ирина» asked CLIP for frames that resemble a WORD.
+#
+# What the two answers are is the reason they are not merged into one list:
+#
+#     a query over the embeddings   a RANKING: confident first, doubtful later, recall
+#                                   grows with depth and precision falls with it
+#     a person's name               an EXACT SELECTION: the frame is in that person's
+#                                   cluster or it is not
+#
+# So a name gives a LIST. No threshold, no depth, no "show more by relevance" — paging by
+# count is another matter and costs nothing. And the answer says which of the two it is,
+# because an exact selection presented like the top of a ranking is read as one.
+
+# What a person's frames ARE, and the one thing this module does not decide for itself.
+# `sorter._CTE` is the source of truth: it resolves the `merged_into` chains and takes the
+# label off the ROOT of each of them (F31), which is what makes the frames of a merged
+# cluster part of the answer — the reason people merge clusters in the first place. The
+# condition below is the album's own subject condition for `kind='person'`, over the same
+# canonical population (`dup_of IS NULL AND error IS NULL`), so that a search by a name and
+# an album of that name cannot disagree by a frame. There is a test for exactly that, and
+# it compares the two SETS rather than trusting this comment.
+_PERSON_FILES_SQL = """SELECT f.id FROM files f
+    WHERE f.dup_of IS NULL AND f.error IS NULL
+      AND f.id IN (SELECT file_id FROM _person_files
+                   WHERE casefold(label) = casefold(?))
+    ORDER BY f.id"""
+
+# Whether the typed string IS a name. Only ROOT clusters are looked at: a cluster that was
+# merged away keeps its own row, and the label the album selects by is the root's — a name
+# left behind on a swallowed cluster names nobody. `casefold` is the project's UDF (SQLite's
+# NOCASE is ASCII-only, and these names are usually Cyrillic), which together with the
+# `strip()` in `match_person` is the whole of requirement "«ирина » and «Ирина» are one
+# name": people type names, and a search that is case-sensitive about them is broken.
+# Unnamed clusters are excluded by `label IS NOT NULL` — there is nothing to type.
+_PERSON_LABEL_SQL = """SELECT label FROM face_clusters
+    WHERE merged_into IS NULL AND label IS NOT NULL AND casefold(label) = casefold(?)
+    ORDER BY id LIMIT 1"""
+
+# The number on a card of a selection. A `Page` carries (file_id, score) pairs because a
+# ranking has scores; this list has none — every frame is in it for the same reason — and a
+# zero is the honest value for "not a score". Callers are expected to leave it off the
+# screen: a "closeness 0.000" under an exact answer would be a measurement nobody made.
+PERSON_NO_SCORE = 0.0
+
+
+def _person_selection(conn: sqlite3.Connection) -> str:
+    """The album's person CTE, with the `casefold` UDF registered on this connection.
+
+    Imported inside the function on purpose: `sorter` imports THIS module (an album of
+    `kind='query'` ranks by it), so an import at the top would be a cycle. The cost is one
+    attribute lookup per call and the gain is that the `merged_into` resolution has exactly
+    one spelling in the project.
+    """
+    from .sorter import _CTE, _sql_casefold
+    conn.create_function("casefold", 1, _sql_casefold, deterministic=True)
+    return _CTE
+
+
+def match_person(conn: sqlite3.Connection, text: str) -> str | None:
+    """The typed string as a person's NAME — the label as stored, or None.
+
+    None is the ordinary case and not a failure: almost everything typed into a search line
+    is words, and a string that names nobody must go on to the ranking untouched rather than
+    produce an empty "no frames of this person" screen.
+
+    The match is exact apart from case and surrounding blanks. Nothing fuzzy — «Ира» does
+    not find «Ирина» — because a near-miss on a name has a cost of its own kind (somebody
+    else's frames under your child's name) and deserves its own feature, its own measurement
+    and its own decision. Ambiguity (two root clusters named alike) resolves to the lowest
+    id: the answer has to be deterministic, and both would select frames of "that name"
+    anyway — the album's condition matches by label, not by cluster.
+    """
+    name = text.strip()
+    if not name:
+        return None
+    _person_selection(conn)  # for the `casefold` UDF alone
+    row = conn.execute(_PERSON_LABEL_SQL, (name,)).fetchone()
+    return str(row["label"]) if row is not None else None
+
+
+def person_files(conn: sqlite3.Connection, label: str) -> list[int]:
+    """Every canonical frame of this person, in index order — the album's own selection.
+
+    Ordered by id rather than by anything about the photographs: this list has no ranking
+    in it, and index order is stable, which is what paging needs (the reason the face
+    slices order the same way).
+    """
+    rows = conn.execute(_person_selection(conn) + _PERSON_FILES_SQL, (label,)).fetchall()
+    return [int(r["id"]) for r in rows]
+
+
+def person_page(conn: sqlite3.Connection, label: str, *, limit: int,
+                offset: int = 0) -> Page:
+    """One window of that selection, in the shape every caller already pages through.
+
+    A `Page` and not a list of its own: «показано N из M», the "show more" button and the
+    total are drawn by the same code whatever produced the frames, and M here is a COUNT of
+    somebody's photographs rather than the length of a ranking — which is precisely why it
+    is worth stating. The window is cut in Python because the whole list is what the total
+    is about; a person's frames are thousands at the very most, not the collection.
+    """
+    ids = person_files(conn, label)
+    start = max(0, offset)
+    size = max(0, limit)
+    return Page(hits=[(file_id, PERSON_NO_SCORE) for file_id in ids[start:start + size]],
+                total=len(ids), offset=start, limit=size)
 
 
 def file_paths(conn: sqlite3.Connection, file_ids: Sequence[int]) -> dict[int, str]:

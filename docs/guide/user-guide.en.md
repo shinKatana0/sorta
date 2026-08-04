@@ -1125,9 +1125,12 @@ sorta junk [--pets/--no-pets] [--quality/--no-quality]
 sorta phash                       Perceptual hashes (for near-duplicates)
 sorta stats                       Index coverage (GPS, date sources, duplicates)
 sorta dupes [--near]              List exact / near duplicates
-sorta search "<words>" [--limit N]
+sorta search "<words>" [--limit N] [--words]
                                   Find frames by words: the CLIP ranking, best first
-                                  (§23). --limit N is how many lines to print
+                                  (§23). --limit N is how many lines to print. A string
+                                  that is the NAME of a person you have labelled gives
+                                  that person's frames instead — an exact list, not a
+                                  ranking; --words asks for the ranking anyway
 sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
            [--where …] [--dedupe] [--delete-worse-dupes] [--exclude PATH] [--thumbnails]
                                   Plan/apply a sort (dry-run without --apply)
@@ -1846,6 +1849,34 @@ sorta album query "cake" --dest /path/to/albums --apply   # the same thing, as a
 In the web UI this is the search line at the top of the **Slices** tab (§6): type the
 words, press **Search**, then gather what came back into a folder with the album button —
 like any other slice.
+
+**A person's name in the search line finds the person.** If you have named a face cluster
+(§9), typing that name is not a question about words at all — it is an exact selection:
+every frame of that person and nothing else, the merged clusters included (naming and
+merging is exactly what makes that possible). The answer says which kind it is — "Frames
+of a person: Irina — showing 200 of 214" instead of "Query …, closest first" — and the
+cards carry no closeness number, because there is no order here to explain: a frame is
+either in that person's cluster or it is not. There is no threshold, no depth and no trade
+under **Show more**; the list is complete and merely shown in portions. It is the same
+selection `sorta album person "Irina"` gathers — one rule, not two.
+
+```bash
+sorta search "Irina"                # the frames of a person: a list, no closeness column
+sorta search --words "Rose"         # the ranking for the same string, when it is a word too
+```
+
+A name can be an ordinary word as well ("Rose", "Mark"), so **the second answer never
+disappears**: the person comes first, and one click — or `--words` in the terminal — asks
+for the ranking of the very same string. Matching is exact apart from case and stray
+blanks ("irina " and "Irina" are one name); "Ira" does **not** find "Irina", because a
+near miss on a name puts somebody else's photographs under it. A string that names nobody
+is an ordinary query, and an unnamed cluster is found by nothing — there is no name to
+type. Nothing is indexed for this and no model is loaded: it works on a collection whose
+search index is empty.
+
+**Pin it and the person becomes a tab.** The **Pin as a slice** button works on a name
+exactly as it works on a query (see below), and the pinned slice answers the same set —
+captioned as a person, not as an estimate, and gathering the person's album.
 
 **It is a ranking, not a filter.** The list is sorted by closeness to the query and there
 is no "this really is it" threshold, nor will there be one: the CLIP score orders frames
