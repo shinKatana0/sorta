@@ -282,10 +282,16 @@ it exists for, ascending in all three cases (little variance = blurred, a thin s
 closed eye, few pixels = low resolution), and each opens as far as its own window —
 `features.blur_review_max`, `features.eye_openness_max` (F179),
 `features.low_resolution_mp`; `beyond=1` continues past that window, which is a prefix of
-the same ordering, so nothing is lost or repeated at the seam. Low resolution is the one
-slice here whose membership was never measured by anything: the two columns are a fact the
-indexer wrote down, so the card carries the resolution itself and the hint says what the
-pixel count does NOT catch (a large frame ruined by compression). Without a faces run the
+the same ordering, so nothing is lost or repeated at the seam. F157: the blurred list is
+that ordering and nothing more — its window is the depth of the first page, and where the
+frames stop looking blurred is read off the screen rather than off a number. Where F155's
+`frame_quality.face_sharpness` exists, the frames that have one are ordered by it first
+(`blur_order` in the answer): measured inside the face it finds 62% of the blurred frames
+against 15% for the whole-frame number, and the two scales never meet in one comparison.
+Low resolution is the one slice here whose membership was never measured by anything: the
+two columns are a fact the indexer wrote down, so the card carries the resolution itself
+and the hint says what the pixel count does NOT catch (a large frame ruined by
+compression). Without a faces run the
 eyes slice answers `eyes_reason='no_faces_run'` rather than a zero (F125: the eyes are only
 measured where a face was found). The POST writes the
 decision into the EXISTING `dedup_choice` (`keep`/`to_delete`, or `clear` to drop the
@@ -433,6 +439,10 @@ from .faces import detect_and_cluster
 from .geo import clear_geo_cache, geo_cache_size, resolve_places
 from .geodata import GeoDataMissing, GeoResolver
 from .indexer import excludes_path, index as run_index, load_excludes, normalize_exclude
+# `_has_column`: "does this database have that column yet". The indexer reads its own
+# optional columns through it, and the blur list (F157) reads F155's `face_sharpness`
+# through the same one — the two features were merged in either order on purpose.
+from .indexer import _has_column
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
 from .junk import (
@@ -2124,6 +2134,45 @@ _REVIEW_SLICE_ORDER = {
     "low_resolution": "f.width * f.height ASC, f.id",
 }
 
+# F157 + F155: where a frame HAS a sharpness measured inside its face, that number orders
+# it — and it orders it BEFORE every frame that has none. Two reasons, and neither is a
+# preference:
+#
+# * the two numbers are not on one scale (a variance over a whole preview against one over
+#   a 100-200 px crop, `features.face_sharpness_max` says why no factor converts them), so
+#   they must never meet inside one comparison. `face_sharpness IS NULL` first, then each
+#   group by its own number, is the only ordering that keeps that promise;
+# * on frames that have a face the face number finds 62% of the blurred ones against 15%
+#   for the whole-frame number (F155, 68 labelled frames). Reading the better signal first
+#   is what a ranking is for.
+#
+# NULL keeps its schema meaning throughout — "not measured", never "sharp" — so a frame
+# with no face, or one from a run before the column existed, simply sorts by the frame
+# number in the second half of the list instead of dropping out of it.
+_BLURRED_ORDER_WITH_FACE = ("(fq.face_sharpness IS NULL), fq.face_sharpness ASC, "
+                            "fq.sharpness ASC, f.id")
+
+
+def _blurred_order_column(conn: sqlite3.Connection) -> str:
+    """Which number orders the blur list on THIS database — the F155 column, or the frame.
+
+    The column is asked of the schema rather than assumed, because the order of F155 and
+    F157 was never fixed: a database from before v25 has no `face_sharpness` at all, and
+    the list has to open on it exactly as it does anywhere else. `_has_column` is the
+    indexer's, which reads its own optional columns the same way (`files.orientation`);
+    a second spelling of one PRAGMA would be a second thing to keep true.
+    """
+    return ("face_sharpness" if _has_column(conn, "frame_quality", "face_sharpness")
+            else "sharpness")
+
+
+def _review_order(conn: sqlite3.Connection, slice_: str) -> str:
+    """The ORDER BY of one flat slice, against `_review_from`."""
+    if slice_ == "blurred" and _blurred_order_column(conn) == "face_sharpness":
+        return _BLURRED_ORDER_WITH_FACE
+    return _REVIEW_SLICE_ORDER[slice_]
+
+
 # The two extra columns a card carries, by slice — a card shows the number its slice is
 # ABOUT and not every number the row happens to hold. The absent one is selected as NULL
 # rather than left out so that one row shape feeds one `_review_item_to_json`; and for
@@ -2267,6 +2316,10 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     slice has one now — blurred down to `features.blur_review_max`, closed eyes down to
     `features.eye_openness_max` — and "show more" walks either of them past its window
     into the frames the ranking is less sure about.
+
+    F157: for the blurred slice that window is the depth of the FIRST PAGE, so
+    `window_total`, the chip's counter and the length of the list the tab opens with are
+    one number — a length, not a population. `blur_order` says which column ordered it.
     """
     conn = _connect(db_path)
     try:
@@ -2274,6 +2327,7 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
         pending = _review_pending_counts(conn, features)
         eyes_reason = None if faces_stage_ran(conn) else "no_faces_run"
         window_total = counts.get(slice_, counts["blurred"])
+        blur_order = _blurred_order_column(conn)
         items: list[dict] = []
         total = 0
         if slice_ != "dupes":
@@ -2284,7 +2338,7 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
             rows = conn.execute(
                 f"""SELECT f.id, f.path, f.taken_at, {_REVIEW_SLICE_COLUMNS[slice_]}
                     {source} WHERE {where}
-                    ORDER BY {_REVIEW_SLICE_ORDER[slice_]}
+                    ORDER BY {_review_order(conn, slice_)}
                     LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
             actions: dict[int, str] = {}
             if rows:
@@ -2319,6 +2373,11 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
         "pending_total": sum(pending.values()),
         "eyes_reason": eyes_reason,
         "blur_max": float(features.blur_review_max),
+        # F157: which number ordered the blur list — `face_sharpness` where F155's column
+        # exists, `sharpness` where it does not. The caption says so out loud, because
+        # "frames with a face are ordered by the sharpness of the face" is the one thing
+        # that explains why a visibly sharp street can sit above a soft portrait.
+        "blur_order": blur_order,
         # F179: the number the closed-eyes caption is shown with — and that caption states
         # the PRECISION measured at it, not a count, because 62% right is the fact a person
         # needs before looking at the list.
@@ -7090,18 +7149,48 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "印であって削除ではありません。対象は次回の振り分けで「_削除」フォルダへ"
               "移ります。「残す」は再計算後も保持され、再び尋ねられません。",
     },
+    # F157: the caption of a RANKING. It used to describe a window ("the list opens down
+    # to 90"), which read as a verdict about the frames inside it — and the number behind
+    # that reading catches 12% of what a person calls blurred. The list is now ordered from
+    # the softest frame, `{max}` is only how far the first page reaches, and the sentence
+    # says the two things a reader has to know: read from the top and stop where the
+    # resemblance ends, and this number cannot tell a detailed sharp street from a smooth
+    # blurred face. The "delete everything below the threshold" line stays: a button this
+    # feature deliberately does not have has to be named, or somebody adds it.
     "review_hint_blurred": {
-        "ru": "Список открыт до резкости {max} и отсортирован от самых размытых. Это "
-              "окно, а не приговор: размытые кадры встречаются во всех полосах вплоть "
-              "до 400, поэтому кнопки «удалить всё ниже порога» здесь нет и по "
-              "умолчанию не удаляется ничего.",
-        "en": "The list opens down to a sharpness of {max} and starts with the "
-              "blurriest. That is a window, not a verdict: blurred frames turn up in "
-              "every band up to 400, so there is no “delete everything below the "
-              "threshold” button here and nothing is marked by default.",
-        "ja": "リストは鮮鋭度 {max} まで開き、ぼやけの強い順に並びます。これは判定では"
-              "なく表示範囲です。ぼやけたコマは 400 までのどの帯にも現れるため、"
+        "ru": "Это порядок, а не приговор. Сверху кадры, которые почти наверняка "
+              "смазаны; ниже резкость растёт, и где-то начинаются нормальные "
+              "фотографии — читайте сверху вниз и остановитесь, где сходство кончилось. "
+              "Первая страница открыта до резкости {max}, «показать ещё» идёт дальше по "
+              "списку. Признак грубый: детализированная резкая улица и гладкое размытое "
+              "лицо дают близкие числа, поэтому кнопки «удалить всё ниже порога» здесь "
+              "нет и по умолчанию не удаляется ничего.",
+        "en": "This is an order, not a verdict. At the top are frames that are almost "
+              "certainly smeared; further down the sharpness grows and at some point "
+              "ordinary photographs begin — read from the top and stop where the "
+              "resemblance ends. The first page opens down to a sharpness of {max}, and "
+              "“show more” simply continues down the list. The signal is coarse: a "
+              "detailed sharp street and a smooth blurred face score alike, so there is "
+              "no “delete everything below the threshold” button here and nothing is "
+              "marked by default.",
+        "ja": "これは判定ではなく並び順です。上にあるのはほぼ確実にぶれているコマで、"
+              "下にいくほど鮮鋭度は上がり、どこかで普通の写真が始まります。上から読み、"
+              "似ていると思えなくなった所で止めてください。最初のページは鮮鋭度 {max} "
+              "まで開き、「さらに表示」はその先へ続きます。この指標は粗いものです。"
+              "細部の多い鮮明な街並みと、なめらかにぼけた顔は近い値になるため、"
               "「しきい値以下をすべて削除」というボタンはなく、既定では何も削除しません。",
+    },
+    # F155 + F157: shown only where `frame_quality.face_sharpness` exists, because only
+    # there is it true. It is the answer to "why is this sharp-looking street above that
+    # soft portrait": the frames with a face are ordered by a different number, measured
+    # inside the face, which finds 62% of the blurred ones against 15% for the whole frame.
+    "review_hint_blurred_faces": {
+        "ru": " Кадры с лицами идут первыми и упорядочены по резкости самого лица — "
+              "по кадру целиком этот признак их почти не находит.",
+        "en": " Frames with a face come first and are ordered by the sharpness measured "
+              "inside the face — over the whole frame this signal barely finds them.",
+        "ja": " 顔のあるコマが先に並び、顔の内側で測った鮮鋭度で順序づけられます。"
+              "コマ全体で測ると、この指標はそれらをほとんど拾えません。",
     },
     # F179: the caption states the MEASURED PRECISION and not a count. "Found 730 frames"
     # reads as a verdict about 730 photographs; on 249 hand-labelled frames this list is
@@ -7296,6 +7385,15 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "review_shown_label": {
         "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
         "ja": "{total} 件中 {shown} 件を表示",
+    },
+    # F157: the counter of a ranking says how long the LIST is and never how many blurred
+    # frames there are. "Showing 2 210" read as "you have 2 210 blurred photographs" —
+    # a claim the signal cannot make (four of five frames on that page are not blurred),
+    # and one that grows or shrinks the moment somebody edits a number in the config.
+    "review_shown_ranked": {
+        "ru": "Показано {shown}; дальше по списку резкость растёт",
+        "en": "Showing {shown}; further down the list the sharpness grows",
+        "ja": "{shown} 件を表示中。リストの先へ進むほど鮮鋭度は上がります",
     },
     "review_error_prefix": {
         "ru": "Не удалось сохранить отметку: ", "en": "Could not save the mark: ",
@@ -13751,7 +13849,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var reviewOffset = 0;
   // Each flat slice opens to a window — `features.blur_review_max`,
   // `features.eye_openness_max` (F179) — and continues past it only when asked: the
-  // number is a window, not a verdict.
+  // number is a window, not a verdict. F157: for the blurred slice it is not even a
+  // window, it is the depth of the first page of a ranking, and the button below says so.
   var reviewBeyond = false;
   var reviewWindowTotal = 0;
   var reviewSelected = {};
@@ -13804,7 +13903,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     if (reviewSlice === "low_resolution") {
       return fmt(I18N.review_hint_low_resolution, { mp: data.low_resolution_mp });
     }
-    return fmt(I18N.review_hint_blurred, { max: data.blur_max });
+    // F157: the second sentence only where the second number exists (`blur_order`), and
+    // never as a promise the database cannot keep — on a collection indexed before F155
+    // there is no face sharpness and the list is ordered by the frame alone.
+    var blurred = fmt(I18N.review_hint_blurred, { max: data.blur_max });
+    return data.blur_order === "face_sharpness"
+        ? blurred + I18N.review_hint_blurred_faces : blurred;
   }
 
   // F150: "1280×960 (1.2 MP)" — the size of the picture, which the 200 px thumbnail
@@ -13882,11 +13986,18 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           data.eyes_reason === "no_faces_run" && reviewSlice === "eyes"
               ? I18N.review_eyes_no_faces : I18N.review_empty));
     }
-    document.getElementById("review-shown").textContent =
-        shown ? fmt(I18N.review_shown_label, { shown: shown, total: data.total }) : "";
-    // Past the end of the window the button changes its meaning, not just its target:
-    // the next page is no longer "more of the same list" but a step outside the window
-    // the list opened to.
+    // F157: the blurred slice counts the LIST and not a population — "showing 2 210 of
+    // 19 211" would be two numbers, neither of which is the number of blurred frames.
+    // Every other slice keeps "of M": there M is a fact (groups, small frames) rather
+    // than the length of a ranking cut wherever the config happens to cut it.
+    document.getElementById("review-shown").textContent = !shown ? ""
+        : reviewSlice === "blurred"
+            ? fmt(I18N.review_shown_ranked, { shown: shown })
+            : fmt(I18N.review_shown_label, { shown: shown, total: data.total });
+    // Past the end of the window the button can change its meaning and not just its
+    // target: for closed eyes the next page is no longer "more of the same list" but a
+    // step outside the window the list opened to (F157 left the blurred slice out of
+    // that — see below, its first page is not a claim about anything).
     // WHICH SLICES HAVE A WINDOW, listed rather than negated. Blurred opens down to
     // `blur_review_max` and closed eyes down to `eye_openness_max` (F179): both are
     // RANKINGS cut short, so there is a "further down the list" to step into. Duplicates
@@ -13899,7 +14010,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         shown >= reviewWindowTotal;
     var more = shown < data.total || beyondNext;
     var moreBtn = document.getElementById("review-more-btn");
-    moreBtn.textContent = beyondNext ? I18N.review_load_more_beyond : I18N.review_load_more;
+    // F157: for the blurred slice the button keeps saying "show more", because that is
+    // what it does — the first page ends where `blur_review_max` put it, and the next one
+    // continues the same ordering. "Show past the window" belongs to the closed eyes,
+    // where the window is the measured 62% and stepping outside it IS a change of
+    // meaning. Same request either way; only the promise is different.
+    moreBtn.textContent = beyondNext && reviewSlice !== "blurred"
+        ? I18N.review_load_more_beyond : I18N.review_load_more;
     moreBtn.style.display = more ? "" : "none";
     reviewOffset = shown;
     reinsertRestoredCards();

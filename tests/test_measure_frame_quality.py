@@ -170,7 +170,10 @@ class TestFormattingIsAnonymous(unittest.TestCase):
         frames = [frame(101, "cat", 0.9, 100.0, 0.5), frame(102, None, 0.1, 900.0, 0.99)]
         text = "\n".join([
             measure.format_pets(frames, measure.sweep_pets(frames, [0.5, 0.9]), 0.6),
-            measure.format_sharpness(frames, q),
+            # F157: the sharpness block carries the blur-window sweep now, so the grid
+            # goes in here too — a table added to a block the privacy rule covers has
+            # to be covered by the same test.
+            measure.format_sharpness(frames, q, [90.0, 300.0], 300.0),
             measure.format_band(frames, q),
         ])
         for forbidden in ("/photos", ".jpg", "101", "102"):
@@ -183,8 +186,22 @@ class TestFormattingIsAnonymous(unittest.TestCase):
 
     def test_undecodable_frames_are_reported_as_null_not_zero(self):
         frames = [frame(1, sharpness=None), frame(2, sharpness=50.0)]
-        text = measure.format_sharpness(frames, settings())
+        text = measure.format_sharpness(frames, settings(), [90.0], 90.0)
         self.assertIn("не декодировалось: 1", text)
+
+    def test_the_blur_window_sweep_counts_only_the_measured_frames(self):
+        """F157: the sweep is the first page of a ranking, and NULL is not a frame in it.
+
+        A frame that never decoded has no sharpness — counting it as "below 90" would
+        make the list look longer than the one a person will actually be handed, and the
+        share below is per measured frame for the same reason.
+        """
+        frames = [frame(1, sharpness=None), frame(2, sharpness=50.0),
+                  frame(3, sharpness=500.0)]
+        text = measure.format_sharpness(frames, settings(), [90.0, 700.0], 90.0)
+        self.assertIn("90.0*", text)          # the value from the config is marked
+        self.assertIn("50.0%", text)          # 1 of the 2 measured frames, not of 3
+        self.assertIn("100.0%", text)         # both of them under 700
 
 
 class TestCache(unittest.TestCase):

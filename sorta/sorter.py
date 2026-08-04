@@ -2150,6 +2150,13 @@ def quality_slice_where(kind: str, features: FeaturesConfig, *,
     is never passed here by `plan_album`): the button collects what was shown, and past
     the window sit thousands of frames nobody has looked at.
 
+    F157: for the blurred slice that window is the DEPTH OF THE FIRST PAGE and nothing
+    else. Membership is `fq.sharpness IS NOT NULL` — every measured photograph is in the
+    ranking — and the number only says how far it opens before the button. Measured on 300
+    hand-labelled frames, a cutoff there runs 29% precision at 12% recall (90) to 12% at
+    82% (700): precision falls slowly, recall climbs quickly, which is the shape that makes
+    a threshold the wrong instrument and a list the right one.
+
     Both of those windows are `< the number`, on two scales that have nothing in common —
     a variance in the hundreds and a ratio under one — because on both of them SMALLER is
     the interesting end: a blurred frame has little variance, and a closed eye is a thin
@@ -2336,10 +2343,12 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     what it exists to prevent.
     kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`; F150,
     `low_resolution`): the slice = the "Review" workspace's flat list of that name
-    (`quality_slice_where`, the shared rule), each inside its own window — blurred under
-    `features.blur_review_max`, closed eyes under `features.eye_openness_max` (F179) and
+    (`quality_slice_where`, the shared rule), each inside its own window — blurred down to
+    `features.blur_review_max`, closed eyes down to `features.eye_openness_max` (F179) and
     low-resolution under `features.low_resolution_mp` megapixels. No selector; the default
-    album name comes from the catalog.
+    album name comes from the catalog. F157: for the blurred slice that window is the first
+    page of a ranking, and the album gathers exactly it — "the first N in order" is an
+    album, "everything below, for ever" is the whole collection.
     kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
     `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
     fact that covers 77% of what a person would call a photo of people (measured). Like

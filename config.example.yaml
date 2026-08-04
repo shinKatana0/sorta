@@ -544,13 +544,23 @@ features:
   # The other way in: a junk-group CLIP probability of "a photograph" below this means
   # CLIP does not know what it is looking at.
   subject_score_min: 0.9
-  # F126: how far down the blur review list opens by default. NOT a verdict — the
-  # measurement says the opposite. Reviewed by eye in bands, blurred frames turned up in
-  # EVERY band up to 400: sharpness ranks, it does not classify. What the bands did show
-  # is where the yield falls off, around 90-120 (< 70: 378 frames, < 90: 530, < 120: 785,
-  # < 160: 1215 — on a 19 757-photo collection). So the list opens here and continues on
-  # demand, and nothing is ever deleted by this number.
-  blur_review_max: 90.0
+  # F126/F157: how far down the blur review list opens by default — the depth of the FIRST
+  # PAGE of a ranking, not the edge of "blurred". The slice is ordered from the softest
+  # frame and "show more" continues past this number; where to stop reading is your call.
+  #
+  # Measured twice. On 300 frames labelled "visibly smeared" (17 of them), a cutoff at 90
+  # flags 7 frames and catches 2 of the 17 (12% recall); at 300 it flags 47 and catches 9
+  # (53%); at 700, 120 and 14 (82%) — precision drifts from 29% down to 12% on the way.
+  # Read as an ordering instead, the top 10% of the list holds 41% of the blurred frames
+  # and the top 20% holds 53%. On a live collection of 19 211 photographs the first page
+  # is 523 frames at 90, 1 663 at 200, 2 968 at 300, 4 988 at 450 and 7 859 at 700.
+  #
+  # 300 is where the two meet: half the blurred frames on a first page of ~15% of the
+  # collection. NOT a verdict at any value — four of five frames there are not blurred,
+  # and nothing is ever deleted by this number.
+  # `python scripts/measure_frame_quality.py --features sharpness` prints the sweep for
+  # your own collection.
+  blur_review_max: 300.0
   # F150: the ceiling of the "low resolution" slice of the "Review" tab, in MEGAPIXELS —
   # a photograph whose `width * height` is below this many million pixels is in it.
   # The one number in this section that measures nothing: width and height are a fact of

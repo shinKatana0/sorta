@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **"Blurred" is a list in order, not a window with a threshold** (F157). The morning of
+  2026-08-02 measured the completeness of this filter at 6% and spent half a day calling
+  that a catastrophe; the evening measurement cancelled the number, and not because the
+  filter was better. The sample had been labelled in two sessions, five of the six
+  features agreed between them (ratios 0.77-0.93) and blur diverged threefold — the
+  criterion had moved, which the sharpness numbers show directly (softly labelled: median
+  706 against 980 for the rest, one population; strictly: 254 against 1 022). Under the
+  strict criterion the user chose — "visibly smeared", not "a little soft" — **a cutoff
+  buys recall far faster than it loses precision**: at 90 it flags 7 frames of 300 and
+  catches 2 of the 17 blurred (12% recall, 29% precision), at 300 it flags 47 and catches
+  9 (53%, 19%), at 700 it flags 120 and catches 14 (82%, 12%). That is the profile where a
+  threshold is the wrong instrument, so the slice is now **an ordering**: the softest frame
+  first, `features.blur_review_max` is the **depth of the first page** (raised `90` → `300`
+  off a sweep on a live collection — 523 frames at 90, 2 968 at 300, 7 859 at 700 out of
+  19 211), "show more" continues down the same list rather than jumping a window, and the
+  counter states **how many frames are shown** instead of how many blurred photographs
+  there supposedly are. The caption says the same out loud: read from the top, stop where
+  the resemblance ends, and know that a detailed sharp street and a smooth blurred face
+  score alike. Where F155's `frame_quality.face_sharpness` exists, **the frames that have a
+  face are ordered by the number measured inside it and come first** (62% of the blurred
+  frames against 15% for the whole-frame number); on a database from before that column the
+  list opens exactly as before. The album of the slice still gathers the first page and
+  nothing below it, and nothing here is ever marked or deleted automatically.
 - **"Closed eyes" is a real slice again, and it is arithmetic rather than a model**
   (F179). The question "are the eyes open" used to be asked of a local VLM: 60% precision
   over 9% of the frames it was meant to find, for ~92 minutes a run. It was retired

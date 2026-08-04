@@ -30,6 +30,10 @@ measurement goes. Two things are needed for that and both are here:
   it, weighted back to the collection by score band so the two are comparable to F122 and
   to each other. `--write-labels` writes the stratified worksheet to fill in.
 
+F157 adds the sweep `features.blur_review_max` is read off, in the same block: the blur
+slice is an ORDERING, so what the grid prints is how many frames its first page would hold
+at each value, and where to stop reading stays a decision for the person reading it.
+
 F155 adds the sweep `features.face_sharpness_max` has to be read off: the same laplacian
 measured INSIDE the face boxes, over the frames that have one. It prints under `--features
 sharpness`, next to the whole-frame distribution it is meant to be compared with, and like
@@ -99,6 +103,12 @@ FEATURES = ("pets", "sharpness", "band", "verify")
 # the brief measured (200) on purpose: what the 68-frame sample showed is a direction, and
 # a grid centred on the number it produced would only confirm it.
 DEFAULT_FACE_GRID = (50.0, 100.0, 200.0, 300.0, 400.0, 600.0)
+
+# F157: the grid `features.blur_review_max` is read off — how long the FIRST PAGE of the
+# blur list would be at each value. It is not a threshold sweep in the sense the two grids
+# above are: the slice is a ranking and every frame below is in it sooner or later, so what
+# this prints is the size of a reading job, not the size of a verdict.
+DEFAULT_BLUR_GRID = (90.0, 200.0, 300.0, 450.0, 700.0)
 
 # F155 bumped this: `Frame` gained face_sharpness, so a cache written before it has one
 # column too few and would load with the fields shifted.
@@ -219,8 +229,16 @@ def format_pets(frames: list[Frame], rows: list[PetRow], current: float) -> str:
     return "\n".join(out)
 
 
-def format_sharpness(frames: list[Frame], q: junk.QualitySettings) -> str:
-    """The sharpness block: the distribution the band has to be read off."""
+def format_sharpness(frames: list[Frame], q: junk.QualitySettings,
+                     blur_thresholds: list[float], blur_current: float) -> str:
+    """The sharpness block: the distribution the band has to be read off.
+
+    F157 adds the second table — the depth of the blur list's first page at each candidate
+    value of `features.blur_review_max`. The slice is an ORDERING, so a row here says how
+    many frames a person would be handed before the button, and nothing about how many of
+    them are blurred: on 300 hand-labelled frames precision runs 29% down to 12% across
+    this grid while recall climbs 12% to 82%, which is why the number is a page depth.
+    """
     values = [f.sharpness for f in frames if f.sharpness is not None]
     missing = len(frames) - len(values)
     low, high = q.sharpness_band
@@ -235,10 +253,18 @@ def format_sharpness(frames: list[Frame], q: junk.QualitySettings) -> str:
     ]
     if missing:
         out.append(f"  не декодировалось: {missing} — резкость NULL, это не «0»")
+    out.append(f"{'порог':>7} {'первая страница':>18} {'от кадров с резкостью':>26}")
+    for t in blur_thresholds:
+        mark = "*" if abs(t - blur_current) < 1e-9 else " "
+        fired = sum(1 for v in values if v < t)
+        out.append(f"{t:>7.1f}{mark}{fired:>17d} {_pct(fired, len(values)):>25}")
     out.append("=" * 88)
     out.append("Число зависит от разрешения (features.sharpness_max_edge) — меняя его, "
                "полосу\nнужно перемерить. Ниже полосы кадр смазан, выше — резкий; "
                "внутри решает VLM.")
+    out.append("* — features.blur_review_max: это ГЛУБИНА ПЕРВОЙ СТРАНИЦЫ списка "
+               "размытых, а не\nграница «размыто». Список отсортирован от самых мягких, "
+               "и «показать ещё» идёт\nдальше по нему.")
     return "\n".join(out)
 
 
@@ -625,6 +651,9 @@ def main() -> None:
     ap.add_argument("--face-thresholds", type=float, nargs="+",
                     default=list(DEFAULT_FACE_GRID),
                     help="the grid features.face_sharpness_max is read off")
+    ap.add_argument("--blur-thresholds", type=float, nargs="+",
+                    default=list(DEFAULT_BLUR_GRID),
+                    help="the grid features.blur_review_max is read off (F157)")
     ap.add_argument("--labels", help="JSON {file_id: true|false} — is there really a live "
                                      "animal in the frame; enables the accuracy block")
     ap.add_argument("--write-labels", help="write a stratified worksheet to fill in "
@@ -672,7 +701,8 @@ def main() -> None:
         print(format_pets(frames, sweep_pets(frames, sorted(args.pet_thresholds)),
                           q.pet_threshold))
     if "sharpness" in args.features:
-        print(format_sharpness(frames, q))
+        print(format_sharpness(frames, q, sorted(args.blur_thresholds),
+                               cfg.features.blur_review_max))
         # F155: the same block, over the face crops — a different population and a
         # different threshold, printed next to the one it is meant to be compared with.
         print(format_face_sharpness(
