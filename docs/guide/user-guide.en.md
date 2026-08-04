@@ -351,8 +351,8 @@ happens to the files:
    near‑duplicates).
    You can close the tab; processing continues.
 2. **Review** tab → one workspace for everything that has to be looked at by eye and
-   partly deleted: **Duplicates**, **Blurred**, **Closed eyes** — three slices of a
-   single tab, described in §22.
+   partly deleted: **Duplicates**, **Blurred**, **Closed eyes**, **Low resolution** —
+   four slices of a single tab, described in §22.
 3. **Layout** tab → the canon: the proposed structure (`Country/City/Year/District`),
    where to lay it out, move or copy, and the button that starts it. Always visible.
 4. **Slices** tab → everything built **on top of** the canon: **With people**, **Group
@@ -894,6 +894,7 @@ sorta album meme --dest /path/to/albums --apply
 # A quality slice of the Review workspace (§22) — no selector either:
 sorta album blurred --dest /path/to/albums --apply
 sorta album eyes_closed --dest /path/to/albums --apply
+sorta album low_resolution --dest /path/to/albums --apply
 
 # The face slices (§6) — also without a selector: the collection has exactly one of
 # each. Every frame a face was found on, the group photographs, the portraits:
@@ -903,7 +904,7 @@ sorta album portrait --dest /path/to/albums --apply
 ```
 
 - **Slices without a selector**: `animal`, `product`, `screenshot`, `meme`, `blurred`,
-  `eyes_closed`, `people`, `group`, `portrait`. There is nothing to choose inside them
+  `eyes_closed`, `low_resolution`, `people`, `group`, `portrait`. There is nothing to choose inside them
   — the collection has exactly one products bucket and exactly one blurred list — so `sorta album <kind> --dest …` is the whole command, and the folder is named
   after the slice unless `--name` says otherwise.
 - **`person` / `event` / `query`** require the selector, because the selector *is* the
@@ -926,7 +927,7 @@ sorta album portrait --dest /path/to/albums --apply
   into one album (ambiguous) — those are blocked; use link/copy.
 - In the UI, use **Collect into folder** — on the People/Events cards, on the
   **Animals** slice, on a classifier bucket (Products, Screenshots, Memes) and on the
-  two quality slices of **Review** (Blurred, Closed eyes). It is the same row
+  quality slices of **Review** (Blurred, Closed eyes, Low resolution). It is the same row
   everywhere: mode, an optional folder name, a destination. The marking buttons
   ("Return to photos", "To trash") stay in their own block — one movement never both
   gathers and deletes.
@@ -1108,7 +1109,7 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
 sorta album person|event|query <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album animal --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album product|screenshot|meme --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
-sorta album blurred|eyes_closed --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album blurred|eyes_closed|low_resolution --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album people|group|portrait --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   Collect a slice into a named folder (hardlink by
                                   default); only person/event/query take a selector,
@@ -1559,6 +1560,7 @@ selects it keeps working: the run says the provider is gone, lists `template` / 
 | `features.sharpness_band_max` | `300` | Above this it is plainly sharp. Between the two lies the band of uncertainty, and only that band reaches the VLM. |
 | `features.subject_score_min` | `0.9` | The "there is a subject in this frame at all" threshold — what separates a shot from a pocket accident. |
 | `features.blur_review_max` | `90.0` | How far down the blur review list opens by default. **Not a "blurred" verdict** — the measurement says the opposite. Reviewed by eye in bands, blurred frames turned up in **every** band up to 400: sharpness ranks, it does not classify, and no cutoff separates junk from a soft but wanted photograph. What the bands did show is where the yield falls off, around 90–120 (below 70: 378 frames, below 90: 530, below 120: 785, below 160: 1215, on a 19 757-photo collection). The list opens here and continues on demand. **Nothing is ever deleted by this number.** |
+| `features.low_resolution_mp` | `1.0` | The ceiling of the **Low resolution** slice of the Review workspace (§22), in megapixels: a photograph whose `width × height` is below this many million pixels is in it. The one number in this section that **measures nothing** — the two columns are written down when the file is indexed, so this is a window you choose rather than a threshold anybody calibrated. Measured on 22 095 photographs: 94 frames under 0.2 MP, 133 between 0.2 and 0.5, 479 between 0.5 and 1, and 17 493 above 12 — `1.0` selects 706, of which 682 are formally sharp and therefore invisible in every other slice. **Not a verdict** (a small frame can be the only surviving photograph), and videos are not counted. |
 | `features.face_sharpness_max` | `200.0` | The same laplacian, measured **inside the face boxes** of a frame (column `frame_quality.face_sharpness`), and the number below which such a frame is a blur candidate. It exists because the whole-frame number answers "how much detail is in this picture", which is a different question from "is it in focus": a detailed sharp street and a smooth blurred face score alike, and on a hand-checked sample of 200 frames the whole-frame filter found 2 of the 33 blurred ones — 6%. Measured on the 68 frames of that sample that have a face (13 blurred): over the whole frame at 300 → 10 flagged, 2 right (15% recall); over the face crop at 100 → 17 flagged, 5 right (38%); at 200 → 33 flagged, 8 right (62%); at 400 → 44 flagged, 10 right (77%). So 200 quadruples recall for a comparable number of frames flagged. **Provisional**: 13 blurred frames means one frame is worth ~8 points of recall, so the direction was measured and the figure was not — `python scripts/measure_frame_quality.py --features sharpness` prints the sweep on your own collection. Two limits worth knowing: it covers only frames a face was found on (about a third of a typical archive — landscapes and objects have no such signal at all), and its precision is ~25% at every threshold above, i.e. three of four flagged frames are not blurred. **It ranks the blur list; nothing is deleted or reclassified by it.** |
 | `features.eye_openness_max` | `0.18` | How open the eyes of the **largest face** on a frame are (column `frame_quality.eye_openness`) — the height of the eye opening over its width, measured off the 106-point face contour on the same preview everything else in this stage uses — and the number **below** which the frame joins the “Closed eyes” slice (§22). It is the one threshold here that a *smaller* value passes, because a closed eye is a thin slit. It replaced a question asked of a local VLM, and the table is why. Measured on the same 249 hand-labelled frames that question was judged on: the VLM → 60% precision at 9% recall (for ~92 minutes a run); eyelid geometry at `0.16` → 68% / 34%; at `0.18` → 62% / 48%; at `0.22` → 56% / 61%; a small classifier over the eye crop → 46% / 57%; CLIP over the same crop → 58% / 49%. Five times the recall of the model at slightly better precision, out of arithmetic over contour points rather than a network's opinion; the neighbouring rows are printed so the price of moving this is visible. The population is ~948 frames — 15.6% of everything with a face in it. Two limits worth knowing: it covers only frames a face was found on (run `sorta faces` first — without it the slice is empty and says so), and its precision is 62%, i.e. one frame in three of that list has its eyes open. **It ranks the list and opens it to a window “show more” continues past; nothing is deleted or reclassified by it.** |
 | `features.store_embeddings` | `true` | Whether to keep the CLIP vector of every canonical photograph (table `clip_embeddings`) instead of discarding it once the junk stage has read its scores off it. Nothing is shown for it: it is what lets a later feature — search by words, an album from a query, "frames like this one" — work without a fresh CLIP pass over the whole collection. On by default, because the price is small (~60 MB per 20 000 photos, written inside a pass that runs anyway) and the off state is the one where each such feature costs a full pass. Turn it off on very large collections: 300 000 photos are ~920 MB. Vectors are stored L2-normalized in float32 together with the model that produced them — change `naming.clip.model` or `naming.clip.pretrained` and the stored rows are recomputed rather than used, because vectors of different models are not comparable. |
@@ -1711,7 +1713,7 @@ named as a verdict — forwarded pictures are often worth looking through.
 ## 22. The Review workspace
 
 The **Review** tab (§6) is one workspace for everything that has to be looked at by eye
-and partly deleted. Three slices, switched by the buttons at the top, and each button
+and partly deleted. Four slices, switched by the buttons at the top, and each button
 carries the number of frames still undecided:
 
 - **Duplicates** — near‑duplicate groups, with the recommended keeper (★) pre‑selected
@@ -1726,13 +1728,31 @@ carries the number of frames still undecided:
   three here has its eyes open — so nothing is ever marked or deleted automatically, and
   the button continues past the threshold into the doubtful part. Measured only where the
   detector found a face, so without a `faces` run this slice is empty and says so.
+- **Low resolution** — photographs of fewer than `features.low_resolution_mp` megapixels
+  (default `1.0`), the smallest first, with the size printed on every card
+  (`1280×960 (1.2 MP)`).
+
+**Low resolution is the one slice here that measures nothing.** The width and the height
+are written down when the file is indexed, so this list does not find frames that *look*
+small — it enumerates the frames that *are* small, and there is no threshold anybody
+calibrated and no accuracy to quote. On a collection of 22,095 photographs it holds 706
+frames, and 682 of them are formally sharp: no other slice shows them at all, which is
+why it is a slice of its own rather than a corner of "Blurred".
+
+**Small is not faulty.** Such a frame can be the only surviving photograph of somebody,
+sent through a messenger ten years ago, so the slice is named after the fact and nothing
+in it is marked for deletion by default. Two limits worth knowing: megapixels say nothing
+about a **large frame ruined by compression** (a 4000×3000 picture full of JPEG artefacts
+is not here — that is a different signal), and **videos are not counted**, because their
+resolution has its own meaning. This is also the slice **"Try to improve"** was really
+built for: Swin2SR ×4 is a super-resolution model, and 640×480 becomes 2560×1920.
 
 **The decision goes into one shared journal, one per file.** There are three buttons:
 **Mark for deletion**, **Keep**, **Clear the mark**. Marking "delete" is a mark, not a
 deletion: those files leave for the `_delete` folder on the next layout (§9), and until
 then nothing happens. A **Keep survives a recompute** — a frame you have decided about
 is not asked about a second time, even if the next run scores it as blurred again. The
-journal is shared by all three slices, so a file that turns up both in "blurred" and in
+journal is shared by every slice, so a file that turns up both in "blurred" and in
 "closed eyes" has one decision, not two.
 
 **A third action: "Try to improve"** (`features.restore_model`, §21). Select **exactly

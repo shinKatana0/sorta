@@ -229,6 +229,22 @@ class TestFeaturesSection(unittest.TestCase):
         self.assertEqual(cfg.features.group_photo_faces, d.group_photo_faces)
         self.assertAlmostEqual(cfg.features.portrait_face_share, d.portrait_face_share)
 
+    def test_the_low_resolution_ceiling_has_the_documented_default(self):
+        # F150: megapixels, and the one number of this section that measures nothing —
+        # it is read against `files.width * files.height`, a fact of the index.
+        self.assertAlmostEqual(FeaturesConfig().low_resolution_mp, 1.0)
+
+    def test_the_low_resolution_ceiling_is_read(self):
+        cfg = self._load("features:\n  low_resolution_mp: 2.5\n")
+        self.assertAlmostEqual(cfg.features.low_resolution_mp, 2.5)
+
+    def test_a_garbage_low_resolution_ceiling_falls_back_to_the_default(self):
+        # Read as 0 the slice would be permanently empty and the fifth tab of the
+        # "Review" workspace would quietly stop showing anything.
+        cfg = self._load("features:\n  low_resolution_mp: small\n")
+        self.assertAlmostEqual(cfg.features.low_resolution_mp,
+                               FeaturesConfig().low_resolution_mp)
+
 
 class TestVlmQualityKeys(unittest.TestCase):
     """F113: `vlm.quality` / `vlm.quality_scope` — the band's own toggle and population."""

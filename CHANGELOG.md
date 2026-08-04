@@ -384,6 +384,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **A "low resolution" slice — the one signal in the product that needs no measurement**
+  (F150). Measured on 22 095 photographs (2026-08-02): **706** frames hold fewer than a
+  megapixel, and **682 of them are formally sharp** — the intersection with the blur
+  window is **3%**, so until now no filter in the program showed them at all. The shape of
+  the distribution says where they came from: 94 frames under 0.2 MP, 133 between 0.2 and
+  0.5, 479 between 0.5 and 1, then a gap and 17 493 above 12 MP. Phones do not take
+  pictures of that size; this is what arrived through a messenger or came off a download.
+  It is the **fifth slice of the "Review" workspace**, beside duplicates, blurred frames,
+  closed eyes — one job, one place, one decision per file — and not a sixth tab, because a
+  tab for one signal would split the place where problem frames are sorted out. It is not
+  folded into "Blurred" either: with a 3% overlap the two populations would hide inside
+  each other. **Detection here is exact by construction.** `files.width * files.height` is
+  a fact the indexer wrote down, not a model's estimate, so this slice has **no threshold
+  chosen by taste, no labelling to check its precision against and no recall to measure**:
+  it does not find frames that look small, it enumerates the frames that are small. The
+  list is ordered by ascending pixels (the most damaged first — a ranking, like sharpness,
+  never a verdict) below `features.low_resolution_mp` (**1.0** by default), each card
+  prints the size the thumbnail cannot show (`1280×960 (1.2 MP)`), and the slice carries
+  the same actions as its neighbours: keep, mark for deletion, gather into a folder
+  (`sorta album low_resolution`), and **"Try to improve"** — for which this is the real
+  addressee in the whole product, since Swin2SR ×4 is a super-resolution model and 640×480
+  becomes 2560×1920, i.e. it does here exactly what it was trained for instead of working
+  against its purpose on blur. **Small is not faulty**, and the hint says so: such a frame
+  can be the only surviving photograph of somebody, so the slice is named after the fact
+  and nothing in it is marked for deletion by default. Two limits are stated there too —
+  megapixels say nothing about a large frame ruined by compression (a 4000×3000 picture
+  full of JPEG artefacts is a different signal), and videos are not counted, their
+  resolution having its own meaning. A counter in "Overview" like every other slice.
 - **The run log says what is happening now, not what happened** (F166). F147 gave the junk
   stage a breakdown by phase, and the live run of 2026-08-03 showed what was still missing:
   all four phase lines carried the **same timestamp**, printed in one batch just before the

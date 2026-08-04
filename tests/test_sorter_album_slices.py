@@ -7,6 +7,11 @@ F34's and is not re-tested here; what is pinned below is what a new kind can get
 
 * the slice it selects (and, for `blurred`, that it is a WINDOW and not a threshold —
   `features.blur_review_max`, the same key that bounds the list a person looks at);
+
+F150 adds a seventh, `low_resolution`, and it has a class of its own below: it is the
+one kind here whose membership no model produced, so what has to be pinned about it is
+different (see `TestLowResolutionSlice`).
+
 * the classes that must NOT be gatherable: a class listed in `vlm.exclude_classes`
   (`document` by default) is refused here, not merely left without a button;
 * duplicates and unreadable files stay out of every one of them;
@@ -69,6 +74,19 @@ class SliceAlbumTestBase(SorterTestBase):
                    source, updated_at)
                VALUES (?, ?, ?, 'clip', '2026-01-01')""",
             (file_id, sharpness, eye_openness))
+        self.conn.commit()
+        return file_id
+
+    def add_sized(self, rel: str, width: int, height: int, *,
+                  verdict: str = "photo", **kwargs) -> int:
+        """A photograph the indexer measured — the population of the F150 slice.
+
+        No `frame_quality` row: this slice does not need one, and building the fixture
+        without one is how the test says so.
+        """
+        file_id = self.add_classified(rel, verdict, **kwargs)
+        self.conn.execute("UPDATE files SET width = ?, height = ? WHERE id = ?",
+                          (width, height, file_id))
         self.conn.commit()
         return file_id
 
@@ -185,8 +203,11 @@ class TestQualitySlices(SliceAlbumTestBase):
         self.assertEqual(self.ids("blurred"), [photo])
 
     def test_a_photograph_the_quality_stage_never_touched_is_out(self):
+        # The two slices that READ `frame_quality`. `low_resolution` is deliberately not
+        # in this loop: it reads `files.width/height` instead, so a frame the stage never
+        # reached belongs in it like any other — see TestLowResolutionSlice.
         self.add_classified("no_quality_row.jpg", "photo")
-        for kind in QUALITY_ALBUM_KINDS:
+        for kind in ("blurred", "eyes_closed"):
             with self.subTest(kind=kind):
                 self.assertEqual(self.ids(kind), [])
 
@@ -243,6 +264,97 @@ class TestBlurIsAWindowNotAThreshold(SliceAlbumTestBase):
         self.assertEqual(self.ids("eyes_closed"), [eyes])
 
 
+class TestLowResolutionSlice(SliceAlbumTestBase):
+    """F150: the fifth slice of the "Review" workspace, gathered like the rest.
+
+    What separates it from its neighbours is that nothing measured it. `blurred` and
+    `eyes_closed` read a number some stage left in `frame_quality`; this one reads
+    `files.width * files.height`, which the indexer wrote down while reading the file. So
+    the cases below are not about accuracy — there is none to state — but about the two
+    ways a fact can still be got wrong: reading it where it was never written (NULL) and
+    reading it for a kind of file it does not mean the same thing for (a video).
+    """
+
+    def test_the_slice_holds_the_frames_under_the_threshold_and_only_them(self):
+        small = self.add_sized("small.jpg", 640, 480)          # 0.31 Mp
+        medium = self.add_sized("medium.jpg", 1024, 768)       # 0.79 Mp
+        self.add_sized("big.jpg", 4000, 3000)                  # 12 Mp
+        self.assertEqual(sorted(self.ids("low_resolution")), sorted([small, medium]))
+
+    def test_the_configured_ceiling_changes_what_is_in_it(self):
+        self.assertEqual(self.cfg.features.low_resolution_mp, 1.0)
+        small = self.add_sized("small.jpg", 640, 480)
+        two_mp = self.add_sized("two_mp.jpg", 1600, 1200)      # 1.92 Mp
+        self.assertEqual(self.ids("low_resolution"), [small])
+        self.cfg.features = dataclasses.replace(
+            self.cfg.features, low_resolution_mp=3.0)
+        self.assertEqual(sorted(self.ids("low_resolution")), sorted([small, two_mp]))
+        self.cfg.features = dataclasses.replace(
+            self.cfg.features, low_resolution_mp=0.1)
+        self.assertEqual(self.ids("low_resolution"), [])
+
+    def test_a_frame_exactly_at_the_ceiling_is_not_in_it(self):
+        # `<`, not `<=` — the same boundary the blur window has.
+        self.add_sized("exactly.jpg", 1000, 1000)              # 1.0 Mp
+        self.assertEqual(self.ids("low_resolution"), [])
+
+    def test_a_frame_without_dimensions_is_not_a_frame_of_zero_pixels(self):
+        # The trap of this feature: NULL means "never learned", and a slice that read it
+        # as 0 would put the least-known frames at the very top of the list.
+        self.add_classified("unknown_size.jpg", "photo")
+        self.assertEqual(self.ids("low_resolution"), [])
+
+    def test_a_zero_dimension_is_not_a_small_frame_either(self):
+        self.add_sized("broken_header.jpg", 0, 0)
+        self.assertEqual(self.ids("low_resolution"), [])
+
+    def test_a_photograph_the_quality_stage_never_touched_is_in(self):
+        # The point of the slice: it needs no measurement, so it needs no `frame_quality`
+        # row. `add_sized` writes none.
+        small = self.add_sized("small.jpg", 640, 480)
+        self.assertEqual(self.ids("low_resolution"), [small])
+
+    def test_only_photographs_are_in_it(self):
+        self.add_sized("icon.jpg", 64, 64, verdict="screenshot")
+        self.add_sized("receipt.jpg", 300, 400, verdict="document")
+        photo = self.add_sized("small.jpg", 640, 480)
+        self.assertEqual(self.ids("low_resolution"), [photo])
+
+    def test_a_video_is_not_in_it(self):
+        # Videos have their own logic of resolution and their own meaning for it.
+        video = self.add_sized("clip.mp4", 320, 240)
+        self.conn.execute("UPDATE files SET media_type = 'video' WHERE id = ?", (video,))
+        self.conn.commit()
+        self.assertEqual(self.ids("low_resolution"), [])
+
+    def test_duplicates_and_unreadable_files_stay_out(self):
+        canonical = self.add_sized("a.jpg", 640, 480)
+        duplicate = self.add_sized("b.jpg", 640, 480)
+        broken = self.add_sized("c.jpg", 640, 480)
+        self.conn.execute("UPDATE files SET dup_of = ? WHERE id = ?",
+                          (canonical, duplicate))
+        self.conn.execute("UPDATE files SET error = 'cannot read' WHERE id = ?", (broken,))
+        self.conn.commit()
+        self.assertEqual(self.ids("low_resolution"), [canonical])
+
+    def test_the_default_name_comes_from_the_folder_catalog(self):
+        self.add_sized("small.jpg", 640, 480)
+        self.assertEqual(self.gather("low_resolution").album_name,
+                         i18n.folder("low_resolution", "en"))
+
+    def test_the_album_journals_under_its_own_mode(self):
+        # The brief names this string: `move_batches.mode = 'album_low_resolution'`.
+        self.add_sized("small.jpg", 640, 480, content=b"small")
+        report = self.gather("low_resolution", mode="link", apply=True)
+        batch = self.conn.execute(
+            "SELECT mode, operation FROM move_batches WHERE id = ?",
+            (report.batch_id,)).fetchone()
+        self.assertEqual(batch["mode"], "album_low_resolution")
+        self.assertEqual(batch["operation"], "link")
+        self.assertTrue(
+            (self.dest / i18n.folder("low_resolution", "en") / "small.jpg").exists())
+
+
 class TestApplyAndJournal(SliceAlbumTestBase):
     def test_dry_run_writes_nothing_to_the_db_or_the_filesystem(self):
         self.add_classified("chair.jpg", "product")
@@ -259,6 +371,7 @@ class TestApplyAndJournal(SliceAlbumTestBase):
         self.add_classified("meme.jpg", "meme", content=b"meme")
         self.add_quality("blurred.jpg", sharpness=10.0, content=b"blur")
         self.add_quality("eyes.jpg", eye_openness=CLOSED, content=b"eyes")
+        self.add_sized("small.jpg", 640, 480, content=b"small")
         for kind in CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS:
             with self.subTest(kind=kind):
                 report = self.gather(kind, mode="link", apply=True)
@@ -344,6 +457,7 @@ class TestMoveWarns(SliceAlbumTestBase):
         self.add_classified("meme.jpg", "meme")
         self.add_quality("blurred.jpg", sharpness=10.0)
         self.add_quality("eyes.jpg", eye_openness=CLOSED)
+        self.add_sized("small.jpg", 640, 480)
         expected = i18n.cli_text("cli.album.warn_move", "en")
         for kind in CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS:
             with self.subTest(kind=kind):

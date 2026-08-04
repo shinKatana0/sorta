@@ -125,7 +125,12 @@ class TestEmptyIndex(OverviewTestBase):
                                               "animals": 0, "with_people": None,
                                               "group_photos": None, "portraits": None,
                                               "faces_reason": "no_faces_run",
-                                              "blurred": 0, "eyes_closed": 0})
+                                              # F150 added the low-resolution counter; the
+                                              # assertion pins the WHOLE set on purpose, so
+                                              # a new counter has to be admitted here — that
+                                              # is the test doing its job, not breaking.
+                                              "blurred": 0, "eyes_closed": 0,
+                                              "low_resolution": 0})
         self.assertEqual(data["place"]["total"], 0)
         self.assertEqual(data["place"]["confidence"], [])
         self.assertEqual(data["place"]["no_place"], 0)
@@ -171,7 +176,8 @@ class TestCollectionCounts(OverviewTestBase):
                                       "animals": 0, "with_people": None,
                                       "group_photos": None, "portraits": None,
                                       "faces_reason": "no_faces_run",
-                                      "blurred": 0, "eyes_closed": 0})
+                                      "blurred": 0, "eyes_closed": 0,
+                                      "low_resolution": 0})
 
     def test_photos_and_videos_add_up_to_the_whole_index(self):
         self.add_file("a.jpg")

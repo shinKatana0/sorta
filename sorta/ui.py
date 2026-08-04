@@ -267,22 +267,27 @@ route that marks a whole band at once: the feature exists because somebody LOOKE
 frame, and a threshold is already there for the other case.
 
 (21) `GET /api/review` + `POST /api/review/mark` (F126, the "Review" tab, which replaces
-the "Duplicates" tab) — the three things a person looks at in order to decide what stays:
-near-duplicates, blurred frames, closed eyes. One workspace with three SLICES rather than
-three tabs, because it is one job. Duplicates are the only GROUPED
-slice and keep their own route and their own rendering untouched — `/api/dupes` and the
+the "Duplicates" tab) — the things a person looks at in order to decide what stays:
+near-duplicates, blurred frames, closed eyes and (F150) frames of low resolution. One
+workspace with SLICES rather than that many tabs, because it is one job. Duplicates are
+the only GROUPED slice and keep their own route and their own rendering untouched —
+`/api/dupes` and the
 four write routes above answer exactly as they did, since that is the one path in the
 product that deletes files and the one that has been run against a live collection. The
-GET carries the counters of all three slices (a slice with nothing in it stays in the
+GET carries the counters of all the slices (a slice with nothing in it stays in the
 switcher with a zero — an empty slice is an answer, a missing one is a riddle) plus one
 bounded page of the current flat slice, over photographs only (`media_class.verdict =
-'photo'`, F120) that are canonical and readable. Both flat lists are ORDERED by the number
-they exist for, ascending in both cases (little variance = blurred, a thin slit = a closed
-eye), and each opens as far as its own window — `features.blur_review_max`,
-`features.eye_openness_max` (F179); `beyond=1` continues past that window, which is a
-prefix of the same ordering, so nothing is lost or repeated at the seam. Without a faces
-run the eyes slice answers `eyes_reason='no_faces_run'` rather than a zero (F125: the eyes
-are only measured where a face was found). The POST writes the
+'photo'`, F120) that are canonical and readable. Every flat list is ORDERED by the number
+it exists for, ascending in all three cases (little variance = blurred, a thin slit = a
+closed eye, few pixels = low resolution), and each opens as far as its own window —
+`features.blur_review_max`, `features.eye_openness_max` (F179),
+`features.low_resolution_mp`; `beyond=1` continues past that window, which is a prefix of
+the same ordering, so nothing is lost or repeated at the seam. Low resolution is the one
+slice here whose membership was never measured by anything: the two columns are a fact the
+indexer wrote down, so the card carries the resolution itself and the hint says what the
+pixel count does NOT catch (a large frame ruined by compression). Without a faces run the
+eyes slice answers `eyes_reason='no_faces_run'` rather than a zero (F125: the eyes are only
+measured where a face was found). The POST writes the
 decision into the EXISTING `dedup_choice` (`keep`/`to_delete`, or `clear` to drop the
 row) — `file_id` is its primary key, so a frame that appears in two slices carries one
 decision, and `to_delete` is already understood by the sorter. There is deliberately no
@@ -435,7 +440,6 @@ from .sorter import (
     ALBUM_MODES,
     CLASS_ALBUM_KINDS,
     FACE_SLICES,
-    QUALITY_FROM,
     SELECTORLESS_ALBUM_KINDS,
     AlbumReport,
     Destination,
@@ -446,6 +450,7 @@ from .sorter import (
     face_slice_ids_sql,
     plan_album,
     plan_and_sort,
+    quality_slice_from,
     quality_slice_where,
     undo,
 )
@@ -2058,7 +2063,14 @@ def _parse_face_slice_query(query: dict[str, list[str]]) -> tuple[str, int, int]
 #   threshold" route here, and the measurement is why: reviewed by eye in bands, blurred
 #   frames turn up in every band up to 400, and the blurred frame that gets kept is the
 #   only photograph of a person or a place. Sharpness ranks the list; a human decides.
-_REVIEW_SLICES = ("dupes", "blurred", "eyes")
+#
+# F150 adds a fifth, "low resolution", and it sits here rather than in a tab of its own
+# for the same reason the other four share this one: all of them are "look at this and
+# decide whether it stays". It is not folded INTO the blurred list either — measured on
+# 22 095 photographs, the two populations intersect by 3% (682 of the 706 frames under a
+# megapixel are formally sharp), so mixing them would hide each inside the other and leave
+# a person sorting blur wondering why sharp little pictures keep appearing.
+_REVIEW_SLICES = ("dupes", "blurred", "eyes", "low_resolution")
 
 # F139: which album kind each flat slice gathers into — and, read the other way, the map
 # that keeps the list and the album on one rule. The names differ because the switcher's
@@ -2066,83 +2078,98 @@ _REVIEW_SLICES = ("dupes", "blurred", "eyes")
 # renaming either half would move an API parameter for nothing. Duplicates have no kind:
 # they are the grouped slice, the one where a keeper is chosen, and the one path in the
 # program that deletes files — collecting them into a folder is not what they are for.
-_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed"}
+_REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed",
+                      "low_resolution": "low_resolution"}
 
-# Each flat slice is ranked by the number it exists for, most interesting first — and for
-# both of them that means ASCENDING: a blurred frame has little variance, and a closed eye
-# is a thin slit. F179 gave the eyes such a number; before it they went in index order,
-# because the VLM answer behind them was a yes/no with nothing to sort by. The `f.id` tail
-# is what makes either ordering total, and paging needs that: two frames of equal sharpness
-# must not swap places between page one and page two.
+# Every flat slice is ranked by the number it exists for, and for all three that means
+# ASCENDING, so the most damaged frame is the first one a person sees: a blurred frame has
+# little variance, a closed eye is a thin slit, a low-resolution frame has few pixels. None
+# of the three orderings is a verdict — each decides what to look at first, not what to
+# delete. F179 gave the eyes such a number; before it they went in index order, because the
+# VLM answer behind them was a yes/no with nothing to sort by. `f.id` closes every one of
+# them: frames of equal sharpness, equal openness or equal size must come back in the same
+# order on every page, or paging would drop and repeat them at the seam.
 _REVIEW_SLICE_ORDER = {
     "blurred": "fq.sharpness ASC, f.id",
     "eyes": "fq.eye_openness ASC, f.id",
+    "low_resolution": "f.width * f.height ASC, f.id",
 }
 
-# The membership rule itself lives in sorter.py (`quality_slice_where`, `QUALITY_FROM`)
-# and is read from there rather than restated here: the album of a slice and the list of
-# it must be the same set of frames, and two spellings of one condition drift.
-_REVIEW_FROM = QUALITY_FROM
+# The two extra columns a card carries, by slice — a card shows the number its slice is
+# ABOUT and not every number the row happens to hold. The absent one is selected as NULL
+# rather than left out so that one row shape feeds one `_review_item_to_json`; and for
+# `low_resolution` there is no `fq` alias to read at all (`quality_slice_from`).
+_REVIEW_SLICE_COLUMNS = {
+    "blurred": "fq.sharpness AS sharpness, NULL AS width, NULL AS height",
+    "eyes": "fq.sharpness AS sharpness, NULL AS width, NULL AS height",
+    "low_resolution": "NULL AS sharpness, f.width AS width, f.height AS height",
+}
+
+# The membership rule itself lives in sorter.py (`quality_slice_where`,
+# `quality_slice_from`) and is read from there rather than restated here: the album of a
+# slice and the list of it must be the same set of frames, and two spellings of one
+# condition drift.
 
 
-def _review_where(slice_: str, blur_max: float | None,
-                  eye_max: float | None = None) -> tuple[str, list[object]]:
+def _review_from(slice_: str) -> str:
+    """The FROM of one flat slice — the shared rule, by slice name."""
+    return quality_slice_from(_REVIEW_SLICE_KIND[slice_])
+
+
+def _review_where(slice_: str, features: FeaturesConfig, *,
+                  beyond: bool = False) -> tuple[str, list[object]]:
     """The WHERE of one flat slice + its parameters — the shared rule, by slice name.
 
-    `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
-    `eye_max` the one the closed-eyes list opens to (`features.eye_openness_max`, F179);
-    each applies to its own slice, and None means "show more" has been pressed and the list
-    runs on without a ceiling.
+    `beyond` is "show more": the blurred list opens to `features.blur_review_max` and the
+    closed-eyes list to `features.eye_openness_max` (F179), and each runs on without a
+    ceiling once asked. Each window bounds its own slice alone.
     """
-    return quality_slice_where(_REVIEW_SLICE_KIND[slice_], blur_max, eye_max)
+    return quality_slice_where(_REVIEW_SLICE_KIND[slice_], features, beyond=beyond)
 
 
-def _review_count(conn: sqlite3.Connection, slice_: str, blur_max: float | None,
-                  eye_max: float | None = None) -> int:
+def _review_count(conn: sqlite3.Connection, slice_: str,
+                  features: FeaturesConfig) -> int:
     """How many frames one flat slice holds, under the same WHERE the page uses."""
-    where, params = _review_where(slice_, blur_max, eye_max)
+    where, params = _review_where(slice_, features)
     return int(conn.execute(
-        f"SELECT COUNT(*) {_REVIEW_FROM} WHERE {where}", params).fetchone()[0])
+        f"SELECT COUNT(*) {_review_from(slice_)} WHERE {where}", params).fetchone()[0])
 
 
-def _review_flat_counts(conn: sqlite3.Connection, blur_max: float,
-                        eye_max: float) -> dict[str, int]:
+def _review_flat_counts(conn: sqlite3.Connection,
+                        features: FeaturesConfig) -> dict[str, int]:
     """The flat slice counters — plain aggregates, cheap enough for "Overview".
 
-    BOTH are counted INSIDE their window, so the chip, the "Overview" row and the length of
-    the list the tab opens with are one number per slice. F179 made that true of the eyes
-    too: the slice is a ranking now, and a counter that ignored the window would advertise
-    every frame a face was measured on — the whole face population, not the closed eyes.
+    EVERY slice is counted INSIDE its own window, so the chip, the "Overview" row and the
+    length of the list the tab opens with are one number per slice. F179 made that true of
+    the eyes too: the slice is a ranking now, and a counter that ignored the window would
+    advertise every frame a face was measured on — the whole face population, not the
+    closed eyes.
     """
-    return {
-        "blurred": _review_count(conn, "blurred", blur_max),
-        "eyes": _review_count(conn, "eyes", None, eye_max),
-    }
+    return {name: _review_count(conn, name, features)
+            for name in _REVIEW_SLICES if name != "dupes"}
 
 
 # F133: the same flat slices again, counting only the frames NOBODY has decided about.
 # "Decided" is a row in `dedup_choice` and nothing else — the rule the marks are written
 # by — so a slice empties as the person works through it, which is what makes the warning
 # on the "Layout" tab disappear on its own.
-_REVIEW_PENDING_FROM = f"{_REVIEW_FROM} LEFT JOIN dedup_choice dc ON dc.file_id = f.id"
+_PENDING_JOIN = " LEFT JOIN dedup_choice dc ON dc.file_id = f.id"
 
 
-def _review_pending_count(conn: sqlite3.Connection, slice_: str, blur_max: float | None,
-                          eye_max: float | None = None) -> int:
+def _review_pending_count(conn: sqlite3.Connection, slice_: str,
+                          features: FeaturesConfig) -> int:
     """How many frames of one flat slice still carry no decision."""
-    where, params = _review_where(slice_, blur_max, eye_max)
+    where, params = _review_where(slice_, features)
     return int(conn.execute(
-        f"SELECT COUNT(*) {_REVIEW_PENDING_FROM} WHERE {where} AND dc.action IS NULL",
-        params).fetchone()[0])
+        f"SELECT COUNT(*) {_review_from(slice_)}{_PENDING_JOIN} "
+        f"WHERE {where} AND dc.action IS NULL", params).fetchone()[0])
 
 
-def _review_pending_counts(conn: sqlite3.Connection, blur_max: float,
-                           eye_max: float) -> dict[str, int]:
+def _review_pending_counts(conn: sqlite3.Connection,
+                           features: FeaturesConfig) -> dict[str, int]:
     """The undecided part of each flat slice, under the same WHERE the page uses."""
-    return {
-        "blurred": _review_pending_count(conn, "blurred", blur_max),
-        "eyes": _review_pending_count(conn, "eyes", None, eye_max),
-    }
+    return {name: _review_pending_count(conn, name, features)
+            for name in _REVIEW_SLICES if name != "dupes"}
 
 
 def _pending_dupe_groups(groups: list[dict]) -> int:
@@ -2160,7 +2187,8 @@ def _pending_dupe_groups(groups: list[dict]) -> int:
 
 
 def _review_item_to_json(row: sqlite3.Row, action: str | None) -> dict:
-    """One card of a flat slice: a thumbnail, a name, a date, sharpness, the decision."""
+    """One card of a flat slice: a thumbnail, a name, a date, the slice's number, the
+    decision."""
     path = Path(row["path"])
     return {
         "file_id": int(row["id"]),
@@ -2171,6 +2199,11 @@ def _review_item_to_json(row: sqlite3.Row, action: str | None) -> dict:
         "src_dir": path.parent.name,
         "src_path": str(path.parent),
         "sharpness": None if row["sharpness"] is None else float(row["sharpness"]),
+        # F150: the size of the picture, on the card of the slice that is about it. A
+        # thumbnail is the same 200 px whatever it was made from, so the pixels are the
+        # one thing a person cannot see and the one thing they are deciding on.
+        "width": None if row["width"] is None else int(row["width"]),
+        "height": None if row["height"] is None else int(row["height"]),
         "action": action,
         "thumb_url": f"/thumb/{int(row['id'])}",
         "video": imaging.is_video_path(path),
@@ -2178,7 +2211,7 @@ def _review_item_to_json(row: sqlite3.Row, action: str | None) -> dict:
 
 
 def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
-                    beyond: bool, blur_max: float, eye_max: float,
+                    beyond: bool, features: FeaturesConfig,
                     max_distance: int) -> dict:
     """`GET /api/review` — the slice counters + one bounded page of the current slice.
 
@@ -2197,28 +2230,31 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     found, so without a faces run the honest answer is why there is no data, not a zero
     that looks like "your subjects all had their eyes open".
 
-    F179: `window_total` is the count of the CURRENT slice's window, because both flat
-    slices have one now — the blurred list opens down to `features.blur_review_max`, the
-    closed-eyes list down to `features.eye_openness_max`, and "show more" walks either of
-    them past its window into the frames the ranking is less sure about.
+    F150: `low_resolution_mp` travels with the answer for the same reason `blur_max`
+    does — and `eye_max` with it since F179 — the hint above the grid states the rule the
+    list was built by instead of repeating a default in JS.
+
+    F179: `window_total` is the count of the CURRENT slice's window, because every flat
+    slice has one now — blurred down to `features.blur_review_max`, closed eyes down to
+    `features.eye_openness_max` — and "show more" walks either of them past its window
+    into the frames the ranking is less sure about.
     """
     conn = _connect(db_path)
     try:
-        counts = _review_flat_counts(conn, blur_max, eye_max)
-        pending = _review_pending_counts(conn, blur_max, eye_max)
+        counts = _review_flat_counts(conn, features)
+        pending = _review_pending_counts(conn, features)
         eyes_reason = None if faces_stage_ran(conn) else "no_faces_run"
         window_total = counts.get(slice_, counts["blurred"])
         items: list[dict] = []
         total = 0
         if slice_ != "dupes":
-            blur_ceiling = None if beyond else blur_max
-            eye_ceiling = None if beyond else eye_max
-            where, params = _review_where(slice_, blur_ceiling, eye_ceiling)
+            source = _review_from(slice_)
+            where, params = _review_where(slice_, features, beyond=beyond)
             total = int(conn.execute(
-                f"SELECT COUNT(*) {_REVIEW_FROM} WHERE {where}", params).fetchone()[0])
+                f"SELECT COUNT(*) {source} WHERE {where}", params).fetchone()[0])
             rows = conn.execute(
-                f"""SELECT f.id, f.path, f.taken_at, fq.sharpness
-                    {_REVIEW_FROM} WHERE {where}
+                f"""SELECT f.id, f.path, f.taken_at, {_REVIEW_SLICE_COLUMNS[slice_]}
+                    {source} WHERE {where}
                     ORDER BY {_REVIEW_SLICE_ORDER[slice_]}
                     LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
             actions: dict[int, str] = {}
@@ -2253,11 +2289,12 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
         "pending": [{"slice": name, "count": pending[name]} for name in _REVIEW_SLICES],
         "pending_total": sum(pending.values()),
         "eyes_reason": eyes_reason,
-        "blur_max": float(blur_max),
-        # F179: the number the closed-eyes caption states — and it states the PRECISION
-        # measured at it, not a count, because 62% right is the fact a person needs before
-        # looking at the list.
-        "eye_max": float(eye_max),
+        "blur_max": float(features.blur_review_max),
+        # F179: the number the closed-eyes caption is shown with — and that caption states
+        # the PRECISION measured at it, not a count, because 62% right is the fact a person
+        # needs before looking at the list.
+        "eye_max": float(features.eye_openness_max),
+        "low_resolution_mp": float(features.low_resolution_mp),
         "window_total": window_total,
         "beyond": bool(beyond),
         "total": total,
@@ -2273,8 +2310,9 @@ def _parse_review_query(
     """(slice, offset, limit, beyond) for `GET /api/review`, or None -> 400.
 
     An unknown slice is refused rather than answered with an empty page: the switcher
-    offers exactly four, so anything else is a client that has lost track of what it is
-    asking for. The window is parsed by the plan-page rules (`_parse_page_window`).
+    offers exactly `_REVIEW_SLICES`, so anything else is a client that has lost track of
+    what it is asking for. The window is parsed by the plan-page rules
+    (`_parse_page_window`).
     """
     window = _parse_page_window(query)
     if window is None:
@@ -2446,10 +2484,16 @@ def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     `sharpness` is selected as NULL rather than joined: the copy has no `frame_quality`
     row and will not have one until the next run measures it, and a card that printed a
     zero would be claiming a measurement nobody made.
+
+    F150: the size, on the other hand, is REAL and is selected as such. `record_restored`
+    measures the copy it just wrote, and on the low-resolution slice — the model's proper
+    addressee, where ×4 turns 640×480 into 2560×1920 — the change in size is the whole
+    result of the operation. A card that hid it would leave the person comparing two
+    thumbnails of identical width on screen.
     """
     return conn.execute(
-        "SELECT id, path, taken_at, NULL AS sharpness FROM files WHERE id = ?",
-        (file_id,)).fetchone()
+        "SELECT id, path, taken_at, NULL AS sharpness, width, height "
+        "FROM files WHERE id = ?", (file_id,)).fetchone()
 
 
 def _parse_junk_query(query: dict[str, list[str]]) -> tuple[str | None, int, int] | None:
@@ -3095,8 +3139,7 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
             name: (_face_slice_count(conn, cfg, name) if faces_ran else None)
             for name in FACE_SLICES
         }
-        review = _review_flat_counts(conn, features.blur_review_max,
-                                     features.eye_openness_max)
+        review = _review_flat_counts(conn, features)
         place = _overview_place(conn)
         classes_total = conn.execute(
             f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
@@ -3138,6 +3181,9 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
             "faces_reason": None if faces_ran else "no_faces_run",
             "blurred": review["blurred"],
             "eyes_closed": review["eyes"],
+            # F150: the same query the slice itself runs, so the row and the list it
+            # links to cannot say two different numbers.
+            "low_resolution": review["low_resolution"],
         },
         "place": place,
         "classes": classes,
@@ -6678,6 +6724,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "review_slice_dupes": {"ru": "Дубли", "en": "Duplicates", "ja": "重複"},
     "review_slice_blurred": {"ru": "Размытые", "en": "Blurred", "ja": "ぼやけ"},
     "review_slice_eyes": {"ru": "Закрытые глаза", "en": "Closed eyes", "ja": "目を閉じた"},
+    # F150: named after the FACT and never after a judgement. "Bad" or "junk" would be a
+    # verdict the program has no business passing on a picture somebody was sent once and
+    # never got again.
+    "review_slice_low_resolution": {
+        "ru": "Низкое разрешение", "en": "Low resolution", "ja": "低解像度",
+    },
     "review_intro": {
         "ru": "Одно место для всего, что надо просмотреть глазами и частью удалить. "
               "Отметка «удалить» — это пометка, а не удаление: файлы уедут в папку "
@@ -6735,6 +6787,38 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "face was found. Run faces and come back to this slice.",
         "ja": "データがありません。顔ステージが実行されておらず、目の計測は顔が検出された"
               "コマにのみ行われます。顔ステージを実行してから、この区分を開いてください。",
+    },
+    # F150: the whole boundary of the slice, said out loud. Three things a person has to
+    # know before pressing anything here: it is a fact and not a verdict (the frame may be
+    # the only copy of something), megapixels say nothing about a big frame ruined by
+    # compression, and videos are not in this list at all.
+    "review_hint_low_resolution": {
+        "ru": "Кадры меньше {mp} мегапикселя, сначала самые мелкие. Это факт из индекса, "
+              "а не оценка: ширина и высота записаны при индексации, ничего не "
+              "измерялось. Малое разрешение — не признак брака: это может быть "
+              "единственная сохранившаяся фотография, присланная десять лет назад, "
+              "поэтому по умолчанию не удаляется ничего. Пережатое сюда не попадает: "
+              "кадр 4000×3000, убитый JPEG-артефактами, формально большой — это другой "
+              "сигнал и другой разговор. Видео не считаем.",
+        "en": "Frames smaller than {mp} megapixels, the smallest first. This is a fact "
+              "out of the index rather than an estimate: width and height were written "
+              "down when the file was indexed and nothing was measured. A small frame is "
+              "not a faulty one — it can be the only surviving photograph, sent ten "
+              "years ago — so nothing is marked for deletion by default. Over-compressed "
+              "frames are not here: a 4000×3000 picture ruined by JPEG artefacts is "
+              "formally large, and that is a different signal and a different "
+              "conversation. Videos are not counted.",
+        "ja": "{mp} メガピクセル未満のコマを、小さい順に並べています。これは推定ではなく"
+              "索引に記録された事実です。幅と高さは登録時に書き込まれたもので、何も"
+              "測定していません。解像度が低いことは欠陥ではありません — 十年前に送られて"
+              "きた唯一の一枚かもしれないので、既定では何も削除の印を付けません。"
+              "圧縮で潰れたコマはここには入りません。JPEG のノイズで壊れた 4000×3000 の"
+              "画像は形式上は大きく、それは別の指標であり別の話です。動画は数えません。",
+    },
+    # The size of the picture, as a person reads it off a camera: the two sides and the
+    # megapixels they come to.
+    "review_resolution_label": {
+        "ru": "{w}×{h} ({mp} Мп)", "en": "{w}×{h} ({mp} MP)", "ja": "{w}×{h}（{mp} MP）",
     },
     "review_empty": {
         "ru": "Здесь пусто — таких кадров нет.",
@@ -6910,6 +6994,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "overview_blurred": {"ru": "Размытых", "en": "Blurred", "ja": "ぼやけ"},
     "overview_eyes_closed": {"ru": "С закрытыми глазами", "en": "With closed eyes",
                              "ja": "目を閉じた"},
+    # F150: counted under `features.low_resolution_mp`, the same ceiling the slice lists.
+    "overview_low_resolution": {"ru": "Низкого разрешения", "en": "Low resolution",
+                                "ja": "低解像度"},
     "overview_place_exact_gps": {"ru": "Точный GPS", "en": "Exact GPS", "ja": "正確なGPS"},
     "overview_place_manual": {"ru": "Указано вручную", "en": "Set by hand", "ja": "手動指定"},
     "overview_place_session_inferred": {
@@ -8235,6 +8322,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" class="btn btn-sm review-slice-btn active" id="review-slice-dupes">{{review_slice_dupes}}<span class="review-slice-count" id="review-count-dupes"></span></button>
 <button type="button" class="btn btn-sm review-slice-btn" id="review-slice-blurred">{{review_slice_blurred}}<span class="review-slice-count" id="review-count-blurred"></span></button>
 <button type="button" class="btn btn-sm review-slice-btn" id="review-slice-eyes">{{review_slice_eyes}}<span class="review-slice-count" id="review-count-eyes"></span></button>
+<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-low_resolution">{{review_slice_low_resolution}}<span class="review-slice-count" id="review-count-low_resolution"></span></button>
 </div>
 <div id="review-dupes">
 <div class="dupes-controls">
@@ -10174,6 +10262,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                                  overviewCount(c.blurred, "review", "blurred")));
     card.appendChild(overviewRow(I18N.overview_eyes_closed,
                                  overviewCount(c.eyes_closed, "review", "eyes")));
+    card.appendChild(overviewRow(
+        I18N.overview_low_resolution,
+        overviewCount(c.low_resolution, "review", "low_resolution")));
     return card;
   }
 
@@ -12804,7 +12895,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // DOM at once.
 
   var REVIEW_PAGE_SIZE = 200;
-  var REVIEW_SLICES = ["dupes", "blurred", "eyes"];
+  var REVIEW_SLICES = ["dupes", "blurred", "eyes", "low_resolution"];
   var reviewSlice = "dupes";
   var reviewOffset = 0;
   // Each flat slice opens to a window — `features.blur_review_max`,
@@ -12857,7 +12948,23 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           ? I18N.review_eyes_no_faces
           : fmt(I18N.review_hint_eyes, { max: data.eye_max });
     }
+    // F150: the ceiling comes off the answer, not out of a constant here — the number in
+    // the sentence has to be the one the list was actually built with.
+    if (reviewSlice === "low_resolution") {
+      return fmt(I18N.review_hint_low_resolution, { mp: data.low_resolution_mp });
+    }
     return fmt(I18N.review_hint_blurred, { max: data.blur_max });
+  }
+
+  // F150: "1280×960 (1.2 MP)" — the size of the picture, which the 200 px thumbnail
+  // beside it cannot show. Empty for a frame whose dimensions the index never learned:
+  // an unknown size is not a small one, and such a frame is in no slice anyway.
+  function reviewResolutionLabel(item) {
+    if (!item.width || !item.height) return "";
+    return fmt(I18N.review_resolution_label, {
+      w: item.width, h: item.height,
+      mp: (item.width * item.height / 1000000).toFixed(1),
+    });
   }
 
   function renderReviewCard(item) {
@@ -12890,7 +12997,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     meta.className = "review-card-meta";
     var sharp = item.sharpness === null || item.sharpness === undefined ? "" :
         fmt(I18N.review_sharpness_label, { value: Number(item.sharpness).toFixed(0) });
-    meta.textContent = [item.src_dir, item.date || "", sharp, actionLabel(item.action)]
+    meta.textContent = [item.src_dir, item.date || "", sharp,
+                        reviewResolutionLabel(item), actionLabel(item.action)]
         .filter(Boolean).join(" \\u00b7 ");
     card.appendChild(meta);
     var label = document.createElement("label");
@@ -12928,10 +13036,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // Past the end of the window the button changes its meaning, not just its target:
     // the next page is no longer "more of the same list" but a step outside the window
     // the list opened to.
-    // F179: both flat slices have a window now — sharpness down to `blur_review_max`,
-    // eye openness down to `eye_openness_max` — so the button changes its meaning on
-    // either of them, and only the duplicates (which have no ranking) never leave one.
-    var beyondNext = reviewSlice !== "dupes" && !reviewBeyond &&
+    // WHICH SLICES HAVE A WINDOW, listed rather than negated. Blurred opens down to
+    // `blur_review_max` and closed eyes down to `eye_openness_max` (F179): both are
+    // RANKINGS cut short, so there is a "further down the list" to step into. Duplicates
+    // have no ranking, and `low_resolution` (F150) has no window either — its megapixel
+    // ceiling is the membership rule itself, so `beyond` selects exactly the same frames
+    // and the button would promise a page that does not exist. `!== "dupes"` was the same
+    // thing right up until F150 added a fourth slice.
+    var BEYOND_SLICES = ["blurred", "eyes"];
+    var beyondNext = BEYOND_SLICES.indexOf(reviewSlice) >= 0 && !reviewBeyond &&
         shown >= reviewWindowTotal;
     var more = shown < data.total || beyondNext;
     var moreBtn = document.getElementById("review-more-btn");
@@ -13677,8 +13790,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             slice_, offset, limit, beyond = parsed
             self._send_json(_review_payload(
                 db_path, slice_, offset, limit, beyond=beyond,
-                blur_max=cfg.features.blur_review_max,
-                eye_max=cfg.features.eye_openness_max,
+                features=cfg.features,
                 max_distance=cfg.index.phash_max_distance))
 
         def _serve_search(self, query: dict[str, list[str]]) -> None:
