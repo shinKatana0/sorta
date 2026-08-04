@@ -11908,8 +11908,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
      ["process-faces-checkbox", I18N.process_faces_label],
      ["process-events-checkbox", I18N.process_events_label],
      ["process-pets-checkbox", I18N.process_pets_label],
-     ["process-pets-verify-checkbox", I18N.process_pets_verify_label]].forEach(
-        function (pair) {
+     ["process-pets-verify-checkbox", I18N.process_pets_verify_label]
+    ].forEach(function (pair) {
       if (document.getElementById(pair[0]).checked) on.push(pair[1]);
     });
     return I18N.step_options_summary_prefix +
