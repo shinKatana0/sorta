@@ -59,8 +59,10 @@ class OneButtonTestBase(ProcessTestBase):
             return _FakeIndexResult(added=added, updated=updated, skipped=skipped)
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                      progress=None):
-            calls.append("junk")
+                      verdicts_only=False, progress=None):
+            # F165: two stages, one function. Both report the same pair of counters
+            # to the status, which is what the cases below read.
+            calls.append("classify" if verdicts_only else "junk")
             if progress:
                 progress(processed, processed)
             return _FakeJunkResult(processed=processed,
@@ -181,8 +183,8 @@ class TestCheckboxesStillDecideTheOptionalStages(OneButtonTestBase):
         _poll_until(self.status, lambda d: d["finished"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "faces", "events",
-             "name_events", "junk", "phash"],
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "faces",
+             "events", "name_events", "junk", "phash"],
         )
 
     def test_the_start_click_still_sends_every_checkbox(self):

@@ -2,7 +2,7 @@
 Duplicates (incl. batch saving) + deleting a single frame + a "People" tab (managing
 face clusters) + person/event albums ("Collect into folder", on top of the F34
 engine) + the "Process" entry point — running the pipeline
-index→geo→landmarks→faces→events→junk→phash from the web, on a background server thread.
+index→geo→landmarks→classify→faces→events→junk→phash from the web, on a background server thread.
 
 Most routes are READ-ONLY (reading originals/decoding thumbnails by file_id from the
 index). Writes go through six narrowly-scoped paths: (1) `dedup_choice` — the user's
@@ -28,7 +28,7 @@ from the DB itself). `apply=False` — a preview (writes nothing), the client co
 and re-sends with `apply=True`.
 
 (7) `POST /api/process` (F36) — starts a background THREAD running the stages
-index→geo→landmarks→faces→events→junk→phash (the leaf functions indexer/geo/
+index→geo→landmarks→classify→faces→events→junk→phash (the leaf functions indexer/geo/
 landmarks/faces/events/junk/dedup/naming — NOT imported from cli.py, to avoid a
 cycle); the body accepts `source_dir: str` (required) + optional
 `deep: bool`/`geo_online: bool` (F50/#34, default False) — which override
@@ -3408,14 +3408,19 @@ class _LazyTextEncoder:
         return encoder(texts)
 
 
-# --- F36: "Process" — the background pipeline index→geo→landmarks→faces→events→
-# junk→phash from the web (POST /api/process), pollable progress (GET
+# --- F36: "Process" — the background pipeline index→geo→landmarks→classify→faces→
+# events→junk→phash from the web (POST /api/process), pollable progress (GET
 # /api/process/status), cancel (POST /api/process/cancel). NOT imported from cli.py
 # (to avoid a cli<->ui cycle) — the same leaf functions as `cli._pipeline_steps` are
 # called directly from indexer/geo/landmarks/faces/events/junk/dedup/naming, +
 # compute_phashes (dedup) as the last step.
 
-_PIPELINE_STAGE_NAMES = ("index", "geo", "landmarks", "faces", "events", "junk", "phash")
+# F165: `classify` — the front half of the junk stage (the verdicts, `verdicts_only`),
+# placed before `faces` so that the faces stage skips the frames the classifier has
+# already called screenshots, documents, memes or products. The back half keeps its
+# place: everything left in it reads what `faces` writes.
+_PIPELINE_STAGE_NAMES = ("index", "geo", "landmarks", "classify", "faces", "events",
+                         "junk", "phash")
 
 # F53/#39: faces and events — the heaviest/longest steps, opt-in via the "Process"
 # checkboxes, default off. `_pipeline_steps()` still builds the FULL list (see the
@@ -3531,6 +3536,11 @@ def _pipeline_steps() -> list[tuple[str, _StageFn]]:
         name_events(cfg, conn)
         return None
 
+    def _classify(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
+        stats = classify_junk(cfg, conn, classifier=_clip(cfg), verdicts_only=True,
+                              progress=cb)
+        return _stage_stats(stats, ("processed",), "skipped_incremental")
+
     def _junk(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
         stats = classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb)
         return _stage_stats(stats, ("processed",), "skipped_incremental")
@@ -3541,7 +3551,8 @@ def _pipeline_steps() -> list[tuple[str, _StageFn]]:
 
     steps: list[tuple[str, _StageFn]] = [
         ("index", _index), ("geo", _geo), ("landmarks", _landmarks),
-        ("faces", _faces), ("events", _events), ("junk", _junk), ("phash", _phash),
+        ("classify", _classify), ("faces", _faces), ("events", _events),
+        ("junk", _junk), ("phash", _phash),
     ]
     assert tuple(name for name, _fn in steps) == _PIPELINE_STAGE_NAMES
     return steps
@@ -5267,6 +5278,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_stage_index": {"ru": "индексация", "en": "indexing", "ja": "インデックス作成"},
     "process_stage_geo": {"ru": "гео", "en": "geo", "ja": "位置情報"},
     "process_stage_landmarks": {"ru": "места", "en": "landmarks", "ja": "ランドマーク"},
+    # F165: the two halves of the classification, and the chips have to tell them apart —
+    # the first one decides WHAT a frame is (and lets the faces stage skip what is not a
+    # photograph), the second one measures the photographs it left.
+    "process_stage_classify": {"ru": "вердикты", "en": "verdicts", "ja": "判定"},
     "process_stage_faces": {"ru": "лица", "en": "faces", "ja": "顔"},
     "process_stage_events": {"ru": "события", "en": "events", "ja": "イベント"},
     "process_stage_junk": {"ru": "классификация", "en": "classification", "ja": "分類"},
@@ -10225,7 +10240,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // faces/events opt-in — currentProcessStages фиксируется по чекбоксам в
   // момент запуска (сервер фильтрует steps так же), иначе индексы чипов
   // разъедутся со stage_index отфильтрованного прогона.
-  var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "faces", "events", "junk", "phash"];
+  var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "classify", "faces", "events",
+                            "junk", "phash"];
   var OPTIONAL_PROCESS_STAGES = { faces: true, events: true };
   var currentProcessStages = ALL_PROCESS_STAGES.slice();
 

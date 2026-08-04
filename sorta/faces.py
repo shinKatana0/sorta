@@ -11,6 +11,17 @@ Contract: reads files (path, dup_of IS NULL), writes ONLY into faces and face_cl
 
 Thresholds come from the config.yaml `faces:` section (typed, cfg.faces);
 the defaults are the tuned Immich values.
+
+F165: and it does not look for faces where the classifier has already said there is
+nothing to look at. The `classify` stage runs before this one now (see junk.classify's
+`verdicts_only`), so a screenshot, a document, a meme or a product carries its verdict
+before the detector is asked about it — 4 300 frames of 24 195 on the reference
+collection, at 77 ms each. The rule is `media_class.verdict = 'photo'` OR no row at all:
+NULL means nobody has classified this frame, not "not a photograph", so a collection whose
+owner runs `sorta faces` alone is detected in full exactly as before. A frame that becomes
+a photograph later (the deep tier reclassifies 2 592 of 24 196 on the reference run) has no
+`faces` row, so the ordinary incrementality of this stage picks it up on the next run — the
+economy must not be able to turn into lost faces.
 """
 from __future__ import annotations
 
@@ -608,6 +619,20 @@ def _write_hits(
 # and stills — a video has no faces row of its own.
 _CANONICAL = "dup_of IS NULL AND error IS NULL AND media_type = 'photo'"
 
+# F165: the verdict a personal photograph carries in `media_class` — the same string
+# `junk.QUALITY_VERDICT` holds, spelled here so that this module keeps its three imports
+# and does not pull the whole classification stage in for one stored value. The two are
+# pinned to each other by a test rather than by an import.
+_PHOTO_VERDICT = "photo"
+
+# F165: ...and the frames it lets through. NOT EXISTS rather than a join or `verdict = ?`,
+# because the frames with NO row have to pass: NULL means "nobody has classified this",
+# which is the state of every collection whose owner runs `sorta faces` on its own.
+_CLASSIFIED_AS_PHOTO = (
+    "NOT EXISTS (SELECT 1 FROM media_class mc"
+    f" WHERE mc.file_id = files.id AND mc.verdict != '{_PHOTO_VERDICT}')"
+)
+
 # width/height (F91) decide whether a frame is worth gating — see _split_for_gate.
 _DETECT_COLUMNS = "id, path, orientation, width, height"
 
@@ -623,19 +648,27 @@ def _files_to_detect(
     leaves the other 24 thousand alone. Random rather than the first N by id, because
     the head of the collection is one folder from one camera and would answer a
     different question than "what does this step cost on my photos".
+
+    F165: every one of the three is narrowed by the classification (see the module
+    docstring), the rescan included — "re-detect everything" means the population of this
+    stage, and a screenshot has not been part of it since the `classify` stage started
+    running first.
     """
     if not rescan:
         return conn.execute(
             f"""SELECT {_DETECT_COLUMNS} FROM files
-                WHERE {_CANONICAL} AND id NOT IN (SELECT file_id FROM faces)
+                WHERE {_CANONICAL} AND {_CLASSIFIED_AS_PHOTO}
+                  AND id NOT IN (SELECT file_id FROM faces)
                 ORDER BY id"""
         ).fetchall()
     if limit is None:
         return conn.execute(
-            f"SELECT {_DETECT_COLUMNS} FROM files WHERE {_CANONICAL} ORDER BY id"
+            f"SELECT {_DETECT_COLUMNS} FROM files "
+            f"WHERE {_CANONICAL} AND {_CLASSIFIED_AS_PHOTO} ORDER BY id"
         ).fetchall()
     return conn.execute(
-        f"SELECT {_DETECT_COLUMNS} FROM files WHERE {_CANONICAL} "
+        f"SELECT {_DETECT_COLUMNS} FROM files "
+        f"WHERE {_CANONICAL} AND {_CLASSIFIED_AS_PHOTO} "
         f"ORDER BY RANDOM() LIMIT ?", (limit,)
     ).fetchall()
 

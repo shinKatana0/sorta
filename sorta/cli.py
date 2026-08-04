@@ -386,6 +386,23 @@ def _cmd_junk(config_path: str, *, pets: bool | None = None,
     print(_summarize_junk(stats, lang))
 
 
+def _cmd_classify(config_path: str) -> None:
+    """F165: the verdicts alone — the half of the junk stage that runs before faces.
+
+    No flags of its own: the three the `junk` command offers (`--pets`,
+    `--quality`/`--quality-scope`) all belong to the frame-quality cascade, and that
+    cascade is precisely what this half does not run.
+    """
+    cfg = load_config(config_path)
+    configure_logging(cfg.log_level)
+    lang = _lang(cfg)
+    conn = connect(cfg.database)
+    with progress_task(_t("cli.progress.classify", lang),
+                       phase_labels=_junk_phase_labels(lang)) as cb:
+        stats = classify_junk(cfg, conn, verdicts_only=True, progress=cb)
+    print(_summarize_junk(stats, lang))
+
+
 def _cmd_events(config_path: str) -> None:
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
@@ -450,6 +467,14 @@ def _pipeline_steps() -> list[tuple[str, object]]:
     Order matters: geo before landmarks (landmarks writes only unknown places),
     faces before junk (junk uses the face-presence signal). landmarks and junk share
     ONE lazy CLIP classifier (F19) — a shared image-feature cache for the whole run.
+
+    F165: `classify` is the front half of `junk` — the verdicts, which depend on nothing
+    here — and it runs before `faces` so that the faces stage can skip the screenshots and
+    the documents instead of detecting on them first and being told afterwards. The back
+    half keeps its place after `faces`, because everything left in it (the quality cascade,
+    `face_sharpness`, the animal cascade) reads the table that stage writes. Both halves
+    share the classifier with `landmarks` for the same F19 reason: within one run the
+    second call scores frames the first one already encoded.
     """
     shared: dict[str, _LazySharedClassifier] = {}
 
@@ -481,6 +506,11 @@ def _pipeline_steps() -> list[tuple[str, object]]:
         name_events(cfg, conn)
         return _summarize_events(stats, _lang(cfg))
 
+    def _classify(cfg, conn, cb) -> str:
+        return _summarize_junk(
+            classify_junk(cfg, conn, classifier=_clip(cfg), verdicts_only=True,
+                          progress=cb), _lang(cfg))
+
     def _junk(cfg, conn, cb) -> str:
         return _summarize_junk(
             classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb), _lang(cfg))
@@ -489,6 +519,7 @@ def _pipeline_steps() -> list[tuple[str, object]]:
         ("index", _index),
         ("geo", _geo),
         ("landmarks", _landmarks),
+        ("classify", _classify),
         ("faces", _faces),
         ("events", _events),
         ("junk", _junk),
@@ -508,8 +539,8 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     the positional src of `index`).
 
     `faces`/`events` (F53/#39) — opt-in steps, default off: the basic run builds only
-    `index/geo/landmarks/junk`, the heaviest/longest steps are skipped. Independent
-    of each other and of `deep`/`geo`.
+    `index/geo/landmarks/classify/junk`, the heaviest/longest steps are skipped.
+    Independent of each other and of `deep`/`geo`.
 
     `pets`/`quality`/`quality_scope` (F127) — the same kind of per-run override as
     `deep`, on the frame-quality cascade (see `_quality_overrides`). NOT stages: they
@@ -953,6 +984,10 @@ def build_app(lang: Lang) -> typer.Typer:
     def phash(config: str = cfg_opt):
         _cmd_phash(config)
 
+    @app.command(help=h("cli.help.classify"))
+    def classify(config: str = cfg_opt):
+        _cmd_classify(config)
+
     @app.command(help=h("cli.help.junk"))
     def junk(
         pets: bool = pets_opt,
@@ -1144,8 +1179,8 @@ def build_app(lang: Lang) -> typer.Typer:
 # Localized for the same reason as the interface above: help whose language depends on
 # which packages happen to be installed is the least predictable kind there is (F114).
 
-_FALLBACK_COMMANDS = ("index", "stats", "dupes", "geo", "phash", "landmarks", "junk",
-                      "faces", "events", "run")
+_FALLBACK_COMMANDS = ("index", "stats", "dupes", "geo", "phash", "landmarks", "classify",
+                      "junk", "faces", "events", "run")
 
 
 def _argparse_main(lang: Lang, argv: list[str] | None = None) -> None:
@@ -1163,8 +1198,9 @@ def _argparse_main(lang: Lang, argv: list[str] | None = None) -> None:
         _cmd_dupes(args.config, near=args.near)
     else:
         {"index": _cmd_index, "stats": _cmd_stats, "geo": _cmd_geo, "phash": _cmd_phash,
-         "landmarks": _cmd_landmarks, "junk": _cmd_junk, "faces": _cmd_faces,
-         "events": _cmd_events, "run": _cmd_run}[args.command](args.config)
+         "landmarks": _cmd_landmarks, "classify": _cmd_classify, "junk": _cmd_junk,
+         "faces": _cmd_faces, "events": _cmd_events,
+         "run": _cmd_run}[args.command](args.config)
 
 
 # The application the tests and the entry point reach for. Built at import, which in a

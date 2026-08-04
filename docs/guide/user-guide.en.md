@@ -347,7 +347,8 @@ happens to the files:
    time. Enter the path, tick **"Detect faces"** and **"Detect events"** if you want
    them (both **unchecked by default** — the pipeline's slowest stages, opt‑in on
    purpose, see §8) and click **Process**: it runs in the background with per‑stage
-   progress (index → geo → landmarks → [faces] → [events] → junk → near‑duplicates).
+   progress (index → geo → landmarks → classify → [faces] → [events] → junk →
+   near‑duplicates).
    You can close the tab; processing continues.
 2. **Review** tab → one workspace for everything that has to be looked at by eye and
    partly deleted: **Duplicates**, **Blurred**, **Closed eyes** — three slices of a
@@ -556,9 +557,10 @@ new/changed files):
 | Index | `sorta index [dir]` | always | Scan files, read EXIF/dates, compute blake3 hashes, mark exact duplicates. |
 | Geo | `sorta geo` | always | Resolve each file's place from GPS; infer place for GPS‑less files from time‑adjacent neighbours, then from the whole trip when its GPS frames agree on the city and surround the file in time (offline GeoNames, or online Nominatim if enabled). |
 | Landmarks | `sorta landmarks` | always | Visual place guess for GPS‑less scenes, conservative threshold — fills in city for e.g. an indoor landmark photo with no GPS. |
+| Classify | `sorta classify` | always | Decide what each photo IS: `photo` / `screenshot` / `meme` / `document` / `product` (heuristics + CLIP + text‑density). The `product` class (an item photographed for sale) comes from the deep VLM tier only — the fast tier never produces it, see §14. Runs **before** faces so that the faces stage does not look for people in screenshots and receipts; a photo with no verdict yet is detected as usual. |
 | Faces | `sorta faces` | **opt‑in** (`--faces`) | Detect faces (insightface), compute embeddings, cluster people (HDBSCAN). The slowest stage; skipped unless you ask for it. |
 | Events | `sorta events` | **opt‑in** (`--events`) | Group photos into events by time gaps + city; name them by date + city. Independent of faces — enable either, both, or neither. |
-| Junk | `sorta junk` | always | Classify each photo: `photo` / `screenshot` / `meme` / `document` / `product` (heuristics + CLIP + text‑density). The `product` class (an item photographed for sale) comes from the deep VLM tier only — the fast tier never produces it, see §14. |
+| Junk | `sorta junk` | always | Everything the verdicts leave: frame quality (sharpness, and the sharpness inside each face — which is why this half runs **after** faces), animals, the near‑duplicate keeper, the search index. Run on its own it also does the classification above, so `sorta junk` alone is still the whole stage. |
 | Near‑dup hashes | `sorta phash` | always (UI); separate command in the CLI (`sorta run` doesn't call it — run `sorta phash` yourself) | Compute perceptual hashes for near‑duplicate detection. |
 
 **`sorta run` flags** (all optional, all overrides for *this run only* — nothing is
@@ -1068,7 +1070,7 @@ sorta index --refresh-exif        Re-read metadata of already-indexed files (§1
 sorta run [--src DIR] [--faces/--no-faces] [--events/--no-events] [--deep/--no-deep]
           [--geo offline|online] [--pets/--no-pets] [--quality/--no-quality]
           [--quality-scope groups|events|faces|all] [--by city|person|event] [--dest DIR]
-                                  Base pipeline (index→geo→landmarks→junk); --src
+                                  Base pipeline (index→geo→landmarks→classify→junk); --src
                                   overrides config sources for this run; --faces/
                                   --events opt into the slow stages (default: off,
                                   independent of each other); --deep/--geo/--pets/
@@ -1086,9 +1088,13 @@ sorta faces sheet <cluster> <out.html> Contact sheet to identify a cluster
 sorta events                      (Re)build events
 sorta events add <name> <from> <to>    Manual event over a date range
 sorta events rename <id> <name>        Manual event name
+sorta classify                    Verdicts only (photo/screenshot/meme/document/product),
+                                  the half of the junk stage that runs BEFORE faces so
+                                  that faces are not looked for in screenshots (§8)
 sorta junk [--pets/--no-pets] [--quality/--no-quality]
            [--quality-scope groups|events|faces|all]
-                                  Classify photo/screenshot/meme/document/product; the
+                                  Frame quality, animals, keeper, search index — and the
+                                  classification above when run on its own; the
                                   frame-quality flags override config for this run (§24)
 sorta phash                       Perceptual hashes (for near-duplicates)
 sorta stats                       Index coverage (GPS, date sources, duplicates)

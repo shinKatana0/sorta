@@ -374,9 +374,12 @@ class TestRussianHelpIsUnchanged(unittest.TestCase):
             "Внимание: пропадут имена людей/событий и решения по дублям. Кэш геоданных\n"
             "(F93) остаётся — названия точек на карте не зависят от того, какие файлы лежат\n"
             "у пользователя; стереть и его — `--clear-geo`.")
+        # F165: the one deliberate edit to this golden — the list of steps is a FACT
+        # about the pipeline, and the pipeline gained `classify` between `landmarks` and
+        # `junk`. The rest of the text is pinned exactly as before.
         self.assert_ru(
             "cli.help.run",
-            "Анализ одним прогоном: index -> geo -> landmarks -> junk "
+            "Анализ одним прогоном: index -> geo -> landmarks -> classify -> junk "
             "(+faces/+events с флагами).\n"
             "\n"
             "Ничего не перемещает. С --by в конце строит dry-run план (в --dest либо\n"

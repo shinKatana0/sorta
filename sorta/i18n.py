@@ -784,6 +784,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     "cli.progress.junk": {
         "ru": "junk: классификация", "en": "junk: classification", "ja": "junk: 分類",
     },
+    # F165: the front half of the junk stage, run before faces — the verdicts alone.
+    "cli.progress.classify": {
+        "ru": "classify: вердикты", "en": "classify: verdicts", "ja": "classify: 判定",
+    },
     "cli.progress.events": {
         "ru": "events: кластеризация", "en": "events: clustering",
         "ja": "events: クラスタリング",
@@ -945,6 +949,24 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "Посчитать pHash для почти-дубликатов (для `dupes --near`).",
         "en": "Compute the pHash for near-duplicates (for `dupes --near`).",
         "ja": "類似写真のための pHash を計算します（`dupes --near` 用）。",
+    },
+    # classify
+    "cli.help.classify": {
+        "ru": "Вердикты классификатора (screenshot|meme|document|product) — до лиц.\n"
+              "\n"
+              "Передняя половина стадии junk: только вердикты, без качества кадра и\n"
+              "каскадов. Стадия `faces` пропускает всё, что здесь названо не фотографией;\n"
+              "кадр без вердикта проходит детекцию лиц как обычно.",
+        "en": "The classifier verdicts (screenshot|meme|document|product) — before faces.\n"
+              "\n"
+              "The front half of the junk stage: the verdicts alone, without the frame\n"
+              "quality and the cascades. The `faces` stage skips whatever is called a\n"
+              "non-photograph here; a frame with no verdict is detected as usual.",
+        "ja": "分類器の判定 (screenshot|meme|document|product) — 顔検出の前に。\n"
+              "\n"
+              "junk ステージの前半です。判定のみを行い、フレーム品質やカスケードは\n"
+              "実行しません。`faces` ステージはここで写真ではないとされたものを\n"
+              "スキップします。判定のないフレームは通常どおり処理されます。",
     },
     # junk
     "cli.help.junk": {
@@ -1288,17 +1310,17 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # run
     "cli.help.run": {
-        "ru": "Анализ одним прогоном: index -> geo -> landmarks -> junk "
+        "ru": "Анализ одним прогоном: index -> geo -> landmarks -> classify -> junk "
               "(+faces/+events с флагами).\n"
               "\n"
               "Ничего не перемещает. С --by в конце строит dry-run план (в --dest либо\n"
               "in-place в корень источника, если --dest не задан).",
-        "en": "The whole analysis in one run: index -> geo -> landmarks -> junk "
-              "(+faces/+events behind flags).\n"
+        "en": "The whole analysis in one run: index -> geo -> landmarks -> classify -> "
+              "junk (+faces/+events behind flags).\n"
               "\n"
               "Moves nothing. With --by it builds a dry-run plan at the end (into "
               "--dest, or in place into the source root if --dest is not given).",
-        "ja": "分析を 1 回の実行で: index -> geo -> landmarks -> junk"
+        "ja": "分析を 1 回の実行で: index -> geo -> landmarks -> classify -> junk"
               "（フラグで +faces/+events）。\n"
               "\n"
               "何も移動しません。--by を指定すると、最後に dry-run のプランを作成します"

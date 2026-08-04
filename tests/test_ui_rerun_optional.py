@@ -86,7 +86,8 @@ class TestRerunOptionalRunsOnlySelectedStages(ProcessTestBase):
             "/api/process/rerun-optional", {"faces": True, "events": True})
         self.assertEqual(status, 200)
         _poll_until(self.status, lambda d: d["finished"])
-        for name in ("index", "assign_duplicates", "geo", "landmarks", "junk", "phash"):
+        for name in ("index", "assign_duplicates", "geo", "landmarks", "classify",
+                     "junk", "phash"):  # F165: `classify` is a base stage too
             self.assertNotIn(name, self.calls)
 
     def test_does_not_override_cfg_sources(self):

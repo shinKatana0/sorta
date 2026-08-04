@@ -62,6 +62,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are untouched. The test that matters is the one that pins the caption to the plan — the
   folder a card names is compared against what `plan_and_sort` builds for the same file,
   before and after the correction is written, so the two cannot drift apart.
+- **Faces are not looked for where the classifier has already said "this is not a
+  photograph"** (F165). The faces stage is the most expensive one there is — 30.9 minutes,
+  46% of a full run — and it walked all **24 195** frames, among them 1 342 screenshots,
+  682 documents and 76 memes, plus ~2 200 products once the deep tier has spoken: **up to
+  4 300 frames, 18% of the collection**, at 77 ms each. The classifier knew about every one
+  of them. It just used to run afterwards. So the stage is now **split by dependency**, not
+  reordered: `classify` — the verdicts, which need nothing from faces — runs before them,
+  and `junk` keeps everything that reads what the faces stage writes. The pipeline is
+  `index → geo → landmarks → classify → faces → events → junk → phash`, and there is a
+  `sorta classify` command for the front half.
+  **Swapping the two stages instead would have been the silent kind of breakage**: `junk`
+  reads the `faces` table in four places, and one of them is `frame_quality.face_sharpness`
+  (F155), measured inside the boxes that stage writes. With the order flipped it would have
+  stopped being computed on every first run — no error, no log line, just a NULL that means
+  "not measured". Splitting keeps all four dependencies where they were.
+  The economy is honest about its size and its edges: **~5% of the faces stage without the
+  deep tier, up to 18% with it**, and it costs no new model and no new pass — only an
+  order. A frame with **no verdict** is detected as before (NULL means "nobody asked", not
+  "not a photograph"), so `sorta faces` on its own still walks the whole collection; a frame
+  the deep tier later moves back to `photo` has no `faces` row yet and is picked up on the
+  next run. What does change: before the faces stage has ever run there is no face to veto
+  a CLIP verdict with (F13/F15), so on a **first** run with `--faces` a frame the classifier
+  is confident about is no longer rescued by the face in it — which is exactly what a
+  default run, where faces are opt-in, has always done.
 - **Every ordered slice can be walked past its first page — search included** (F173). A
   query for «дети» came back with **exactly 200 frames** and no way further:
   `features.search_limit` was 200, and search had no paging at all, only a caption saying

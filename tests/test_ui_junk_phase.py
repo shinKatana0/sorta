@@ -27,7 +27,13 @@ class TestJunkPhaseInStatus(ProcessTestBase):
         """Stands in for junk.classify: names a phase, reports its counts, then waits."""
         calls = self.calls
 
-        def blocking_junk(cfg, conn, classifier=None, progress=None):
+        def blocking_junk(cfg, conn, classifier=None, verdicts_only=False,
+                          progress=None):
+            # F165: the same function is also the `classify` stage of the run, and
+            # the phases under test are the ones the half AFTER faces reports.
+            if verdicts_only:
+                calls.append("classify")
+                return
             calls.append("junk")
             progress.phase(phase)
             progress(done, total)
@@ -76,7 +82,11 @@ class TestJunkPhaseInStatus(ProcessTestBase):
         calls = self.calls
         seen = threading.Event()
 
-        def two_phase_junk(cfg, conn, classifier=None, progress=None):
+        def two_phase_junk(cfg, conn, classifier=None, verdicts_only=False,
+                           progress=None):
+            if verdicts_only:  # F165: see `_patch_junk` above
+                calls.append("classify")
+                return
             calls.append("junk")
             progress.phase(CLASSIFY_PHASE_WRITE)
             progress(24196, 24196)

@@ -105,11 +105,16 @@ class ProcessTestBase(UiServerTestBase):
             calls.append("name_events")
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                     progress=None):
-            calls.append("junk")
+                      verdicts_only=False, progress=None):
+            # F165: one function serves two stages now — `classify` (the verdicts, before
+            # faces) and `junk` (everything that needs the face signal), told apart by the
+            # flag the pipeline passes. The stub records them under those two names, so
+            # the order assertions below still read as the pipeline a user gets.
+            name = "classify" if verdicts_only else "junk"
+            calls.append(name)
             if progress:
                 progress(1, 1)
-            maybe_block("junk")
+            maybe_block(name)
 
         def fake_phash(cfg, conn, progress=None):
             calls.append("phash")
@@ -177,7 +182,7 @@ class TestProcessStartAndProgress(ProcessTestBase):
         self.assertEqual(final["source_dir"], str(self.src_dir))
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "faces",
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "faces",
              "events", "name_events", "junk", "phash"],
         )
 
@@ -615,8 +620,10 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "junk", "phash"])
-        self.assertEqual(final["stage_total"], 5)  # index/geo/landmarks/junk/phash
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "junk",
+             "phash"])
+        # index/geo/landmarks/classify/junk/phash
+        self.assertEqual(final["stage_total"], 6)
 
     def test_faces_true_adds_faces_only(self):
         self.patch_fast_stages()
@@ -628,8 +635,9 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "faces", "junk", "phash"])
-        self.assertEqual(final["stage_total"], 6)
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "faces",
+             "junk", "phash"])
+        self.assertEqual(final["stage_total"], 7)
 
     def test_events_true_adds_events_only(self):
         self.patch_fast_stages()
@@ -641,9 +649,9 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "events", "name_events",
-             "junk", "phash"])
-        self.assertEqual(final["stage_total"], 6)
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "events",
+             "name_events", "junk", "phash"])
+        self.assertEqual(final["stage_total"], 7)
 
     def test_faces_and_events_true_adds_both(self):
         self.patch_fast_stages()
@@ -656,9 +664,9 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "faces",
+            ["index", "assign_duplicates", "geo", "landmarks", "classify", "faces",
              "events", "name_events", "junk", "phash"])
-        self.assertEqual(final["stage_total"], 7)
+        self.assertEqual(final["stage_total"], 8)
 
 
 class TestProcessOptionalStagesHtml(ProcessTestBase):

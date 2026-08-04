@@ -26,7 +26,7 @@ Switching the sort mode does not require re-running the pipelines.
 | core | `config.py`, `db/`, `hashing.py`, `dates.py`, `exif.py`, `imaging.py` | FS (decode) | — |
 | indexer | `indexer.py`, `dedup.py` | FS | `files` |
 | geo | `geo.py` | `files`, `geo_cache` | `places`, `geo_cache` (online provider only) |
-| faces | `faces.py` | `files` | `faces`, `face_clusters` |
+| faces | `faces.py` | `files`, `media_class` (F165: it detects only where the classifier has not said "not a photograph"; no row = detect) | `faces`, `face_clusters` |
 | events | `events.py` | `files`, `places` | `events`, `event_files` |
 | naming | `naming.py`, `landmarks.py`, `junk.py` | `files`, `places`, `events` | `places` (unknown only), `media_class`, `events.name` (name_is_manual=0 only) |
 | restore | `restore.py` | `files` | `restored_files`, the copy's own `files` row, FS |
