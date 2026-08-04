@@ -223,11 +223,16 @@ class TestSlicesAreSearchPlusPinned(MarkupTestBase):
         """Was "drawn and not wired" while F129 was still landing. It is wired now — but
         the field still opens disabled, because a query needs embeddings and a collection
         that has not run `junk` has none. The disabled state is now a real answer about
-        the index, not a stub."""
+        the index, not a stub.
+
+        F189: the field opens disabled all the same, and is enabled by `usable` —
+        `available` OR somebody named, because a person's name is answered out of the face
+        clusters and needs no embeddings. What the index can do has not changed."""
         slices = self.section("tab-slices")
         self.assertIn("disabled", slices.split('id="slice-query"', 1)[1].split(">", 1)[0])
-        self.assertIn('document.getElementById("slice-query").disabled = !available;',
+        self.assertIn('document.getElementById("slice-query").disabled = !usable;',
                       self.html)
+        self.assertIn("var usable = available || !!(state && state.names);", self.html)
 
     def test_the_pins_are_built_from_data_not_written_out(self):
         slices = self.section("tab-slices")
