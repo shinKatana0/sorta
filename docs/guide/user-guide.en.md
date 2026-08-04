@@ -1013,6 +1013,20 @@ Every third "screenshot" is an ordinary photograph and every fifth "product" is 
 product; for documents and memes nobody has counted yet, and the app says exactly that
 rather than borrowing a neighbour's number.
 
+**`screenshot` is an opinion, so look the list over.** The number above was predicted
+from a sample of 350 frames and then confirmed by a live run: switching
+`features.junk_rescue` on added **441 frames** to that bucket (1 782 against 1 341), and
+41% of what the rescue adds is an ordinary photograph — about **181 personal pictures**
+that leave the city layout for a list most people read as "these are your screenshots"
+and never open. Nothing about the verdict was changed for that (the threshold is a
+separate decision); what changed is what the slice says and how it is ordered. In the web
+app the bucket opens as **a list from the frames the model is surest of down to the ones
+it doubts**, so you can read from the top and stop where the resemblance ends, and the
+caption states the 59% before you select anything. Return what does not belong there —
+tick the cards and press "Return to the layout": at this precision that is an ordinary
+step of the work, not the repair of a rare mistake, and the frames go straight back into
+the city layout while `media_class` keeps the model's verdict.
+
 **This is not the same thing as `_Unsorted/not_personal/`.** That folder holds
 downloaded films and series, recognised by the *file name* (`S01E05`, `1080p`, a rip
 group) at indexing time — the `files.not_personal` flag, a question about where a file

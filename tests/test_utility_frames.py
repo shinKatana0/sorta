@@ -195,8 +195,11 @@ class TestPrecisionBelongsToTheBucket(unittest.TestCase):
         self.assertIn('id="junk-accuracy"', html)
 
     def test_the_line_is_rewritten_for_the_bucket_that_is_open(self):
+        # F171: plus the sentence about the ORDER, which the server decides the truth of.
         html = ui._render_index_html("en")
-        self.assertIn("accuracy.textContent = junkAccuracyText(data.bucket);", html)
+        self.assertIn(
+            "accuracy.textContent = junkAccuracyText(data.bucket) + junkOrderText(data);",
+            html)
 
 
 class TestDocumentsAreTellableApart(JunkViewTestBase):
