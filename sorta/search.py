@@ -191,7 +191,10 @@ def encode_queries(texts: Sequence[str], encoder: TextEncoder) -> np.ndarray:
     wanted = [t.strip() for t in texts if t and t.strip()]
     if not wanted:
         raise ValueError("encode_queries: the slice carries no query")
-    matrix = np.asarray(encoder(wanted), dtype=np.float32).reshape(len(wanted), -1)
+    # A COPY (`np.array`, not `np.asarray`): the rows are normalized in place below, and
+    # an encoder that answers out of a buffer of its own would have that buffer rewritten
+    # under it — a corruption that would show up as a ranking, never as an error.
+    matrix = np.array(encoder(wanted), dtype=np.float32).reshape(len(wanted), -1)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     # A zero row is left alone rather than divided by zero — it contributes no direction,
     # which is the honest outcome of a phrase the tower answered with nothing.

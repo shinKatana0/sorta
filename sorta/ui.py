@@ -3517,11 +3517,6 @@ def _parse_search_query(query: dict[str, list[str]],
 # first or it drowns).
 
 
-def _saved_slice_names(cfg: Config) -> list[SavedSlice]:
-    """The pinned slices of the LIVE config — the row of pins, in the file's own order."""
-    return list(cfg.features.saved_slices)
-
-
 def _saved_slice_by_name(cfg: Config, name: str) -> SavedSlice | None:
     for slice_ in cfg.features.saved_slices:
         if slice_.name == name:
@@ -3544,7 +3539,8 @@ def _saved_slices_payload(cfg: Config, db_path: Path, name: str | None, offset: 
     model. The phrases travel with the page because the panel prints them — a slice whose
     words are invisible cannot be edited by the person it is wrong for.
     """
-    slices = _saved_slice_names(cfg)
+    # The LIVE config, in the file's own order — that order is the order of the pins.
+    slices = cfg.features.saved_slices
     conn = _connect(db_path)
     try:
         model = search_index_model(cfg)
