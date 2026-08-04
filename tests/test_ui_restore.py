@@ -14,9 +14,16 @@ processed, and the two things the feature must NOT do —
 The real weights are never loaded: `restore.load_swin2sr` is patched with a stub of the
 same shape, which is also what makes "loaded on the first press, not at server start"
 checkable at all.
+
+F169 adds the third thing this route must not do: decide for everybody in silence. It
+called the engine with no ceiling at all, so a constant in `restore.py` chose what every
+person got back — including for a 12 Mpx frame, which came back the size it went in and
+rebuilt out of a 1024 px copy of itself. The cases below check that the ceiling is the
+config's and that such a frame comes back with an answer that SAYS so.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import unittest
 from unittest import mock
@@ -328,6 +335,112 @@ class TestTheCopyIsNoNewDuplicateTask(RestoreUiTestBase):
         _status, again = self.restore_frame({"file_id": source})
         self.assertTrue(again["ok"])
         self.assertFalse(again["reused"])
+
+
+class TestTheCeilingIsPassedAndSaidOutLoud(RestoreUiTestBase):
+    """F169. The route used to call the engine WITHOUT a ceiling, so one number in the
+    code decided for every frame and nobody was told: a 12 Mpx shot came back the size it
+    went in, rebuilt out of a 1024 px copy of itself. Two things are checked here — the
+    ceiling is the config's, and a frame above it is told so in the answer."""
+
+    def set_ceiling(self, max_edge: int) -> None:
+        self.cfg = dataclasses.replace(
+            self.cfg,
+            features=dataclasses.replace(self.cfg.features, restore_max_edge=max_edge))
+
+    def big_frame(self, rel: str = "big.jpg", size=(2400, 1800)) -> int:
+        """A reviewable frame whose FILE is a full-sized one — the population the button
+        was never measured on."""
+        file_id = self.add_reviewable(rel, sharpness=10.0)
+        Image.new("RGB", size, (90, 120, 160)).save(self.src_dir / rel, "JPEG")
+        return file_id
+
+    def watching(self, seen: list) -> None:
+        def loader(_name: str) -> restore.UpscaleFn:
+            def upscale(image: Image.Image) -> Image.Image:
+                seen.append(image.size)
+                return image
+            return upscale
+        self.patch_model(loader)
+
+    def test_the_engine_is_given_the_ceiling_from_the_config(self):
+        self.set_ceiling(600)
+        file_id = self.big_frame()
+        seen: list = []
+        self.watching(seen)
+        self.start_server()
+
+        status, payload = self.restore_frame({"file_id": file_id})
+
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(seen, [(600, 450)])
+
+    def test_a_frame_above_the_ceiling_says_the_copy_was_rebuilt(self):
+        self.set_ceiling(600)
+        file_id = self.big_frame()
+        self.patch_model()
+        self.start_server()
+
+        _status, payload = self.restore_frame({"file_id": file_id})
+
+        self.assertTrue(payload["ok"], payload)
+        self.assertTrue(payload["rebuilt"])
+        self.assertEqual(payload["source_edge"], 2400)
+        self.assertEqual(payload["max_edge"], 600)
+
+    def test_a_frame_below_the_ceiling_claims_nothing_of_the_sort(self):
+        """The ordinary case of this action — a small frame, a clean gain, no warning."""
+        file_id = self.add_reviewable("small.jpg", sharpness=10.0)
+        self.patch_model()
+        self.start_server()
+
+        _status, payload = self.restore_frame({"file_id": file_id})
+
+        self.assertFalse(payload["rebuilt"])
+        self.assertEqual(payload["source_edge"], 64)
+        self.assertEqual(payload["max_edge"], self.cfg.features.restore_max_edge)
+
+    def test_the_second_press_repeats_the_warning_with_the_reused_copy(self):
+        """The frame and the ceiling have not changed, so neither has what is owed."""
+        self.set_ceiling(600)
+        file_id = self.big_frame()
+        self.patch_model()
+        self.start_server()
+
+        self.restore_frame({"file_id": file_id})
+        _status, second = self.restore_frame({"file_id": file_id})
+
+        self.assertTrue(second["reused"])
+        self.assertTrue(second["rebuilt"])
+        self.assertEqual(second["source_edge"], 2400)
+
+    def test_the_original_is_untouched_even_when_the_copy_is_rebuilt(self):
+        self.set_ceiling(600)
+        file_id = self.big_frame()
+        before = (self.src_dir / "big.jpg").read_bytes()
+        self.patch_model()
+        self.start_server()
+
+        _status, payload = self.restore_frame({"file_id": file_id})
+
+        self.assertTrue(payload["rebuilt"])
+        self.assertEqual((self.src_dir / "big.jpg").read_bytes(), before)
+
+    def test_the_warning_reaches_the_screen_in_three_languages(self):
+        self.start_server()
+        html = self.html()
+        self.assertIn("if (resp.rebuilt)", html)
+        self.assertIn("fmt(I18N.review_restore_rebuilt", html)
+        entry = ui._UI_STRINGS["review_restore_rebuilt"]
+        self.assertEqual(set(entry), {"ru", "en", "ja"})
+        for lang in ("ru", "en", "ja"):
+            with self.subTest(lang=lang):
+                # Both numbers are named: "too big" without saying too big for what is a
+                # warning a person cannot act on, and the key that moves the limit is the
+                # action they can take.
+                self.assertIn("{max_edge}", entry[lang])
+                self.assertIn("{source_edge}", entry[lang])
+                self.assertIn("features.restore_max_edge", entry[lang])
 
 
 class TestTheButtonAndTheBadge(RestoreUiTestBase):
