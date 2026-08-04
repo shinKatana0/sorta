@@ -401,6 +401,7 @@ from .indexer import excludes_path, index as run_index, load_excludes, normalize
 from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
 from .junk import (
+    CLASSIFY_PHASE_VLM,
     faces_stage_ran,
     quality_scope_ids,
     search_index_model,
@@ -409,7 +410,14 @@ from .junk import (
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .landmarks import batched
 from .naming import name_events, naming_settings
-from .runlog import log_environment, stage_timer
+from .runlog import (
+    Measurement,
+    log_environment,
+    measurement_files,
+    measurement_unit,
+    read_measurements,
+    stage_timer,
+)
 from .search import (
     REASON_EMPTY,
     REASON_OTHER_MODEL,
@@ -2346,6 +2354,18 @@ def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
     return item
 
 
+def _restore_notice(src: Path, max_edge: int) -> dict:
+    """F169: what the answer owes about the ceiling — `rebuilt` and the two numbers.
+
+    Recomputed from the source rather than remembered, because the same sentence is owed
+    on the press that REUSES a copy: the frame and the ceiling are what they are, so the
+    second press must not quietly drop the warning the first one carried.
+    """
+    edge = restore.source_edge(src)
+    return {"rebuilt": edge > int(max_edge) > 0, "source_edge": edge,
+            "max_edge": int(max_edge)}
+
+
 def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dict:
     """`POST /api/review/restore` for ONE id -> the card of the copy, or the reason.
 
@@ -2354,6 +2374,13 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
     reason travels as a CODE (`restore.ERROR_*`), which the client translates: the weights
     come from the network and offline is an ordinary state for this product, so "the model
     is not here" has to be an answer a person can read rather than an empty result.
+
+    F169: the ceiling comes from `features.restore_max_edge` and is PASSED — it used to be
+    a constant the engine defaulted to, i.e. one number for every frame with nobody told —
+    and the answer carries `rebuilt` whenever the frame was larger than it. The action is
+    not refused for such a frame: what should happen to a 12 Mpx one is the measurement's
+    decision (`scripts/measure_restore.py`), and until it is made the honest thing is to
+    do the work and say what was done.
     """
     conn = _connect(db_path)
     try:
@@ -2361,18 +2388,22 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
         if row is None:
             return {"ok": False, "error": "file not found"}
         model = features.restore_model
+        notice = _restore_notice(Path(row["path"]), features.restore_max_edge)
         existing = restore.existing_copy(conn, file_id, model)
         if existing is not None:
             copy_id, copy_path = existing
             if Path(copy_path).exists():
-                return {"ok": True, "reused": True,
+                return {"ok": True, "reused": True, **notice,
                         "item": _restored_item_to_json(_restored_row(conn, copy_id), file_id)}
             # The person deleted it in their file manager. Answering "you already have one"
             # and drawing a card for a file that is gone is worse than doing the work again.
             restore.forget_copy(conn, copy_id)
-        result = restore.restore_frame(Path(row["path"]), model)
+        result = restore.restore_frame(Path(row["path"]), model,
+                                       max_edge=features.restore_max_edge)
         if not result.ok or result.path is None:
             return {"ok": False, "reason": result.error, "detail": result.detail}
+        notice = {"rebuilt": result.rebuilt, "source_edge": result.source_edge,
+                  "max_edge": int(features.restore_max_edge)}
         copy_id = restore.record_restored(conn, file_id, result.path, model=model)
         item = _restored_item_to_json(_restored_row(conn, copy_id), file_id)
     finally:
@@ -2381,7 +2412,7 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
     # layout no longer describe the collection. It is never a duplicate of its source
     # (`dedup`), which is a statement about the GROUPS and not about the cache.
     _dupes_cache_clear()
-    return {"ok": True, "reused": False, "item": item}
+    return {"ok": True, "reused": False, "item": item, **notice}
 
 
 def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
@@ -3973,9 +4004,16 @@ def _process_defaults_payload(cfg: Config) -> dict:
 # answer is None and the screen draws a dash. A zero would read as "free", and the one
 # thing an estimate may not do is promise twenty minutes with two hours coming.
 #
-# The rates, each with the measurement it comes from:
+# F159: the rates below are no longer THE price. They are the price until this machine
+# has measured its own, which after F147 it does on every run — the run log holds
+# `stage=<s>[ phase=<p>] elapsed=<sec> processed=<n>` for everything the pipeline does,
+# and a second per frame taken from there beats a second per frame measured once on
+# somebody else's collection and shipped in a wheel. The screen says which of the two it
+# used, because a person deciding whether to wait four hours needs to tell "this is how
+# it went for YOU last time" from "this is how it went for the developer".
+#
+# The defaults, each with the measurement it comes from:
 _SEC_PER_VLM_FRAME = 0.78    # F113: one frame in one prompt
-_SEC_PER_VLM_GROUP = 1.32    # F132: one comparative question over a whole group
 # The faces stage over the reference collection — the ~17 minutes the changelog and the
 # F123 note both quote — spread over its 19 757 photographs.
 _SEC_PER_FACES_FRAME = 17 * 60 / 19757
@@ -3985,6 +4023,73 @@ _SEC_PER_BASE_FRAME = 5 * 60 / 19757
 # events: a grouping pass over rows the DB already holds — under a minute there, and it
 # is scaled per frame for the same reason as the others rather than pinned at "fast".
 _SEC_PER_EVENTS_FRAME = 15.0 / 19757
+
+# Where a rate comes from, as it travels to the browser next to the seconds it produced.
+# `fixed` is neither: the animal line costs 0 because the prompts ride inside a CLIP call
+# that runs anyway, and a structural zero has no pedigree to state.
+_RATE_MEASURED = "measured"
+_RATE_DEFAULT = "default"
+_RATE_FIXED = "fixed"
+
+# Which units of the run log price which rate, and the default each falls back to. A rate
+# counts as measured only when EVERY unit behind it is: `base` covers four stages, and
+# three measured ones plus a guessed fourth is a guess wearing a measurement's clothes.
+#
+# The keeper question is deliberately absent. It is asked inside the junk stage's VLM
+# phase, next to the per-frame questions, so the log cannot separate its seconds from
+# theirs — it is priced from `estimate:` in the config instead (see `_keeper_seconds`).
+_RATE_UNITS: dict[str, tuple[str, ...]] = {
+    "base": tuple(measurement_unit(stage)
+                  for stage in ("index", "geo", "landmarks", "phash")),
+    "faces": (measurement_unit("faces"),),
+    "events": (measurement_unit("events"),),
+    "vlm_frame": (measurement_unit("junk", CLASSIFY_PHASE_VLM),),
+}
+_DEFAULT_RATES: dict[str, float] = {
+    "base": _SEC_PER_BASE_FRAME,
+    "faces": _SEC_PER_FACES_FRAME,
+    "events": _SEC_PER_EVENTS_FRAME,
+    "vlm_frame": _SEC_PER_VLM_FRAME,
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class _Rate:
+    """Seconds per unit, and where that number came from (F159)."""
+
+    seconds: float
+    source: str
+    at: datetime | None = None
+
+
+def _resolve_rates(measurements: dict[str, Measurement]) -> dict[str, _Rate]:
+    """The run log's rates where it has them, the shipped defaults where it does not."""
+    rates: dict[str, _Rate] = {}
+    for name, units in _RATE_UNITS.items():
+        found = [measurements[unit] for unit in units if unit in measurements]
+        if len(found) == len(units):
+            rates[name] = _Rate(sum(m.seconds_per_unit for m in found),
+                                _RATE_MEASURED, max(m.at for m in found))
+        else:
+            rates[name] = _Rate(_DEFAULT_RATES[name], _RATE_DEFAULT)
+    return rates
+
+
+def _keeper_seconds(cfg: Config, groups: Sequence[Sequence[Any]]) -> float:
+    """What the comparative question costs over THESE groups (F159).
+
+    Summed over the actual sizes rather than an average times a count, because the price
+    is linear in the frames a prompt carries — 0.45 s plus 1.03 s each, measured — and a
+    collection whose groups run to nine and eleven frames is not described by its mean.
+    Only the frames that are really sent are counted: `dedup.keeper_max_frames` caps what
+    one question may hold, and the rest of a group is never shown to the model.
+    """
+    per_call = float(cfg.estimate.keeper_call_sec)
+    per_frame = float(cfg.estimate.keeper_frame_sec)
+    cap = int(cfg.dedup.keeper_max_frames)
+    smallest = int(cfg.dedup.keeper_min_group_size)
+    return sum(per_call + per_frame * min(len(group), cap)
+               for group in groups if len(group) >= smallest)
 
 # The photographs a run actually works on: `sorta` skips a duplicate and a file it could
 # not read, so counting them in would price frames nobody looks at. Same predicate the
@@ -4027,6 +4132,8 @@ def _quality_scope_counts(cfg: Config, conn: sqlite3.Connection,
 # Keyed like the Duplicates payload — any write to the index changes the fingerprint —
 # plus the config values the arithmetic reads, so moving a threshold in the settings
 # column re-prices immediately instead of serving the number the old one produced.
+# F159 adds the run log to that list for the same reason: a run that has just written its
+# own timings is exactly the moment the old prices stop being the right answer.
 _ESTIMATE_CACHE_MAX_ITEMS = 2
 _estimate_cache: OrderedDict[tuple, dict] = OrderedDict()
 _estimate_cache_lock = threading.Lock()
@@ -4036,6 +4143,18 @@ def _estimate_cache_clear() -> None:
     """Drop the cached estimates (test isolation)."""
     with _estimate_cache_lock:
         _estimate_cache.clear()
+
+
+def _run_log_fingerprint() -> tuple:
+    """(mtime, size) of every file the measurements are read out of (F159)."""
+    stats: list[tuple[str, int, int]] = []
+    for path in measurement_files():
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        stats.append((str(path), st.st_mtime_ns, st.st_size))
+    return tuple(stats)
 
 
 def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
@@ -4049,10 +4168,19 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
     `pets` is 0.0 rather than None when there is anything to count: the animal prompts
     ride inside the CLIP call the junk stage makes anyway (F123), so the line genuinely
     adds nothing to the run — the one place a zero here is the truth.
+
+    F159 adds `sources` and `measured_at`, on the same keys again. A rate is either
+    `measured` — read out of this machine's own run log — or `default`, a number measured
+    once elsewhere and shipped with the tool, and the difference is the whole point:
+    somebody deciding whether to start a four-hour run is entitled to know whose four
+    hours the estimate is describing. `fixed` is the third value and belongs to the one
+    line that is structurally free.
     """
     key = (str(db_path), _db_fingerprint(db_path), cfg.index.phash_max_distance,
-           int(cfg.dedup.keeper_min_group_size),
-           float(cfg.features.pet_candidate_threshold))
+           int(cfg.dedup.keeper_min_group_size), int(cfg.dedup.keeper_max_frames),
+           float(cfg.features.pet_candidate_threshold),
+           float(cfg.estimate.keeper_call_sec), float(cfg.estimate.keeper_frame_sec),
+           float(cfg.estimate.measurement_max_age_days), _run_log_fingerprint())
     with _estimate_cache_lock:
         cached = _estimate_cache.get(key)
         if cached is not None:
@@ -4077,15 +4205,19 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         hashed = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files WHERE phash IS NOT NULL)").fetchone()[0])
         keeper: int | None = None
+        keeper_seconds: float | None = None
         group_frames: int | None = None
         if hashed:
             groups = near_duplicate_groups(conn, cfg.index.phash_max_distance)
             keeper = sum(1 for g in groups
                          if len(g) >= int(cfg.dedup.keeper_min_group_size))
+            keeper_seconds = _keeper_seconds(cfg, groups)
             group_frames = sum(len(g) for g in groups)
         scopes = _quality_scope_counts(cfg, conn, photos, group_frames)
     finally:
         conn.close()
+    rates = _resolve_rates(read_measurements(
+        max_age_days=float(cfg.estimate.measurement_max_age_days)))
     counts: dict[str, int | None] = {
         "base": _positive_or_none(photos),
         "faces": _positive_or_none(photos),
@@ -4096,19 +4228,31 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         "keeper": keeper,
         **{f"quality_{scope}": value for scope, value in scopes.items()},
     }
-    rates = {
-        "base": _SEC_PER_BASE_FRAME,
-        "faces": _SEC_PER_FACES_FRAME,
-        "events": _SEC_PER_EVENTS_FRAME,
-        "pets": 0.0,
-        "pets_verify": _SEC_PER_VLM_FRAME,
-        "deep": _SEC_PER_VLM_FRAME,
-        "keeper": _SEC_PER_VLM_GROUP,
-        **{f"quality_{scope}": _SEC_PER_VLM_FRAME for scope in scopes},
+    per_line: dict[str, _Rate] = {
+        "base": rates["base"],
+        "faces": rates["faces"],
+        "events": rates["events"],
+        "pets": _Rate(0.0, _RATE_FIXED),
+        "pets_verify": rates["vlm_frame"],
+        "deep": rates["vlm_frame"],
+        # The keeper line is the one that is not a rate times a count at all — see
+        # `_keeper_seconds`. It carries the config's constants, so it is a `default`
+        # until the day the log can tell its seconds from the per-frame ones.
+        "keeper": _Rate(0.0, _RATE_DEFAULT),
+        **{f"quality_{scope}": rates["vlm_frame"] for scope in scopes},
     }
-    seconds = {name: (None if count is None else round(count * rates[name], 1))
-               for name, count in counts.items()}
-    payload = {"seconds": seconds, "counts": counts}
+    seconds: dict[str, float | None] = {}
+    for name, rate in per_line.items():
+        count = counts[name]
+        seconds[name] = None if count is None else round(count * rate.seconds, 1)
+    seconds["keeper"] = None if keeper_seconds is None else round(keeper_seconds, 1)
+    measured = [rate.at for rate in per_line.values() if rate.at is not None]
+    payload = {
+        "seconds": seconds,
+        "counts": counts,
+        "sources": {name: rate.source for name, rate in per_line.items()},
+        "measured_at": max(measured).date().isoformat() if measured else None,
+    }
     with _estimate_cache_lock:
         _estimate_cache[key] = payload
         _estimate_cache.move_to_end(key)
@@ -4949,6 +5093,27 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "のコマ数）。約束ではありません。ダッシュは「このインデックスでは算出でき"
               "ない」という意味です。",
     },
+    # F159: where the numbers came from, said next to them. A person deciding whether to
+    # wait four hours needs to tell "this is how it went for YOU last time" from "this is
+    # how it went for the developer" — the second is an honest guess, and calling it one
+    # is what keeps the first believable.
+    "costs_source_measured": {
+        "ru": "Числа — по вашему прошлому прогону ({date}).",
+        "en": "The numbers come from your own last run ({date}).",
+        "ja": "数値は前回のご自身の実行（{date}）に基づいています。",
+    },
+    "costs_source_default": {
+        "ru": "Оценка по умолчанию: своих замеров на этой машине ещё нет.",
+        "en": "A default estimate: this machine has no measurements of its own yet.",
+        "ja": "既定の見積もりです。この端末での実測値はまだありません。",
+    },
+    "costs_source_mixed": {
+        "ru": "Часть чисел — по вашему прошлому прогону ({date}), остальные — оценка "
+              "по умолчанию.",
+        "en": "Some numbers come from your own last run ({date}), the rest are default "
+              "estimates.",
+        "ja": "一部の数値は前回のご自身の実行（{date}）に基づき、残りは既定の見積もりです。",
+    },
     "costs_base_label": {
         "ru": "Города, места и дубли", "en": "Cities, places and duplicates",
         "ja": "都市・場所・重複",
@@ -5015,12 +5180,24 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Лучший кадр в группе", "en": "Best frame of a group",
         "ja": "グループ内のベストショット",
     },
+    # F159 rewrote the second sentence. It used to sell the group question as the cheap
+    # way to ask — one call instead of one per frame — and the 2026-08-03 measurement
+    # took that away: the price is linear in the frames the prompt carries, so from three
+    # frames up the group question costs what the separate ones cost. What is left is the
+    # honest reason to switch it on, which was never the price.
     "process_keeper_hint": {
         "ru": "Один сравнительный вопрос модели на группу почти-дублей: какой кадр "
-              "оставить. Ничего не удаляет — только подсказка на вкладке «Разбор».",
+              "оставить. Время растёт с размером группы — на группу из пяти уходит "
+              "примерно столько же, сколько на пять отдельных вопросов, зато отдельные "
+              "вопросы не говорят, который кадр лучше. Ничего не удаляет — только "
+              "подсказка на вкладке «Разбор».",
         "en": "One comparative question per near-duplicate group: which frame to keep. "
-              "It deletes nothing — it is a recommendation on the Review tab.",
+              "The time grows with the group — five frames take about what five separate "
+              "questions take, but separate questions do not say which frame is the best "
+              "one. It deletes nothing — it is a recommendation on the Review tab.",
         "ja": "類似写真のグループごとに 1 回、どのコマを残すかをモデルに比較させます。"
+              "所要時間はグループの大きさに比例し、5 コマなら個別に 5 回尋ねるのとほぼ"
+              "同じです。ただし個別の質問ではどれが最良かは分かりません。"
               "削除は行いません —「確認」タブでの推奨にとどまります。",
     },
     # F145: said next to every option that asks the SAME model the "Deep analysis"
@@ -6564,6 +6741,28 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "That copy already existed — here it is; a second one is not made.",
         "ja": "その複製はすでに存在します。既存のものを表示し、二つ目は作りません。",
     },
+    # F169: the sentence a full-sized frame is owed. The model is x4 and cannot be shown
+    # the whole frame, so a big one is REDUCED first and blown back up to about its own
+    # size — the copy comes out the same size and holds less of what was really there.
+    # Said next to "done", every time it happens, because it is the one outcome a person
+    # cannot see by looking: the copy usually looks sharper, and sharper is not truer.
+    "review_restore_rebuilt": {
+        "ru": "Внимание: кадр больше предела ({max_edge} px по длинной стороне, здесь "
+              "{source_edge}). Копия пересобрана из уменьшенной: настоящая детализация "
+              "оригинала не попала в модель, и на её месте дорисована правдоподобная. "
+              "Это не улучшение оригинала — предел меняется ключом "
+              "features.restore_max_edge.",
+        "en": "Note: this frame is larger than the limit ({max_edge} px on the longer "
+              "side, this one is {source_edge}). The copy was rebuilt from a reduced "
+              "frame: the real detail of the original never reached the model, and "
+              "plausible detail was drawn in its place. This is not an improved original "
+              "— the limit is the features.restore_max_edge key.",
+        "ja": "注意: このコマは上限 (長辺 {max_edge} px、このコマは {source_edge} px) を"
+              "超えています。複製は縮小した画像から作り直されました。元の写真の本当の"
+              "細部はモデルに渡らず、代わりにそれらしい細部が描き足されています。"
+              "元の写真が良くなったわけではありません。上限は "
+              "features.restore_max_edge で変えられます。",
+    },
     "review_restore_error_model_unavailable": {
         "ru": "Модель не загрузилась. Веса качаются из сети и нужен дополнительный "
               "набор пакетов ([vlm]); офлайн и без скачанных весов эта кнопка работать "
@@ -7768,6 +7967,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div class="cost-block" id="process-costs">
 <div class="cost-head">{{costs_title}}</div>
 <span class="process-toggle-hint">{{costs_estimate_note}}</span>
+<span class="process-toggle-hint" id="process-costs-source"></span>
 <span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
 <div class="cost-row">
 <span class="cost-name">{{costs_base_label}}</span>
@@ -10086,7 +10286,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // A missing price is null, and null is a DASH, never a zero: a zero reads as "free",
   // and this screen may not promise twenty minutes with two hours coming. The same rule
   // carries into the sum — an unknown line makes it a floor ("at least"), not a total.
+  //
+  // F159: `sources` travels with the seconds and says, per line, whether the rate behind
+  // it was read out of this machine's own run log or is the default shipped with the
+  // tool. The note under the block reports that over the lines actually SWITCHED ON — it
+  // describes the total standing above the button, and a caveat about a stage nobody
+  // asked for would be a caveat about nothing.
   var costEstimate = null;
+  var costSources = null;
+  var costMeasuredAt = null;
   var COST_ROWS = [
     { key: "base", always: true },
     { key: "faces", id: "process-faces-checkbox" },
@@ -10149,6 +10357,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return (typeof value === "number") ? value : null;
   }
 
+  // "measured", "default" or "fixed" — see the server payload. Null when this index has
+  // not answered yet, and for a line the master switch has turned off: a line that does
+  // not run has no rate to have a pedigree.
+  function costSource(row) {
+    if (!costSources) return null;
+    if (row.vlm && !vlmMasterOn()) return null;
+    return costSources[row.scoped ? "quality_" + currentQualityScope() : row.key] || null;
+  }
+
   function formatCost(seconds) {
     if (seconds === null) return I18N.costs_unknown;
     if (seconds <= 0) return I18N.costs_free;
@@ -10176,6 +10393,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     updateVlmSubordinatesDisabled();
     var total = 0;
     var unknown = false;
+    var measured = false;
+    var byDefault = false;
     var vlmOff = !vlmMasterOn();
     COST_ROWS.forEach(function (row) {
       var seconds = costSeconds(row);
@@ -10187,14 +10406,30 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         cell.textContent = (row.vlm && vlmOff) ? I18N.costs_off : formatCost(seconds);
       }
       if (!costRowEnabled(row)) return;
-      if (seconds === null) unknown = true;
-      else total += seconds;
+      if (seconds === null) { unknown = true; return; }
+      total += seconds;
+      var source = costSource(row);
+      if (source === "measured") measured = true;
+      else if (source === "default") byDefault = true;
     });
     var value = document.getElementById("process-budget-value");
     if (unknown && total <= 0) value.textContent = I18N.costs_unknown;
     else if (unknown) {
       value.textContent = fmt(I18N.costs_total_at_least, { time: formatCost(total) });
     } else value.textContent = formatCost(total);
+    renderCostSource(measured, byDefault);
+  }
+
+  function renderCostSource(measured, byDefault) {
+    var note = document.getElementById("process-costs-source");
+    var when = costMeasuredAt || "";
+    if (measured && byDefault) {
+      note.textContent = fmt(I18N.costs_source_mixed, { date: when });
+    } else if (measured) {
+      note.textContent = fmt(I18N.costs_source_measured, { date: when });
+    } else if (byDefault) {
+      note.textContent = I18N.costs_source_default;
+    } else note.textContent = "";  // nothing priced yet — nothing to have a pedigree
   }
 
   function loadCostEstimate() {
@@ -10202,6 +10437,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .then(function (r) { return r.json(); })
       .then(function (data) {
         costEstimate = (data && data.seconds) || null;
+        costSources = (data && data.sources) || null;
+        costMeasuredAt = (data && data.measured_at) || null;
         renderCosts();
       })
       .catch(function () { renderCosts(); });
@@ -12760,6 +12997,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           insertRestoredCard(resp.item);
           status.textContent = resp.reused ? I18N.review_restore_reused
                                            : I18N.review_restore_done;
+          // F169: a frame above the ceiling is reduced before the model and blown back
+          // up, so the copy is the same size and holds less of what was really there.
+          // Said in the same breath as "done" — the copy looks sharper either way, and
+          // this is the part nobody can see by looking at it.
+          if (resp.rebuilt) {
+            status.textContent += " " + fmt(I18N.review_restore_rebuilt, {
+              max_edge: resp.max_edge, source_edge: resp.source_edge });
+          }
         } else {
           // A reason, never an empty result: the weights come off the network and being
           // offline is an ordinary state for this program.

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **"Try to improve" no longer trades real pixels for invented ones in silence** (F169).
+  The button of F149 scaled every frame to one ceiling before the model — `1024` px, a
+  constant in `restore.py` — and the model is ×4. For a small frame that is a clean gain
+  (800 px in, 3200 px out, the case the action was built for). For a phone shot it was a
+  trade nobody was told about: **4032 × 3024 → 1024 × 768 → 4096 × 3072**, the same size
+  out, through a quarter and back, with the real detail of the original dropped on the way
+  in and plausible detail drawn in its place. The frame can come back looking sharper and
+  holding less of what was there. Two things follow, and both are here. **The ceiling is a
+  setting** — `features.restore_max_edge` — because it is the single number that decides
+  what a person gets back, and a threshold in the code is a threshold nobody can move; the
+  route now passes it, which it did not, so the constant really did decide for everybody.
+  **A frame above it is told so**: the answer carries `rebuilt` with both numbers, the
+  Review tab prints that beside "done" in all three languages, and a frame under the
+  ceiling is handed to the model untouched and says nothing — because nothing was given
+  up. What should ultimately happen to a 12-megapixel frame (tile it at native resolution,
+  supersample back down, or close the action for that population and treat defocus as the
+  different problem it is) is **not** decided here: `scripts/measure_restore.py` is the
+  phase-0 measurement it will be decided from. It prints the three frame populations
+  separately (< 1024 px, 1024–2500 px, > 2500 px), each against the original as the
+  baseline, with size, weight, time, peak memory and the share of the frame's own pixels
+  the model was even shown, at the current ceiling, at 2048 and at the full frame (a run
+  that does not fit is a row, not a crash) — and lays out **blind** pairs for the eyes,
+  both halves at the same size, the order seeded, the key in a file meant to be opened
+  afterwards. It deliberately does not compute "better": the first probe of F149 used a
+  model trained on clean bicubic downscaling and its numbers flattered a result a human
+  eye then rejected, and "sharper" is not "truer".
 - **«Not personal photos» was the wrong name for four different buckets** (F175). The
   slice showed **4 980** frames, which is exactly `product` 2 107 + `screenshot` 1 782 +
   `document` 1 015 + `meme` 76 — the classifier's whole output under one name — and that
@@ -193,6 +219,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **The run estimate is computed from measurements instead of baked-in constants**
+  (F159). The run screen priced the "best frame of a group" stage at **1.32 s per group,
+  whatever the group held**. Measured on 2026-08-03, one comparative question costs
+  **0.45 s plus 1.03 s for every frame in the prompt** — 1.47 s for a pair, 2.45 for a
+  triple, 3.46 for four, 4.56 for five. The 1.32 was the price of a PAIR, quoted for
+  groups "of up to five", and on the reference collection it estimated the stage at half
+  a minute against a measured **1.9 — a 3.7x understatement**, which is 90 invisible
+  seconds on a small archive and hours on a 300 GB one full of groups of nine, ten and
+  eleven. The line is now summed over the ACTUAL group sizes, capped at the frames
+  `dedup.keeper_max_frames` really sends, and both numbers moved into a config section of
+  their own (`estimate.keeper_call_sec` / `estimate.keeper_frame_sec`) with the
+  measurement table in the comment above them.
+  **The deeper fix is that the screen stopped carrying constants at all.** Since F147 the
+  run log holds `stage=… elapsed=… processed=…` for every stage and phase of every run —
+  the real speed of THIS machine — and the estimate now reads its rates from there
+  (`runlog.read_measurements`): the four always-on stages behind the base line, faces,
+  events, and the model questions priced off the junk stage's VLM phase. A constant is
+  what is used when the log has nothing to say, and the screen **states which of the two
+  it used** — "the numbers come from your own last run (2026-08-03)" against "a default
+  estimate: this machine has no measurements of its own yet" — because somebody deciding
+  whether to start a four-hour run is entitled to know whose four hours the estimate is
+  describing. A timing is discarded rather than trusted when the version that wrote it is
+  not the version asking (the `frame_quality.source` device: a stored answer is kept only
+  while the question behind it is the same one), when no environment header vouches for
+  it, or when it is older than `estimate.measurement_max_age_days`. Half a line measured
+  is not a measured line: the base line covers four stages and falls back whole.
+  **The same measurement also retired the premise the option was sold on.** From three
+  frames up, one question over a group is **not** cheaper than asking about the frames one
+  at a time (2.45 s against 2.31, 4.56 against 3.85) — the saving was only ever real for
+  pairs, and `keeper_min_group_size: 3` stopped asking about those. The stage stays,
+  because it answers something separate questions do not — which of the frames is the best
+  one — but no caption calls it the cheap way to ask any more; they say the time grows
+  with the group. The stage's own behaviour is untouched: this is a feature about
+  estimating the time, not about spending less of it.
 - **The detector's answer reaches the screen — and the rule is checked against itself**
   (F160). F154 shipped the object detector: it ranked the candidates, ran the model, stored
   `detections` and wrote `frame_quality.pet`. What it could not reach is the place the

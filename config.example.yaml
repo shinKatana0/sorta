@@ -26,6 +26,25 @@ logging:
   # and the summaries of finished stages/phases are written either way.
   progress_interval_sec: 60
 
+# F159: the run screen says how long a run will take before it starts. Every stage it
+# can price is priced from the run log above — the real speed of THIS machine, from the
+# last time that stage ran here — and the screen says which numbers came from there and
+# which are still defaults. These are the defaults that cannot be read back, because the
+# comparative keeper question shares a log phase with the per-frame questions.
+estimate:
+  # One comparative question over a near-duplicate group: a fixed cost plus a cost per
+  # frame that goes into it. Measured 2026-08-03 on a live collection (median seconds):
+  # 2 frames — 1.47, 3 — 2.45, 4 — 3.46, 5 — 4.56: a slope of 1.03 s per frame on top of
+  # 0.45 s of fixed cost. The line deliberately sits about a second above each median —
+  # an estimate that runs long is a warning, one that runs short is a broken promise.
+  # Move them if this machine disagrees; they are settings so that it can.
+  keeper_call_sec: 0.45
+  keeper_frame_sec: 1.03
+  # How many days a timing from the run log stays trustworthy. 0 switches the expiry
+  # off. A timing written by another version of sorta is discarded whatever this says —
+  # the stage behind it may have been rewritten since.
+  measurement_max_age_days: 90
+
 index:
   # F81: folders that must not be SCANNED at all — no stat, no hash, no later
   # stage. Different from sort.exclude_dirs, which indexes the files and only
@@ -61,9 +80,12 @@ dedup:
   # prefer_exif_then_largest — the file with an EXIF date first, then the larger one
   canonical_strategy: prefer_exif_then_largest
   # F132: ask the local VLM which frame of a near-duplicate group is the one to keep —
-  # ONE comparative question over the whole group ("which of these is best"), which a
+  # one comparative question over the whole group ("which of these is best"), which a
   # model answers far more reliably than it scores frames one at a time. It sees what
   # sharpness cannot: closed eyes, a face turned away, a hand across the lens.
+  # F159 measured what it costs: 0.45 s plus 1.03 s per frame in the question, so from
+  # three frames up it is not cheaper than asking about the frames one at a time. What
+  # it buys is an answer separate questions do not give — which of them is the best one.
   # Needs the VLM extra installed; off by default. A RECOMMENDATION only — it is stored
   # in `group_keeper` and nothing is ever deleted or marked by it. With this off the
   # interface keeps recommending by sharpness, exactly as before — and F145 made
@@ -637,6 +659,25 @@ features:
   # photograph. Its link to the original is stored, and the pair is never shown as a
   # duplicate to sort out.
   restore_model: "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+  # F169: the longer side the frame is scaled to BEFORE the model, and the single number
+  # that decides what you get back. It used to be a constant in the code; it is a setting
+  # now because the trade it makes is not the same for every frame:
+  #
+  #   a frame BELOW it (a scan, a downloaded picture, an old small shot) goes to the model
+  #     untouched — 800 px in, 3200 px out, nothing given up, the case this was built for;
+  #   a frame ABOVE it is reduced first, and the x4 brings it back to about its own size:
+  #     4032 px -> 1024 px -> 4096 px. Same size out, but the real detail of the original
+  #     was dropped on the way in and the model drew plausible detail instead. The Review
+  #     tab says exactly that when it happens, rather than calling the copy an improvement.
+  #
+  # Raising it costs memory as the SQUARE of the number and on the x4 OUTPUT, not on the
+  # input: 2048 is four times the pixels of 1024, and a full 4000 px frame would be 16 000
+  # px wide inside the model — around 780 megapixels, which does not fit on 32 GB. Before
+  # you move it, run `python scripts/measure_restore.py`: it prints time, weight and peak
+  # memory per frame population (< 1024 px, 1024-2500 px, > 2500 px) at each candidate
+  # ceiling, and lays out blind pairs of "original / processed" — the only honest judge of
+  # whether the copy is better is a person looking at it, and "sharper" is not "better".
+  restore_max_edge: 1024
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

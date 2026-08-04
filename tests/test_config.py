@@ -133,6 +133,20 @@ class TestFeaturesSection(unittest.TestCase):
             self._load("features:\n  face_sharpness_max: sharp\n"
                        ).features.face_sharpness_max, 200.0)
 
+    def test_the_restore_ceiling_is_a_setting_and_not_a_constant(self):
+        # F169: the longer side a frame is scaled to before the x4 model — the one number
+        # that decides whether a person gets their own detail back or a plausible
+        # redrawing of it. It lived in `restore.py` until this feature, where nobody could
+        # move it and nobody was told it existed.
+        self.assertEqual(FeaturesConfig().restore_max_edge, 1024)
+        self.assertEqual(self._load("features:\n  restore_max_edge: 2048\n"
+                                    ).features.restore_max_edge, 2048)
+        for garbage in ("wide", 0, -1, "true"):
+            with self.subTest(value=garbage):
+                self.assertEqual(
+                    self._load(f"features:\n  restore_max_edge: {garbage}\n"
+                               ).features.restore_max_edge, 1024)
+
     def test_a_quoted_false_does_not_switch_the_feature_on(self):
         self.assertFalse(self._load('features:\n  pets: "false"\n').features.pets)
 

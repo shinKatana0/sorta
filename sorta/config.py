@@ -153,6 +153,70 @@ def _dedup_from(raw: dict) -> DedupConfig:
 
 
 @dataclass
+class EstimateConfig:
+    """F159: what the run screen prices a run with when it has nothing measured here.
+
+    The rest of the budget is read out of the run log — after F147 the file holds how
+    fast every stage ran ON THIS MACHINE, and that beats any number measured once
+    somewhere else. The comparative keeper question is the exception, and it is why this
+    section exists: it is asked inside the junk stage's VLM phase, so the log cannot
+    separate its seconds from the per-frame questions asked in the same phase. It gets
+    the only two numbers here, and they are settings rather than constants in `ui.py`
+    because the last set of constants sat there for two features being wrong.
+    """
+
+    # Measured 2026-08-03 over a live collection, one question per group, seconds:
+    #
+    #     frames in the group   median   min    max    asked one by one
+    #             2              1.47    1.40   2.03         1.54
+    #             3              2.45     2.31   2.96         2.31
+    #             4              3.46     3.34   4.65         3.08
+    #             5              4.56     4.37   5.05         3.85
+    #
+    # The slope through those four points is 1.03 s per frame, and the fixed cost is
+    # 0.45 s. The 1.32 s this replaced was the price of a PAIR, quoted for groups "of up
+    # to five" — on the collection above it estimated the stage at half a minute against
+    # a measured 1.9.
+    #
+    # Read the line honestly: `0.45 + 1.03 x frames` sits about a second above each
+    # median (the same four points also fit `0.45 + 1.03 x (frames - 1)`). The higher of
+    # the two is the one that ships, because the two errors are not symmetric — an
+    # estimate that runs long is a warning, and one that runs short is a broken promise.
+    # Both numbers are settings for the same reason: a machine that disagrees can say so.
+    #
+    # The same table also retires the premise the option was built on: from three frames
+    # up, one question over the group is NOT cheaper than asking about the frames one at
+    # a time. The stage still answers something separate questions cannot ("which of
+    # these is the best one"), and that is now the only thing said for it.
+    keeper_call_sec: float = 0.45
+    keeper_frame_sec: float = 1.03
+    # How many days a timing from the run log is worth trusting. Mirrors
+    # `runlog.DEFAULT_MEASUREMENT_MAX_AGE_DAYS`; 0 or less switches the expiry off. The
+    # guard that does the real work is the build check inside `read_measurements` — this
+    # one only catches the same version running months later on a machine that has moved
+    # on since.
+    measurement_max_age_days: float = 90.0
+
+
+def _estimate_from(raw: dict) -> EstimateConfig:
+    """The `estimate:` section — garbage-tolerant like every section around it."""
+    d = EstimateConfig()
+
+    def price(key: str, default: float) -> float:
+        # A negative price is not a cheap stage, it is a typo — and it would make the
+        # total shrink as options are switched on.
+        value = _as_float(raw.get(key), default)
+        return value if value >= 0 else default
+
+    return EstimateConfig(
+        keeper_call_sec=price("keeper_call_sec", d.keeper_call_sec),
+        keeper_frame_sec=price("keeper_frame_sec", d.keeper_frame_sec),
+        measurement_max_age_days=_as_float(
+            raw.get("measurement_max_age_days"), d.measurement_max_age_days),
+    )
+
+
+@dataclass
 class GeoConfig:
     session_gap_hours: float = 6  # a gap larger than this starts a new session
     provider: str = "offline"     # offline (geodata, default) | online (Nominatim, G2b)
@@ -953,6 +1017,19 @@ class FeaturesConfig:
     # "classical" is trained on clean bicubic downscaling, a degradation an archive of
     # real photographs does not contain. Against `realworld-sr-x4` the mask lost outright.
     restore_model: str = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+    # F169: the longer side the frame is scaled to BEFORE that model — and, until this
+    # key existed, a constant in `restore.py` that decided for everybody. The model is x4
+    # and works at the UPSCALED resolution, so 1024 becomes 4096 in memory and a full 12
+    # Mpx frame would become 16 000 px, which fits on no card here.
+    #
+    # What that costs is the reason the number is a setting. A frame BELOW it is handed to
+    # the model as it is — a small scan, a downloaded picture, the case the action was
+    # built for, pure gain. A frame ABOVE it is reduced first and the x4 brings it back to
+    # roughly its own size: same pixels count, real detail dropped, plausible detail drawn
+    # in its place. The interface says so on such a frame instead of calling it an
+    # improvement, and `scripts/measure_restore.py` prints what raising this costs in time
+    # and memory on the three frame populations separately.
+    restore_max_edge: int = 1024
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -994,6 +1071,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         search_model=_as_model_name(raw.get("search_model"), d.search_model),
         restore_model=_as_repo_id(
             "features.restore_model", raw.get("restore_model"), d.restore_model),
+        restore_max_edge=_as_positive_int(
+            raw.get("restore_max_edge"), d.restore_max_edge),
     )
 
 
@@ -1109,6 +1188,7 @@ class Config:
     language: str = "en"  # folder/name language (ru|en|ja), normalized in load_config (F25/F27)
     log_level: str = "WARNING"  # DEBUG|INFO|WARNING|ERROR; validated in configure_logging (F52)
     logging: LoggingConfig = field(default_factory=LoggingConfig)  # F166: run-log pacing
+    estimate: EstimateConfig = field(default_factory=EstimateConfig)  # F159: run budget
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
 
 
@@ -1195,6 +1275,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         language=i18n.normalize_lang(data.get("language")),
         log_level=str(data.get("log_level", "WARNING")),
         logging=LoggingConfig(**_known(LoggingConfig, data.get("logging") or {})),
+        estimate=_estimate_from(_mapping(data.get("estimate"))),
         raw=data,
     )
     _apply_imaging_config(data.get("imaging") or {})
