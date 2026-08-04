@@ -7885,6 +7885,55 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось выполнить поиск: ", "en": "Could not run the search: ",
         "ja": "検索を実行できません: ",
     },
+    # --- F189: the same line, answering with a person ----------------------------------
+    # The caption is the feature as much as the selection is. A reader who cannot tell an
+    # exact answer from the top of a ranking has been handed one thing and shown another,
+    # so this sentence says what it is and the ranking's sentence stays where it was.
+    "search_person_shown_label": {
+        "ru": "Кадры человека: {name} — показано {shown} из {total}",
+        "en": "Frames of a person: {name} — showing {shown} of {total}",
+        "ja": "人物のコマ: {name} — {total} 件中 {shown} 件を表示",
+    },
+    "search_person_hint": {
+        "ru": "Это точный отбор по кластеру лиц, а не ранжирование: кадр либо в кластере "
+              "этого человека, либо нет. Порога и «похожести» здесь нет, список полный — "
+              "он лишь показывается по частям.",
+        "en": "This is an exact selection by face cluster, not a ranking: a frame is "
+              "either in this person's cluster or it is not. There is no threshold and no "
+              "“closeness” here — the list is complete and merely shown in portions.",
+        "ja": "これはランキングではなく、顔クラスタによる正確な抽出です。コマがこの人物の"
+              "クラスタに入っているかどうかだけで決まります。しきい値も「近さ」もなく、"
+              "一覧は完全で、分割して表示しているだけです。",
+    },
+    # The depth warning of a ranking does not apply to a list: the next page is more of the
+    # same fact, not a worse guess.
+    "search_person_more_hint": {
+        "ru": "Дальше — продолжение того же списка: кадры не становятся менее «точными».",
+        "en": "Further on is the same list continued: the frames do not get less certain.",
+        "ja": "この先も同じ一覧の続きです。コマの確かさが下がることはありません。",
+    },
+    # Requirement 4 on screen: a name can be an ordinary word («Роза», «Марк»), and the
+    # other answer is one click away instead of gone.
+    "search_person_words_link": {
+        "ru": "Искать «{q}» по картинке",
+        "en": "Search for “{q}” as an image",
+        "ja": "「{q}」を画像として検索",
+    },
+    "search_words_person_link": {
+        "ru": "Показать кадры человека: {name}",
+        "en": "Show the frames of a person: {name}",
+        "ja": "人物のコマを表示: {name}",
+    },
+    # A named cluster all of whose frames are duplicates or unreadable. Rare, and still not
+    # "nothing was found": the person exists, the frames a search may show do not.
+    "search_person_no_frames": {
+        "ru": "У этого человека нет кадров, которые можно показать: все они дубли или "
+              "нечитаемые файлы.",
+        "en": "This person has no frame that can be shown: all of them are duplicates or "
+              "unreadable files.",
+        "ja": "この人物には表示できるコマがありません。すべて重複か読み取れない"
+              "ファイルです。",
+    },
     # --- F152: the three face slices ---------------------------------------------------
     # The labels are deliberately not the label of the cluster slice next to them: "Люди"
     # there answers "who is this", these answer "is anybody in the frame".
@@ -9213,7 +9262,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="slice-pins" class="review-slices" aria-label="{{slices_pinned_label}}"></div>
 
 <div id="tab-search" class="slice-panel">
-<p class="process-intro">{{search_ranking_hint}}</p>
+<p id="search-kind-hint" class="process-intro">{{search_ranking_hint}}</p>
+<div id="search-other" class="album-controls"></div>
 <div id="search-album" class="album-controls"></div>
 <div id="search-grid"></div>
 <div class="process-actions">
@@ -9224,7 +9274,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 </div>
 
 <div id="tab-query" class="slice-panel">
-<p class="process-intro">{{query_slice_intro}}</p>
+<p id="query-kind-hint" class="process-intro">{{query_slice_intro}}</p>
 <p id="query-phrases" class="override-hint"></p>
 <div class="override-controls">
 <button type="button" id="query-up-btn" class="btn btn-ghost btn-sm">{{pin_move_up}}</button>
@@ -10847,21 +10897,30 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     meta.className = "search-card-meta";
     meta.textContent = item.date || "";
     card.appendChild(meta);
-    // The score is on every card because it is the only thing that explains the order —
-    // this ranks, it does not classify, and the reader decides where the list stops
-    // being about their query.
-    var score = document.createElement("span");
-    score.className = "search-card-score";
-    score.textContent = fmt(I18N.search_score_label,
-                            { score: Number(item.score).toFixed(3) });
-    card.appendChild(score);
+    // The score is on every card of a RANKING because it is the only thing that explains
+    // the order — this ranks, it does not classify, and the reader decides where the list
+    // stops being about their query. F189: a selection has no order to explain and the
+    // server sends no score for one; a «близость 0.000» here would be a number nobody
+    // measured, on a list where every frame is present for the same reason.
+    if (item.score !== undefined && item.score !== null) {
+      var score = document.createElement("span");
+      score.className = "search-card-score";
+      score.textContent = fmt(I18N.search_score_label,
+                              { score: Number(item.score).toFixed(3) });
+      card.appendChild(score);
+    }
     return card;
   }
 
   // The album of a query is the album route that already exists: kind='query' and the
   // words themselves as the selector, through the same dry-run-then-confirm path every
   // other album goes through.
-  function renderSearchAlbumControls(query) {
+  //
+  // F189: when the answer on screen is a PERSON, the album is `kind='person'` with the
+  // name — the very selection the frames above came out of. Gathering `kind='query'`
+  // there would ask CLIP for a word and hand back a folder that does not match the list
+  // it was gathered from, under that person's name.
+  function renderSearchAlbumControls(query, person) {
     var box = document.getElementById("search-album");
     box.textContent = "";
     if (!query) return;
@@ -10874,18 +10933,52 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
-      gatherAlbum("query", query, modeSelect.value, null, null,
-          destInput.value.trim() || null, albumStatus);
+      if (person) {
+        gatherAlbum("person", person, modeSelect.value, null, null,
+            destInput.value.trim() || null, albumStatus);
+      } else {
+        gatherAlbum("query", query, modeSelect.value, null, null,
+            destInput.value.trim() || null, albumStatus);
+      }
     });
     box.appendChild(albumBtn);
     box.appendChild(albumStatus);
     appendAlbumBusyHint(box);
   }
 
+  // F189: the other answer, never gone. A string can be both a name and a word, and the
+  // rule is that finding the person does not cost the ability to find the word (nor the
+  // other way round) — so whichever of the two is on screen, the link to its counterpart
+  // is above it.
+  function renderSearchOtherAnswer(data) {
+    var box = document.getElementById("search-other");
+    box.textContent = "";
+    if (!data.person) return;
+    var label = data.exact
+        ? fmt(I18N.search_person_words_link, { q: data.query })
+        : fmt(I18N.search_words_person_link, { name: data.person });
+    var btn = makeBtn("ghost", null, label, "btn-sm");
+    btn.id = "search-other-btn";
+    btn.addEventListener("click", function () {
+      searchWords = !!data.exact;   // one is the ranking, the other the person
+      searchPager.load();
+    });
+    box.appendChild(btn);
+  }
+
   // F173: the words the pages belong to. A "show more" that read the input field would
   // fetch the continuation of a ranking nobody is looking at as soon as somebody starts
   // typing the next query — the button continues the list on screen, not the field.
   var searchQuery = "";
+
+  // F189: whether the reader has asked for the RANKING of a string that is also somebody's
+  // name. It belongs next to `searchQuery` and for the same reason — a "show more" has to
+  // continue the answer on screen, and the two answers to one string are different lists.
+  var searchWords = false;
+  // Whether what is on screen is a person's frames, and whose. Kept rather than read off
+  // the last payload, because the counter is repainted (`sync`) without one.
+  var searchExact = false;
+  var searchPerson = null;
 
   // The hole this feature was written for. Search was the one user-facing slice with no
   // way past the first page, and the caption said "200 frames" where the truth was "the
@@ -10902,29 +10995,51 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     shown: "search-shown",
     hint: "search-depth-hint",
     url: function (offset) {
-      return "/api/search?q=" + encodeURIComponent(searchQuery) + "&offset=" + offset;
+      return "/api/search?q=" + encodeURIComponent(searchQuery) + "&offset=" + offset +
+             (searchWords ? "&words=1" : "");
     },
     card: renderSearchCard,
     // Never "nothing was found": a usable index ranks everything it holds, so an empty
-    // list is a fact about the index and the answer says which one.
+    // list is a fact about the index and the answer says which one. F189: an exact answer
+    // has its own empty state — the person exists and none of their frames can be shown,
+    // which is not a fact about the index at all.
     emptyText: function (data) {
+      if (data.exact) return I18N.search_person_no_frames;
       return data.available ? I18N.search_no_frames : searchStateText(data);
     },
     errorText: function () { return I18N.error_loading_search; },
     shownText: function (n, total) {
+      // The caption is how a reader tells the two answers apart: an exact selection
+      // presented in the ranking's words would be read as the top of a list.
+      if (searchExact) {
+        return fmt(I18N.search_person_shown_label,
+                   { name: searchPerson || searchQuery, shown: n, total: total });
+      }
       return fmt(I18N.search_shown_label,
                  { q: searchQuery, shown: n, total: total });
     },
     onData: function (data, append) {
       applySearchState(data);
+      searchExact = !!data.exact;
+      searchPerson = data.person || null;
+      // Which KIND of answer this is, said above the grid: the ranking's warning about
+      // thresholds is false of a selection, and the depth trade under "show more" is too.
+      document.getElementById("search-kind-hint").textContent =
+          searchExact ? I18N.search_person_hint : I18N.search_ranking_hint;
+      document.getElementById("search-depth-hint").textContent =
+          searchExact ? I18N.search_person_more_hint : I18N.slice_depth_hint;
       // The album gathers the QUERY, not the page, so it is built once per search — and
       // rebuilding it on every "show more" would wipe the destination somebody typed.
       if (!append) {
-        renderSearchAlbumControls((data.items || []).length ? data.query : "");
+        var some = (data.items || []).length;
+        renderSearchAlbumControls(some ? data.query : "",
+                                  searchExact ? data.person : null);
         // F156: and the same condition offers to PIN it. A query with nothing under it is
         // not a slice yet, and the button that saves one appears when there is something
-        // to save.
-        showPinButton((data.items || []).length ? data.query : "");
+        // to save. A name is pinned the same way — that is the whole reason this feature
+        // lives in the parse of the query string.
+        showPinButton(some ? data.query : "");
+        renderSearchOtherAnswer(data);
       }
     },
   });
@@ -10934,10 +11049,16 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // An empty query goes nowhere near the model — not from here and not on the server.
     if (!q || !(searchState && searchState.available)) return;
     searchQuery = q;
+    // A new string is asked as itself: the "search by words instead" of the previous one
+    // must not silently carry over to the next name somebody types.
+    searchWords = false;
+    searchExact = false;
+    searchPerson = null;
     showSearchPanel();
     document.getElementById("search-shown").textContent = "";
-    renderSearchAlbumControls("");
+    renderSearchAlbumControls("", null);
     showPinButton("");
+    document.getElementById("search-other").textContent = "";
     return searchPager.load();
   }
 
@@ -10996,18 +11117,34 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // Never "there are no children in your archive": an index that cannot rank says which
     // of its states it is in, exactly as the typed query does (F134).
     emptyText: function (data) {
+      if (data.exact) return I18N.search_person_no_frames;
       return data.available ? I18N.search_no_frames : searchStateText(data);
     },
     errorText: function () { return I18N.error_loading_saved_slices; },
     shownText: function (n, total) {
+      // F189: a pinned NAME is captioned as a person and not as a slice of a ranking —
+      // the same sentence the search line prints for the same string.
+      if (querySliceExact) {
+        return fmt(I18N.search_person_shown_label,
+                   { name: querySlicePerson || savedSliceLabel(querySlice),
+                     shown: n, total: total });
+      }
       return fmt(I18N.query_slice_shown_label,
                  { name: savedSliceLabel(querySlice), shown: n, total: total });
     },
     onData: function (data, append) {
       applySearchState(data);
+      querySliceExact = !!data.exact;
+      querySlicePerson = data.person || null;
       // The phrases on screen are what makes "edit it without code" an offer rather than
-      // a claim — and they are the answer to "why is this frame here".
-      document.getElementById("query-phrases").textContent =
+      // a claim — and they are the answer to "why is this frame here". For a pinned name
+      // the answer to that question is the cluster, so the two lines that call this list
+      // an estimate say what it really is instead.
+      document.getElementById("query-kind-hint").textContent =
+          querySliceExact ? I18N.search_person_hint : I18N.query_slice_intro;
+      document.getElementById("query-depth-hint").textContent =
+          querySliceExact ? I18N.search_person_more_hint : I18N.slice_depth_hint;
+      document.getElementById("query-phrases").textContent = querySliceExact ? "" :
           fmt(I18N.query_slice_phrases,
               { phrases: (data.queries || []).join(" · ") });
       // F156: the actions belong to the SLICE and not to the page, so a "show more" leaves
@@ -11016,6 +11153,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       if (!append) renderQuerySliceActions(data);
     },
   });
+
+  // F189: whether the open pin is a person, and which one — the pinned twin of
+  // `searchExact`/`searchPerson`, kept for the same reason.
+  var querySliceExact = false;
+  var querySlicePerson = null;
 
   function loadSavedSlice() {
     return queryPager.load();
@@ -11122,8 +11264,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
-      gatherAlbum("query", one, modeSelect.value, null,
-          nameInput.value.trim() || null, destInput.value.trim() || null, albumStatus);
+      // F189: a pinned name gathers the PERSON album, for the reason the search line
+      // does — the folder has to hold the list the button was pressed under.
+      gatherAlbum(data.person ? "person" : "query", data.person || one, modeSelect.value,
+          null, nameInput.value.trim() || null, destInput.value.trim() || null,
+          albumStatus);
     });
     box.appendChild(albumBtn);
     box.appendChild(albumStatus);
