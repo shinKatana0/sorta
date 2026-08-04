@@ -402,6 +402,8 @@ from .indexer import save_excludes as save_excludes_file
 from .junk import classify as classify_junk
 from .junk import (
     CLASSIFY_PHASE_VLM,
+    CLASSIFY_STAGE,
+    VERDICTS_STAGE,
     faces_stage_ran,
     quality_scope_ids,
     search_index_model,
@@ -4035,6 +4037,12 @@ _RATE_FIXED = "fixed"
 # counts as measured only when EVERY unit behind it is: `base` covers four stages, and
 # three measured ones plus a guessed fourth is a guess wearing a measurement's clothes.
 #
+# The model questions are read from TWO units, because F165 split the stage that asks them
+# in half: the deep tier decides what a frame IS and runs ahead of faces (`classify`),
+# while the quality and animal questions read what faces wrote and stay behind it
+# (`junk`). Both phases are called `junk_vlm`, so pricing the deep line off the wrong one
+# would quietly charge it the rate of a different population.
+#
 # The keeper question is deliberately absent. It is asked inside the junk stage's VLM
 # phase, next to the per-frame questions, so the log cannot separate its seconds from
 # theirs — it is priced from `estimate:` in the config instead (see `_keeper_seconds`).
@@ -4043,12 +4051,14 @@ _RATE_UNITS: dict[str, tuple[str, ...]] = {
                   for stage in ("index", "geo", "landmarks", "phash")),
     "faces": (measurement_unit("faces"),),
     "events": (measurement_unit("events"),),
-    "vlm_frame": (measurement_unit("junk", CLASSIFY_PHASE_VLM),),
+    "vlm_verdict": (measurement_unit(VERDICTS_STAGE, CLASSIFY_PHASE_VLM),),
+    "vlm_frame": (measurement_unit(CLASSIFY_STAGE, CLASSIFY_PHASE_VLM),),
 }
 _DEFAULT_RATES: dict[str, float] = {
     "base": _SEC_PER_BASE_FRAME,
     "faces": _SEC_PER_FACES_FRAME,
     "events": _SEC_PER_EVENTS_FRAME,
+    "vlm_verdict": _SEC_PER_VLM_FRAME,
     "vlm_frame": _SEC_PER_VLM_FRAME,
 }
 
@@ -4234,7 +4244,9 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         "events": rates["events"],
         "pets": _Rate(0.0, _RATE_FIXED),
         "pets_verify": rates["vlm_frame"],
-        "deep": rates["vlm_frame"],
+        # F165 moved the deep tier ahead of faces, into a stage of its own — so this is
+        # the one model line whose rate comes from `classify` rather than from `junk`.
+        "deep": rates["vlm_verdict"],
         # The keeper line is the one that is not a rate times a count at all — see
         # `_keeper_seconds`. It carries the config's constants, so it is a `default`
         # until the day the log can tell its seconds from the per-frame ones.
