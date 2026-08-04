@@ -33,6 +33,7 @@ every expected number is arithmetic a reader can check by hand.
 """
 from __future__ import annotations
 
+import dataclasses
 import unittest
 import unittest.mock
 
@@ -413,12 +414,18 @@ class ClosedEyesSliceCase(ReviewTestBase):
 
     def payload(self, slice_="eyes", *, offset=0, limit=50, beyond=False,
                 eye_max=None):
+        # Brief test 6: the thresholds come off the CONFIG. Literals here would test the
+        # numbers this file happened to be written on rather than the settings.
+        #
+        # `_review_payload` takes the whole `features` now: main made every threshold read
+        # at query time while this branch was written (F137's rule), so the older shape of
+        # passing `blur_max`/`eye_max` one by one no longer exists.
+        features = self.cfg.features
+        if eye_max is not None:
+            features = dataclasses.replace(features, eye_openness_max=eye_max)
         return ui._review_payload(
             self.cfg.database, slice_, offset, limit, beyond=beyond,
-            blur_max=self.cfg.features.blur_review_max,
-            # Brief test 6: the threshold comes off the CONFIG. A literal here would test
-            # the number this file happened to be written on rather than the setting.
-            eye_max=self.cfg.features.eye_openness_max if eye_max is None else eye_max,
+            features=features,
             max_distance=self.cfg.index.phash_max_distance)
 
     def ids(self, data):
@@ -465,7 +472,12 @@ class TestTheSliceReadsTheConfig(ClosedEyesSliceCase):
         limit = self.cfg.features.eye_openness_max
         listed = [self.closed("a.jpg", limit / 2), self.closed("b.jpg", limit / 3)]
         self.closed("c.jpg", limit * 2)
-        where, params = sorter.quality_slice_where("eyes_closed", None, limit)
+        # Same shape change as `_review_payload`: the rule reads its thresholds off
+        # `features` at query time now, so the limit travels inside it rather than as a
+        # third positional argument.
+        where, params = sorter.quality_slice_where(
+            "eyes_closed", dataclasses.replace(self.cfg.features,
+                                               eye_openness_max=limit))
         rows = self.conn.execute(
             f"SELECT f.id {sorter.QUALITY_FROM} WHERE {where}", params).fetchall()
         self.assertEqual(sorted(int(r["id"]) for r in rows), sorted(listed))
