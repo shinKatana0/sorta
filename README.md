@@ -54,7 +54,7 @@ app**.
 - **Local web app** (`sorta ui`): process a folder, review the plan, resolve
   duplicates, name people, and materialize sorts/albums — all in the browser. The
   **Overview** tab states the collection's condition on one screen with clickable
-  numbers; **Not personal photos** is where products/documents/screenshots/memes are
+  numbers; **Utility frames** is where products/documents/screenshots/memes are
   reviewed and sent back in bulk. The **People**/**Events** tabs only appear once
   you've actually run those stages.
 - **Trilingual** UI and folder names: **ru / en / ja**.

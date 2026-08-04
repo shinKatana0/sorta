@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **«Not personal photos» was the wrong name for four different buckets** (F175). The
+  slice showed **4 980** frames, which is exactly `product` 2 107 + `screenshot` 1 782 +
+  `document` 1 015 + `meme` 76 — the classifier's whole output under one name — and that
+  name was wrong three times over. **First, it collided with a different concept.**
+  `files.not_personal` is a heuristic over the file NAME (`S01E05`, `1080p`, a rip group)
+  that marks downloaded films: **three** files out of 38 485, computed by a different
+  stage, filed into a different folder — and named almost identically. **Second, it was
+  wrong on the facts.** A photograph of a shop receipt is personal, a screenshot of a
+  conversation with your wife is personal, a passport more so; they are simply not
+  photographs taken *for memory*, which is a different thing. Read as "not personal" the
+  slice invites you to select everything and delete it, and 1 015 of the frames in it are
+  documents that must not be deleted — a class that is private on top of that
+  (`vlm.exclude_classes`, never rendered). The slice is **«Служебные кадры» / «Utility
+  frames» / 「実用目的のコマ」** now. **Third, one caption cannot be honest about four
+  different measurements.** Products are 78% precise at 81% recall (2026-08-03, 999
+  frames), screenshots 59% at 83% (350 frames), and documents and memes have not been
+  measured at all. So the caption of the whole slice names **no** percentage, each bucket
+  states its own when it is the one open, and a bucket nobody has measured says **"not
+  measured"** — the lookup falls back to it, so a class added later cannot quietly
+  inherit a neighbour's number. **The documents are told apart before anything is
+  selected:** the card carries the mark as a field of its own (`sensitive`, decided by
+  the server from `vlm.exclude_classes`, not inferred by the browser from a missing
+  thumbnail), gets a border and a "not for deletion" chip, and the note about what that
+  bucket holds now sits **above** the button that selects the whole page. Nothing about
+  the classification changed: the classes are neither merged nor split, `document` stays
+  in `vlm.exclude_classes`, and `is_not_personal_video` is untouched — the guides simply
+  say, in all three languages, that the flag and the slice are two different questions.
+- **An action says where the frame will land, instead of «return to the photos»** (F174).
+  Two of the marks the slices offer read as one movement to the person making it — "this
+  frame does not belong here" — and the interface gave them two different names while
+  saying nothing about what either one does. They are not the same movement. «This is not
+  an animal» edits a MEMBERSHIP (`manual_pet`): the frame has been lying in its city folder
+  the whole time, it is shown in the slice as a view over the canon, and the mark moves no
+  file, ever. «Return to the photos» edits a route (`manual_overrides`): such a frame is
+  **not** in the city layout at all, and returning it is a real transfer out of `_Products`
+  on the next `sort --apply`. The button now reads the same in both slices, and what
+  differs is stated **under** it: "goes into `Russia/Samara/2023`" there, "we take it out
+  of the slice; the frame already lies in `Russia/Samara/2023`, the file will not move"
+  here — which is the sentence that answers the fear the wording has to answer, that a mark
+  deletes something. Where the frame lands is **not a guess**: the layout is a pure
+  function of rows that are already in the database, so `sorter.destinations` answers for a
+  page of cards with one query, through the same `_target_parts` and the same SELECT that
+  `plan_and_sort` builds the plan from — and for the junk view it is asked with the
+  correction **already assumed**, so the caption names the city the frame goes back to and
+  not the service folder it is sitting in. A frame with no geodata is told so by name
+  (`_Unsorted/no_place`, a third of the live collection) instead of being promised a city,
+  and a country without a city is told the country level. A **bulk** return states the
+  spread of the selection — "12 frames will return: 7 into cities, 5 into no_place" —
+  because a person ticks dozens at a time and one folder name out of twelve deceives them;
+  the count updates as the selection does, rather than appearing in the confirmation dialog
+  where it is seen too late. Nothing is applied any earlier than before: the marks still
+  pile up and land on `sort --apply`, the two tables stay two tables, and the layout rules
+  are untouched. The test that matters is the one that pins the caption to the plan — the
+  folder a card names is compared against what `plan_and_sort` builds for the same file,
+  before and after the correction is written, so the two cannot drift apart.
 - **Faces are not looked for where the classifier has already said "this is not a
   photograph"** (F165). The faces stage is the most expensive one there is — 30.9 minutes,
   46% of a full run — and it walked all **24 195** frames, among them 1 342 screenshots,

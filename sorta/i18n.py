@@ -68,6 +68,13 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     # F78: neither junk nor a lost shot — forwarded/downloaded pictures the user may
     # well want to look through, so the name must not read as a verdict.
     "downloaded": {"ru": "скачанное", "en": "downloaded", "ja": "ダウンロード"},
+    # F175: this folder is the DOWNLOADED-FILM one and nothing else — `files.not_personal`
+    # is set by a heuristic over the file NAME (`S01E05`, `1080p`, a rip group; see
+    # indexer.is_not_personal_video) and marks three files out of 38 485 on the live
+    # collection. It has nothing to do with the «Служебные кадры» slice of the web app,
+    # which is about what is IN the frame (product/screenshot/document/meme, some five
+    # thousand frames, computed by the `junk` stage). Two different questions, two
+    # different stages, two different folders — and, until F175, almost the same name.
     "not_personal": {"ru": "не_личное", "en": "not_personal", "ja": "非個人"},
     "no_event": {"ru": "без_события", "en": "no_event", "ja": "イベント不明"},
     "no_faces": {"ru": "без_лиц", "en": "no_faces", "ja": "顔なし"},

@@ -1,5 +1,5 @@
-"""F103: the "Not personal photos" view — the classifier's buckets shown AS buckets,
-plus the bulk way back for the frames it got wrong.
+"""F103: the "Utility frames" slice — the classifier's buckets shown AS buckets, plus
+the bulk way back for the frames it got wrong.
 
 The deep VLM tier carries roughly every tenth frame of a live collection into service
 folders and a few of those verdicts are wrong; until this view there was nowhere to look
@@ -465,7 +465,7 @@ class TestJunkMarkup(JunkViewTestBase):
 class TestJunkStringsAreTranslated(unittest.TestCase):
     KEYS = ("tab_junk", "junk_intro", "junk_bucket_product",
             "junk_bucket_document", "junk_bucket_screenshot", "junk_bucket_meme",
-            "junk_empty", "junk_restore_button", "junk_restore_confirm",
+            "junk_empty", "slice_return_button", "junk_restore_confirm",
             "junk_undo_restore_button", "junk_restored_mark",
             "junk_select_all", "junk_select_none", "junk_load_more",
             "junk_shown_label", "junk_document_no_preview", "junk_document_hint",
