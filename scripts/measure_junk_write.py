@@ -34,7 +34,6 @@ from __future__ import annotations
 import argparse
 import random
 import sqlite3
-import statistics
 import sys
 import tempfile
 import time

@@ -56,7 +56,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 FAST_CHECKS = [
     ("version sync", [sys.executable, os.path.join(_HERE, "release.py"), "check"]),
-    ("ruff (lint)", [sys.executable, "-m", "ruff", "check", "sorta", "tests"]),
+    # `scripts` is in the list because the fast gate is now the ONLY check between
+    # writing and committing (the rule of 2026-08-04), and it did not look here. Found by
+    # walking into it: a multi-line `help=` left an unterminated string literal in
+    # measure_deblur.py and --fast said green. Five measurement modules live here and are
+    # merged into main with their tests; a file that does not parse must not pass.
+    ("ruff (lint)", [sys.executable, "-m", "ruff", "check", "sorta", "tests", "scripts"]),
     ("mypy (types)", [sys.executable, "-m", "mypy", "sorta"]),
 ]
 
