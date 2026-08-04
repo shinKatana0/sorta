@@ -10,17 +10,28 @@ is an ordinary state for this program.
 The model itself is never loaded here. The loader is injected (`restore.shared_upscaler`
 takes one, exactly like `naming.shared_vlm`), which is also how the "loaded on first use,
 not at import" case can be stated as a fact rather than as a hope.
+
+F169 adds the cases about the CEILING on the way in — the single number that decides
+whether the copy is built from the frame or from a quarter of it. Three things are
+checked and they are the whole feature: the number comes from the caller
+(`features.restore_max_edge`) and not from a constant here, a frame at or under it is
+handed to the model untouched, and a frame over it comes back with an answer that SAYS
+the copy was rebuilt from a reduced one.
 """
 from __future__ import annotations
 
+import builtins
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Callable
+from unittest import mock
 
 from PIL import Image
 
 from sorta import restore
+from sorta.config import FeaturesConfig
 from sorta.db import connect
 from sorta.hashing import file_hash
 
@@ -68,6 +79,27 @@ class TestTheOriginalIsNeverTouched(RestoreTestBase):
         self.assertEqual(file_hash(src), (before, algo))
         self.assertEqual(src.read_bytes(), before_bytes)
         self.assertEqual(src.stat().st_mtime, before_mtime)
+
+    def test_no_path_opens_the_original_for_writing(self):
+        """The same invariant one level down: not "the bytes came out equal" but "nothing
+        ever asked the file system for a handle to write them with" — and on the frame
+        the ceiling fires on, which is the path F169 added."""
+        src = make_jpeg(self.root / "big.jpg", size=(2400, 1800))
+        writes: list[Path] = []
+        real_open = builtins.open
+
+        def watching_open(file, mode="r", *args, **kwargs):
+            if isinstance(file, (str, Path)) and any(c in str(mode) for c in "wax+"):
+                writes.append(Path(file))
+            return real_open(file, mode, *args, **kwargs)
+
+        with mock.patch("builtins.open", watching_open):
+            result = restore.restore_frame(src, "stub", max_edge=600,
+                                           loader=doubling_upscaler)
+
+        self.assertTrue(result.rebuilt, result)
+        self.assertEqual([p.name for p in writes], ["big_restored.jpg"])
+        self.assertNotIn(src.resolve(), [p.resolve() for p in writes])
 
     def test_the_original_survives_a_failure_too(self):
         """A model that will not load must not leave the frame half-written either."""
@@ -120,38 +152,132 @@ class TestTheCopy(RestoreTestBase):
         self.assertEqual(result.path.name, "scan_restored.jpg")
 
 
+def watching_upscaler(seen: list[tuple[int, int]]) -> Callable[[str], restore.UpscaleFn]:
+    """A stub that records what the model was actually shown, and hands it straight back."""
+    def loader(_name: str) -> restore.UpscaleFn:
+        def upscale(image: Image.Image) -> Image.Image:
+            seen.append(image.size)
+            return image
+        return upscale
+    return loader
+
+
 class TestTheInputIsBounded(RestoreTestBase):
     """x4 over a 4000 px frame is 16000 px and a memory failure — the input is scaled to
-    `MAX_INPUT_EDGE` first. A compromise, stated as one in the module."""
+    the ceiling first. A compromise, stated as one in the module."""
 
     def test_a_large_frame_is_scaled_down_before_the_model_sees_it(self):
         src = make_jpeg(self.root / "big.jpg", size=(2400, 1800))
         seen: list[tuple[int, int]] = []
 
-        def watching(_name: str) -> restore.UpscaleFn:
-            def upscale(image: Image.Image) -> Image.Image:
-                seen.append(image.size)
-                return image
-            return upscale
-
-        result = restore.restore_frame(src, "stub", loader=watching)
+        result = restore.restore_frame(src, "stub", loader=watching_upscaler(seen))
 
         self.assertTrue(result.ok, result)
         self.assertEqual(len(seen), 1)
-        self.assertLessEqual(max(seen[0]), restore.MAX_INPUT_EDGE)
+        self.assertLessEqual(max(seen[0]), restore.DEFAULT_RESTORE_MAX_EDGE)
 
     def test_a_small_frame_is_not_enlarged_on_the_way_in(self):
         src = make_jpeg(self.root / "small.jpg", size=(64, 48))
         seen: list[tuple[int, int]] = []
 
-        def watching(_name: str) -> restore.UpscaleFn:
+        restore.restore_frame(src, "stub", loader=watching_upscaler(seen))
+        self.assertEqual(seen, [(64, 48)])
+
+
+class TestTheCeilingIsASetting(RestoreTestBase):
+    """F169. The ceiling decides, alone, whether a person gets their own detail back or a
+    plausible redrawing of it — so it is a value the caller passes, not a number in here.
+    """
+
+    def test_the_default_is_the_default_of_the_config_key(self):
+        """One number in two places is one number that will disagree with itself."""
+        self.assertEqual(restore.DEFAULT_RESTORE_MAX_EDGE,
+                         FeaturesConfig().restore_max_edge)
+
+    def test_the_ceiling_the_caller_passes_is_what_the_model_is_shown(self):
+        src = make_jpeg(self.root / "big.jpg", size=(2400, 1800))
+        seen: list[tuple[int, int]] = []
+
+        restore.restore_frame(src, "stub", max_edge=300, loader=watching_upscaler(seen))
+
+        self.assertEqual(seen, [(300, 225)])
+
+    def test_a_frame_under_the_ceiling_is_handed_over_untouched(self):
+        """The case the action was built for: a small scan, nothing given up. The pixels
+        are compared, not just the size — a re-encode is not "untouched"."""
+        src = make_jpeg(self.root / "small.jpg", size=(640, 480))
+        seen: list[Image.Image] = []
+
+        def loader(_name: str) -> restore.UpscaleFn:
             def upscale(image: Image.Image) -> Image.Image:
-                seen.append(image.size)
+                seen.append(image.copy())
                 return image
             return upscale
 
-        restore.restore_frame(src, "stub", loader=watching)
-        self.assertEqual(seen, [(64, 48)])
+        result = restore.restore_frame(src, "stub", max_edge=1024, loader=loader)
+
+        with Image.open(src) as source:
+            self.assertEqual(seen[0].tobytes(), source.convert("RGB").tobytes())
+        self.assertEqual(seen[0].size, (640, 480))
+        self.assertFalse(result.rebuilt)
+        self.assertEqual((result.source_edge, result.input_edge), (640, 640))
+
+    def test_a_frame_exactly_at_the_ceiling_is_not_reduced_either(self):
+        src = make_jpeg(self.root / "edge.jpg", size=(800, 600))
+        seen: list[tuple[int, int]] = []
+
+        result = restore.restore_frame(src, "stub", max_edge=800,
+                                       loader=watching_upscaler(seen))
+
+        self.assertEqual(seen, [(800, 600)])
+        self.assertFalse(result.rebuilt)
+
+
+class TestTheAnswerSaysWhatTheModelWasShown(RestoreTestBase):
+    """F169's other half: a copy rebuilt from a REDUCED frame is not a silent outcome.
+    The copy comes back the size of the original and holds less of what was there, which
+    is precisely the thing a person cannot see by looking at it."""
+
+    def test_a_frame_over_the_ceiling_says_it_was_rebuilt(self):
+        src = make_jpeg(self.root / "big.jpg", size=(2400, 1800))
+
+        result = restore.restore_frame(src, "stub", max_edge=600,
+                                       loader=doubling_upscaler)
+
+        self.assertTrue(result.ok, result)
+        self.assertTrue(result.rebuilt)
+        self.assertEqual(result.source_edge, 2400)
+        self.assertEqual(result.input_edge, 600)
+
+    def test_a_frame_under_the_ceiling_claims_nothing_of_the_sort(self):
+        src = make_jpeg(self.root / "small.jpg", size=(320, 240))
+        result = restore.restore_frame(src, "stub", max_edge=1024,
+                                       loader=doubling_upscaler)
+        self.assertFalse(result.rebuilt)
+        self.assertEqual((result.source_edge, result.input_edge), (320, 320))
+
+    def test_the_original_of_a_rebuilt_copy_is_still_untouched(self):
+        """The invariant does not weaken for the frames the ceiling fires on."""
+        src = make_jpeg(self.root / "big.jpg", size=(2400, 1800))
+        before, algo = file_hash(src)
+
+        result = restore.restore_frame(src, "stub", max_edge=600,
+                                       loader=doubling_upscaler)
+
+        self.assertTrue(result.rebuilt)
+        self.assertEqual(file_hash(src), (before, algo))
+
+    def test_the_longer_side_of_the_frame_is_read_off_the_header(self):
+        src = make_jpeg(self.root / "wide.jpg", size=(1600, 900))
+        self.assertEqual(restore.source_edge(src), 1600)
+
+    def test_a_frame_that_will_not_open_has_no_size_and_no_crash(self):
+        broken = self.root / "broken.jpg"
+        broken.write_bytes(b"not an image")
+        self.assertEqual(restore.source_edge(broken), 0)
+        self.assertEqual(restore.source_edge(self.root / "gone.jpg"), 0)
+        # ...and a result with no numbers claims nothing about a rebuild.
+        self.assertFalse(restore.RestoreResult(error=restore.ERROR_DECODE_FAILED).rebuilt)
 
 
 class TestAReasonNotAnEmptyResult(RestoreTestBase):

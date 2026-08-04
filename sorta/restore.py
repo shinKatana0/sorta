@@ -29,6 +29,35 @@ server start, for a button most sessions never press, is not a trade anybody ask
 A load that fails is not cached: it propagates to the caller, which turns it into a
 reason a person can read. Offline is an ordinary state for this product (the weights come
 from the network), so "the model is not there" has to be an answer, never an empty result.
+
+F169: THE CEILING ON THE WAY IN, AND WHY IT IS SAID OUT LOUD
+------------------------------------------------------------
+The model is x4 and the transformer computes at the UPSCALED resolution, so a full 4000
+px frame would be 16 000 px on the way through and fit on no card here. The frame is
+therefore scaled to `features.restore_max_edge` first, and for a big frame that is a
+trade nobody was told about:
+
+    4032 x 3024 (12 Mpx)  ->  1024 x 768  ->  4096 x 3072
+
+The same size out — through a quarter and back. For a SMALL frame (a downloaded picture,
+an old scan) the ceiling never fires and the gain is pure, which is the case F149 was
+built for. For a full-sized one the true detail of the original is dropped and the model
+draws something plausible in its place, and the copy can look sharper while holding less
+of what was there.
+
+Two things follow, and they are the whole of this module's F169 change:
+
+* the ceiling is a SETTING (`features.restore_max_edge`) and not a constant in the code,
+  because it is the single number that decides what a person gets back;
+* every answer states what the model was actually shown (`source_edge` / `input_edge`,
+  and `rebuilt` from the two). A copy rebuilt from a reduced frame is not a silent
+  outcome: the interface says so beside the frame, in the same breath as "done".
+
+What to DO about a frame above the ceiling — tile it in native resolution, supersample
+back down, or refuse the action altogether — is not decided here. It is decided by the
+measurement `scripts/measure_restore.py` prints, on the three populations separately,
+with a human looking at blind pairs. Guessing that was the mistake F149's first probe
+already made once.
 """
 from __future__ import annotations
 
@@ -49,12 +78,18 @@ _log = logging.getLogger(__name__)
 # The default of `features.restore_model`, and the model the second measurement chose.
 DEFAULT_RESTORE_MODEL = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
 
-# The longer side the frame is scaled to BEFORE the model. A COMPROMISE, not an optimum:
-# the model is x4, so a full 4000 px frame would come out at 16000 px and eat memory on
-# the way there (the transformer works on the upscaled resolution). 1024 -> 4096 is a
-# frame nobody's screen is short of, computed in about a second. Raise it if you have the
-# VRAM and want the full sensor back; nothing downstream depends on the number.
-MAX_INPUT_EDGE = 1024
+# The default of `features.restore_max_edge` — the longer side the frame is scaled to
+# BEFORE the model. A COMPROMISE, not an optimum: the model is x4, so a full 4000 px frame
+# would come out at 16000 px and eat memory on the way there (the transformer works on the
+# upscaled resolution). 1024 -> 4096 is a frame nobody's screen is short of, computed in
+# about a second.
+#
+# It lives HERE only as the default of the setting (the shape `DEFAULT_RESTORE_MODEL` has
+# above), because a threshold in the code is a threshold nobody can change: this one
+# decides, alone, whether a person gets their own detail back or a plausible redrawing of
+# it. Raising it costs memory as the SQUARE of the number, on the x4 output — see the
+# table `scripts/measure_restore.py` prints before touching it.
+DEFAULT_RESTORE_MAX_EDGE = 1024
 
 # What the copy is called and how it is written. JPEG regardless of what the original was
 # (the model's output is RGB pixels, and a HEIC/RAW source has nothing left to preserve
@@ -80,10 +115,29 @@ class RestoreResult:
     path: Path | None = None
     error: str | None = None
     detail: str | None = None
+    # F169: what the model was actually shown. `source_edge` is the longer side of the
+    # frame as it lies on disk, `input_edge` the longer side of what went into the model —
+    # equal whenever the ceiling did not fire, which is the ordinary case this action was
+    # built for. Both are carried on the result rather than logged, because the caller has
+    # to be able to SAY it: a copy silently rebuilt from a reduced frame is exactly the
+    # trade a person did not agree to.
+    source_edge: int = 0
+    input_edge: int = 0
 
     @property
     def ok(self) -> bool:
         return self.path is not None
+
+    @property
+    def rebuilt(self) -> bool:
+        """True when the copy came out of a REDUCED frame rather than the original one.
+
+        Not "the copy is worse" — nobody has measured that yet, and the measurement is a
+        person looking at blind pairs (`scripts/measure_restore.py`). It is the narrower
+        fact the interface owes: the detail of the original was dropped on the way in and
+        what replaced it was drawn.
+        """
+        return self.input_edge > 0 and self.source_edge > self.input_edge
 
 
 # --- the model ----------------------------------------------------------------------
@@ -168,8 +222,23 @@ def restored_path(src: Path) -> Path:
     return candidate
 
 
+def source_edge(src: Path) -> int:
+    """The longer side of the frame AS IT LIES ON DISK; 0 if the file will not open.
+
+    Read off the header (`Image.open` does not decode the pixels), because the decode
+    below is already scaled to the ceiling and so cannot say what was given up on the way
+    in. Orientation is not consulted on purpose: a rotation swaps the two sides, it does
+    not change which of them is longer.
+    """
+    try:
+        with Image.open(src) as im:
+            return int(max(im.size))
+    except Exception:  # noqa: BLE001 — a missing/corrupt file is answered by the decode
+        return 0
+
+
 def restore_frame(src: Path, model_name: str, *,
-                  max_edge: int = MAX_INPUT_EDGE,
+                  max_edge: int = DEFAULT_RESTORE_MAX_EDGE,
                   loader: Callable[[str], UpscaleFn] | None = None) -> RestoreResult:
     """Process ONE frame and write the copy; the original is never opened for writing.
 
@@ -179,10 +248,18 @@ def restore_frame(src: Path, model_name: str, *,
     package, weights that are not on disk with no network to fetch them from, a decode,
     the write itself — becomes a `RestoreResult.error` rather than an exception: this is
     called from a request handler, and a stack trace is not a reason a person can act on.
+
+    `max_edge` is `features.restore_max_edge` and arrives from the caller (F169). A frame
+    at or below it is handed to the model UNTOUCHED — that is the case where this action
+    is a pure gain and nothing here narrows it. A frame above it is still processed, and
+    the result says it was rebuilt from a reduced copy of itself; what else should happen
+    to such a frame is the measurement's decision, not this function's.
     """
+    original_edge = source_edge(src)
     image = imaging.decode_rgb(src, max_edge, apply_orientation=True)
     if image is None:
         return RestoreResult(error=ERROR_DECODE_FAILED, detail=str(src))
+    input_edge = int(max(image.size))
     try:
         upscale = shared_upscaler(model_name, loader)
     except Exception as exc:  # noqa: BLE001 — no transformers, no weights, no network
@@ -199,7 +276,11 @@ def restore_frame(src: Path, model_name: str, *,
     except OSError as exc:
         _log.warning("restore: copy %s was not written (%s)", dest, exc)
         return RestoreResult(error=ERROR_WRITE_FAILED, detail=f"{type(exc).__name__}: {exc}")
-    return RestoreResult(path=dest)
+    if original_edge > input_edge:
+        _log.info("restore: %s is %d px and the ceiling is %d — the copy is rebuilt from "
+                  "a reduced frame, not sharpened from the original",
+                  src, original_edge, input_edge)
+    return RestoreResult(path=dest, source_edge=original_edge, input_edge=input_edge)
 
 
 # --- the copy as a member of the collection -----------------------------------------
