@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **«Not personal photos» was the wrong name for four different buckets** (F175). The
+  slice showed **4 980** frames, which is exactly `product` 2 107 + `screenshot` 1 782 +
+  `document` 1 015 + `meme` 76 — the classifier's whole output under one name — and that
+  name was wrong three times over. **First, it collided with a different concept.**
+  `files.not_personal` is a heuristic over the file NAME (`S01E05`, `1080p`, a rip group)
+  that marks downloaded films: **three** files out of 38 485, computed by a different
+  stage, filed into a different folder — and named almost identically. **Second, it was
+  wrong on the facts.** A photograph of a shop receipt is personal, a screenshot of a
+  conversation with your wife is personal, a passport more so; they are simply not
+  photographs taken *for memory*, which is a different thing. Read as "not personal" the
+  slice invites you to select everything and delete it, and 1 015 of the frames in it are
+  documents that must not be deleted — a class that is private on top of that
+  (`vlm.exclude_classes`, never rendered). The slice is **«Служебные кадры» / «Utility
+  frames» / 「実用目的のコマ」** now. **Third, one caption cannot be honest about four
+  different measurements.** Products are 78% precise at 81% recall (2026-08-03, 999
+  frames), screenshots 59% at 83% (350 frames), and documents and memes have not been
+  measured at all. So the caption of the whole slice names **no** percentage, each bucket
+  states its own when it is the one open, and a bucket nobody has measured says **"not
+  measured"** — the lookup falls back to it, so a class added later cannot quietly
+  inherit a neighbour's number. **The documents are told apart before anything is
+  selected:** the card carries the mark as a field of its own (`sensitive`, decided by
+  the server from `vlm.exclude_classes`, not inferred by the browser from a missing
+  thumbnail), gets a border and a "not for deletion" chip, and the note about what that
+  bucket holds now sits **above** the button that selects the whole page. Nothing about
+  the classification changed: the classes are neither merged nor split, `document` stays
+  in `vlm.exclude_classes`, and `is_not_personal_video` is untouched — the guides simply
+  say, in all three languages, that the flag and the slice are two different questions.
 - **An action says where the frame will land, instead of «return to the photos»** (F174).
   Two of the marks the slices offer read as one movement to the person making it — "this
   frame does not belong here" — and the interface gave them two different names while

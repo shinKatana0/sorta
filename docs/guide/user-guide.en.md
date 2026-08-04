@@ -382,7 +382,8 @@ happens to the files:
 
 **Where the familiar tabs went.** Nothing was removed, the grouping changed: Process
 moved inside Overview, Cities is now called Layout, Duplicates became the first slice of
-Review, and People, Events and "Not personal photos" became panels of Slices. Inside
+Review, and People, Events and the classifier's buckets (now **Utility frames**, §14)
+became panels of Slices. Inside
 Slices, People and Events appear only once face clusters or events exist — that is,
 after a run with faces/events enabled (or after `sorta faces`/`sorta events`).
 
@@ -970,10 +971,41 @@ city/person/event folders:
 pull out; a real document leaking into your city memories is worse). Review it
 manually.
 
-These buckets are easier to review from the web UI: the **Not personal photos** tab
-(§6) shows them side by side, returns the frames you tick back into the normal layout
-in bulk, and **renders no thumbnails for documents** — deliberately, because that
-bucket is where personal papers are.
+These buckets are easier to review from the web UI: the **Utility frames** slice (§6)
+shows them side by side, returns the frames you tick back into the normal layout in
+bulk, and **renders no thumbnails for documents** — deliberately, because that bucket
+is where personal papers are.
+
+**Why "utility frames".** A photograph of a shop receipt is personal. A screenshot of
+a conversation with your wife is personal. A passport is more personal than either.
+None of them is a photograph taken *for memory*, and that is a different thing — which
+is why the slice is named after it. The distinction is not academic: a name that reads
+as "junk, select everything, delete" is expensive here, because about a fifth of what
+is in the slice are documents that must not be deleted. In the web app those cards are
+marked out, and the note above the grid says so before you select anything.
+
+**How reliable each bucket is.** Four buckets under one name are four different
+measurements, so the slice as a whole names no percentage and each bucket names its
+own:
+
+| bucket | precision | recall | measured |
+|---|---|---|---|
+| `product` | 78% | 81% | 2026‑08‑03, 999 frames |
+| `screenshot` | 59% | 83% | 2026‑08‑03, 350 frames |
+| `document` | — | — | not measured |
+| `meme` | — | — | not measured |
+
+Every third "screenshot" is an ordinary photograph and every fifth "product" is not a
+product; for documents and memes nobody has counted yet, and the app says exactly that
+rather than borrowing a neighbour's number.
+
+**This is not the same thing as `_Unsorted/not_personal/`.** That folder holds
+downloaded films and series, recognised by the *file name* (`S01E05`, `1080p`, a rip
+group) at indexing time — the `files.not_personal` flag, a question about where a file
+came from. The Utility frames slice is a question about what is *in* the frame,
+answered by the `sorta junk` stage. Different stages, different folders (`_Products/`,
+`_Documents/`, `_Unsorted/junk/`), and no overlap: on a live collection of 38,485
+files the flag marks three of them.
 
 > **Privacy:** documents may contain personal data. Sorta processes them **locally**
 > and never uploads them (unless you enable an online provider). See §15.

@@ -433,7 +433,7 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         return [i18n.folder("unsorted", lang), i18n.folder("not_personal", lang)], "not_personal"
     verdict = row["junk_verdict"]
     if row["manual_action"] == "photo":
-        # F103: the user opened the "Not personal photos" view, looked at the frame and
+        # F103: the user opened the "Utility frames" slice, looked at the frame and
         # said it is an ordinary photo. Only the ROUTE changes here — media_class keeps
         # the model's verdict, because that verdict is a measurement and a correction by
         # eye is a separate layer on top of it. Overwriting the measurement would mean a

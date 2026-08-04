@@ -1,5 +1,5 @@
-"""F103: the "Not personal photos" view — the classifier's buckets shown AS buckets,
-plus the bulk way back for the frames it got wrong.
+"""F103: the "Utility frames" slice — the classifier's buckets shown AS buckets, plus
+the bulk way back for the frames it got wrong.
 
 The deep VLM tier carries roughly every tenth frame of a live collection into service
 folders and a few of those verdicts are wrong; until this view there was nowhere to look

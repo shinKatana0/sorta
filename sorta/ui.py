@@ -196,7 +196,7 @@ for `source_dir` is compared against `files.path` as a string and never opened (
 plan cache IS dropped afterwards (unlike an F77 correction, an assignment changes the
 target folder of every file of the group).
 
-(16) `GET /api/junk` (F103, the "Not personal photos" tab) — the buckets the classifier
+(16) `GET /api/junk` (F103, the "Utility frames" slice) — the buckets the classifier
 carries out of the collection, shown AS buckets: every frame whose `media_class.verdict`
 is not `photo`, with per-verdict counters and one bounded page of one bucket
 (`?bucket=&offset=&limit=`, the plan-page bounds). Read-only and reclassifying nothing.
@@ -1527,7 +1527,7 @@ def _destinations_for(cfg: Config, conn: sqlite3.Connection, rows: list[sqlite3.
         return {}
 
 
-# --- F103: the "Not personal photos" view -------------------------------------------
+# --- F103: the "Utility frames" slice ------------------------------------------------
 # The deep VLM tier carries away roughly every tenth frame of the collection into
 # service folders (2 202 `product` alone on the live 24k run), and until now those
 # buckets were visible only indirectly, as folders of the layout plan. A handful of
@@ -1561,6 +1561,11 @@ def _junk_item_to_json(row: sqlite3.Row, restored: bool,
         "verdict": verdict,
         "name": path.name,
         "date": row["taken_at"],
+        # F175: said out loud, per card, for the same reason the page-level list is —
+        # a card the person must not delete has to be visible AS one before the "select
+        # everything" button is pressed, and a client inferring it from the missing
+        # `thumb_url` would be a second copy of the privacy rule in JS.
+        "sensitive": verdict in no_preview,
         # F77/F103: the frame already carries a manual "this is a photo" correction —
         # the card says so instead of offering the same action twice.
         "restored": restored,
@@ -4817,8 +4822,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "tab_event": {"ru": "События", "en": "Events", "ja": "イベント"},
     "tab_animal": {"ru": "Животные", "en": "Animals", "ja": "動物"},
     "tab_moves": {"ru": "Перемещения", "en": "Moves", "ja": "移動"},
-    "tab_junk": {"ru": "Не личные фото", "en": "Not personal photos",
-                 "ja": "個人写真ではない"},
+    # F175: the slice used to be called "Not personal photos", and that name was wrong
+    # twice over. A photograph of a receipt, a screenshot of a conversation with your
+    # wife and a passport are all personal — they are simply not photographs taken FOR
+    # MEMORY, which is a different thing; and read as "not personal" the slice invites
+    # deleting it, while a thousand of the frames in it are documents that must not be
+    # deleted. The old name also sat one letter away from `files.not_personal`, the flag
+    # for downloaded films (three files of 38 485), which is about where a file came
+    # from and not about what is in the frame — see the note in i18n._FOLDERS.
+    "tab_junk": {"ru": "Служебные кадры", "en": "Utility frames",
+                 "ja": "実用目的のコマ"},
     "process_intro": {
         "ru": "Укажите папку с фото и нажмите «Обработать» — индекс наполнится "
               "(гео, лица, события, мусор, почти-дубликаты). Файлы не перемещаются.",
@@ -6169,18 +6182,59 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось назначить место: ", "en": "Could not assign the place: ",
         "ja": "場所を指定できません: ",
     },
-    # F103: the "Not personal photos" view — the buckets the classifier carries out of
+    # F103: the "Utility frames" view — the buckets the classifier carries out of
     # the collection, and the bulk way back for the frames it got wrong.
+    # F175: the caption of the WHOLE slice names no percentage, and deliberately. Behind
+    # one name lie four buckets measured separately (products 78%, screenshots 59%,
+    # documents and memes not measured at all), and a single number over them would be
+    # honest about none of them. What it does say is the thing a person has to know
+    # before ticking everything: one of the four is not to be deleted.
     "junk_intro": {
-        "ru": "Кадры, которые классификатор посчитал не личными фото. Отметьте те, "
-              "что попали сюда зря, и верните их — они снова разложатся по городам. "
-              "Вердикт модели при этом не переписывается.",
-        "en": "Frames the classifier judged not to be personal photos. Tick the ones "
-              "that landed here by mistake and return them — they go back into the "
-              "city layout. The model's verdict itself is not rewritten.",
-        "ja": "分類器が個人写真ではないと判断したフレームです。誤って入ったものに"
+        "ru": "Кадры, снятые не ради памяти: товары, скриншоты, документы, мемы. Это "
+              "четыре разные корзины с разной надёжностью — откройте любую, и подпись "
+              "назовёт её точность. Документы удалять нельзя: там паспорта, справки и "
+              "чеки. Отметьте кадры, попавшие сюда зря, и верните их — они снова "
+              "разложатся по городам. Вердикт модели при этом не переписывается.",
+        "en": "Frames that were not taken for memory: products, screenshots, documents, "
+              "memes. These are four different buckets of different reliability — open "
+              "any one of them and the caption names its precision. The documents are "
+              "not to be deleted: passports, certificates and receipts live there. Tick "
+              "the frames that landed here by mistake and return them — they go back "
+              "into the city layout. The model's verdict itself is not rewritten.",
+        "ja": "思い出のためではなく実用のために撮られたコマです: 商品、"
+              "スクリーンショット、書類、ミーム。信頼度の異なる 4 つの別々のバケットで、"
+              "いずれかを開くとその精度が説明に出ます。書類は削除できません — "
+              "パスポート、証明書、レシートが入っています。誤って入ったコマに"
               "チェックを入れて戻すと、再び都市ごとに振り分けられます。モデルの"
               "判定自体は書き換えません。",
+    },
+    # F175: precision belongs to a CLASS, not to the slice. Each line below is one
+    # measurement with its date and its sample size, shown when that bucket is the one
+    # open. A class nobody has measured gets `junk_accuracy_unmeasured` — the lookup in
+    # the client falls back to it, so a class added later says "not measured" instead of
+    # quietly inheriting somebody else's number.
+    "junk_accuracy_product": {
+        "ru": "Точность 78% при полноте 81% (замер 2026-08-03, 999 кадров): примерно "
+              "каждый пятый кадр здесь — не товар.",
+        "en": "Precision 78% at 81% recall (measured 2026-08-03 on 999 frames): about "
+              "one frame in five here is not a product.",
+        "ja": "精度 78%、再現率 81%（2026-08-03、999 コマで測定）: ここにあるコマの"
+              "およそ 5 枚に 1 枚は商品ではありません。",
+    },
+    "junk_accuracy_screenshot": {
+        "ru": "Точность 59% при полноте 83% (замер 2026-08-03, 350 кадров): каждый "
+              "третий кадр здесь — обычная фотография.",
+        "en": "Precision 59% at 83% recall (measured 2026-08-03 on 350 frames): every "
+              "third frame here is an ordinary photograph.",
+        "ja": "精度 59%、再現率 83%（2026-08-03、350 コマで測定）: ここにあるコマの"
+              "3 枚に 1 枚は普通の写真です。",
+    },
+    "junk_accuracy_unmeasured": {
+        "ru": "Точность этой корзины не измерена — сколько здесь ошибок, неизвестно.",
+        "en": "The precision of this bucket has not been measured — how many frames "
+              "here are wrong is not known.",
+        "ja": "このバケットの精度は測定されていません — 誤りがどれだけあるかは"
+              "分かりません。",
     },
     "junk_bucket_product": {"ru": "Товары", "en": "Products", "ja": "商品"},
     "junk_bucket_document": {"ru": "Документы", "en": "Documents", "ja": "書類"},
@@ -6219,15 +6273,26 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "junk_document_no_preview": {
         "ru": "без превью", "en": "no preview", "ja": "プレビューなし",
     },
+    # F175: the hint says what a document IS before it says how it is shown. This slice
+    # reads as "junk, select all, delete", and the frames the sentence is about are the
+    # ones a person needs most — so the warning has to arrive above the grid, before the
+    # selection, and not as an explanation of a missing thumbnail.
     "junk_document_hint": {
-        "ru": "Документы не открываются и не показываются: в этой корзине паспорта, "
-              "справки и медицинские бланки. Видно имя файла и дату — этого хватает, "
-              "чтобы решить.",
-        "en": "Documents are neither opened nor rendered: this bucket holds passports, "
-              "certificates and medical forms. The file name and the date are shown — "
-              "enough to decide.",
-        "ja": "書類は開かず表示もしません。このバケットにはパスポート、証明書、"
-              "診断書が含まれます。判断にはファイル名と日付で十分です。",
+        "ru": "Документы здесь — не на удаление: это паспорта, справки, чеки и "
+              "медицинские бланки, и они помечены отдельно. Sorta их не открывает и не "
+              "показывает; видно имя файла и дату — этого хватает, чтобы решить.",
+        "en": "The documents here are not for deletion: they are passports, "
+              "certificates, receipts and medical forms, and they are marked out "
+              "separately. Sorta neither opens nor renders them; the file name and the "
+              "date are shown — enough to decide.",
+        "ja": "ここにある書類は削除の対象ではありません: パスポート、証明書、"
+              "レシート、診断書であり、別に印が付いています。Sorta はそれらを開かず"
+              "表示もしません。判断にはファイル名と日付で十分です。",
+    },
+    # The same warning ON the card, because the hint above the grid is read once and the
+    # selection is made card by card.
+    "junk_document_mark": {
+        "ru": "не удалять", "en": "not for deletion", "ja": "削除しない",
     },
     "junk_error_prefix": {
         "ru": "Не удалось вернуть кадры: ", "en": "Could not return the frames: ",
@@ -7237,9 +7302,9 @@ label { cursor: pointer; }
 .thumb-name { display: block; font-size: 0.8rem; color: var(--muted); word-break: break-all; margin-top: 2px; }
 .event-name-input { width: 100%; margin-bottom: var(--space-sm); box-sizing: border-box; }
 
-/* --- F103: корзины «не личные фото» ----------------------------------- */
-/* Сетка плиток, а не таблица: здесь смотрят глазами — «это правда товар?» —
-   и решение принимается по картинке, а не по колонкам. */
+/* --- F103: the buckets of «Служебные кадры» ---------------------------- */
+/* A grid of tiles rather than a table: the decision here is made by looking — «это
+   правда товар?» — from the picture and not from the columns. */
 #junk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
       gap: var(--space-md); }
 .junk-card { border: 1px solid var(--line); border-radius: var(--radius-md);
@@ -7256,6 +7321,13 @@ label { cursor: pointer; }
 .junk-card-name { font-size: 0.8rem; word-break: break-all; }
 .junk-card-meta { font-size: 0.75rem; color: var(--muted); }
 .junk-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
+/* F175: the one bucket in this slice that must not be deleted is told apart from the
+   other three BEFORE anything is selected — a border of its own and a mark on the card,
+   not merely a stub where a thumbnail would have been. Accent and not danger red: red
+   on this grid would read as "these are the ones to throw away", which is the exact
+   opposite of what the mark means. */
+.junk-card.sensitive { border-color: var(--accent); border-left-width: 3px; }
+.junk-card .chip { align-self: flex-start; }
 
 /* --- F123: the "Animals" tab -------------------------------------------- */
 /* The same tile grid as the junk buckets: the decision is made by looking. The one
@@ -7983,6 +8055,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
 <div id="tab-junk" class="slice-panel">
 <p class="process-intro">{{junk_intro}}</p>
+<p id="junk-accuracy" class="override-hint" style="display:none"></p>
+<div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
 <div class="override-controls">
 <button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{slice_return_button}}<span id="junk-selected-count"></span></button>
 <button type="button" id="junk-select-all-btn" class="btn btn-ghost">{{junk_select_all}}</button>
@@ -7991,7 +8065,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="junk-dest-summary" class="override-hint dest-summary"></div>
-<div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
 <div id="junk-album" class="album-controls"></div>
 <div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
 <div class="process-actions">
@@ -8692,9 +8765,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       tr.removeAttribute("title");
       return;
     }
-    // F103: третье состояние — «возвращено в фото» (правка из вкладки «Не личные
-    // фото»). Строка плана должна показывать его отдельно: это не «не трогать» и не
-    // «перенесено в папку», а снятие вердикта классификатора.
+    // F103: a third state — "returned to the photos" (a correction made in the
+    // «Служебные кадры» slice). The plan row has to show it apart from the other two:
+    // this is neither "leave alone" nor "moved to a folder", it is the classifier's
+    // verdict being taken off.
     var excluded = action === "exclude";
     var restored = action === "photo";
     tr.classList.add(excluded ? "override-exclude"
@@ -11872,12 +11946,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                { n: items.length, breakdown: destBreakdown(items) });
   }
 
-  // --- F103: вкладка «Не личные фото» -------------------------------------
-  // Корзины классификатора видно КАК корзины: чипы-фильтры со счётчиком, сетка
-  // плиток, отметка нескольких кадров и ОДИН возврат на всё выделение (по одному
-  // это десятки кликов на «пару штук из 2 202»). Возврат — это POST /api/overrides
-  // с action="photo" (готовый механизм F77): вердикт в media_class не переписывается,
-  // поэтому повторный прогон яруса не сотрёт правку.
+  // --- F103: the «Служебные кадры» slice -----------------------------------
+  // The classifier's buckets are visible AS buckets: filter chips with a counter, a
+  // grid of tiles, several frames ticked at once and ONE return for the whole selection
+  // (one at a time is dozens of clicks for "a couple out of 2 202"). The return is a
+  // POST /api/overrides with action="photo" (the F77 mechanism, already there): the
+  // verdict in media_class is not rewritten, so re-running the tier does not wipe the
+  // correction.
 
   var JUNK_PAGE_SIZE = 200;
   var junkBucket = null;   // null — «Все»
@@ -11890,6 +11965,16 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function junkBucketLabel(verdict) {
     return I18N["junk_bucket_" + verdict] || verdict;
+  }
+
+  // F175: precision is a property of a CLASS, so it is shown only when a class is the
+  // one open — the "all" view names no number at all, because four buckets measured
+  // separately have no shared one. A class with no measurement of its own falls back to
+  // "not measured": inheriting the neighbour's percentage would be the lie this whole
+  // caption exists to stop.
+  function junkAccuracyText(verdict) {
+    if (!verdict) return "";
+    return I18N["junk_accuracy_" + verdict] || I18N.junk_accuracy_unmeasured;
   }
 
   function junkSelectedIds() {
@@ -11923,7 +12008,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function renderJunkCard(item) {
     junkItems[item.file_id] = item;
     var card = document.createElement("div");
-    card.className = "junk-card" + (item.restored ? " restored" : "");
+    card.className = "junk-card" + (item.restored ? " restored" : "") +
+        (item.sensitive ? " sensitive" : "");
+    // F175: the mark goes at the TOP of the card, above the picture — a bucket that must
+    // not be deleted has to be readable while the eye runs over the grid, before the
+    // checkbox at the bottom is anywhere near being ticked.
+    if (item.sensitive) {
+      var mark = document.createElement("span");
+      mark.className = "chip chip-accent";
+      mark.textContent = I18N.junk_document_mark;
+      card.appendChild(mark);
+    }
     if (item.thumb_url) {
       card.appendChild(
           clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
@@ -11986,6 +12081,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // preview nor an album). The "back to photos" row above is untouched: one movement
     // must not be able to both gather and delete.
     renderSliceAlbumControls("junk-album", data.album_kind);
+    // F175: which bucket is open decides which measurement is true here, so the line is
+    // rewritten with every page — including the empty one, where "not measured" is still
+    // the honest answer about the bucket a person is looking at.
+    var accuracy = document.getElementById("junk-accuracy");
+    accuracy.textContent = junkAccuracyText(data.bucket);
+    accuracy.style.display = accuracy.textContent ? "" : "none";
     if (!append) {
       grid.textContent = "";
       junkItems = {};      // the cards go, their destinations go with them
@@ -11999,10 +12100,11 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         shown ? fmt(I18N.junk_shown_label, { shown: shown, total: data.total }) : "";
     document.getElementById("junk-more-btn").style.display =
         shown && shown < data.total ? "" : "none";
-    // Пояснение про документы — только там, где карточки без превью реально есть
-    // (считаем по всей сетке, а не по последней подгруженной странице).
+    // The note about documents — only where such cards are actually on screen (counted
+    // over the whole grid, not over the page that was just appended). F175: counted by
+    // the mark the cards carry, so the note and the marks appear and disappear together.
     document.getElementById("junk-doc-hint").style.display =
-        grid.querySelector(".junk-doc-box") ? "" : "none";
+        grid.querySelector(".junk-card.sensitive") ? "" : "none";
     junkOffset = shown;
   }
 
