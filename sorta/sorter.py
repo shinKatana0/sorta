@@ -1841,7 +1841,14 @@ CLASS_ALBUM_KINDS = ("product", "screenshot", "meme")
 # `quality_slice_where`. F177 removed a third one, `no_subject`: the question behind it is
 # no longer asked and the answers it had are gone, so the kind is now simply unknown — a
 # `sorta album no_subject` is refused like any other name that is not a slice.
-QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed")
+#
+# F150 adds `low_resolution`, and it is the odd one of the three: nothing measured it.
+# The other two read a number a model or a filter left in `frame_quality`, while this one
+# reads `files.width * files.height` — what the picture IS, written down by the indexer.
+# There is therefore no accuracy to quote for it and no labelling that could produce one;
+# it is grouped here because the JOB is the same (look at a frame and decide whether it
+# stays), not because the signal is.
+QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed", "low_resolution")
 
 # F152: `people`, `group` and `portrait` are read straight off the `faces` table, which a
 # detector filled — so membership is a FACT about boxes, not an estimate. What that fact
@@ -1874,6 +1881,7 @@ ALBUM_FOLDER_KEYS = {
     "meme": "memes",
     "blurred": "blurred",
     "eyes_closed": "eyes_closed",
+    "low_resolution": "low_resolution",
 }
 
 # F124: THE rule for "is there an animal in this frame", written down once. The user's
@@ -2079,35 +2087,71 @@ def animal_ids_sql(features: FeaturesConfig,
 # whole point of these slices is that the decision is taken by eye, on what was shown.
 #
 # Photographs only (F120: sharpness and open eyes mean nothing on a screenshot or a
-# receipt), canonical and readable.
+# receipt — and neither does a pixel count on a receipt, which is small on purpose),
+# canonical and readable. That population is shared by every kind here; what varies is
+# the FROM (`quality_slice_from`) and the one condition that names the slice.
 QUALITY_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
                 "JOIN media_class mc ON mc.file_id = f.id")
+
+# F150: the low-resolution slice joins NO `frame_quality`, and that is the feature rather
+# than an optimization. Its rule is `files.width * files.height`, two columns the indexer
+# fills for every photograph it reads, so a frame the quality stage never reached belongs
+# in this slice exactly like any other — requiring a `frame_quality` row would make the
+# one signal that needs no measurement depend on a measurement having been taken.
+LOW_RESOLUTION_FROM = "FROM files f JOIN media_class mc ON mc.file_id = f.id"
+
 QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
 
 # `eyes_open` is `= 0` and never `IS NOT 1`: NULL there means "not asked" (schema), and a
 # frame nobody looked at must not be shown to a user as an answer.
+#
+# `low_resolution` states the same care in its own terms. `width > 0 AND height > 0`
+# excludes both a frame whose dimensions the index never learned (NULL — the pixels are
+# unknown, not few) and a zero that some broken header could leave behind; without it a
+# missing width would read as the smallest picture in the collection and sort to the very
+# top of the list. `media_type <> 'video'` is the brief's boundary written where it can be
+# tested: a video's resolution is a different question with a different answer, and today
+# it is also excluded by the `media_class` join (the classifier only ever writes rows for
+# photographs), which is exactly the kind of accident this line does not rely on.
 _QUALITY_MEMBER = {
     "blurred": "fq.sharpness IS NOT NULL",
     "eyes_closed": "fq.eyes_open = 0",
+    "low_resolution": ("f.media_type <> 'video' AND f.width > 0 AND f.height > 0 "
+                       "AND f.width * f.height < ?"),
 }
 
 
-def quality_slice_where(kind: str, blur_max: float | None) -> tuple[str, list[object]]:
-    """The WHERE of one quality slice + its parameters, against `QUALITY_FROM`.
+def quality_slice_from(kind: str) -> str:
+    """The FROM one quality slice is selected over — `f`, `mc` and, where needed, `fq`."""
+    return LOW_RESOLUTION_FROM if kind == "low_resolution" else QUALITY_FROM
 
-    `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
-    applies to that slice alone; None — no ceiling (the workspace's "show more", which
-    continues past the window). The window is a prefix of the same ordering, so
-    continuing past it neither repeats a frame nor skips one.
 
-    An album is ALWAYS gathered inside the window: the button collects what was shown,
+def quality_slice_where(kind: str, features: FeaturesConfig, *,
+                        beyond: bool = False) -> tuple[str, list[object]]:
+    """The WHERE of one quality slice + its parameters, against `quality_slice_from`.
+
+    Every number these rules need comes off `features:` and off nothing else, so a
+    threshold a person edits moves the list, its counter and its album together, with
+    nothing re-run in between.
+
+    `beyond` is the workspace's "show more": the blurred list opens to
+    `features.blur_review_max` and continues past it only when asked. The window is a
+    prefix of the same ordering, so continuing past it neither repeats a frame nor skips
+    one, and it bounds that slice alone. An album is ALWAYS gathered inside the window
+    (`beyond` is never passed here by `plan_album`): the button collects what was shown,
     and past the window sit thousands of frames nobody has looked at.
+
+    F150: `low_resolution` binds a ceiling of its own, `features.low_resolution_mp`,
+    converted from megapixels to pixels here — the config speaks the unit a person reads
+    off a camera, the column holds the number the index wrote.
     """
     where = f"{QUALITY_POPULATION} AND {_QUALITY_MEMBER[kind]}"
     params: list[object] = []
-    if kind == "blurred" and blur_max is not None:
+    if kind == "low_resolution":
+        params.append(float(features.low_resolution_mp) * 1_000_000)
+    elif kind == "blurred" and not beyond:
         where += " AND fq.sharpness < ?"
-        params.append(float(blur_max))
+        params.append(float(features.blur_review_max))
     return where, params
 
 # --- F152: the face slices — three questions the `faces` table already answers ------
@@ -2272,10 +2316,11 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     private" (F133) and a private bucket keeps its counter and gets neither a preview nor
     an album — gathering somebody's passports into one folder in one click is exactly
     what it exists to prevent.
-    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`): the slice = the "Review"
-    workspace's flat list of that name (`quality_slice_where`, the shared rule), blurred
-    inside the `features.blur_review_max` window. No selector; the default album name
-    comes from the catalog.
+    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`; F150,
+    `low_resolution`): the slice = the "Review" workspace's flat list of that name
+    (`quality_slice_where`, the shared rule), blurred inside the
+    `features.blur_review_max` window and low-resolution under `features.low_resolution_mp`
+    megapixels. No selector; the default album name comes from the catalog.
     kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
     `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
     fact that covers 77% of what a person would call a photo of people (measured). Like
@@ -2341,9 +2386,9 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         # the length of the subquery — it is a plain uncorrelated set of ids, and the
         # outer WHERE keeps applying `dup_of`/`error` to the file being planned.
         resolved_name = i18n.folder(ALBUM_FOLDER_KEYS[kind], lang)
-        quality_cond, quality_params = quality_slice_where(
-            kind, cfg.features.blur_review_max)
-        subject_cond = f"f.id IN (SELECT f.id {QUALITY_FROM} WHERE {quality_cond})"
+        quality_cond, quality_params = quality_slice_where(kind, cfg.features)
+        subject_cond = (f"f.id IN (SELECT f.id {quality_slice_from(kind)} "
+                        f"WHERE {quality_cond})")
         subject_params = list(quality_params)
     elif kind in FACE_ALBUM_KINDS:
         # F152: the marker row `bbox = '[]'` is excluded inside `face_slice_ids_sql` and

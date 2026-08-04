@@ -551,6 +551,22 @@ features:
   # < 160: 1215 — on a 19 757-photo collection). So the list opens here and continues on
   # demand, and nothing is ever deleted by this number.
   blur_review_max: 90.0
+  # F150: the ceiling of the "low resolution" slice of the "Review" tab, in MEGAPIXELS —
+  # a photograph whose `width * height` is below this many million pixels is in it.
+  # The one number in this section that measures nothing: width and height are a fact of
+  # the index, so this is a window a person chooses rather than a threshold anybody
+  # calibrated, and no model is asked anything.
+  #
+  # Measured on 22 095 photographs (2026-08-02): 94 frames under 0.2 Mp, 133 between 0.2
+  # and 0.5, 479 between 0.5 and 1, and 17 493 above 12. 1.0 selects 706 of them, and the
+  # gap in the middle is why the number is round — phones do not take pictures that size,
+  # so what lies under a megapixel arrived through a messenger or came off a download.
+  # 682 of those 706 frames are formally sharp, i.e. no other slice shows them.
+  #
+  # NOT a verdict: a small frame can be the only surviving photograph of somebody, and
+  # nothing is ever deleted by this number either. Videos are not counted — their
+  # resolution has its own meaning.
+  low_resolution_mp: 1.0
   # F155: the same laplacian, measured INSIDE the face boxes of a frame (column
   # `frame_quality.face_sharpness`), and the number below which such a frame is a blur
   # candidate. It exists because the whole-frame number answers "how much detail is in this

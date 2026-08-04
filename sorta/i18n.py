@@ -52,6 +52,7 @@ FOLDER_KEYS: tuple[str, ...] = (
     "memes",
     "blurred",
     "eyes_closed",
+    "low_resolution",
     "people",
     "group_photos",
     "portraits",
@@ -93,6 +94,12 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     "memes": {"ru": "_Мемы", "en": "_Memes", "ja": "_ミーム"},
     "blurred": {"ru": "_Размытые", "en": "_Blurred", "ja": "_ぼやけ"},
     "eyes_closed": {"ru": "_Закрытые_глаза", "en": "_Closed_eyes", "ja": "_目を閉じた"},
+    # F150: named after the FACT (how many pixels the frame has) and never after a
+    # judgement ("bad", "junk"). A frame of 640x480 can be the only surviving photograph
+    # of somebody, sent ten years ago through a messenger, and a folder called otherwise
+    # would be telling the person what to do with it.
+    "low_resolution": {"ru": "_Низкое_разрешение", "en": "_Low_resolution",
+                       "ja": "_低解像度"},
     # F152: the three face slices have no selector either — the collection holds exactly
     # one of each — so their album folders are named the same way the animal one is.
     # "People" here is the question "is there a face in this frame", not "who is it":
@@ -664,13 +671,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     "cli.album.selector_required": {
         "ru": "альбому person/event/query нужен селектор: имя человека, имя или id "
               "события либо слова запроса. Срезы animal, product, screenshot, meme, "
-              "blurred и eyes_closed собираются без селектора",
+              "blurred, eyes_closed и low_resolution собираются без селектора",
         "en": "a person/event/query album needs a selector: a person's name, an event's "
               "name or id, or the words to search for. The animal, product, screenshot, "
-              "meme, blurred and eyes_closed slices are gathered without one",
+              "meme, blurred, eyes_closed and low_resolution slices are gathered "
+              "without one",
         "ja": "person/event/query のアルバムにはセレクタが必要です: 人物の名前、"
               "イベントの名前か id、または検索する語。animal・product・screenshot・"
-              "meme・blurred・eyes_closed のスライスはセレクタなしで"
+              "meme・blurred・eyes_closed・low_resolution のスライスはセレクタなしで"
               "作成できます",
     },
     # F129: search by words — the engine's two refusals and the sentence that closes a
@@ -1214,11 +1222,11 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     "cli.help.album.kind": {
         "ru": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | people | group | portrait",
+              "blurred | eyes_closed | low_resolution | people | group | portrait",
         "en": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | people | group | portrait",
+              "blurred | eyes_closed | low_resolution | people | group | portrait",
         "ja": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | people | group | portrait",
+              "blurred | eyes_closed | low_resolution | people | group | portrait",
     },
     "cli.help.album.selector": {
         "ru": "имя человека / имя или id события / слова запроса; для animal, срезов "

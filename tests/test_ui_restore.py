@@ -123,7 +123,11 @@ class TestTheCopyArrivesBesideTheOriginal(RestoreUiTestBase):
         # The same shape as any other review card — that is what "the same actions" means.
         self.assertEqual(set(item) - {"restored", "source_file_id"},
                          {"file_id", "name", "date", "src_dir", "src_path", "sharpness",
-                          "action", "thumb_url", "video"})
+                          "width", "height", "action", "thumb_url", "video"})
+        # F150: the size of the copy is REAL and measured on the file just written — on
+        # the low-resolution slice the change in size is the whole result of the press.
+        self.assertGreater(item["width"], 0)
+        self.assertGreater(item["height"], 0)
         # ...and the original is still exactly where and what it was.
         self.assertEqual(self.files()[source], source_path)
 

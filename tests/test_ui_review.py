@@ -11,6 +11,10 @@ What this file is really guarding, in the order the risk runs:
   continues past it, and the seam neither loses a frame nor shows one twice;
 * one decision per file, in the existing `dedup_choice`, surviving a recompute of
   `frame_quality` — and no route anywhere that marks a whole slice at once.
+
+F150 adds the fifth slice, "low resolution", and it is the odd one here: its membership
+is a FACT of the index (`files.width * files.height`) rather than a number some stage
+measured, so `TestLowResolutionSlice` guards a different set of risks — see its docstring.
 """
 from __future__ import annotations
 
@@ -33,8 +37,15 @@ class ReviewTestBase(UiServerTestBase):
     def add_reviewable(self, rel: str, *, verdict: str = "photo",
                        sharpness: float | None = 100.0,
                        eyes_open: int | None = None,
+                       size: tuple[int, int] | None = None,
                        source: str = "vlm#aaaaaaaa") -> int:
         file_id, _p, _c = self.add_photo_file(rel)
+        # F150: `size` is what the indexer wrote into `files.width/height`. None leaves
+        # both NULL — the state of a frame whose dimensions were never learned, which is
+        # the default here on purpose: a slice that reads them must say so.
+        if size is not None:
+            self.conn.execute("UPDATE files SET width = ?, height = ? WHERE id = ?",
+                              (size[0], size[1], file_id))
         self.conn.execute(
             """INSERT INTO media_class (file_id, verdict, source, score, updated_at, tier)
                VALUES (?, ?, 'clip', 0.9, '2026-01-01', 'clip')""",
@@ -108,14 +119,15 @@ class TestSliceSelection(ReviewTestBase):
 
     def test_non_photos_are_in_no_slice(self):
         # F120: the quality signals mean nothing on a screenshot, a document or a
-        # product shot, so those frames are not offered for review at all.
+        # product shot, so those frames are not offered for review at all. F150: nor
+        # does a pixel count — a receipt is small on purpose.
         for verdict in ("screenshot", "document", "product", "meme"):
             self.add_reviewable(f"{verdict}.jpg", verdict=verdict, sharpness=1.0,
-                                eyes_open=0)
+                                eyes_open=0, size=(320, 240))
         self.start_server()
         data = self.review("?slice=blurred")
-        self.assertEqual(self.counts(data), {"dupes": 0, "blurred": 0, "eyes": 0})
-        for slice_ in ("blurred", "eyes"):
+        self.assertEqual(self.counts(data), {name: 0 for name in ui._REVIEW_SLICES})
+        for slice_ in ("blurred", "eyes", "low_resolution"):
             self.assertEqual(self.review(f"?slice={slice_}")["items"], [])
 
     def test_duplicates_and_read_errors_are_in_no_slice(self):
@@ -138,7 +150,7 @@ class TestSliceSelection(ReviewTestBase):
         self.start_server()
         data = self.review("?slice=eyes")
         counts = self.counts(data)
-        self.assertEqual(set(counts), {"dupes", "blurred", "eyes"})
+        self.assertEqual(set(counts), set(ui._REVIEW_SLICES))
         self.assertEqual(counts["eyes"], 0)
         self.assertEqual(data["total"], 0)
         self.assertEqual(data["items"], [])
@@ -164,7 +176,8 @@ class TestSliceSelection(ReviewTestBase):
         self.start_server()
         item = self.review("?slice=blurred")["items"][0]
         self.assertEqual(set(item), {"file_id", "name", "date", "src_dir", "src_path",
-                                     "sharpness", "action", "thumb_url", "video"})
+                                     "sharpness", "width", "height", "action",
+                                     "thumb_url", "video"})
         self.assertEqual(item["file_id"], fid)
         self.assertEqual(item["name"], "blur.jpg")
         self.assertEqual(item["src_dir"], "holiday")
@@ -309,6 +322,166 @@ class TestEyesWithoutFacesRun(ReviewTestBase):
         data = self.review("?slice=eyes")
         self.assertIsNone(data["eyes_reason"])
         self.assertEqual([it["file_id"] for it in data["items"]], [fid])
+
+
+class TestLowResolutionSlice(ReviewTestBase):
+    """F150: the fifth slice — the only one in the workspace that measures nothing.
+
+    Width and height are a fact the indexer wrote down, so there is no accuracy to pin
+    here. What there is to pin is everything a fact can still be read wrongly through:
+    an absent one, a frame of the wrong kind, an ordering that puts the wrong picture
+    first, and a card that shows the thumbnail without the one number the decision is
+    actually taken on.
+    """
+
+    def small(self, rel: str, width: int, height: int, **kwargs) -> int:
+        """A photograph of a known size and NO `frame_quality` row.
+
+        `sharpness=None` would still insert one; this slice must work with none at all,
+        so the fixture is built without the row rather than with an empty one.
+        """
+        file_id, _p, _c = self.add_photo_file(rel)
+        self.conn.execute(
+            """INSERT INTO media_class (file_id, verdict, source, score, updated_at, tier)
+               VALUES (?, ?, 'clip', 0.9, '2026-01-01', 'clip')""",
+            (file_id, kwargs.get("verdict", "photo")))
+        self.conn.execute("UPDATE files SET width = ?, height = ? WHERE id = ?",
+                          (width, height, file_id))
+        self.conn.commit()
+        return file_id
+
+    def ids(self, query: str = "") -> list[int]:
+        return [it["file_id"] for it in
+                self.review("?slice=low_resolution" + query)["items"]]
+
+    def test_the_slice_holds_the_frames_under_the_threshold_and_only_them(self):
+        small = self.small("small.jpg", 640, 480)
+        medium = self.small("medium.jpg", 1024, 768)
+        self.small("big.jpg", 4000, 3000)
+        self.start_server()
+        self.assertEqual(sorted(self.ids()), sorted([small, medium]))
+
+    def test_the_ceiling_comes_off_the_config_and_travels_with_the_answer(self):
+        self.small("small.jpg", 640, 480)
+        two_mp = self.small("two_mp.jpg", 1600, 1200)
+        self.cfg.features = dataclasses.replace(
+            self.cfg.features, low_resolution_mp=3.0)
+        self.start_server()
+        data = self.review("?slice=low_resolution")
+        # The hint above the grid states the rule the list was built by, so the number
+        # has to arrive with the list rather than be a constant in the browser.
+        self.assertEqual(data["low_resolution_mp"], 3.0)
+        self.assertEqual(data["total"], 2)
+        self.assertIn(two_mp, [it["file_id"] for it in data["items"]])
+
+    def test_the_smallest_frame_comes_first(self):
+        # Ascending pixels: the most damaged frame is the one a person sees first. It is
+        # a ranking and not a verdict — nothing below marks anything.
+        medium = self.small("medium.jpg", 1024, 768)
+        tiny = self.small("tiny.jpg", 160, 120)
+        middling = self.small("middling.jpg", 800, 600)
+        self.start_server()
+        self.assertEqual(self.ids(), [tiny, middling, medium])
+
+    def test_frames_of_equal_size_come_back_in_a_stable_order(self):
+        # Paging walks this list; ties resolved by anything but `f.id` would drop and
+        # repeat frames at the seam between pages.
+        same = [self.small(f"same{i}.jpg", 640, 480) for i in range(4)]
+        self.start_server()
+        first = self.ids("&limit=2")
+        second = self.ids("&limit=2&offset=2")
+        self.assertEqual(first + second, same)
+        self.assertEqual(self.ids(), same)
+
+    def test_a_frame_without_dimensions_is_not_a_frame_of_zero_pixels(self):
+        # NULL means the index never learned the size. Read as 0 it would sort to the
+        # very top of the list — the loudest possible way to be wrong.
+        self.add_reviewable("unknown.jpg", sharpness=500.0)
+        self.start_server()
+        data = self.review("?slice=low_resolution")
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(data["items"], [])
+
+    def test_a_photograph_the_quality_stage_never_touched_is_in_it(self):
+        small = self.small("small.jpg", 640, 480)
+        self.start_server()
+        self.assertEqual(self.ids(), [small])
+        self.assertEqual(self.counts(self.review())["low_resolution"], 1)
+
+    def test_non_photos_duplicates_and_broken_files_are_out(self):
+        canonical = self.small("a.jpg", 640, 480)
+        duplicate = self.small("b.jpg", 640, 480)
+        broken = self.small("c.jpg", 640, 480)
+        self.small("shot.jpg", 320, 240, verdict="screenshot")
+        self.conn.execute("UPDATE files SET dup_of = ? WHERE id = ?",
+                          (canonical, duplicate))
+        self.conn.execute("UPDATE files SET error = 'nope' WHERE id = ?", (broken,))
+        self.conn.commit()
+        self.start_server()
+        self.assertEqual(self.ids(), [canonical])
+
+    def test_a_video_is_not_in_it(self):
+        video = self.small("clip.mp4", 320, 240)
+        self.conn.execute("UPDATE files SET media_type = 'video' WHERE id = ?", (video,))
+        self.conn.commit()
+        self.start_server()
+        self.assertEqual(self.ids(), [])
+
+    def test_the_card_carries_the_resolution(self):
+        # The thumbnail is the same 200 px whatever it was made from, so the size is the
+        # one thing a person cannot see and the one thing they are deciding on.
+        self.small("small.jpg", 1280, 960)     # the brief's example: 1.2 Mp
+        self.cfg.features = dataclasses.replace(
+            self.cfg.features, low_resolution_mp=2.0)
+        self.start_server()
+        item = self.review("?slice=low_resolution")["items"][0]
+        self.assertEqual(item["width"], 1280)
+        self.assertEqual(item["height"], 960)
+
+    def test_the_neighbouring_slices_do_not_show_a_resolution(self):
+        # A card shows the number its slice is ABOUT: the blurred list ranks by
+        # sharpness and adding pixels to every card there is a different feature.
+        self.add_reviewable("blur.jpg", sharpness=10.0, size=(4000, 3000))
+        self.start_server()
+        item = self.review("?slice=blurred")["items"][0]
+        self.assertIsNone(item["width"])
+        self.assertIsNone(item["height"])
+        self.assertAlmostEqual(item["sharpness"], 10.0)
+
+    def test_the_card_carries_no_sharpness_it_never_read(self):
+        self.small("small.jpg", 640, 480)
+        self.start_server()
+        self.assertIsNone(self.review("?slice=low_resolution")["items"][0]["sharpness"])
+
+    def test_the_slice_gathers_into_its_own_album(self):
+        self.small("small.jpg", 640, 480)
+        self.start_server()
+        self.assertEqual(self.review("?slice=low_resolution")["album_kind"],
+                         "low_resolution")
+
+    def test_a_decision_is_the_same_one_row_the_other_slices_write(self):
+        fid = self.small("small.jpg", 640, 480)
+        self.start_server()
+        status, body = self.post(
+            "/api/review/mark", {"file_ids": [fid], "action": "to_delete"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"ok": True, "marked": 1})
+        self.assertEqual(self.actions(), {fid: "to_delete"})
+        self.assertEqual(
+            self.review("?slice=low_resolution")["items"][0]["action"], "to_delete")
+
+    def test_the_overview_counter_is_the_length_of_the_slice(self):
+        for i in range(3):
+            self.small(f"small{i}.jpg", 640, 480)
+        self.small("big.jpg", 4000, 3000)
+        self.start_server()
+        _status, body, _ctype = self.get("/api/overview")
+        collection = json.loads(body)["collection"]
+        data = self.review("?slice=low_resolution")
+        self.assertEqual(collection["low_resolution"], 3)
+        self.assertEqual(collection["low_resolution"], data["total"])
+        self.assertEqual(collection["low_resolution"],
+                         self.counts(data)["low_resolution"])
 
 
 class TestOneDecisionPerFrame(ReviewTestBase):
@@ -507,12 +680,30 @@ class TestReviewTabHtml(ReviewTestBase):
         self.assertIn("/api/dupes/choices", self.html)
         self.assertIn("/api/dupes/trash", self.html)
 
-    def test_all_three_slices_are_in_the_markup_with_a_counter_each(self):
-        for slice_ in ("dupes", "blurred", "eyes"):
+    def test_every_slice_is_in_the_markup_with_a_counter_each(self):
+        for slice_ in ui._REVIEW_SLICES:
             with self.subTest(slice=slice_):
                 self.assertIn(f'id="review-slice-{slice_}"', self.html)
                 self.assertIn(f'id="review-count-{slice_}"', self.html)
-        self.assertIn('var REVIEW_SLICES = ["dupes", "blurred", "eyes"];', self.html)
+        self.assertIn(
+            'var REVIEW_SLICES = ["dupes", "blurred", "eyes", "low_resolution"];',
+            self.html)
+
+    def test_the_low_resolution_card_prints_its_size(self):
+        # F150: the label the person decides on — "1280×960 (1.2 MP)". Built from the
+        # width and the height the card carries, not from anything the server formatted.
+        self.assertIn("function reviewResolutionLabel(item)", self.html)
+        self.assertIn("reviewResolutionLabel(item)", self.html)
+        self.assertIn("I18N.review_resolution_label", self.html)
+
+    def test_the_slice_states_its_boundaries_in_the_hint(self):
+        # The three things the brief requires be said out loud: it is not a verdict, it
+        # does not catch over-compressed frames, and videos are not counted.
+        self.assertIn("I18N.review_hint_low_resolution", self.html)
+        hint = ui._UI_STRINGS["review_hint_low_resolution"]["en"]
+        for phrase in ("not a faulty one", "Over-compressed", "Videos are not counted"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, hint)
 
     def test_the_grid_is_paged_rather_than_rendered_whole(self):
         # F70: 530 cards with previews must not land in the DOM at once.
