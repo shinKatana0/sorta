@@ -478,6 +478,8 @@ from .search import (
     REASON_OTHER_MODEL,
     EmbeddingsMissing,
     TextEncoder,
+    match_person,
+    person_page,
     rank_queries,
     rank_text,
     text_encoder,
@@ -3572,9 +3574,14 @@ def _search_index_state(conn: sqlite3.Connection, model: str) -> dict:
     }
 
 
-def _search_item_to_json(row: sqlite3.Row, score: float,
-                         sensitive: frozenset[str]) -> dict:
+def _search_item_to_json(row: sqlite3.Row, score: float, sensitive: frozenset[str],
+                         scored: bool = True) -> dict:
     """One card of the ranking: the score is always on it, the thumbnail sometimes.
+
+    F189: `scored=False` for a card of a SELECTION — a person's frames — and then the key
+    is absent rather than zero. The number explains an order; this list has no order to
+    explain, and «близость 0.000» under every frame of somebody's daughter would be a
+    measurement nobody made.
 
     F133's rule, unchanged: a frame whose class sits in `vlm.exclude_classes` (documents
     by default) gets no `thumb_url`, so the browser never asks `/thumb` for it and no
@@ -3583,14 +3590,15 @@ def _search_item_to_json(row: sqlite3.Row, score: float,
     the way around a protection the slices already apply.
     """
     path = Path(row["path"])
-    payload = {
+    payload: dict = {
         "file_id": int(row["id"]),
         "name": path.name,
         "date": row["taken_at"],
+    }
+    if scored:
         # A ranking, not a filter: the number is what lets a reader see where the
         # relevance ran out, and a card without it would hide exactly that.
-        "score": float(score),
-    }
+        payload["score"] = float(score)
     verdict = row["verdict"]
     if verdict is None or str(verdict) not in sensitive:
         payload["thumb_url"] = f"/thumb/{int(row['id'])}"
@@ -3599,7 +3607,7 @@ def _search_item_to_json(row: sqlite3.Row, score: float,
 
 
 def _search_items(conn: sqlite3.Connection, hits: Sequence[tuple[int, float]],
-                  sensitive: frozenset[str]) -> list[dict]:
+                  sensitive: frozenset[str], scored: bool = True) -> list[dict]:
     """The engine's (file_id, score) pairs -> cards, IN THE RANKING'S ORDER.
 
     The rows are fetched in chunks (a limit is user-set and SQLite has a ceiling on bound
@@ -3611,12 +3619,53 @@ def _search_items(conn: sqlite3.Connection, hits: Sequence[tuple[int, float]],
         marks = ",".join("?" * len(part))
         rows.update({int(r["id"]): r for r in conn.execute(
             _SEARCH_ROWS_SQL.format(marks=marks), tuple(part))})
-    return [_search_item_to_json(rows[fid], score, sensitive)
+    return [_search_item_to_json(rows[fid], score, sensitive, scored)
             for fid, score in hits if fid in rows]
 
 
+# --- F189: the search line answers a NAME with the person ------------------------------
+# The question this closes: a cluster somebody named, and merged another cluster into, was
+# reachable by `album person <name>` and by `sort --by person` and by no query anybody could
+# type. «Ирина» in the search line asked CLIP for frames resembling a WORD.
+#
+# The bridge is a parse of the query string and nothing else — no index, no threshold, no
+# cluster work — and it is deliberately in ONE place for the whole server: the typed line
+# (`/api/search`) and a pinned slice of the same words (`/api/saved-slices`, F156) have to
+# answer identically, or a pin becomes a second engine with a name.
+#
+# What travels to the client is two flags rather than a merged list:
+#
+#     person   the name this string is, whenever it is one — even when the answer being
+#              served is the ranking, because the offer of the other answer is the point
+#     exact    whether THIS payload is the person's frames. It decides the caption, and a
+#              caption is how a reader tells an exact selection from the top of a ranking
+#
+# Requirement 4 lives in that pair: a name that is also an ordinary word («Роза», «Марк»)
+# shows the person first and keeps the ranking one click away — the second answer never
+# disappears silently, which is what a search line quietly hijacked by a name would do.
+
+
+def _person_payload(conn: sqlite3.Connection, cfg: Config, label: str, offset: int,
+                    limit: int) -> dict:
+    """One page of a person's frames, in the shape every paged slice of this server has.
+
+    `exact: true` is the whole difference on the wire, and the client draws a different
+    sentence from it. The cards carry no score (`scored=False`): there is no order here to
+    explain.
+    """
+    page = person_page(conn, label, limit=limit, offset=offset)
+    return {
+        "person": label,
+        "exact": True,
+        **_page_payload(
+            _search_items(conn, page.hits, frozenset(cfg.vlm.exclude_classes),
+                          scored=False),
+            total=page.total, offset=page.offset, limit=page.limit),
+    }
+
+
 def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: int,
-                    encoder: TextEncoder | None = None) -> dict:
+                    encoder: TextEncoder | None = None, words: bool = False) -> dict:
     """`GET /api/search` — the state of the index always, a page of the ranking when there
     is one.
 
@@ -3634,13 +3683,26 @@ def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: i
     with the page, so the two cannot be computed out of step with each other. A state that
     ranks nothing still carries `total: 0` and `has_more: false`: the client draws the same
     controls whatever happened, and they are simply not there when there is nothing below.
+
+    F189: a string that IS somebody's name is answered with that person's frames, before
+    the index is consulted at all — a selection out of `face_clusters` needs no vector, so
+    a name still finds the person on a collection nobody has indexed yet. `words=True` is
+    how the client asks for the ranking anyway, which is the other half of the same rule:
+    the name never takes the word search away, it only goes first.
     """
     conn = _connect(db_path)
     try:
         model = search_index_model(cfg)  # F141: the search model, not the classifier's
         payload = _search_index_state(conn, model)
-        payload.update({"query": text,
+        payload.update({"query": text, "person": None, "exact": False,
                         **_page_payload([], total=0, offset=offset, limit=limit)})
+        # Computed even when the ranking is what gets served: the client offers the other
+        # answer, and it can only offer what the payload names.
+        person = match_person(conn, text)
+        payload["person"] = person
+        if person is not None and not words:
+            payload.update(_person_payload(conn, cfg, person, offset, limit))
+            return payload
         if not text.strip() or not payload["available"]:
             return payload
         try:
@@ -3658,18 +3720,23 @@ def _search_payload(cfg: Config, db_path: Path, text: str, offset: int, limit: i
 
 
 def _parse_search_query(query: dict[str, list[str]],
-                        default_limit: int) -> tuple[str, int, int] | None:
-    """(query text, offset, limit) for `GET /api/search`, or None -> 400.
+                        default_limit: int) -> tuple[str, int, int, bool] | None:
+    """(query text, offset, limit, words) for `GET /api/search`, or None -> 400.
 
     An absent/empty `q` is NOT an error: the client asks with one on purpose, to learn the
     state of the index without spending a model on it. The window is the shared
     `_parse_page_window` — a non-integer or a negative number is rejected, an over-eager
     limit is clamped — with `features.search_page` as the default size of a page.
+
+    F189: `words=1` asks for the ranking even when the string names somebody. Anything else
+    (absent, `0`, a typo) means the default, which is the person — a malformed flag must not
+    be a 400 on a route whose whole job is to answer.
     """
     window = _parse_page_window(query, default_limit)
     if window is None:
         return None
-    return (query.get("q") or [""])[0], window[0], window[1]
+    return ((query.get("q") or [""])[0], window[0], window[1],
+            (query.get("words") or [""])[0] == "1")
 
 
 # --- F151: the pinned queries of the "Slices" tab (`GET /api/saved-slices`) ------------
@@ -3725,6 +3792,13 @@ def _saved_slices_payload(cfg: Config, db_path: Path, name: str | None, offset: 
     `name=None` is the tab's own call on open: the pins and the state, no ranking, no
     model. The phrases travel with the page because the panel prints them — a slice whose
     words are invisible cannot be edited by the person it is wrong for.
+
+    F189: a pin whose single phrase is somebody's NAME answers with that person's frames,
+    exactly as the search line does for the same string. Pinning is how a named person
+    becomes an ordinary tab and it was supposed to cost nothing — but a pin that ranked
+    «Ирина» by CLIP while the search line selected her cluster would be two answers under
+    one word, and the divergence would be silent. A pin of SEVERAL phrases is a query and
+    stays one: a name averaged with other words is not a name.
     """
     # The LIVE config, in the file's own order — that order is the order of the pins.
     slices = cfg.features.saved_slices
@@ -3746,9 +3820,23 @@ def _saved_slices_payload(cfg: Config, db_path: Path, name: str | None, offset: 
             # It travels with every answer so the "pin this" button can say the limit is
             # reached BEFORE somebody types a name for a slice that will be refused.
             "max_pinned": int(cfg.features.max_pinned_slices),
+            # F189: the same two flags the search line sends, so the panel captions a
+            # pinned person the way it captions a typed one.
+            "person": None,
+            "exact": False,
             **_page_payload([], total=0, offset=offset, limit=limit),
         })
-        if current is None or not payload["available"]:
+        if current is None:
+            return payload
+        person = (match_person(conn, current.queries[0])
+                  if len(current.queries) == 1 else None)
+        if person is not None:
+            payload.update(_person_payload(conn, cfg, person, offset, limit))
+            # This list is a fact and not an estimate, and the word that says so is the
+            # one the panel prints beside every ranking on this tab.
+            payload["approximate"] = False
+            return payload
+        if not payload["available"]:
             return payload
         try:
             page = rank_queries(cfg, conn, current.queries, limit=limit, offset=offset,
@@ -14981,9 +15069,9 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "invalid offset/limit"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            text, offset, limit = parsed
+            text, offset, limit, words = parsed
             self._send_json(_search_payload(cfg, db_path, text, offset, limit,
-                                            encoder=query_encoder))
+                                            encoder=query_encoder, words=words))
 
         def _serve_saved_slices(self, query: dict[str, list[str]]) -> None:
             # F151: read-only, and the slices come off the LIVE config for the reason
