@@ -209,7 +209,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run log holds `stage=… elapsed=… processed=…` for every stage and phase of every run —
   the real speed of THIS machine — and the estimate now reads its rates from there
   (`runlog.read_measurements`): the four always-on stages behind the base line, faces,
-  events, and the model questions priced off the junk stage's VLM phase. A constant is
+  events, and the model questions priced off the VLM phase of the stage that asks them —
+  `classify` for the deep tier and `junk` for the quality and animal ones, which F165
+  split apart and which both call that phase `junk_vlm`. A constant is
   what is used when the log has nothing to say, and the screen **states which of the two
   it used** — "the numbers come from your own last run (2026-08-03)" against "a default
   estimate: this machine has no measurements of its own yet" — because somebody deciding
