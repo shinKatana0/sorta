@@ -213,6 +213,12 @@ that such a frame is never decoded for display — the card carries a name and a
 only. Returning one to the photos is still allowed; only its preview is not built. The
 class list is the config key rather than a constant, so the same list that keeps a frame
 away from the model keeps it off the screen — and emptying it lifts both at once.
+F171: a bucket is answered as a LIST IN ORDER — `media_class.score` descending, the
+frames with no estimate keeping the path order behind them — and `ordered_by_score` says
+whether that ordering happened, which is what lets the caption promise a ranking only
+where there is one. No schema, no verdict and no threshold moves with it: the screenshot
+bucket is right about 59% of what it points at, and what changed is that the slice now
+says so and reads from the confident end down.
 
 (17) `GET|POST /api/settings` (F104, the settings column of the "Cities" tab) — the
 knobs that used to be reachable only by editing config.yaml and restarting: the deep
@@ -1635,6 +1641,19 @@ def _junk_item_to_json(row: sqlite3.Row, restored: bool,
     return payload
 
 
+# F171: the order INSIDE one bucket — the model's own estimate, most confident first.
+# `media_class.score` is the number the verdict was decided by (the CLIP probability of
+# the winning class, or the text density for a document); NULL means "no estimate", never
+# "unsure", so those frames keep the old path order at the END of the list instead of
+# sinking to a score they were never given. The id is not needed as a tie-break: `f.path`
+# is unique and already breaks every tie, so a card keeps its place between pages.
+#
+# It is applied to one bucket and never to the "all" view, for the reason F175 gives about
+# the captions: four classes are four separate softmaxes, and an order across them would
+# be a comparison nobody measured.
+_JUNK_ORDER = "(mc.score IS NULL), mc.score DESC, f.path"
+
+
 def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
                   offset: int, limit: int,
                   sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
@@ -1673,6 +1692,10 @@ def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
     view (an album of "everything the classifier carried off" is not a slice anybody
     asked for) and for a class in `vlm.exclude_classes`, which keeps its counter and gets
     neither a preview nor an album.
+
+    F171: a bucket is a LIST IN ORDER — `_JUNK_ORDER`, the model's own estimate first —
+    and `ordered_by_score` says whether it really was one, so the caption promises a
+    ranking exactly where there is one to promise.
     """
     conn = _connect(db_path)
     try:
@@ -1691,12 +1714,16 @@ def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
             f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
                 WHERE mc.verdict <> 'photo' AND f.dup_of IS NULL AND f.error IS NULL
                       {clause}""", params).fetchone()[0]
+        scored = 0 if bucket is None else int(conn.execute(
+            f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
+                WHERE mc.verdict <> 'photo' AND f.dup_of IS NULL AND f.error IS NULL
+                      AND mc.score IS NOT NULL {clause}""", params).fetchone()[0])
         rows = conn.execute(
             f"""SELECT f.id, f.path, f.taken_at, mc.verdict
                 FROM files f JOIN media_class mc ON mc.file_id = f.id
                 WHERE mc.verdict <> 'photo' AND f.dup_of IS NULL AND f.error IS NULL
                       {clause}
-                ORDER BY f.path
+                ORDER BY {_JUNK_ORDER if bucket is not None else 'f.path'}
                 LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
         # F174: what the button on these cards will do — asked with the correction it
         # writes already assumed, so the caption names the city the frame goes back to
@@ -1717,6 +1744,11 @@ def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
         # `thumb_url` is a class the server refuses to render, not a preview that failed
         # to build, and the two need different words on the screen.
         "sensitive": sorted(sensitive),
+        # F171: whether this page really is the ranking its caption promises. `False` for
+        # the "all" view (no ordering across four buckets) and for a bucket the classifier
+        # settled without a number of its own — a heuristics-only run, or the frames the
+        # deep tier rewrote, both of which store NULL rather than a confidence.
+        "ordered_by_score": bool(scored),
         "total": int(total),
         "offset": offset,
         "limit": limit,
@@ -6914,13 +6946,29 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "精度 78%、再現率 81%（2026-08-03、999 コマで測定）: ここにあるコマの"
               "およそ 5 枚に 1 枚は商品ではありません。",
     },
+    # F171: this bucket states an OPINION and has to be read as one. The rescue of
+    # 2026-08-04 added 441 frames to it (1 782 against 1 341) and 41% of what it adds is
+    # an ordinary photograph — about 181 personal pictures leaving the city layout for a
+    # bucket a person reads as "these are your screenshots" and does not look through.
+    # So the caption names the model as the author of the verdict, and names returning a
+    # frame as the ordinary next step rather than as the repair of a rare mistake.
     "junk_accuracy_screenshot": {
-        "ru": "Точность 59% при полноте 83% (замер 2026-08-03, 350 кадров): каждый "
-              "третий кадр здесь — обычная фотография.",
-        "en": "Precision 59% at 83% recall (measured 2026-08-03 on 350 frames): every "
-              "third frame here is an ordinary photograph.",
-        "ja": "精度 59%、再現率 83%（2026-08-03、350 コマで測定）: ここにあるコマの"
-              "3 枚に 1 枚は普通の写真です。",
+        "ru": "Модель считает эти кадры экранными — это её оценка, а не факт. Точность "
+              "59% при полноте 83% (замер 2026-08-03, 350 кадров): каждый "
+              "третий кадр здесь — обычная фотография. Просмотрите список перед "
+              "удалением и верните такие кадры в раскладку — здесь это обычный шаг "
+              "работы, а не исправление редкой ошибки.",
+        "en": "The model considers these frames screen captures — that is its estimate "
+              "and not a fact. Precision 59% at 83% recall (measured 2026-08-03 on 350 "
+              "frames): every third frame here is an ordinary photograph. Look the list "
+              "over before deleting anything and return such frames to the layout — "
+              "here that is an ordinary step of the work, not the repair of a rare "
+              "mistake.",
+        "ja": "モデルはこれらのコマを画面のコマだと考えています — 事実ではなく推定です。"
+              "精度 59%、再現率 83%（2026-08-03、350 コマで測定）: ここにあるコマの"
+              "3 枚に 1 枚は普通の写真です。削除する前にリストを見て、そうしたコマは"
+              "振り分けに戻してください — ここではそれが通常の作業であり、まれな誤りの"
+              "修正ではありません。",
     },
     "junk_accuracy_unmeasured": {
         "ru": "Точность этой корзины не измерена — сколько здесь ошибок, неизвестно.",
@@ -6928,6 +6976,18 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "here are wrong is not known.",
         "ja": "このバケットの精度は測定されていません — 誤りがどれだけあるかは"
               "分かりません。",
+    },
+    # F171: appended to the caption of the bucket that is open, and ONLY where the server
+    # says the page was actually ordered by the model's own estimate (`ordered_by_score`).
+    # A promise about the order that is true on one collection and silent on another is
+    # the F157 rule: the sentence appears exactly where the ordering it describes does.
+    "junk_order_hint": {
+        "ru": " Список идёт от кадров, в которых модель уверена больше, к сомнительным: "
+              "читайте сверху и остановитесь, где сходство кончилось.",
+        "en": " The list runs from the frames the model is most sure of down to the "
+              "doubtful ones: read from the top and stop where the resemblance ends.",
+        "ja": " リストはモデルの確信が強いコマから弱いコマへ並びます。上から読み、"
+              "似ていると思えなくなった所で止めてください。",
     },
     "junk_bucket_product": {"ru": "Товары", "en": "Products", "ja": "商品"},
     "junk_bucket_document": {"ru": "Документы", "en": "Documents", "ja": "書類"},
@@ -13343,6 +13403,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     return I18N["junk_accuracy_" + verdict] || I18N.junk_accuracy_unmeasured;
   }
 
+  // F171: the promise about the ORDER, made only where the server actually ordered the
+  // page by the model's estimate. A bucket the classifier settled without a number of its
+  // own is still a list — it is simply not a ranking, and saying otherwise would be the
+  // same borrowed claim the accuracy fallback exists to stop.
+  function junkOrderText(data) {
+    return data.ordered_by_score ? I18N.junk_order_hint : "";
+  }
+
   function junkSelectedIds() {
     return Object.keys(junkSelected).map(Number);
   }
@@ -13451,7 +13519,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // rewritten with every page — including the empty one, where "not measured" is still
     // the honest answer about the bucket a person is looking at.
     var accuracy = document.getElementById("junk-accuracy");
-    accuracy.textContent = junkAccuracyText(data.bucket);
+    accuracy.textContent = junkAccuracyText(data.bucket) + junkOrderText(data);
     accuracy.style.display = accuracy.textContent ? "" : "none";
     if (!append) {
       grid.textContent = "";
