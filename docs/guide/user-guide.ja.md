@@ -552,9 +552,10 @@ $ sorta stats -c config.yaml
 | インデックス | `sorta index [dir]` | 常に | スキャン、EXIF/日付読取、blake3 ハッシュ、完全重複の印付け。 |
 | 位置情報 | `sorta geo` | 常に | GPS から場所を解決。GPS 無しは時間的に近い隣接写真から、次に旅行全体（GPS 付きコマの都市が一致し、その前後を挟んでいる場合）から推定（オフライン GeoNames、有効なら オンライン Nominatim）。 |
 | ランドマーク | `sorta landmarks` | 常に | GPS 無しシーンの視覚的場所推定、保守的なしきい値 — 例えば屋内のランドマーク写真で GPS が無い場合に都市を補完。 |
+| 分類 | `sorta classify` | 常に | 各写真が何であるかを判定: `photo` / `screenshot` / `meme` / `document` / `product`（ヒューリスティック + CLIP + テキスト密度）。`product`（販売用に撮影された商品）は深い VLM ティアだけが出します（§14 参照）。顔検出の**前**に実行され、スクリーンショットやレシートの中の人を探さないようにします。判定のないフレームはこれまでどおり検出されます。 |
 | 顔 | `sorta faces` | **opt‑in**（`--faces`） | 顔検出（insightface）、埋め込み計算、人物クラスタリング（HDBSCAN）。最も遅い段階のため、明示的に要求しない限りスキップされます。 |
 | イベント | `sorta events` | **opt‑in**（`--events`） | 時間差＋都市で写真をイベント化。日付＋都市で命名。顔検出とは独立 — どちらか、両方、どちらもオフ、を選べます。 |
-| 不要写真 | `sorta junk` | 常に | 各写真を分類: `photo` / `screenshot` / `meme` / `document` / `product`（ヒューリスティック + CLIP + テキスト密度）。`product`（販売用に撮影された商品）は深い VLM ティアだけが出す分類で、高速ティアは一切生成しません（§14 参照）。 |
+| 不要写真 | `sorta junk` | 常に | 判定のあとに残るすべて: フレーム品質（鮮明さと顔の中の鮮明さ — だからこの半分は顔検出の**あと**に実行されます）、動物、類似写真グループの代表選び、検索インデックス。単体で実行すれば上の分類も行うので、`sorta junk` だけで従来どおりステージ全体です。 |
 | 類似写真ハッシュ | `sorta phash` | 常に（UI）；CLI では別コマンド（`sorta run` は呼びません — `sorta phash` を自分で実行してください） | 類似写真検出用の知覚ハッシュ。 |
 
 **`sorta run` のフラグ**（すべて任意で、すべて「その実行だけの」上書き ——
@@ -1055,7 +1056,7 @@ sorta index --refresh-exif        インデックス済みファイルのメタ�
 sorta run [--src DIR] [--faces/--no-faces] [--events/--no-events] [--deep/--no-deep]
           [--geo offline|online] [--pets/--no-pets] [--quality/--no-quality]
           [--quality-scope groups|events|faces|all] [--by city|person|event] [--dest DIR]
-                                  基本パイプライン（index→geo→landmarks→junk）;
+                                  基本パイプライン（index→geo→landmarks→classify→junk）;
                                   --src はこの実行だけ config の sources を上書き;
                                   --faces/--events は遅い段階を opt-in（既定オフ、
                                   互いに独立）; --deep/--geo/--pets/--quality/
@@ -1073,9 +1074,13 @@ sorta faces sheet <cluster> <out.html> 識別用コンタクトシート
 sorta events                      イベントを（再）構築
 sorta events add <name> <from> <to>    日付範囲の手動イベント
 sorta events rename <id> <name>        手動のイベント名
+sorta classify                    判定のみ（photo/screenshot/meme/document/product）。
+                                  junk ステージの前半で、顔検出の前に実行され、
+                                  スクリーンショットの中の顔を探さないようにします（§8）
 sorta junk [--pets/--no-pets] [--quality/--no-quality]
            [--quality-scope groups|events|faces|all]
-                                  photo/screenshot/meme/document/product を分類;
+                                  フレーム品質、動物、代表コマ選び、検索インデックス —
+                                  単体で実行すれば上の分類も行います;
                                   品質のフラグはこの実行だけの上書き（§24）
 sorta phash                       知覚ハッシュ（類似写真用）
 sorta stats                       インデックス網羅状況（GPS、日付ソース、重複）

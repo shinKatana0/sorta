@@ -62,10 +62,14 @@ class TestPipelineSteps(unittest.TestCase):
     def test_order_and_dependencies(self):
         from sorta.cli import _pipeline_steps
         names = [name for name, _fn in _pipeline_steps()]
-        self.assertEqual(names, ["index", "geo", "landmarks", "faces", "events", "junk"])
+        self.assertEqual(names, ["index", "geo", "landmarks", "classify", "faces",
+                                 "events", "junk"])
         # dependency invariants
         self.assertLess(names.index("geo"), names.index("landmarks"))
         self.assertLess(names.index("faces"), names.index("junk"))
+        # F165: the verdicts move ahead of the faces they let that stage skip; the half
+        # that reads what `faces` writes (frame quality, face sharpness) stays behind it.
+        self.assertLess(names.index("classify"), names.index("faces"))
 
 
 if __name__ == "__main__":

@@ -86,9 +86,12 @@ class RunCostsTestBase(ProcessTestBase):
         seen: list[object] = []
 
         def fake_junk(cfg, conn, classifier=None, use_clip=True, text_detector=None,
-                      progress=None):
-            self.calls.append("junk")
-            seen.append(cfg)
+                      verdicts_only=False, progress=None):
+            # F165: the knobs under test are settings of the half AFTER faces, so
+            # that is the call whose config is captured.
+            self.calls.append("classify" if verdicts_only else "junk")
+            if not verdicts_only:
+                seen.append(cfg)
 
         self.patch_fast_stages()
         self._patch("classify_junk", fake_junk)
