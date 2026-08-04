@@ -630,12 +630,19 @@ def format_reach(reach: Reach, ceiling: int) -> str:
 
 
 def sample_frames(db_path: str, features: FeaturesConfig, ceiling: int, count: int,
-                  seed: int) -> list[tuple[int, str]]:
+                  seed: int, source_max: int = 0) -> list[tuple[int, str]]:
     """`count` frames of the population in question: the blurred slice, above the ceiling.
 
     Seeded, so a second run with another candidate talks about the same frames — otherwise
     two models are compared on two collections. Sampled across the whole window rather than
     from its most blurred end: the window is what a person is shown.
+
+    `source_max` (0 = no bound) is a ceiling on the ORIGINAL frame, and it exists because
+    of the machine, not because of the question. Measured 2026-08-05 on the only candidate
+    that runs here: NAFNet on the CPU needs one buffer of 25.6 GB for a 12 Mpx frame and
+    fails, while 5.8 Mpx takes 86 seconds and succeeds. A bound named on the command line
+    keeps that a stated limit of the run instead of a row of errors in the middle of it —
+    and the verdict must then say which frames it never saw.
     """
     where, params = sorter.quality_slice_where("blurred", features)
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -643,8 +650,10 @@ def sample_frames(db_path: str, features: FeaturesConfig, ceiling: int, count: i
     try:
         rows = conn.execute(
             f"SELECT f.id, f.path {sorter.quality_slice_from('blurred')} "
-            f"WHERE {where} AND {ABOVE_CEILING} ORDER BY f.id",
-            [*params, ceiling]).fetchall()
+            f"WHERE {where} AND {ABOVE_CEILING}"
+            + (" AND MAX(f.width, f.height) <= ?" if source_max else "")
+            + " ORDER BY f.id",
+            [*params, ceiling, *([source_max] if source_max else [])]).fetchall()
     finally:
         conn.close()
     shuffled = list(rows)
@@ -959,6 +968,9 @@ def main() -> int:  # pragma: no cover — needs the weights and a collection
                          "NONE on purpose — name them here")
     ap.add_argument("--sample", type=int, default=12, help="frames to measure (default 12)")
     ap.add_argument("--seed", type=int, default=20260804)
+    ap.add_argument("--max-source-edge", type=int, default=0,
+                    help="skip originals larger than this (0 = no bound). A limit of the "
+                         "MACHINE, not of the question: state it in the verdict")
     ap.add_argument("--megapixels", nargs="+", type=float, default=list(COST_MEGAPIXELS),
                     help="frame sizes for the price table")
     ap.add_argument("--no-baseline", action="store_true",
@@ -1003,7 +1015,8 @@ def main() -> int:  # pragma: no cover — needs the weights and a collection
     finally:
         conn.close()
 
-    frames = sample_frames(str(cfg.database), cfg.features, ceiling, args.sample, args.seed)
+    frames = sample_frames(str(cfg.database), cfg.features, ceiling, args.sample,
+                           args.seed, args.max_source_edge)
     if not frames:
         raise SystemExit("в срезе размытых нет кадров больше потолка — мерить нечего")
     print(f"выборка: {len(frames)} кадров размытого среза больше потолка")

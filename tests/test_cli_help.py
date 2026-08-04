@@ -296,11 +296,12 @@ class TestTheFlagsOfTheParityFeatureAreDocumented(_HelpCase):
                 self.assertEqual(len(set(printed.values())), 3)
 
     def test_the_new_flags_are_listed_by_the_commands_that_take_them(self):
+        # F186 retired `--quality`, `--no-quality` and `--quality-scope` with the
+        # question they overrode; `--pets` is what is left of the F127 set on these two
+        # commands, and it is still listed by both.
         expected = {
-            "junk": ("--pets", "--no-pets", "--quality", "--no-quality",
-                     "--quality-scope"),
-            "run": ("--pets", "--no-pets", "--quality", "--no-quality",
-                    "--quality-scope"),
+            "junk": ("--pets", "--no-pets"),
+            "run": ("--pets", "--no-pets"),
             "cache": ("--preview-max-gb",),
         }
         for command, flags in expected.items():
@@ -310,15 +311,17 @@ class TestTheFlagsOfTheParityFeatureAreDocumented(_HelpCase):
                     with self.subTest(command=command, lang=lang, flag=flag):
                         self.assertIn(flag, text)
 
-    def test_the_scope_help_names_the_price_in_every_language(self):
-        """Requirement 2.3: whoever picks a scope sees the bill in the help, instead of
-        finding it out from a four-hour run."""
-        for lang, hours in (("ru", "4,3"), ("en", "4.3"), ("ja", "4.3")):
-            text = self.help_in("junk", lang)
-            with self.subTest(lang=lang):
-                for needle in ("groups", "events", "faces", "all", hours, "95",
-                               "7 341"):
-                    self.assertIn(needle, text)
+    def test_the_retired_flags_are_not_offered_in_any_language(self):
+        """They used to be here with the price of each scope in the help text, so that
+        nobody found out what `all` costs from a four-hour run. The question is retired
+        (F186) and a help screen that still offered the flags would be describing a run
+        the program cannot start."""
+        for command in ("junk", "run"):
+            for lang in _LANGS:
+                text = self.help_in(command, lang)
+                for flag in ("--quality", "--quality-scope"):
+                    with self.subTest(command=command, lang=lang, flag=flag):
+                        self.assertNotIn(flag, text)
 
     def test_the_album_help_mentions_the_animal_kind(self):
         for lang in _LANGS:

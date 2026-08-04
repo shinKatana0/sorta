@@ -165,7 +165,39 @@ def load_onnx_restorer(weights: str | Path,
     except Exception as exc:  # noqa: BLE001 — a broken file is an answer, not a crash
         raise RuntimeError(f"файл не читается как ONNX-граф: {path} "
                            f"({type(exc).__name__}: {exc})") from exc
-    return restorer_from_session(session)
+    return restorer_from_session(_session_that_actually_runs(
+        onnxruntime, session, str(path), options, providers))
+
+
+def _session_that_actually_runs(onnxruntime: Any, session: Any, path: str,
+                                options: Any, providers: tuple[str, ...]) -> Any:
+    """`session`, or a CPU-only one when the graph loads on the GPU but cannot RUN there.
+
+    Found on the only candidate that exists (`deblurring_nafnet_2025may.onnx`, 2026-08-05):
+    it is a QUANTIZED export, and the CUDA provider has no kernel for its
+    `DequantizeLinear`. Nothing announces that at load time — the session is built, the
+    provider list looks right, and the failure arrives on the first frame:
+
+        RUNTIME_EXCEPTION: Non-zero status code returned while running DequantizeLinear
+        node. Name:'intro.weight_quantized_node'. Unsupported quantization type.
+
+    So the fall-back onnxruntime does for an unsupported OPERATOR does not happen for an
+    unsupported KERNEL of a supported one, and the candidate would be thrown out as
+    broken. It is not broken: on the CPU it runs and returns its input's size.
+
+    One tiny frame decides it, before any measurement: cheaper than discovering it on
+    frame one of sixteen, and it cannot flatter the result — this only ever moves a
+    candidate from "does not run" to "runs slowly", never the other way.
+    """
+    if "CUDAExecutionProvider" not in providers:
+        return session
+    try:
+        name = session.get_inputs()[0].name
+        session.run(None, {name: np.zeros((1, 3, MIN_SIDE, MIN_SIDE), dtype=np.float32)})
+        return session
+    except Exception:  # noqa: BLE001 — the point is which provider, not which exception
+        return onnxruntime.InferenceSession(path, options,
+                                            providers=["CPUExecutionProvider"])
 
 
 def _enable_cuda_dll_dirs() -> None:  # pragma: no cover — Windows-specific, needs CUDA

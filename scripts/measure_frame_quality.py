@@ -320,10 +320,15 @@ def format_face_sharpness(frames: list[Frame], rows: list[FaceRow],
 
 
 def format_band(frames: list[Frame], q: junk.QualitySettings) -> str:
-    """The band block: how many frames the VLM would be asked about, and why.
+    """The band block: how many frames the cheap tiers did NOT settle, and why.
 
     Split by REASON because the two conditions are independent knobs: if the whole band is
     the subject condition, moving the sharpness numbers changes nothing.
+
+    F186 retired the consumer of this band — the frame-quality question the model was
+    asked about the frames inside it — so the block no longer prices a model pass. What it
+    still does is what `features.sharpness_band_*` and `features.subject_score_min` are
+    chosen by, which is why the block stayed when the question went.
     """
     total = len(frames)
     low, high = q.sharpness_band
@@ -331,21 +336,18 @@ def format_band(frames: list[Frame], q: junk.QualitySettings) -> str:
                    if f.sharpness is not None and low <= f.sharpness <= high)
     by_subject = sum(1 for f in frames if f.subject_score < q.subject_score_min)
     inside = sum(1 for f in frames if junk.uncertain_band(f.sharpness, f.subject_score, q))
-    seconds = inside * 0.78  # the measured per-frame cost of the local VLM
     return "\n".join([
         "=" * 88,
-        f"НЕУВЕРЕННАЯ ПОЛОСА (популяция VLM, {total} кадров)",
+        f"НЕУВЕРЕННАЯ ПОЛОСА ({total} кадров)",
         f"  по резкости ({low:.1f}..{high:.1f}):       {by_sharp:>6d} "
         f"({_pct(by_sharp, total)})",
         f"  по сюжету (CLIP < {q.subject_score_min:.2f}):     {by_subject:>6d} "
         f"({_pct(by_subject, total)})",
         f"  итого в полосе (ИЛИ):          {inside:>6d} ({_pct(inside, total)})",
-        f"  цена на этой выборке: ~{seconds:.0f} с (0.78 с/кадр); "
-        f"в пересчёте на 20 000 кадров — "
-        f"~{20000 * (inside / total if total else 0) * 0.78 / 3600:.1f} ч",
         "=" * 88,
-        "Полоса сужается ещё и областью (vlm.quality_scope): по умолчанию только кадры "
-        "phash-групп.\nЗдесь она не учтена — это верхняя оценка.",
+        "Полоса больше никого ни о чём не спрашивает: вопрос к модели снят (F186).\n"
+        "Это доля кадров, которую дешёвые признаки не разделили, — по ней и выбираются "
+        "пороги.",
     ])
 
 

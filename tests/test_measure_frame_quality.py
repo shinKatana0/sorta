@@ -46,8 +46,7 @@ def frame(fid=1, pet_class=None, pet_score=0.0, sharpness=None, subject_score=0.
 
 def settings(**kwargs):
     base = dict(pets=True, pet_threshold=0.6, sharpness_max_edge=512,
-                sharpness_band=(30.0, 300.0), subject_score_min=0.9,
-                vlm_quality=True, vlm_scope="groups")
+                sharpness_band=(30.0, 300.0), subject_score_min=0.9)
     base.update(kwargs)
     return junk.QualitySettings(**base)
 

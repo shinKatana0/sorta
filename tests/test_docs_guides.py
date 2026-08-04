@@ -167,7 +167,10 @@ class TestEveryCommandAndFlagIsDocumented(unittest.TestCase):
         self.assertIn("sorta faces label", names)
         self.assertGreaterEqual(len(names), 15)
         flags = {opt for _name, opts in self.surface for opt in opts}
-        self.assertIn("--quality-scope", flags)
+        # Two flags of two different commands, so an empty walk cannot pass and neither
+        # can one that stops at the top level. `--quality-scope` stood here until F186
+        # retired the question it chose a population for.
+        self.assertIn("--preview-max-gb", flags)
         self.assertIn("--no-pets", flags)
 
     # `assertTrue` rather than `assertIn`: the container here is a 1,600-line guide, and
@@ -448,6 +451,47 @@ class TestGuidesAgreeWithTheCode(unittest.TestCase):
         for lang, path in {**GUIDES, **READMES}.items():
             with self.subTest(lang=lang):
                 self.assertIsNone(stale.search(read(path)))
+
+    def test_no_retired_key_is_still_documented(self):
+        """The other direction of the watchdog above, and the one F186 needed.
+
+        `test_every_configuration_key_is_documented` walks the dataclasses, so a key that
+        LEFT them is invisible to it: the guides went on describing `vlm.quality`, the
+        scope that chose who it was asked of and the comparative keeper question for as
+        long as anybody cared to read them. A documented key that does not exist is worse
+        than an undocumented one — it is a setting a person writes into their config.yaml
+        and then waits for something to happen.
+
+        `config.example.yaml` is checked with them: it is the file people copy, and a
+        retired key sitting in it would be written into every new config in the world.
+        The schema is checked with them too — its column comments are the field list, and
+        `frame_quality.eyes_open` was described there as a column a live key still wrote.
+        """
+        retired = ("vlm.quality", "vlm.quality_scope", "dedup.keeper_vlm",
+                   "estimate.keeper_call_sec", "estimate.keeper_frame_sec",
+                   "quality_scope:", "keeper_vlm:", "keeper_call_sec:",
+                   "keeper_frame_sec:", "--quality-scope", "--no-quality")
+        example = _ROOT / "config.example.yaml"
+        schema = _ROOT / "sorta" / "db" / "schema.sql"
+        for lang, path in {**GUIDES, "example": example, "schema": schema}.items():
+            text = read(path)
+            for key in retired:
+                with self.subTest(lang=lang, key=key):
+                    self.assertNotIn(key, text)
+
+    def test_the_keys_that_outlived_the_retired_ones_are_still_documented(self):
+        """The other half — a watchdog that passed on an emptied section would be worse
+        than none. These three sat next to what F186 removed and are still read."""
+        example = read(_ROOT / "config.example.yaml")
+        for key in ("dedup.keeper_max_frames", "dedup.keeper_min_group_size",
+                    "vlm.max_edge"):
+            for lang, path in GUIDES.items():
+                with self.subTest(lang=lang, key=key):
+                    self.assertIn(key, read(path))
+        for key in ("keeper_max_frames:", "keeper_min_group_size:",
+                    "measurement_max_age_days:"):
+            with self.subTest(key=key, file="config.example.yaml"):
+                self.assertIn(key, example)
 
 
 class TestContributingDescribesTheGate(unittest.TestCase):

@@ -487,20 +487,22 @@ class TestIncrementality(PetCascadeCase):
     def test_the_fingerprint_moves_only_when_the_check_runs(self):
         """A collection measured without the check must not be invalidated by a prompt
         nobody asked — so the question joins the fingerprint only when it is asked."""
-        plain = junk.quality_prompt_fingerprint(True, with_vlm=False)
+        plain = junk.quality_prompt_fingerprint(True)
         with unittest.mock.patch.object(junk, "_PET_VLM_PROMPT", "something else"):
-            self.assertEqual(junk.quality_prompt_fingerprint(True, with_vlm=False), plain)
-            moved = junk.quality_prompt_fingerprint(True, with_vlm=False,
+            self.assertEqual(junk.quality_prompt_fingerprint(True), plain)
+            moved = junk.quality_prompt_fingerprint(True,
                                                     verify_pets=True)
         self.assertNotEqual(
-            moved, junk.quality_prompt_fingerprint(True, with_vlm=False, verify_pets=True))
+            moved, junk.quality_prompt_fingerprint(True, verify_pets=True))
 
     def test_switching_the_check_on_marks_the_rows_as_the_model_tier(self):
-        source = junk._quality_source(True, True, None, lambda _p: "real")
+        source = junk._quality_source(True, True, lambda _p: "real")
         self.assertEqual(junk.quality_tier(source), junk.QUALITY_SOURCE_VLM)
-        # and it is a different marker from the one the band alone writes, so switching
-        # between the two questions reprocesses instead of looking done
-        self.assertNotEqual(source, junk._quality_source(True, True, lambda _p: ""))
+        # and it is a different marker from the one the CLIP tier alone writes, so
+        # switching the check on reprocesses instead of looking done. (Until F186 the
+        # comparison was against the marker of the frame-quality question, which was the
+        # other asker of this stage; the pet check is the one left.)
+        self.assertNotEqual(source, junk._quality_source(True, True, None))
 
 
 class TestSettingsAndAsker(unittest.TestCase):

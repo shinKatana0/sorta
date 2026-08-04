@@ -55,21 +55,21 @@ class MarkupCase(unittest.TestCase):
 class TestSubordinateOptionsFollowTheMaster(MarkupCase):
     """Brief requirement 3: shown, dead, and priced at zero."""
 
-    def test_the_three_vlm_options_are_named_as_subordinate(self):
-        """They are named in one list, so a fourth one cannot reach the screen without
-        a decision about which switch owns it.
+    def test_every_vlm_option_is_named_as_subordinate(self):
+        """They are named in one list, so a new one cannot reach the screen without a
+        decision about which switch owns it.
 
         F161 is what that sentence was written for: the deep junk tier was the master
         switch's own effect and therefore in no list at all, and giving it a line of its
-        own (`process-products-checkbox`) meant declaring which switch owns it.
+        own (`process-products-checkbox`) meant declaring which switch owns it. F186 took
+        three entries OUT of the same list — the quality question, the scope that chose
+        who it was asked of and the keeper question — so the list is checked exactly
+        rather than for what it contains, and a retired control cannot linger in it.
         """
         listed = self.html[self.html.index("var VLM_SUBORDINATE_IDS = ["):]
         listed = listed[:listed.index("];")]
-        for control in ("process-products-checkbox",
-                        "process-pets-verify-checkbox", "process-quality-checkbox",
-                        "process-quality-scope", "process-keeper-checkbox"):
-            with self.subTest(control=control):
-                self.assertIn('"' + control + '"', listed)
+        self.assertEqual(set(re.findall(r'"([\w-]+)"', listed)),
+                         {"process-products-checkbox", "process-pets-verify-checkbox"})
         self.assertIn("VLM_SUBORDINATE_IDS.forEach",
                       self.body("updateVlmSubordinatesDisabled"))
 
@@ -87,9 +87,11 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         body = self.body("updateVlmSubordinatesDisabled")
         self.assertIn('document.querySelectorAll(".vlm-off-hint")', body)
         self.assertIn('el.style.display = off ? "" : "none"', body)
-        # one caption per option — four of them since F161 gave the deep tier a line
+        # One caption per subordinate option, and there are two of them: the product
+        # line (F161) and the animal check. The other two went with the questions F186
+        # retired.
         self.assertEqual(self.html.count('class="process-toggle-hint cost-hint '
-                                         'vlm-off-hint"'), 4)
+                                         'vlm-off-hint"'), 2)
 
     def test_their_price_is_zero_and_not_the_old_number(self):
         """The estimate has to add up to what the run will do — a dash would say
@@ -116,7 +118,7 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         for match in re.finditer(r"\{ key: \"(\w+)\"(.*?)\}", rows, re.S):
             entries[match.group(1)] = "vlm: true" in match.group(2)
         self.assertEqual({key for key, marked in entries.items() if marked},
-                         {"products", "pets_verify", "quality", "keeper"})
+                         {"products", "pets_verify"})
         self.assertNotIn("vlm: true", rows.split('{ key: "deep"', 1)[1].split("}", 1)[0])
 
     def test_the_sum_is_recomputed_whenever_the_master_moves(self):

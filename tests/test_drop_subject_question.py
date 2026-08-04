@@ -13,15 +13,17 @@ Four properties, and the third is the one that cannot be skipped:
   the first edit of the file that hides it — and `no_subject` is now an unknown album
   kind, refused out loud;
 * THE STORED ANSWERS ARE ERASED. Nothing else would ever reach them: the question is out
-  of the prompt so the stage cannot overwrite them, `vlm.quality` is off so the stage does
-  not run, and a stale fingerprint only means "recompute", never "this stored answer is
-  wrong". Without the migration the slice would keep listing 212 frames of a question
-  nobody asks;
+  of the prompt so the stage cannot overwrite them, the stage does not run for it (F186
+  retired the whole prompt afterwards, so now it cannot), and a stale fingerprint only
+  means "recompute", never "this stored answer is wrong". Without the migration the slice
+  would keep listing 212 frames of a question nobody asks;
 * and the eyes answers SURVIVE that migration. They are the only quality answers a person
   has checked by eye, and they are one `UPDATE` away from being lost silently.
 """
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import json
 import sqlite3
 import tempfile
@@ -30,7 +32,6 @@ from pathlib import Path
 
 from sorta import i18n, junk, sorter, ui
 from sorta.db import SCHEMA_VERSION, connect
-from sorta.junk import QualityFlags, parse_quality_answer
 
 from tests.schema_history import roll_back_to, version_that_added
 from tests.test_docs_guides import GUIDES, read
@@ -38,35 +39,32 @@ from tests.test_ui_review import ReviewTestBase
 
 
 class TestThePromptAndTheParser(unittest.TestCase):
-    """Brief test 1: the question is not asked, and the word is not read."""
+    """Brief test 1: the question is not asked, and the word is not read.
 
-    def test_the_prompt_does_not_mention_a_subject(self):
-        self.assertNotIn("subject", junk._QUALITY_PROMPT.lower())
+    F186 answered this the strongest way there is: the prompt and the parser are gone
+    outright, with the last question they carried (`eyes_open`, replaced by the eyelid
+    geometry of F179). The case is kept and restated against that — "no prompt mentions a
+    subject" is a claim about a prompt that must go on being true, and the way it is true
+    now is that there is no prompt.
+    """
 
-    def test_the_prompt_still_asks_about_the_eyes(self):
-        """The half that stays — without this the case above passes on an empty prompt."""
-        self.assertIn("eyes_open", junk._QUALITY_PROMPT)
-        self.assertIn("eyes_closed", junk._QUALITY_PROMPT)
+    def test_nothing_of_the_quality_question_is_left_to_ask(self):
+        for name in ("_QUALITY_PROMPT", "_QUALITY_KEYWORDS", "parse_quality_answer",
+                     "QualityFlags", "vlm_quality_asker"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(junk, name))
 
-    def test_no_keyword_writes_the_retired_column(self):
-        fields = {name for name, _keywords in junk._QUALITY_KEYWORDS}
-        self.assertEqual(fields, {"eyes_open"})
+    def test_the_stage_takes_no_quality_asker(self):
+        parameters = inspect.signature(junk.classify).parameters
+        self.assertNotIn("quality_vlm", parameters)
+        self.assertNotIn("quality_vlm_factory", parameters)
 
-    def test_the_word_is_ignored_wherever_it_appears(self):
-        """Brief test 5 in the same breath: the eyes answer next to it still parses."""
-        for answer in ("no_subject", "subject", "eyes_open subject",
-                       "eyes_closed, no subject at all"):
-            with self.subTest(answer=answer):
-                self.assertIsNone(parse_quality_answer(answer).has_subject)
-        self.assertEqual(parse_quality_answer("eyes_open subject"),
-                         QualityFlags(eyes_open=True))
-        self.assertEqual(parse_quality_answer("eyes_closed, no subject at all"),
-                         QualityFlags(eyes_open=False))
-
-    def test_an_answer_that_is_only_the_retired_word_is_not_an_answer(self):
-        """It used to be one: `no_subject` alone parsed, was `known`, and was stored."""
-        flags = parse_quality_answer("no_subject")
-        self.assertFalse(flags.known)
+    def test_the_column_it_wrote_is_still_read(self):
+        """The half that stays. `has_subject` is a field of the row like any other — it
+        is only ever None now, and the next case in the file is what keeps it that way."""
+        self.assertIn("has_subject", {f.name for f in
+                                      dataclasses.fields(junk.FrameQuality)})
+        self.assertIsNone(junk.FrameQuality(file_id=1).has_subject)
 
 
 class MigrationCase(unittest.TestCase):

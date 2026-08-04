@@ -448,14 +448,12 @@ no need to restart `sorta ui`** — the next run reads the new one. What lives t
     by the model, and works with deep analysis switched off; `features.sharpness_max_edge`
     is the preview size for sharpness, and sharpness itself is the variance of a
     Laplacian — no model at all.
-  - **Through the VLM** — **Ask the model about quality** (`vlm.quality`) and **Which
-    frames to ask about** (`vlm.quality_scope` — a dropdown, because “Every frame” costs
-    about 4 hours over a 20 000-frame collection). Needs `vlm.enabled` and the `vlm`
-    extra.
-  - **Who reaches the model** — the two ways into the expensive part: the sharpness
-    uncertainty band (`features.sharpness_band_min` / `features.sharpness_band_max`) and
-    `features.subject_score_min`, the CLIP probability below which CLIP is saying it does
-    not know what it is looking at.
+  - **The uncertain band** — the two thresholds that describe the frames the cheap
+    signals did NOT settle: the sharpness band (`features.sharpness_band_min` /
+    `features.sharpness_band_max`) and `features.subject_score_min`, the CLIP probability
+    below which CLIP is saying it does not know what it is looking at. Nothing is asked
+    of a model about them any more — the question that was is retired (§24) — and the
+    band is what `python scripts/measure_frame_quality.py` reports over.
 - **Preview cache ceiling, GB** — `imaging.preview_cache_max_gb` (§18).
 - **Folders → folder‑name language** — `language`. The plan below is recomputed
   immediately, with no restart.
@@ -588,13 +586,6 @@ written to `config.yaml`):
                             to Nominatim. Default: from config.yaml (geo.provider).
 --pets / --no-pets         Look for animals this run (features.pets, §24). CLIP answers
                             it on a pass that runs anyway, so it is cheap.
---quality / --no-quality   Ask the model about frame quality this run (vlm.quality):
-                            are the eyes open. Needs the `vlm` extra.
---quality-scope groups|events|faces|all
-                           Which frames reach those questions (vlm.quality_scope). The
-                            price is measured: `all` ≈ 4.3 hours on 20 thousand frames,
-                            `faces` ≈ 95 minutes on 7,341 (and needs a `faces` run —
-                            without one the population is empty and nothing is asked).
 --by city|person|event     Also print a dry-run sort plan at the end (see §9)
 --dest DIR                 Destination for that plan (omit for in-place)
 ```
@@ -1094,15 +1085,13 @@ sorta index [DIR] [--exclude-dir NAME]
                                   --exclude-dir keeps a subfolder out of the scan (§21a)
 sorta index --refresh-exif        Re-read metadata of already-indexed files (§17)
 sorta run [--src DIR] [--faces/--no-faces] [--events/--no-events] [--deep/--no-deep]
-          [--geo offline|online] [--pets/--no-pets] [--quality/--no-quality]
-          [--quality-scope groups|events|faces|all] [--by city|person|event] [--dest DIR]
+          [--geo offline|online] [--pets/--no-pets] [--by city|person|event] [--dest DIR]
                                   Base pipeline (index→geo→landmarks→classify→junk); --src
                                   overrides config sources for this run; --faces/
                                   --events opt into the slow stages (default: off,
-                                  independent of each other); --deep/--geo/--pets/
-                                  --quality/--quality-scope override config.yaml for
-                                  this run only (§8, §24); with --by, also prints a
-                                  dry-run plan at the end
+                                  independent of each other); --deep/--geo/--pets
+                                  override config.yaml for this run only (§8, §24); with
+                                  --by, also prints a dry-run plan at the end
 sorta geo                         Resolve places (GPS + session inference)
 sorta landmarks                   Visual place guess for GPS-less scenes (conservative)
 sorta faces [--rescan] [--limit N]     Detect faces + cluster people; --rescan redoes
@@ -1117,11 +1106,9 @@ sorta events rename <id> <name>        Manual event name
 sorta classify                    Verdicts only (photo/screenshot/meme/document/product),
                                   the half of the junk stage that runs BEFORE faces so
                                   that faces are not looked for in screenshots (§8)
-sorta junk [--pets/--no-pets] [--quality/--no-quality]
-           [--quality-scope groups|events|faces|all]
-                                  Frame quality, animals, keeper, search index — and the
-                                  classification above when run on its own; the
-                                  frame-quality flags override config for this run (§24)
+sorta junk [--pets/--no-pets]      Frame quality, animals, search index — and the
+                                  classification above when run on its own; --pets
+                                  overrides config for this run (§24)
 sorta phash                       Perceptual hashes (for near-duplicates)
 sorta stats                       Index coverage (GPS, date sources, duplicates)
 sorta dupes [--near]              List exact / near duplicates
@@ -1491,7 +1478,6 @@ entirely.
 | Key | Default | What it does |
 |---|---|---|
 | `dedup.canonical_strategy` | `prefer_exif_then_largest` | Among exact duplicates the canonical file is the one that has EXIF, and the larger one when that ties. The rest are marked duplicates and stay out of the layout. |
-| `dedup.keeper_vlm` | `false` | Ask the local VLM which frame of a near-duplicate group is the one to keep — one comparative question ("which of these is best") per group, not a score per frame. It sees what sharpness cannot: closed eyes, a head turned away, a hand across the lens. Needs the VLM extra installed; the answer is stored in the `group_keeper` table as a **recommendation** together with its source (`sharpness` or the model), and nothing is deleted, moved or marked by it — the decision about a duplicate stays yours. With this off the Duplicates tab keeps recommending by sharpness, exactly as before. |
 | `dedup.keeper_max_frames` | `5` | How many frames of one group go into that question — the best N by sharpness; the rest are not shown and the answer applies to the whole group. Groups of a few dozen frames do occur, and a 3B model asked to compare 38 pictures answers nothing usable. |
 | `dedup.keeper_min_group_size` | `3` | The smallest group worth asking the model about. `2` is every group; set `3` to pay only where the choice is genuinely unclear — on a **pair** of the same scene sharpness already compares the two frames honestly, and pairs are the large majority of groups (791 groups on the reference collection, 115 of them with three frames or more). |
 
@@ -1610,13 +1596,11 @@ copy per process, so the settings are shared.
 
 | Key | What it does |
 |---|---|
-| `vlm.enabled` | **The master switch for the model, and nothing else.** Default `false`. It permits the VLM to be loaded; by itself it runs nothing and costs nothing — every question the model is asked has a key of its own (`vlm.products`, `vlm.quality`, `features.pets_verify`, `features.landmarks_verify`, `dedup.keeper_vlm`, `features.junk_rescue`), and this one decides whether there is anybody to ask. For a single run the same is done by `--deep`/`--no-deep` and by the "Deep analysis (VLM)" checkbox in the web UI. Without the `vlm` extra a run falls back gracefully to the fast CLIP tier. |
+| `vlm.enabled` | **The master switch for the model, and nothing else.** Default `false`. It permits the VLM to be loaded; by itself it runs nothing and costs nothing — every question the model is asked has a key of its own (`vlm.products`, `features.pets_verify`, `features.landmarks_verify`, `features.junk_rescue`), and this one decides whether there is anybody to ask. For a single run the same is done by `--deep`/`--no-deep` and by the "Deep analysis (VLM)" checkbox in the web UI. Without the `vlm` extra a run falls back gracefully to the fast CLIP tier. |
 | `vlm.products` | **Product recognition** — the deep classification tier, named after what it gives you. Default `true`, the only subordinate key with that default: before this key existed the deep tier was what `vlm.enabled` did by itself, and a config written earlier has to keep working. This tier is the only producer of the `product` class — without it the layout has no `_Products` folder and the products slice is empty (not thin: empty) — and it is also what *corrects* a wrong `document` verdict. Subordinate to `vlm.enabled`: with the master clear nothing is loaded. The price is a pass over the frames the fast tier is unsure about: ≈ 95 minutes on the live 24,196-photo collection, or the band above the threshold of `features.junk_rescue` when that is on (955 frames, ≈ 12 minutes). |
 | `vlm.model` | The model id. Default `Qwen/Qwen2.5-VL-3B-Instruct`. |
 | `vlm.workers` | Threads preparing frames (decode + preprocessing) while the GPU classifies the previous one. Default `min(4, cores)`. It does not affect verdicts — labels are applied in candidate order whatever it is set to. |
 | `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |
-| `vlm.quality` | A toggle of its own for the question about a frame's quality: are the eyes open. Default `false`. Another question — is this an accidental shot — was asked until F122 and has been retired: on a labelled sample it was right 5% of the time, which is noise. The eyes answer is believed only where the face detector found a face. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
-| `vlm.quality_scope` | Who gets asked: `groups` (frames of near-duplicate groups, the default), `events` (plus a sample from every event), `all` (every live photo). On 20 000 frames `all` means hours of GPU, which is why the default is narrow. |
 | `vlm.exclude_classes` | **Privacy:** classes no VLM is ever shown. The default is `[document]` — that bucket holds passports, medical forms and bank papers, and the project already refuses to DECODE them for display. The model is local and nothing leaves the machine, but the call is yours. **The cost is real:** the deep tier is what *corrects* a wrong `document` verdict (a beach photo scored 0.95 as a document on a live run), so an excluded class keeps whatever the fast tier decided. Accepted: `document`, `product`, `screenshot`, `meme`; `[]` shows everything. `photo` cannot be excluded. |
 
 > **An old config needs no editing.** The previous addresses
@@ -2009,22 +1993,21 @@ on either by a flag for one run (§8) or by a key in `config.yaml` (§21).
 
 ### Frame quality
 
-Sharpness is the variance of a Laplacian, computed with no model at all, while "are the
-eyes open" is asked of the local VLM (`vlm.quality`) — that is the one that costs
-time. Who gets asked is decided by `vlm.quality_scope`:
+Every signal here is computed with no model at all. Sharpness is the variance of a
+Laplacian over the preview the stage has already decoded; the face number is the same
+Laplacian inside the sharpest face box; and "are the eyes open" is the height of the eye
+opening over its width, measured on the eyelid points of the largest face.
 
-| Value | Who is asked | Price |
-|---|---|---|
-| `groups` | the frames of near‑duplicate groups (default) | the narrowest population |
-| `events` | plus a sample of each event's frames | wider than `groups`, narrower than `all` |
-| `faces` | the frames a face was found on | **≈ 95 minutes on 7,341 frames** |
-| `all` | every live photograph | **≈ 4.3 hours on 20 thousand frames** |
+That last one used to be a question to the local VLM, and it was the expensive part of
+this section — about 0.78 s per frame, hours of GPU over a collection. It is not asked any
+more. On 249 labelled frames the model was right 60% of the time and found 9% of the
+closed eyes; the eyelid geometry that replaced it is right 62% of the time and finds 48%,
+for no model call at all. The two keys that switched the question on and chose who it was
+put to are gone with it, and a `config.yaml` that still names them simply loads without
+them.
 
-Both numbers are measurements, not estimates. `faces` needs a `faces` run: that is a
-dependency and not a filter — without one the population is empty and nothing is asked at
-all. The answers show up in the Review (§22), and for a single run the whole thing is
-switched on with `--quality`/`--no-quality` and `--quality-scope` on `sorta run` and
-`sorta junk` (§8).
+The results show up in the Review (§22), and animals are the one thing here that still has
+a per-run flag: `--pets`/`--no-pets` on `sorta run` and `sorta junk` (§8).
 
 ---
 

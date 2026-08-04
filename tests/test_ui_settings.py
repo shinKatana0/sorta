@@ -22,7 +22,7 @@ from unittest import mock
 import yaml
 
 from sorta import imaging, ui
-from sorta.config import VLM_QUALITY_SCOPES, load_config
+from sorta.config import load_config
 
 from tests.test_ui_process import ProcessTestBase, _poll_until
 
@@ -109,9 +109,10 @@ class TestReadSettings(SettingsTestBase):
             "vlm.model": "some/other-vlm",
             "vlm.workers": 3,
             "vlm.max_edge": 640,
-            # F138: `vlm.enabled`, `vlm.quality`, `vlm.quality_scope` and
-            # `features.pets` are not answered here any more — they cost a run time, so
-            # they are priced on the run screen and this column is not their second home.
+            # F138: `vlm.enabled` and `features.pets` are not answered here any more —
+            # they cost a run time, so they are priced on the run screen and this column
+            # is not their second home. (The two that moved with them, `vlm.quality` and
+            # `vlm.quality_scope`, are retired outright since F186.)
             "features.pet_threshold": 0.7,
             "features.sharpness_max_edge": 512,
             "features.sharpness_band_min": 30.0,
@@ -224,16 +225,21 @@ class TestWriteSettings(SettingsTestBase):
         self.assertEqual(resp["settings"]["features.subject_score_min"], 0.8)
 
     def test_a_knob_that_moved_to_the_run_screen_is_refused_here(self):
-        """F138 §2: a knob has one home. The column no longer offers `vlm.quality`, so
+        """F138 §2: a knob has one home. The column no longer offers `vlm.enabled`, so
         the endpoint must not quietly accept it either — two writable addresses for one
-        value is exactly the pair of truths the move was made to end."""
+        value is exactly the pair of truths the move was made to end.
+
+        F186 retired two of the four keys this case was written over. They stay in the
+        list: a retired key is refused for a stronger reason than a moved one, and an
+        endpoint that started accepting `vlm.quality` again would be writing a value
+        nothing reads.
+        """
         self.start_server()
         for key, value in (("vlm.enabled", True), ("vlm.quality", True),
                            ("vlm.quality_scope", "all"), ("features.pets", True)):
             with self.subTest(key=key):
                 status, _resp = self.post_raw("/api/settings", {key: value})
                 self.assertEqual(status, 400)
-        self.assertIs(self.cfg.vlm.quality, False)
         self.assertIs(self.cfg.features.pets, False)
 
     def test_a_float_setting_takes_a_whole_number_too(self):
@@ -334,22 +340,6 @@ class TestRejectedValues(SettingsTestBase):
                 assert found is not None  # for mypy; assertIsNotNone already checked
                 self.assertEqual(float(found.group(1)), float(spec.minimum))
                 self.assertEqual(float(found.group(2)), float(spec.maximum))
-
-    def test_the_scope_select_offers_no_value_the_server_refuses(self):
-        """A select that offers a scope the server refuses is worse than no select.
-
-        F138 moved the select onto the run screen (the scope is what makes the quality
-        question 95 minutes or 4.3 hours), so the pairing is checked against the run
-        route's accepted set — the same assertion about the same hazard, one address
-        further along.
-        """
-        html = ui._render_index_html("en")
-        offered = re.findall(
-            r'<select id="process-quality-scope">(.*?)</select>', html, re.S)
-        self.assertEqual(len(offered), 1)
-        values = re.findall(r'value="([^"]+)"', offered[0])
-        self.assertTrue(values)
-        self.assertEqual(values, [v for v in VLM_QUALITY_SCOPES if v in values])
 
 
 class TestRefusedWhileBusy(SettingsTestBase):
