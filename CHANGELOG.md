@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The screenshot slice says it is an opinion** (F171). On 350 hand-labelled frames the
+  `screenshot` verdict is right about **59%** of what it points at (83% recall): every
+  third frame in that bucket is an ordinary photograph. The live run of 2026-08-04
+  reproduced the prediction made from that sample to within one frame — the rescue added
+  **441 frames** to the bucket (1 782 against 1 341), and 41% of what it adds are
+  photographs, so ~**181 personal pictures** left the city layout for a list a person
+  reads as "these are your screenshots" and never opens. No verdict, threshold or file
+  moves here: what changed is what the slice says and in what order it says it. The
+  caption now names the **model** as the author of the verdict, states the measurement it
+  was written from, and names returning a frame as an **ordinary step of the work** rather
+  than the repair of a rare mistake. A bucket is answered as a **list in order** —
+  `media_class.score` descending, the frames the classifier settled without a number
+  keeping the path order behind them — and the page says whether that ordering happened
+  (`ordered_by_score`), so the caption promises a ranking only where there is one; the
+  "all" view keeps the path order, because four classes are four separate softmaxes and an
+  order across them would be a comparison nobody measured. The way back is the action that
+  already existed (`POST /api/overrides` with `photo`), above the grid where it was, and
+  all three guides now carry the measurement, the run that confirmed it and the advice to
+  look the list over before deleting anything.
 - **Product recognition is a line of its own, with a price** (F161). "Deep analysis
   (VLM)" was the master switch of every question the model is asked (F145) and, by
   itself, the one thing that switched the deep junk tier on — which made it the only
