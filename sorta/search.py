@@ -38,6 +38,15 @@ implementation detail:
   is the one lever of completeness the measurements found (the query «дети» goes from 61%
   to 89% when the list is doubled), so it is the last thing this engine may take away.
 
+F151 adds a caller and not a mechanism. A PINNED slice — «дети», «товары» — is a saved
+query: a list of English phrases out of `features.saved_slices`, averaged into one
+direction by `encode_queries` and ranked by `rank_queries` down this very path. It gets
+the model filter, the reason instead of an empty list, the deterministic order and the
+window because it is a query; what it does not get, and what the six hand-written filters
+it replaces each had, is a threshold of its own. On the sample that decided it, asking the
+vectors beats the filter that was there (animals 60% recall against 33%) and creates the
+two slices that were not there at all (children 61%, products 65%).
+
 Known limits, measured elsewhere and repeated here so a caller does not have to guess:
 compound queries ("a cake with candles on a table by the window") are weak — CLIP takes a
 sentence as one whole and single subjects are what it does well. The population is
@@ -216,6 +225,44 @@ def encode_query(text: str, encoder: TextEncoder) -> np.ndarray:
     vec = np.asarray(encoder([text.strip()]), dtype=np.float32).ravel()
     norm = float(np.linalg.norm(vec))
     return vec / norm if norm > 0 else vec
+
+
+def encode_queries(texts: Sequence[str], encoder: TextEncoder) -> np.ndarray:
+    """Several phrases -> ONE unit vector: the ensemble a pinned slice is ranked by (F151).
+
+    Each phrase is brought to a norm of 1 before the mean, and the mean is normalized
+    again. Both steps matter for the same reason `encode_query` normalizes: the result has
+    to be a unit vector so that a dot product against the stored rows is a cosine, and a
+    phrase the tower answered with a longer vector must not weigh more than its neighbours
+    merely for that.
+
+    The averaging is what makes the list a list: three phrases give a direction none of
+    them has on its own, which is the difference between a slice and a query somebody
+    typed. What the ensemble does NOT do is improve accuracy — measured on 200 labelled
+    frames, one phrase, three and six are within the noise of each other — so the reason
+    for the list is that a slice can be retuned in `config.yaml` (see
+    `config.DEFAULT_SAVED_SLICES`).
+
+    The whole ensemble goes to the tower in ONE call: the phrases of a slice are known
+    together, and a call per phrase is a load of the same model N times over in the CLI.
+    Blank phrases are dropped; a slice with nothing left raises, because a pinned query
+    with no words would rank the collection by an arbitrary direction and look like an
+    answer.
+    """
+    wanted = [t.strip() for t in texts if t and t.strip()]
+    if not wanted:
+        raise ValueError("encode_queries: the slice carries no query")
+    # A COPY (`np.array`, not `np.asarray`): the rows are normalized in place below, and
+    # an encoder that answers out of a buffer of its own would have that buffer rewritten
+    # under it — a corruption that would show up as a ranking, never as an error.
+    matrix = np.array(encoder(wanted), dtype=np.float32).reshape(len(wanted), -1)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    # A zero row is left alone rather than divided by zero — it contributes no direction,
+    # which is the honest outcome of a phrase the tower answered with nothing.
+    matrix = np.divide(matrix, norms, out=matrix, where=norms > 0)
+    mean = matrix.mean(axis=0)
+    norm = float(np.linalg.norm(mean))
+    return mean / norm if norm > 0 else mean
 
 
 @dataclass(frozen=True)
@@ -512,6 +559,25 @@ def search_fusion(cfg: Config, conn: sqlite3.Connection, text: str, *,
         Page(hits=merged[start:], offset=start, limit=size,
              total=len({file_id for ranking in ranked.values() for file_id in ranking})),
         tuple(ranked), missing)
+
+
+def rank_queries(cfg: Config, conn: sqlite3.Connection, texts: Sequence[str], *,
+                 limit: int | None = None, offset: int = 0,
+                 encoder: TextEncoder | None = None) -> Page:
+    """`rank_text` for a PINNED slice — the same ranking, asked by several phrases (F151).
+
+    Deliberately the same path and not a second engine: a saved slice is a saved query, so
+    it gets the model filter, the width check, the reason instead of an empty list, the
+    deterministic order and the window — everything a typed query gets — and the only
+    difference between the two callers is how the vector was built. A slice that ranked by
+    rules of its own would be the sixth filter this feature exists to remove.
+    """
+    model = search_index_model(cfg)
+    if encoder is None:  # pragma: no cover — ML, smoke test
+        encoder = text_encoder(search_index_settings(naming_settings(cfg), model))
+    vector = encode_queries(texts, encoder)
+    return rank(conn, vector, model, offset=offset,
+                limit=int(limit if limit is not None else cfg.features.search_page))
 
 
 def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,

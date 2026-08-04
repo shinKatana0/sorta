@@ -360,6 +360,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **A slice is a saved query, not a sixth filter with a threshold of its own** (F151).
+  Measured on 2026-08-02 — 200 frames out of 22 096, labelled by hand, and the first time
+  **recall** was measured rather than the precision of the top — the hand-written filters
+  find **6%** of the blurred frames, **33%** of the animals, **0%** of the products, and
+  there is no filter at all for children (an estimated 4 860 photographs) or people. The
+  **same vectors**, asked in words, give **61%** for children, **65%** for products and
+  **60%** for animals at the same depth, and **89% / 95% / 87%** at twice it. The price is
+  zero: the vectors are the ones the junk stage already stores (F128/F141) and a query is
+  one matrix multiplication (0.9 ms measured). So the **Slices** tab now pins three of them
+  — **Children**, **Products**, **Animals · by query** — beside people and events, out of
+  `features.saved_slices`: **a name and a list of phrases in the config file**, so a slice
+  is retuned, added or deleted without code and without a release. The number of phrases is
+  **not** why it works (one, three and six differ by less than the noise of the sample); the
+  list is there to be edited, and the panel prints it so there is something to edit. Three
+  decisions are the feature. **These lists are estimates and are captioned apart from the
+  exact ones**: the `pets` label stays exactly as it was — 71% precision, checked by a model,
+  answering "is this confidently an animal" — and stands next to the query slice under a
+  different name, because with one label a reader takes an estimate for a fact. **There is
+  no membership threshold and there will not be one**: the list is ranked, and where it
+  stops being about the query is a judgement the person reading it makes. **Depth is the
+  lever**, the only one the measurement confirmed, so "show more" is the primary button of
+  this panel rather than a ghost at the bottom, and it continues the same ranking
+  `features.search_page` frames at a time — no repeats, nothing skipped. Two populations are
+  deliberately left out: **people**, because `faces` answers that exactly and for free (7 341
+  frames against an estimate of 6 080 — F152 already draws those slices), and **blurred**,
+  where the sharpness filter is 100% precise on that sample against 36% for the query and
+  merging the two would sink the exact signal into the approximate one. An index that cannot
+  rank says which of its states it is in, exactly as the search line does — a pinned slice
+  must never come back as an empty list, because nobody typed anything to be wrong about.
 - **A "low resolution" slice — the one signal in the product that needs no measurement**
   (F150). Measured on 22 095 photographs (2026-08-02): **706** frames hold fewer than a
   megapixel, and **682 of them are formally sharp** — the intersection with the blur

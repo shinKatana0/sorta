@@ -328,7 +328,20 @@ F125 rule, since a zero would read as a claim about the person's photographs. Se
 classes follow the F133 rule unchanged (listed, but no `thumb_url`). The one action these
 slices offer is the existing `POST /api/album` with `kind='people'|'group'|'portrait'`.
 
-(24) F174 adds no route and changes no storage: `/api/junk` and `/api/animals` now carry
+(24) `GET /api/saved-slices` (F151, the pinned queries of the "Slices" tab) — the list of
+saved slices out of `features.saved_slices` on every answer, plus one bounded page of the
+one that was asked for (`slice=`, `offset=`, `limit=`). It is `/api/search` with the words
+coming from the config instead of from a field: the same engine, the same page shape, the
+same state of the index, the same F133 rule about sensitive classes — and the same absence
+of a threshold, because "is this a child" is not a line anybody can draw. What the route
+adds is the two things a pin needs: `queries`, the phrases the slice was ranked by (so the
+panel can show what it asked and a reader can go and edit them), and the fact that these
+lists are ESTIMATES. There is no count on a pin and none is invented: a ranking has no
+size, and a number beside "children" would read like the archive holds exactly that many.
+Asked without `slice` the route ranks nothing and loads no model — that is the call the
+tab makes on open to build the row.
+
+(25) F174 adds no route and changes no storage: `/api/junk` and `/api/animals` now carry
 `dest`/`dest_reason`/`dest_group` on every card — WHERE that frame ends up. Two marks the
 slices offer read as one movement to the person making it ("this frame does not belong
 here") and neither said where the frame goes: taking an animal mark off changes a
@@ -392,6 +405,7 @@ from .config import (
     # meanwhile. Different lines, so git merged both without a word and left a name with
     # no import behind — the kind of break only a gate on the SUM can find.
     FeaturesConfig,
+    SavedSlice,
     save_language,
     save_setting,
 )
@@ -431,6 +445,7 @@ from .search import (
     REASON_OTHER_MODEL,
     EmbeddingsMissing,
     TextEncoder,
+    rank_queries,
     rank_text,
     text_encoder,
 )
@@ -3468,6 +3483,112 @@ def _parse_search_query(query: dict[str, list[str]],
     if window is None:
         return None
     return (query.get("q") or [""])[0], window[0], window[1]
+
+
+# --- F151: the pinned queries of the "Slices" tab (`GET /api/saved-slices`) ------------
+# A slice is a saved query. The measurement of 2026-08-02 (200 frames out of 22 096,
+# labelled by hand, the first time RECALL was measured rather than the precision of the
+# top) is what turned the feature around: the six hand-written filters find 6% of the
+# blurred frames, 33% of the animals, 0% of the products and have nothing at all for
+# children — while the SAME vectors, asked in words, give 61% for children, 65% for
+# products and 60% for animals at the same depth, and 89% / 95% / 87% at twice it.
+#
+# So this route adds no model, no pass and no table: the vectors are the junk stage's
+# (F128/F141), the ranking is F129's, the paging is F173's, and the only new thing on the
+# server is WHERE the words come from — `features.saved_slices`, a config entry rather
+# than code, so a slice can be retuned or added without a release.
+#
+# Three properties are the feature and each is a decision:
+#
+# * these lists are ESTIMATES and are labelled apart from the exact ones. The `pet` label
+#   next to them is 71% precise and verified by a model; this ranking is 60% and verified
+#   by nobody. Both slices stay, because they answer different questions ("is this
+#   confidently an animal" against "show me every animal"), and if their captions matched
+#   a reader would take one for the other;
+# * no count on a pin, and no threshold anywhere. A ranking covers the whole index, so its
+#   length is not a number of children; where the list stops being about the query is a
+#   judgement, and the person reading it makes it;
+# * depth is the lever. The page is `features.search_page` and "show more" continues the
+#   same ranking — the one handle the measurement confirmed (61% -> 89%).
+#
+# Not here on purpose: PEOPLE (the signal is `faces`, 7 341 frames, exact and free — F152
+# already draws it) and BLURRED (the sharpness filter is 100% precise on the sample and
+# the query 36%; merging them is a different feature, and the exact half has to come
+# first or it drowns).
+
+
+def _saved_slice_by_name(cfg: Config, name: str) -> SavedSlice | None:
+    for slice_ in cfg.features.saved_slices:
+        if slice_.name == name:
+            return slice_
+    return None
+
+
+def _saved_slices_payload(cfg: Config, db_path: Path, name: str | None, offset: int,
+                          limit: int, encoder: TextEncoder | None = None) -> dict:
+    """`GET /api/saved-slices` — the pins always, one page of the asked-for slice.
+
+    The shape is `_search_payload`'s and deliberately so: a pinned slice IS a search, so
+    the state of the index travels with every answer and an index that cannot rank says
+    which of the two unavailable states it is in instead of coming back as an empty list.
+    That rule is worth more here than in the search line — nobody types "children" into a
+    pin, so an empty page would be read as a fact about the archive rather than as a
+    question that missed.
+
+    `name=None` is the tab's own call on open: the pins and the state, no ranking, no
+    model. The phrases travel with the page because the panel prints them — a slice whose
+    words are invisible cannot be edited by the person it is wrong for.
+    """
+    # The LIVE config, in the file's own order — that order is the order of the pins.
+    slices = cfg.features.saved_slices
+    conn = _connect(db_path)
+    try:
+        model = search_index_model(cfg)
+        current = _saved_slice_by_name(cfg, name) if name else None
+        payload = _search_index_state(conn, model)
+        payload.update({
+            "slices": [{"slice": s.name, "queries": list(s.queries)} for s in slices],
+            "slice": current.name if current else None,
+            "queries": list(current.queries) if current else [],
+            # The one word the client needs to caption these lists apart from the exact
+            # slices beside them. A constant rather than a per-slice flag: everything this
+            # route serves is a ranking, and the day one of them is not, it will not be
+            # served from here.
+            "approximate": True,
+            **_page_payload([], total=0, offset=offset, limit=limit),
+        })
+        if current is None or not payload["available"]:
+            return payload
+        try:
+            page = rank_queries(cfg, conn, current.queries, limit=limit, offset=offset,
+                                encoder=encoder)
+        except EmbeddingsMissing as exc:
+            payload["state"] = exc.reason
+            payload["available"] = False
+            return payload
+        payload.update(_page_payload(
+            _search_items(conn, page.hits, frozenset(cfg.vlm.exclude_classes)),
+            total=page.total, offset=page.offset, limit=page.limit))
+        return payload
+    finally:
+        conn.close()
+
+
+def _parse_saved_slice_query(cfg: Config, query: dict[str, list[str]],
+                             default_limit: int) -> tuple[str | None, int, int] | None:
+    """(slice name or None, offset, limit) for `GET /api/saved-slices`, or None -> 400.
+
+    An absent `slice` is NOT an error — it is how the pin row is asked for. A `slice` that
+    is not in the config IS one, the `_parse_face_slice_query` rule: answering it with an
+    empty page would show a slice that does not exist as one holding no photographs.
+    """
+    window = _parse_page_window(query, default_limit)
+    if window is None:
+        return None
+    name = (query.get("slice") or [""])[0].strip()
+    if name and _saved_slice_by_name(cfg, name) is None:
+        return None
+    return (name or None), window[0], window[1]
 
 
 class _LazyTextEncoder:
@@ -7234,6 +7355,64 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Could not load the face slices: ",
         "ja": "顔のスライスを読み込めません: ",
     },
+    # --- F151: the pinned queries ------------------------------------------------------
+    # The labels of the three slices `features.saved_slices` ships with. A name that is not
+    # in this catalog is shown as it stands in the config — the row must not refuse to draw
+    # a slice somebody added, and a made-up translation would be worse than the key itself.
+    "query_slice_children": {"ru": "Дети", "en": "Children", "ja": "子ども"},
+    "query_slice_products": {"ru": "Товары", "en": "Products", "ja": "商品"},
+    "query_slice_animals": {"ru": "Животные", "en": "Animals", "ja": "動物"},
+    # THE caption rule of this feature. «Животные» the pin and «Животные» the pet label are
+    # two different slices of one archive — 60% precision against 71%, a ranking against a
+    # verdict a model checked — and with the same label a reader would take the estimate for
+    # the fact. So every pinned query wears the mark, including the ones with no exact
+    # counterpart: what is marked is the METHOD, not the collision.
+    "query_slice_pin": {
+        "ru": "{name} · по запросу", "en": "{name} · by query", "ja": "{name}・クエリ",
+    },
+    "query_slice_intro": {
+        "ru": "Это оценка, а не метка: срез собран запросом к тем же векторам, и ни одна "
+              "модель его не проверяла. Порога «точно оно» здесь нет — список идёт от "
+              "самого близкого, и где он перестаёт быть про запрос, решаете вы. На "
+              "размеченной выборке из 200 кадров такой срез находит около 60% нужного в "
+              "первой порции и около 90% в удвоенной, поэтому «Показать ещё» здесь — "
+              "главная кнопка, а не украшение.",
+        "en": "This is an estimate, not a label: the slice is a query over the same "
+              "vectors and no model has checked it. There is no “this really is it” "
+              "threshold — the list runs from the closest down, and where it stops being "
+              "about the query is yours to decide. On a hand-labelled sample of 200 "
+              "frames a slice like this finds about 60% of what you are after in the "
+              "first portion and about 90% in a doubled one, which is why “Show more” is "
+              "the main button here rather than a decoration.",
+        "ja": "これはラベルではなく推定です。同じベクトルへの問い合わせで集めた"
+              "スライスであり、モデルによる確認は行われていません。「確実に該当」と"
+              "いうしきい値はなく、近い順に並ぶだけなので、どこで終わりにするかは"
+              "あなたが決めます。200 コマの人手ラベル付き標本では、最初の一覧で約 "
+              "60%、倍の深さで約 90% を拾えます。だからこそ「さらに表示」が主役の"
+              "ボタンです。",
+    },
+    # What the slice actually asked, on screen — the half that makes "editable without
+    # code" real rather than stated. The phrases stay English whatever `language:` says:
+    # they go to a CLIP text tower and not to a reader, and the measured numbers were
+    # produced by this wording.
+    "query_slice_phrases": {
+        "ru": "Запрос среза: {phrases}. Правится в features.saved_slices; формулировки "
+              "английские — язык интерфейса на выдачу не влияет.",
+        "en": "The slice asks: {phrases}. Edit it in features.saved_slices; the phrases "
+              "are English — the interface language does not change this list.",
+        "ja": "このスライスの問い合わせ: {phrases}。features.saved_slices で編集でき"
+              "ます。表現は英語です（表示言語はこの一覧に影響しません）。",
+    },
+    "query_slice_shown_label": {
+        "ru": "Срез «{name}»: показано {shown} из {total}, от самого близкого",
+        "en": "Slice “{name}”: showing {shown} of {total}, closest first",
+        "ja": "スライス「{name}」: {total} 件中 {shown} 件を表示（近い順）",
+    },
+    "error_loading_saved_slices": {
+        "ru": "Не удалось загрузить срез по запросу: ",
+        "en": "Could not load the query slice: ",
+        "ja": "クエリのスライスを読み込めません: ",
+    },
     "slices_pinned_label": {
         "ru": "Закреплённые срезы", "en": "Pinned slices", "ja": "固定スライス",
     },
@@ -8335,6 +8514,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <button type="button" id="search-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
 <span id="search-shown" class="override-hint"></span>
 <span id="search-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
+</div>
+</div>
+
+<div id="tab-query" class="slice-panel">
+<p class="process-intro">{{query_slice_intro}}</p>
+<p id="query-phrases" class="override-hint"></p>
+<div id="query-grid"></div>
+<div class="process-actions">
+<button type="button" id="query-more-btn" class="btn btn-primary" style="display:none">{{slice_load_more}}</button>
+<span id="query-shown" class="override-hint"></span>
+<span id="query-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
 </div>
 </div>
 
@@ -9663,6 +9853,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function slicePanelId(key) {
     if (key.indexOf("junk") === 0) return "tab-junk";
     if (key.indexOf("face:") === 0) return "tab-face";
+    if (key.indexOf("query:") === 0) return "tab-query";
     return "tab-" + key;
   }
 
@@ -9678,6 +9869,17 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
                     faceSlice: name });
       });
     }
+    // F151: the pinned queries, and high in the row on purpose. Children are 22% of a
+    // labelled sample and products 10% — the two largest populations the product had no
+    // slice for at all — and a pin nobody scrolls to is a slice nobody knows exists: the
+    // measurement is how the user found out there were ~4 860 photographs of children,
+    // which is a thing the product should have said. They carry NO count: a ranking has
+    // no size, and a number beside "Children" would read as "your archive holds this
+    // many". The mark in the label is what keeps them apart from the exact slices.
+    (savedSlices || []).forEach(function (s) {
+      pins.push({ key: "query:" + s.slice, label: savedSlicePinLabel(s.slice),
+                  savedSlice: s.slice });
+    });
     if (sliceVisibility.person) pins.push({ key: "person", label: I18N.tab_person });
     if (sliceVisibility.event) pins.push({ key: "event", label: I18N.tab_event });
     if (sliceVisibility.animal) pins.push({ key: "animal", label: I18N.tab_animal });
@@ -9726,7 +9928,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     searchActive = false;
     var panelId = slicePanelId(key);
     ["tab-person", "tab-event", "tab-animal", "tab-junk", "tab-face",
-     "tab-search"].forEach(function (id) {
+     "tab-query", "tab-search"].forEach(function (id) {
       document.getElementById(id).classList.toggle("active", id === panelId);
     });
     slicePins.forEach(function (p) {
@@ -9739,6 +9941,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       faceLoaded = true;
       faceSlice = pin.faceSlice;
       loadFaceSlice();
+    }
+    // F151: the same arrangement — several pins over one panel, refetched whenever the
+    // slice changes, because the panel holds one ranking at a time.
+    if (pin.savedSlice !== undefined && (querySlice !== pin.savedSlice || !queryLoaded)) {
+      queryLoaded = true;
+      querySlice = pin.savedSlice;
+      loadSavedSlice();
     }
     if (key === "person" && !clustersLoaded) {
       clustersLoaded = true;
@@ -9775,6 +9984,22 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       fetch("/api/face-slices?offset=0&limit=0")
         .then(function (r) { return r.json(); })
         .then(function (data) { applyFaceCounts(data); })
+        .catch(function () {}),
+      // F151: the pinned queries come from the config, so they are ASKED FOR rather than
+      // written into the row here — an edit of `features.saved_slices` reaches the pins
+      // on the next open of the tab and never through a restart. Without a `slice` the
+      // route ranks nothing and loads no model: this call costs a list.
+      fetch("/api/saved-slices?offset=0&limit=0")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          // The F152 rule for when a pin exists at all: as soon as the index holds a
+          // photograph, and not once the slice is known to hold something. Their empty
+          // state is a SENTENCE ("switch the search index on and process the collection")
+          // and a pin that hides itself never gets to say it — while over an index with
+          // no photographs in it there is nothing to say, and "no slices yet" is the
+          // honest line.
+          savedSlices = (data.photos ? data.slices : []) || [];
+        })
         .catch(function () {}),
     ])
       .then(function () {
@@ -9848,7 +10073,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function showSearchPanel() {
     searchActive = true;
-    ["tab-person", "tab-event", "tab-animal", "tab-junk"].forEach(function (id) {
+    ["tab-person", "tab-event", "tab-animal", "tab-junk", "tab-face",
+     "tab-query"].forEach(function (id) {
       document.getElementById(id).classList.remove("active");
     });
     document.getElementById("tab-search").classList.add("active");
@@ -9979,6 +10205,71 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   document.getElementById("slice-query-goto").addEventListener("click", function () {
     activateTab("overview");
   });
+
+  // --- F151: the pinned queries (children, products, animals by query) --------
+  // The same panel as the search results, fed by words that come from `features.
+  // saved_slices` instead of from the field above. Nothing here knows how to rank: the
+  // route is `/api/search` with the query taken from the config, so a pinned slice cannot
+  // drift away from what a person gets by typing the same words.
+  //
+  // Two things are deliberately different from the slices around it. The cards carry a
+  // SCORE and the panel says the list is an estimate — these are rankings, not marks — and
+  // the "show more" button is the primary one rather than a ghost: depth is the only lever
+  // of completeness the measurement confirmed (about 60% found in the first portion, about
+  // 90% in a doubled one), so the control that turns it is not the quietest thing on the
+  // screen.
+
+  var savedSlices = [];     // [{slice, queries}] — the config's own order, the pin order
+  var querySlice = null;
+  var queryLoaded = false;
+
+  function savedSliceLabel(name) {
+    // A slice added to the config gets its own name on the pin: the catalog holds the
+    // three that ship, and inventing a translation for the rest would be worse than the
+    // word the person wrote themselves.
+    return I18N["query_slice_" + name] || name;
+  }
+
+  function savedSlicePinLabel(name) {
+    return fmt(I18N.query_slice_pin, { name: savedSliceLabel(name) });
+  }
+
+  // No `pageSize`: the page is `features.search_page` and it is the server's to know —
+  // the search pager's reason, and the same one that keeps the setting out of the JS.
+  var queryPager = makePager({
+    grid: "query-grid",
+    cardSelector: ".search-card",
+    moreBtn: "query-more-btn",
+    shown: "query-shown",
+    hint: "query-depth-hint",
+    url: function (offset) {
+      return "/api/saved-slices?slice=" + encodeURIComponent(querySlice) +
+             "&offset=" + offset;
+    },
+    card: renderSearchCard,
+    // Never "there are no children in your archive": an index that cannot rank says which
+    // of its states it is in, exactly as the typed query does (F134).
+    emptyText: function (data) {
+      return data.available ? I18N.search_no_frames : searchStateText(data);
+    },
+    errorText: function () { return I18N.error_loading_saved_slices; },
+    shownText: function (n, total) {
+      return fmt(I18N.query_slice_shown_label,
+                 { name: savedSliceLabel(querySlice), shown: n, total: total });
+    },
+    onData: function (data) {
+      applySearchState(data);
+      // The phrases on screen are what makes "edit it without code" an offer rather than
+      // a claim — and they are the answer to "why is this frame here".
+      document.getElementById("query-phrases").textContent =
+          fmt(I18N.query_slice_phrases,
+              { phrases: (data.queries || []).join(" · ") });
+    },
+  });
+
+  function loadSavedSlice() {
+    return queryPager.load();
+  }
 
   // F54: «Люди»/«События» скрыты по умолчанию (без мигания) и раскрываются
   // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
@@ -13509,6 +13800,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._serve_review(parse_qs(parts.query))
             elif path == "/api/search":
                 self._serve_search(parse_qs(parts.query))
+            elif path == "/api/saved-slices":
+                self._serve_saved_slices(parse_qs(parts.query))
             elif path == "/api/places/search":
                 self._serve_places_search(parse_qs(parts.query))
             elif path == "/api/process/status":
@@ -13752,6 +14045,21 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             text, offset, limit = parsed
             self._send_json(_search_payload(cfg, db_path, text, offset, limit,
                                             encoder=query_encoder))
+
+        def _serve_saved_slices(self, query: dict[str, list[str]]) -> None:
+            # F151: read-only, and the slices come off the LIVE config for the reason
+            # `/api/junk` reads its sensitive classes that way — `features.saved_slices`
+            # is edited to retune a slice, and a pin that needs a restart to change is a
+            # pin nobody will retune. Without `slice` nothing is ranked and no model is
+            # loaded: that call is how the pin row is built.
+            parsed = _parse_saved_slice_query(cfg, query, cfg.features.search_page)
+            if parsed is None:
+                self._send_json({"error": "invalid slice/offset/limit"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            name, offset, limit = parsed
+            self._send_json(_saved_slices_payload(cfg, db_path, name, offset, limit,
+                                                  encoder=query_encoder))
 
         def _serve_places_search(self, query: dict[str, list[str]]) -> None:
             # F85c: read-only, bundled data only. `?lang=` decides the language of the
