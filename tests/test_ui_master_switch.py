@@ -170,12 +170,14 @@ class TestEverythingThatWritesIsFrozenDuringARun(MarkupCase):
         self.assertIn('document.querySelectorAll(".album-gather-btn")',
                       self.body("updateBusyControlsDisabled"))
         # every one of the album buttons starts from the same state, because the box
-        # that holds it is rebuilt on demand and may well be rebuilt mid-run. Six
-        # builders since F152: named people, events, animals, a query, the shared row the
-        # class buckets and the quality slices are drawn with — and `renderFaceAlbum
-        # Controls`, which the three face slices have to themselves because the slice
-        # they gather is chosen by a parameter rather than by which panel is open.
-        self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 6)
+        # that holds it is rebuilt on demand and may well be rebuilt mid-run. Seven
+        # builders since F156: named people, events, animals, a typed query, the shared
+        # row the class buckets and the quality slices are drawn with, `renderFaceAlbum
+        # Controls` (which the three face slices have to themselves because the slice they
+        # gather is chosen by a parameter rather than by which panel is open) — and the
+        # gather row of a PINNED query, which is a slice like any other and so offers the
+        # same album as the rest of them.
+        self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 7)
 
     def test_applying_the_layout_is_dead(self):
         self.assertIn("applyBtn.disabled = busy || cityPlanCount === 0",
@@ -184,9 +186,11 @@ class TestEverythingThatWritesIsFrozenDuringARun(MarkupCase):
     def test_each_group_says_why(self):
         """A caption per block of controls — the run options, the layout, the two sets
         of layout marks, the settings column, the folder language, the duplicate save,
-        the review marks and the junk restore — plus the ones the album boxes build for
-        themselves as they are drawn."""
-        self.assertEqual(self.html.count('busy-hint" style="display:none"'), 9)
+        the review marks and the junk restore, and since F156 the search line's "pin as a
+        slice" and the pin/arrows of a pinned slice (three writes of `config.yaml`, which
+        the server refuses mid-run) — plus the ones the album boxes build for themselves
+        as they are drawn."""
+        self.assertEqual(self.html.count('busy-hint" style="display:none"'), 11)
         self.assertIn(ui._UI_STRINGS["actions_busy"]["ru"], self.html)
         self.assertIn('document.querySelectorAll(".busy-hint")',
                       self.body("updateBusyControlsDisabled"))
@@ -293,6 +297,9 @@ _BODIES: dict[str, object] = {
     "/api/clusters/merge": {"source_id": 1, "target_id": 2},
     "/api/album": {"kind": "animal", "mode": "hardlink"},
     "/api/source-tree/excludes": {"root": ".", "scan": [], "sort": []},
+    "/api/saved-slices/pin": {"name": "mountains", "query": "mountains"},
+    "/api/saved-slices/unpin": {"slice": "children"},
+    "/api/saved-slices/move": {"slice": "children", "delta": 1},
     "/api/process": {"source_dir": "."},
     "/api/process/rerun-optional": {"faces": True},
     "/api/process/reset": {},

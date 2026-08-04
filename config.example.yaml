@@ -681,6 +681,16 @@ features:
   # not for accuracy. Add a name, edit a phrase, delete an entry — the pins follow.
   # There is no membership threshold and there will not be one: the list is ranked, and
   # depth is the lever ("Show more" continues the same ranking, `search_page` at a time).
+  # F156: THE WEB APP WRITES HERE TOO. "Pin as a slice" beside the search line adds an
+  # entry to this mapping, "unpin" removes one, and the arrows on a pinned slice reorder
+  # them — the order below is the order of the pins on screen. That is why the pins live in
+  # the config file rather than in the index: `sorta reset` and every re-processing rebuild
+  # the index, and a slice somebody named for themselves must not be one re-index away from
+  # gone. The comments above this key survive an edit from the interface; comments written
+  # INSIDE the mapping do not.
+  # A pin made from the search line holds the ONE phrase that was typed, and a phrase in
+  # Russian or Japanese will rank badly until the search index is multilingual — the
+  # interface says so at the moment of pinning rather than afterwards.
   saved_slices:
     children:
       - "a photo of a child"
@@ -694,6 +704,13 @@ features:
       - "a photo of an animal"
       - "a pet at home"
       - "a photo of a dog or a cat"
+  # F156: how many pins the INTERFACE will add to the mapping above. Not a resource bound —
+  # a pin costs a line here and one matrix multiplication when it is opened — but the bound
+  # F133 put on the screen when it removed thirteen controls from it: forty pins is a remote
+  # control again, and the slice you actually wanted becomes the hardest thing on the tab to
+  # find. Reaching it is SAID out loud, never a pin that quietly does not appear. Editing
+  # this file by hand is not governed by it: a longer list written here keeps every slice.
+  max_pinned_slices: 12
   # F152: the two numbers the FACE SLICES need — "photographs with people", "group
   # photographs", "portraits" in the Slices tab, and `sorta album people|group|portrait`.
   # Nothing here is a confidence threshold: those slices are read off the `faces` table,
