@@ -58,11 +58,38 @@ back down, or refuse the action altogether — is not decided here. It is decide
 measurement `scripts/measure_restore.py` prints, on the three populations separately,
 with a human looking at blind pairs. Guessing that was the mistake F149's first probe
 already made once.
+
+F185: THE FILE APPEARS AFTER THE ROW, NOT BEFORE IT
+---------------------------------------------------
+The copy used to be written under its final name and the row inserted by a SEPARATE
+call, so an insert that failed left a file the index had never heard of. That is not a
+cosmetic leak: the next `index` run reads such a file as a NEW photograph, and the
+collection gains a near-duplicate nobody made. It happened for real — 81 `_restored`
+files on the owner's archive, none of them in the index.
+
+So the copy is now written to a staging name beside its destination, the row is written
+while the file is still called that, and only then is it renamed into place (a rename
+inside one directory is atomic). Every way out of that sequence that is not "the row is
+in" takes the staging file with it. The other order — write, insert, delete on failure —
+would also work; this one is preferred because it never deletes anything that could
+already have been seen, and because the failure it guards against is the one that leaves
+rubbish rather than the one that leaves nothing.
+
+The failure itself is a CODE like all the others (`ERROR_DATABASE_BUSY`). SQLite lets one
+writer in at a time and an index stage can be running from the terminal, so a busy index
+is an ordinary state of this program, not a defect — and the caller was getting it as a
+stack trace out of a request handler.
+
+A caller that KEEPS the copy has one entry point for all of that: `restore_and_record`.
+`restore_frame` on its own still writes a file and says nothing about the index, which is
+what the measurement scripts want — and is exactly how the 80 orphans before it got there.
 """
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,14 +126,37 @@ DEFAULT_RESTORE_MAX_EDGE = 1024
 RESTORED_SUFFIX = "_restored"
 JPEG_QUALITY = 95
 
+# F185: what the copy is called while it is being written and before the index knows
+# about it. It ends in something that is plainly not a photograph, so a file left behind
+# by a killed process reads as debris rather than as a frame — and, more concretely, so
+# `restored_path`'s "never over an existing file" scan cannot mistake one for a copy that
+# is already there.
+STAGING_SUFFIX = ".part"
+
 # The reasons, as codes rather than sentences: the interface translates them (three
 # languages), and a caller that has to parse prose to tell "no weights" from "unreadable
 # frame" would get it wrong the first time the wording is edited.
 ERROR_MODEL_UNAVAILABLE = "model_unavailable"
 ERROR_DECODE_FAILED = "decode_failed"
 ERROR_WRITE_FAILED = "write_failed"
+# F185. Deliberately `_BUSY` and not `_FAILED`: this one is TEMPORARY. Nothing is broken —
+# an index stage holds the single writer SQLite allows and it will let go, so the same
+# press works a minute later. The interface reads the difference off the name to decide
+# whether offering "try again" is honest, which a shared `write_failed` would hide.
+ERROR_DATABASE_BUSY = "database_busy"
+
+# SQLite's primary result codes for "somebody else is writing" (SQLITE_BUSY) and "the
+# writer is in this very process" (SQLITE_LOCKED). Matched on the CODE rather than on the
+# message, because the message is SQLite's to reword and none of our business.
+_SQLITE_BUSY = 5
+_SQLITE_LOCKED = 6
 
 UpscaleFn = Callable[[Image.Image], Image.Image]
+
+# (final path, the staging file the bytes are in) -> the new `files.id`. Called by
+# `restore_frame` while the copy is still staged; see `restore_and_record`, which is the
+# implementation of it this module ships.
+RecordFn = Callable[[Path, Path], int]
 
 
 @dataclass(frozen=True)
@@ -123,6 +173,10 @@ class RestoreResult:
     # trade a person did not agree to.
     source_edge: int = 0
     input_edge: int = 0
+    # F185: the `files.id` of the row the copy was indexed under, when the caller asked
+    # for the copy to be indexed at all (`restore_and_record`). 0 otherwise — a plain
+    # `restore_frame` writes a file and makes no claim about the index.
+    file_id: int = 0
 
     @property
     def ok(self) -> bool:
@@ -222,6 +276,46 @@ def restored_path(src: Path) -> Path:
     return candidate
 
 
+def _staging_path(dest: Path) -> Path:
+    """A unique, obviously-temporary neighbour of `dest` for the copy to be written into.
+
+    In the SAME directory, and that is the whole point: a rename within one directory is
+    a single atomic operation, so the copy never exists under its real name in a
+    half-written state and never has to be copied across a device boundary to get there.
+    """
+    fd, name = tempfile.mkstemp(dir=str(dest.parent), prefix=f".{dest.stem}.",
+                                suffix=STAGING_SUFFIX)
+    os.close(fd)
+    return Path(name)
+
+
+def _discard(staged: Path) -> None:
+    """Remove the staging file if it is still there — the exit route of every failure.
+
+    Silent about its own failure on purpose: it is called while another problem is being
+    reported, and a file that could not be removed must not replace the reason a person
+    is waiting for. It is a `.part` next to the frame either way, not a photograph.
+    """
+    try:
+        staged.unlink(missing_ok=True)
+    except OSError as exc:  # pragma: no cover — a file we created a moment ago
+        _log.warning("restore: the staging file %s stayed behind (%s)", staged, exc)
+
+
+def _is_database_busy(exc: sqlite3.OperationalError) -> bool:
+    """Is this "somebody else is writing" rather than "the query is wrong"?
+
+    The result code first, because that is SQLite's actual contract; the text only as a
+    fallback for a driver that did not attach one. A `no such table` must not come back
+    to a person as "the index is busy, try again" — it never stops being true.
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        return (code & 0xFF) in (_SQLITE_BUSY, _SQLITE_LOCKED)
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
 def source_edge(src: Path) -> int:
     """The longer side of the frame AS IT LIES ON DISK; 0 if the file will not open.
 
@@ -239,7 +333,8 @@ def source_edge(src: Path) -> int:
 
 def restore_frame(src: Path, model_name: str, *,
                   max_edge: int = DEFAULT_RESTORE_MAX_EDGE,
-                  loader: Callable[[str], UpscaleFn] | None = None) -> RestoreResult:
+                  loader: Callable[[str], UpscaleFn] | None = None,
+                  record: RecordFn | None = None) -> RestoreResult:
     """Process ONE frame and write the copy; the original is never opened for writing.
 
     The decode comes FIRST on purpose: a frame that will not read costs no 400 MB model
@@ -254,6 +349,15 @@ def restore_frame(src: Path, model_name: str, *,
     is a pure gain and nothing here narrows it. A frame above it is still processed, and
     the result says it was rebuilt from a reduced copy of itself; what else should happen
     to such a frame is the measurement's decision, not this function's.
+
+    F185: `record` indexes the copy, and is called while the copy is still under its
+    STAGING name — the file takes its real name only once that call has returned. If it
+    raises, the staging file goes and nothing is left on disk for the next `index` run to
+    read as a photograph of its own. A busy index is answered like every other
+    foreseeable state, with a code (`ERROR_DATABASE_BUSY`); anything else the recorder
+    raises is a genuine defect and propagates, cleaned up but not swallowed. Without
+    `record` this writes a file and says nothing about the index — which is what the
+    measurement scripts want and NOT what a caller keeping the copy should do.
     """
     original_edge = source_edge(src)
     image = imaging.decode_rgb(src, max_edge, apply_orientation=True)
@@ -272,15 +376,44 @@ def restore_frame(src: Path, model_name: str, *,
         return RestoreResult(error=ERROR_MODEL_UNAVAILABLE, detail=f"{type(exc).__name__}: {exc}")
     dest = restored_path(src)
     try:
-        processed.convert("RGB").save(dest, "JPEG", quality=JPEG_QUALITY)
+        staged = _staging_path(dest)
     except OSError as exc:
-        _log.warning("restore: copy %s was not written (%s)", dest, exc)
+        _log.warning("restore: nothing could be written beside %s (%s)", dest, exc)
         return RestoreResult(error=ERROR_WRITE_FAILED, detail=f"{type(exc).__name__}: {exc}")
+    file_id = 0
+    try:
+        try:
+            processed.convert("RGB").save(staged, "JPEG", quality=JPEG_QUALITY)
+        except OSError as exc:
+            _log.warning("restore: copy %s was not written (%s)", dest, exc)
+            return RestoreResult(error=ERROR_WRITE_FAILED,
+                                 detail=f"{type(exc).__name__}: {exc}")
+        if record is not None:
+            try:
+                file_id = int(record(dest, staged))
+            except sqlite3.OperationalError as exc:
+                if not _is_database_busy(exc):
+                    raise
+                _log.warning("restore: the index is busy, %s was not kept (%s)", dest, exc)
+                return RestoreResult(error=ERROR_DATABASE_BUSY,
+                                     detail=f"{type(exc).__name__}: {exc}")
+        try:
+            os.replace(staged, dest)
+        except OSError as exc:
+            _log.warning("restore: copy %s could not be put in place (%s)", dest, exc)
+            return RestoreResult(error=ERROR_WRITE_FAILED,
+                                 detail=f"{type(exc).__name__}: {exc}")
+    finally:
+        # Every way out of the block above other than the rename — a reason returned, an
+        # exception on its way to the caller — leaves the archive as it was found. Once
+        # the rename has happened there is nothing here to remove.
+        _discard(staged)
     if original_edge > input_edge:
         _log.info("restore: %s is %d px and the ceiling is %d — the copy is rebuilt from "
                   "a reduced frame, not sharpened from the original",
                   src, original_edge, input_edge)
-    return RestoreResult(path=dest, source_edge=original_edge, input_edge=input_edge)
+    return RestoreResult(path=dest, source_edge=original_edge, input_edge=input_edge,
+                         file_id=file_id)
 
 
 # --- the copy as a member of the collection -----------------------------------------
@@ -325,7 +458,8 @@ def _dimensions(path: Path) -> tuple[int, int]:
 
 
 def record_restored(conn: sqlite3.Connection, source_id: int, dest: Path, *,
-                    model: str, now: str | None = None) -> int:
+                    model: str, now: str | None = None,
+                    measured_from: Path | None = None) -> int:
     """Index the copy and record where it came from. Returns the new `files.id`.
 
     One transaction: a file row without its `restored_files` row would be a derived frame
@@ -336,15 +470,21 @@ def record_restored(conn: sqlite3.Connection, source_id: int, dest: Path, *,
     The hash IS computed here, on a file of a few megabytes: it is what the exact-duplicate
     pass and the sorter's copy verification both read, and a row without one is a file
     those two quietly skip.
+
+    F185: `measured_from` is where the bytes are RIGHT NOW — the staging file the copy is
+    written to before the index has heard of it. `dest` is what the row says either way:
+    that is the name the file will carry, and the rename that puts it there preserves its
+    size, its mtime and every byte the hash was taken over.
     """
     stamp = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    stat = dest.stat()
+    written = Path(measured_from) if measured_from is not None else Path(dest)
+    stat = written.stat()
     size, mtime = stat.st_size, stat.st_mtime
     try:
-        file_hash, hash_algo = hash_file(dest)
+        file_hash, hash_algo = hash_file(written)
     except OSError:  # pragma: no cover — the file was written a moment ago
         file_hash, hash_algo = None, None
-    width, height = _dimensions(dest)
+    width, height = _dimensions(written)
     clone = ", ".join(_CLONE_COLUMNS)
     with conn:
         cur = conn.execute(
@@ -362,6 +502,31 @@ def record_restored(conn: sqlite3.Connection, source_id: int, dest: Path, *,
                VALUES (?, ?, ?, ?)""",
             (file_id, int(source_id), model, stamp))
     return file_id
+
+
+def restore_and_record(conn: sqlite3.Connection, source_id: int, src: Path,
+                       model_name: str, *,
+                       max_edge: int = DEFAULT_RESTORE_MAX_EDGE,
+                       loader: Callable[[str], UpscaleFn] | None = None,
+                       now: str | None = None) -> RestoreResult:
+    """F185: the whole action — process the frame, index the copy, put it in place.
+
+    THE ONE ENTRY POINT FOR A CALLER THAT KEEPS THE COPY. The two halves used to be two
+    calls, and a caller that made the first and lost the second left a file in somebody's
+    archive that the index had never heard of; the next run then read it as a new
+    photograph. Joined here so the order cannot be got wrong from outside: the row goes in
+    while the copy is still staged, and the copy takes its name only afterwards.
+
+    Retries are NOT done here, on purpose. Waiting for the index to free up inside a
+    request handler means holding a connection and a thread for as long as an index stage
+    takes; whether to ask again — and whether to say so first — belongs to whoever pressed
+    the button.
+    """
+    def record(dest: Path, staged: Path) -> int:
+        return record_restored(conn, source_id, dest, model=model_name, now=now,
+                               measured_from=staged)
+
+    return restore_frame(src, model_name, max_edge=max_edge, loader=loader, record=record)
 
 
 def existing_copy(conn: sqlite3.Connection, source_id: int,

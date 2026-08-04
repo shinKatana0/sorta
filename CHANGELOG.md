@@ -284,6 +284,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **"Try to improve" no longer leaves a file the index has never heard of** (F185). The
+  copy was written under its final name and the row inserted by a SEPARATE call, so an
+  insert that did not happen left a `_restored` file lying in the archive with nothing
+  behind it — and the next `index` run reads such a file as a NEW photograph, so the
+  collection grows a near-duplicate the person never made. Found on the live archive as
+  **81 `_restored` files and zero rows**. The copy is now written to a staging name
+  beside its destination, the row is written while it is still called that, and only then
+  is it renamed into place — a rename inside one directory is atomic, and every other way
+  out of that sequence takes the staging file with it (`restore.restore_and_record`).
+  The click that found it also produced the second half: a **busy index is a reason now,
+  not a stack trace** (`ERROR_DATABASE_BUSY`). SQLite allows one writer, an `index` stage
+  can be running from the terminal, and the busy-guard (F145) only knows about runs
+  started from the interface — so pressing the button during a terminal run raised
+  `sqlite3.OperationalError` out of a request handler. It joins the three codes the
+  interface already translates, and it is `_BUSY` rather than `_FAILED` on purpose:
+  nothing is broken, the same press works a minute later, and the interface reads that
+  difference off the name to decide whether offering "try again" is honest. No retrying
+  happens inside `restore` — waiting for the index there would hold a connection and a
+  thread for as long as a stage takes.
 - **The run estimate is computed from measurements instead of baked-in constants**
   (F159). The run screen priced the "best frame of a group" stage at **1.32 s per group,
   whatever the group held**. Measured on 2026-08-03, one comparative question costs
