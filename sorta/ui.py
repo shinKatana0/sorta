@@ -2725,6 +2725,11 @@ def _restore_offer(db_path: Path, features: FeaturesConfig, file_id: int,
 
     `restored_from` is the other direction: this frame IS a copy, and here is the frame it
     was made from.
+
+    A refused frame is not measured: the size comes off the file's header, and a frame
+    classed as a personal document is one this program does not open for any purpose. The
+    two numbers are what the "too large" sentence is built from, and there is no such
+    sentence to build when the answer is already no.
     """
     conn = _connect(db_path)
     try:
@@ -2733,12 +2738,15 @@ def _restore_offer(db_path: Path, features: FeaturesConfig, file_id: int,
             return None
         path = Path(row["path"])
         refusal = _restore_refusal(path, row["verdict"], row["media_type"], sensitive)
+        notice = ({"rebuilt": False, "source_edge": 0,
+                   "max_edge": int(features.restore_max_edge)} if refusal is not None
+                  else _restore_notice(path, features.restore_max_edge))
         return {
             "file_id": int(row["id"]),
             "available": refusal is None,
             "reason": refusal,
             "restored_from": _restored_source_json(conn, file_id),
-            **_restore_notice(path, features.restore_max_edge),
+            **notice,
         }
     finally:
         conn.close()

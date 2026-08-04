@@ -25,6 +25,7 @@ import dataclasses
 import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -167,6 +168,21 @@ class TestPrivateClassesAreRefusedByTheRoute(RestoreAnywhereBase):
 
         self.assertFalse(offer["available"])
         self.assertEqual(offer["reason"], ui.RESTORE_ERROR_SENSITIVE)
+
+    def test_the_file_of_a_refused_frame_is_never_opened(self):
+        """The size is read off the header, and a document is a file this program opens
+        for no purpose at all — including for a sentence it will not print."""
+        file_id = self.add_reviewable("passport.jpg", verdict="document")
+        self.start_server()
+
+        def refuse(src: Path) -> int:
+            raise AssertionError(f"the document {src} was opened")
+
+        with mock.patch.object(restore, "source_edge", refuse):
+            _status, offer = self.offer(file_id)
+
+        self.assertEqual(offer["source_edge"], 0)
+        self.assertFalse(offer["rebuilt"])
 
     def test_the_list_is_the_config_key_and_not_a_constant(self):
         """`vlm.exclude_classes` is the one visible list of private classes (F133), read
