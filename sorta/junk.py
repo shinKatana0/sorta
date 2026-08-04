@@ -380,6 +380,52 @@ against 15% for the whole frame at 300, for a comparable number of frames flagge
   stage reads it: no verdict, no threshold, no deletion. NULL means not measured, as
   everywhere in `frame_quality`.
 
+F179: the third number off that same decode, and the first one in this file that a MODEL
+used to answer. "Are the eyes open" was asked of the local VLM for 92 minutes a run and
+came back 60% right about 9% of the frames it was meant to find; the question is gone
+(F177) and the ~948 frames it was about — 15.6% of everything with a face in it — did not
+go with it. Measured against the same 249 hand labels (F178, scripts/measure_eye_state.py):
+
+    way in                        threshold  precision  recall
+    the VLM (retired)                     —      60%       9%
+    eyelid geometry                    0.18      62%      48%
+    a classifier over the eye crop      0.9      46%      57%
+    CLIP over the eye crop              0.8      58%      49%
+
+Five times the recall at slightly better precision, out of ARITHMETIC over contour points
+— `eye_openness` is the spread of an eye's ring across its own long axis, so no threshold
+here depends on a network's opinion, only on where the contour landed. CLIP over the same
+crop lost while costing a pass of the network the stage already runs.
+
+Three properties, and they are the same three `face_sharpness` has, which is not an
+accident — it is the shape a signal in this table has to have:
+
+* NO NEW PASS and NO NEW WEIGHTS. `2d106det` is 4.8 MB inside the `buffalo_l` set the faces
+  stage already downloads, it is fitted to the box the crop above is taken from, and it is
+  built on the first face of a run and never on a run without one (`lazy_eye_landmarks`);
+* THE COORDINATES ARE RESCALED, through the very same `face_crop_boxes`. The F178
+  measurement lists this as the mistake F155 had already made once: `faces.bbox` is in
+  pixels of the full original and the preview is a few hundred pixels wide, and a box used
+  as written lands on empty sky. It does not raise — it flatters;
+* it RANKS AND DOES NOT JUDGE. 62% precision means one frame in three of that slice has its
+  eyes open, so `features.eye_openness_max` orders the list and opens it to a window a
+  person walks past; nothing in this stage deletes or reclassifies by it.
+
+The one rule that differs is which face answers: the LARGEST, where sharpness takes the
+sharpest. A frame where somebody at the back blinked is not a portrait with closed eyes,
+and a frame where one of several faces is in focus is a photograph that worked — each rule
+picks the face its own question is about.
+
+WHAT IS NOT FIXED HERE, written down because it will look like this feature's bug. F178
+reports that on a frame with EXIF orientation 6 the faces stage decodes through
+`cv2.imdecode` (which has already applied the rotation) and then rotates a second time, so
+`faces.bbox` is written in a SIDEWAYS frame — while this stage works in the upright one.
+If that holds, every box on a rotated photograph lands wrong here, and it lands wrong for
+`face_sharpness` in exactly the same way and has since F155. It is a finding about the
+faces stage, that stage is out of this feature's bounds, and the same script measures how
+often a stored box matches a fresh detection (`легли на бокс`) — so whoever owns it starts
+from a number rather than from this paragraph.
+
 F164: the first three levers pulled with the phase table of F147 in hand, and the first
 lesson is that a phase NAME is not a bill of costs. `junk_write` looked like 19,4 ms of
 SQLite per frame and turned out to be the laplacian — the writes are one transaction and
@@ -1587,22 +1633,28 @@ NO_FACES = FaceBoxes()
 
 @dataclass(frozen=True)
 class Sharpness:
-    """Both laplacians of one frame, from ONE decode of its preview (F155).
+    """What ONE decode of a frame's preview yields (F155, F179).
 
-    They are returned together because they are measured together: the face number is the
-    same variance taken over a crop of the very same array, and computing it in a pass of
-    its own would decode every frame in the collection a second time for a signal that is
-    already in memory.
+    The three numbers are returned together because they are measured together: the face
+    laplacian is the same variance taken over a crop of the very same array, the eye
+    opening is fitted to a face box on it, and computing either in a pass of its own would
+    decode every frame in the collection a second time for pixels that are already in
+    memory.
 
     None means NOT MEASURED, the `frame_quality` rule: the frame did not decode (`frame`),
-    or it has no face, no faces run behind it, or a crop too small to measure (`face`).
+    or it has no face, no faces run behind it, or a crop too small to measure (`face`,
+    `eyes` — the latter also when the 106-point model is not available at all).
     """
     frame: float | None = None
     face: float | None = None
+    # F179: the eye opening over the eye width of the LARGEST face, small = closed. Named
+    # apart from the two above because it is not a laplacian and is not on their scale;
+    # it rides here because it rides on their decode.
+    eyes: float | None = None
 
 
-# (path, the faces of that frame) -> both numbers. The second argument is `NO_FACES` for
-# every frame outside the face population, which is most of them.
+# (path, the faces of that frame) -> the numbers of one decode. The second argument is
+# `NO_FACES` for every frame outside the face population, which is most of them.
 SharpnessFn = Callable[[str, FaceBoxes], Sharpness]
 # path -> the model's raw answer about one frame (parsed by `parse_quality_answer`).
 QualityAskFn = Callable[[str], str]
@@ -1692,7 +1744,106 @@ def face_crop_sharpness(img: Image.Image, faces: FaceBoxes) -> float | None:
     return best
 
 
-def preview_sharpness_detector(max_edge: int) -> SharpnessFn:
+# F179: the eye contour of insightface `2d106det` — each eye is a ring of eight points,
+# and only the SET of indices matters, never their order: `eye_openness` below finds the
+# corners itself, so a model that lists the ring the other way round gives the same number
+# and a model that moves the ring elsewhere gives a wrong one either way. The map was
+# verified against the detector's own eye points on real frames during the measurement
+# (scripts/measure_eye_state.py, `eye_rings_agree`), which is where it belongs: here there
+# is nothing to check it against, because the five detector points are not stored.
+EYE_RINGS: tuple[tuple[int, ...], tuple[int, ...]] = (
+    (33, 35, 36, 37, 39, 40, 41, 42),
+    (87, 89, 90, 91, 93, 94, 95, 96),
+)
+
+# The whole frame's preview and ONE face box in ITS pixels -> the 106 contour points, in
+# the same pixels; None when the model has nothing to say (or is not there at all). The
+# box is passed rather than a crop because the model aligns the face itself out of it.
+EyeLandmarkFn = Callable[[Image.Image, tuple[int, int, int, int]], "np.ndarray | None"]
+
+
+def eye_openness(points: np.ndarray) -> float | None:
+    """The eye opening over the eye width, from a ring of contour points.
+
+    The two points furthest apart are the corners: they define the eye's own axis, and the
+    opening is the spread of the ring ACROSS that axis. Written this way the number does
+    not care how the head is tilted, nor in which order the model happens to list the ring
+    — the alternative, naming four indices as "upper lid" and "lower lid", is a promise
+    about a model file that a new release can quietly break.
+
+    None when the ring is degenerate (fewer than three points, or all of them in one
+    place): "not measured", never a small number that would sort to the top of a list of
+    closed eyes it was never measured for.
+
+    Copied unchanged from the measurement this feature was decided by (F178,
+    scripts/measure_eye_state.py) — the numbers in `features.eye_openness_max` are this
+    function's numbers, and a paraphrase would silently invalidate them.
+    """
+    if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] != 2:
+        return None
+    diffs = points[:, None, :] - points[None, :, :]
+    distances = np.hypot(diffs[:, :, 0], diffs[:, :, 1])
+    i, j = np.unravel_index(int(np.argmax(distances)), distances.shape)
+    width = float(distances[i, j])
+    if width <= 0.0:
+        return None
+    axis = (points[j] - points[i]) / width
+    normal = np.array([-axis[1], axis[0]])
+    across = (points - points[i]) @ normal
+    return float(across.max() - across.min()) / width
+
+
+def largest_face_box(faces: FaceBoxes,
+                     size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    """The biggest face of a frame, rescaled into preview pixels; None if there is none.
+
+    THE BIGGEST AND ONLY THE BIGGEST — the `largest` rule the measurement was run under.
+    A frame where a passer-by at the back has their eyes shut is not a portrait with closed
+    eyes, and reading every face would put it in the slice; the largest face is the one the
+    shot is about. (`face_sharpness` picks the sharpest face for the mirror-image reason:
+    each takes the face its own question is about.)
+
+    Rescaled through `face_crop_boxes`, so it inherits the guard that feature exists for —
+    the boxes are in pixels of the ORIGINAL and the preview is a small copy of it — and its
+    minimum size: a box too small there is not a face this can be fitted to.
+    """
+    boxes = face_crop_boxes(faces, size)
+    if not boxes:
+        return None
+    return max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+
+
+def face_eye_openness(img: Image.Image, faces: FaceBoxes,
+                      landmark: EyeLandmarkFn | None) -> float | None:
+    """How open the eyes of the largest face on an already-decoded frame are; None if not.
+
+    The MORE CLOSED of the two eyes answers for the face, because that is the question the
+    slice asks — a frame where one eye is shut is a frame the person wants to look at — and
+    because a half-blink averaged with an open eye is nothing at all.
+
+    None all the way down, never a small number: no face, no model, a model that answered
+    with something that is not 106 points, or a ring that came out degenerate. A wrong
+    small value would sort itself to the very top of a list ordered by "most closed first".
+    """
+    if landmark is None:
+        return None
+    box = largest_face_box(faces, img.size)
+    if box is None:
+        return None
+    points = landmark(img, box)
+    if points is None:
+        return None
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[0] <= max(max(ring) for ring in EYE_RINGS):
+        return None
+    values = [value for value in
+              (eye_openness(points[list(ring)]) for ring in EYE_RINGS)
+              if value is not None]
+    return min(values) if values else None
+
+
+def preview_sharpness_detector(max_edge: int,
+                               landmark: EyeLandmarkFn | None = None) -> SharpnessFn:
     """The real detector: the shared preview cache, at a FIXED resolution.
 
     Fixed because the variance of the laplacian is scale-dependent — the same photo
@@ -1714,6 +1865,17 @@ def preview_sharpness_detector(max_edge: int) -> SharpnessFn:
     exactly symmetric is the RESAMPLE around it — scaling and then turning a frame is not
     pixel-identical to turning and then scaling — and that is worth ~0.01% on a rotated
     frame, against a band 270 units wide.
+
+    F179: a THIRD number off that same decode, and no third decode for it — the eye
+    openness of the largest face, fitted to the box the crop above is taken from. The one
+    thing it changes is the COLOUR of the decode: the 106-point contour was measured on a
+    colour preview (F178) and a grayscale one is not the input those numbers came from, so
+    a run with the model present asks for RGB and `laplacian_variance` converts to luma
+    itself. Both paths measure the luma of the SAME preview — libjpeg's grayscale output
+    against a YCbCr->RGB->luma round trip — and both weight the channels the same way, so
+    what is left is rounding: measured at 0.15% on noise and 0.12% on a photograph, against
+    a band 270 units wide. The F155 argument about the orientation, one step on. Without a
+    model (`landmark is None`) the decode is grayscale exactly as before.
     """
     def sharpness(path: str, faces: FaceBoxes = NO_FACES) -> Sharpness:
         try:
@@ -1721,18 +1883,85 @@ def preview_sharpness_detector(max_edge: int) -> SharpnessFn:
         except OSError:
             return Sharpness()
         img = imaging.decode_rgb_preview(
-            path, st.st_mtime, st.st_size, max_edge=max_edge, grayscale=True,
-            apply_orientation=True)
+            path, st.st_mtime, st.st_size, max_edge=max_edge,
+            grayscale=landmark is None, apply_orientation=True)
         if img is None:
             return Sharpness()
         try:
             return Sharpness(frame=laplacian_variance(img),
-                             face=face_crop_sharpness(img, faces))
+                             face=face_crop_sharpness(img, faces),
+                             eyes=face_eye_openness(img, faces, landmark))
         except Exception as exc:  # noqa: BLE001 — one bad frame must not break the stage
             _log.warning("junk: резкость не посчиталась для %s: %s", path, exc)
             return Sharpness()
 
     return sharpness
+
+
+def lazy_eye_landmarks(build: Callable[[], EyeLandmarkFn]) -> EyeLandmarkFn:
+    """The 106-point model, built on the FIRST face of a run and never before it.
+
+    Two runs must not pay for it: one over a collection with no faces in it (two thirds of
+    a typical archive have none, and a first run has no `faces` rows at all), and one on a
+    machine where the model cannot be built — the [faces] extra missing, no weights on
+    disk, a broken onnxruntime. The second is why a failure answers None for the rest of
+    the run instead of raising: the eye number is one column of `frame_quality`, and an
+    optional column must never take the stage that writes the other five down with it. The
+    reason is logged ONCE, not once per frame.
+    """
+    state: dict[str, EyeLandmarkFn | None] = {}
+
+    def landmark(img: Image.Image,
+                 box: tuple[int, int, int, int]) -> np.ndarray | None:
+        if "fn" not in state:
+            try:
+                state["fn"] = build()
+            except Exception as exc:  # noqa: BLE001 — an optional column, not the stage
+                _log.warning(
+                    "junk: модель 106 точек не поднялась (%s) — колонка eye_openness "
+                    "останется пустой, остальная часть стадии не затронута", exc)
+                state["fn"] = None
+        built = state["fn"]
+        return None if built is None else built(img, box)
+
+    return landmark
+
+
+def insightface_eye_landmarks() -> EyeLandmarkFn:  # pragma: no cover — ML
+    """`2d106det` out of the buffalo_l set the faces stage already downloads.
+
+    NO NEW WEIGHTS: the 106-point model is 4.8 MB inside the set `sorta faces` has been
+    fetching since phase 3, and it is disabled there (`faces._ALLOWED_MODULES`) only
+    because that stage has nothing to do with it. The detector is loaded beside it because
+    insightface's FaceAnalysis insists on one, and it is never CALLED: the boxes come from
+    the `faces` table, which is the whole point of doing this inside the junk stage.
+
+    The box arrives in preview pixels and the points come back in them, so nothing here
+    knows about the original frame — `largest_face_box` has already done that conversion.
+    """
+    from insightface.app import FaceAnalysis
+    from insightface.app.common import Face
+
+    from sorta import faces as faces_mod
+
+    faces_mod._enable_cuda_dll_dirs()
+    app = FaceAnalysis(name="buffalo_l",
+                       allowed_modules=["detection", "landmark_2d_106"],
+                       providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+    edge = faces_mod.DET_SIZE_DEFAULT   # F88's pinned shape; nothing here detects anything
+    app.prepare(ctx_id=0, det_size=(edge, edge))
+    model = app.models["landmark_2d_106"]
+
+    def landmark(img: Image.Image,
+                 box: tuple[int, int, int, int]) -> np.ndarray | None:
+        # BGR, the order every insightface model is trained on — the same conversion the
+        # measurement made (scripts/measure_eye_state.py), and the same one `faces` makes.
+        array = np.ascontiguousarray(np.asarray(img.convert("RGB"))[:, :, ::-1])
+        found = model.get(array, Face(bbox=np.asarray(box, dtype=np.float32),
+                                      det_score=1.0))
+        return np.asarray(found, dtype=np.float64)
+
+    return landmark
 
 
 # One short line of keywords. F96's lesson is the reason it is not three fields of JSON:
@@ -2319,6 +2548,10 @@ class FrameQuality:
     # measured" — no face, no faces run, or a crop below FACE_CROP_MIN_PX. It ranks the
     # blur list and decides nothing: ~25% of what it flags is actually blurred.
     face_sharpness: float | None = None
+    # F179: the eye opening over the eye width of the LARGEST face, or None for "not
+    # measured" — no face, no faces run, a crop below FACE_CROP_MIN_PX, or no 106-point
+    # model on this machine. Small means closed; it ranks the slice and decides nothing.
+    eye_openness: float | None = None
     pet: str | None = None
     pet_score: float | None = None
     # F130: real | depiction | none, or None for "the model was not asked about this
@@ -2401,8 +2634,9 @@ def read_frame_quality(conn: sqlite3.Connection,
     each rebuild the 0/NULL distinction out of raw rows; one of them would get it wrong
     exactly once and quietly discard frames nobody had looked at.
     """
-    sql = ("SELECT file_id, sharpness, face_sharpness, pet, pet_score, pet_vlm, eyes_open,"
-           " has_subject, is_accidental, junk_score, source FROM frame_quality")
+    sql = ("SELECT file_id, sharpness, face_sharpness, eye_openness, pet, pet_score,"
+           " pet_vlm, eyes_open, has_subject, is_accidental, junk_score, source"
+           " FROM frame_quality")
 
     def rows(cursor: sqlite3.Cursor) -> dict[int, FrameQuality]:
         return {
@@ -2411,6 +2645,8 @@ def read_frame_quality(conn: sqlite3.Connection,
                 sharpness=None if r["sharpness"] is None else float(r["sharpness"]),
                 face_sharpness=(None if r["face_sharpness"] is None
                                 else float(r["face_sharpness"])),
+                eye_openness=(None if r["eye_openness"] is None
+                              else float(r["eye_openness"])),
                 pet=r["pet"],
                 pet_score=None if r["pet_score"] is None else float(r["pet_score"]),
                 pet_vlm=r["pet_vlm"],
@@ -2441,13 +2677,14 @@ def read_frame_quality(conn: sqlite3.Connection,
 # may never look at. F130 puts `pet_vlm` under the same rule — the fast half re-walks a
 # frame only when its own marker went stale (a prompt edit among other things), and a
 # stale prompt is exactly when a stored answer must not survive.
-_QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, face_sharpness, pet,
-                         pet_score, pet_vlm, eyes_open, has_subject, is_accidental,
-                         junk_score, source, updated_at)
-                     VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+_QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, face_sharpness,
+                         eye_openness, pet, pet_score, pet_vlm, eyes_open, has_subject,
+                         is_accidental, junk_score, source, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
                      ON CONFLICT(file_id) DO UPDATE SET
                          sharpness = excluded.sharpness,
-                         face_sharpness = excluded.face_sharpness, pet = excluded.pet,
+                         face_sharpness = excluded.face_sharpness,
+                         eye_openness = excluded.eye_openness, pet = excluded.pet,
                          pet_score = excluded.pet_score, pet_vlm = NULL, eyes_open = NULL,
                          has_subject = NULL, is_accidental = NULL, junk_score = NULL,
                          source = excluded.source, updated_at = excluded.updated_at"""
@@ -3339,18 +3576,20 @@ class _QualityPass:
         if verdict is not None and verdict != QUALITY_VERDICT:
             self._conn.execute("DELETE FROM frame_quality WHERE file_id = ?", (file_id,))
             return
-        # F155: both laplacians out of one decode — the whole frame, and the sharpest face
-        # in it where the faces stage found one. The face crop is what actually separates
-        # a blurred frame from a detailed one (see the module docstring); the frame number
-        # is unchanged and still what the uncertainty band below reads.
+        # F155/F179: everything one decode yields — the whole frame, the sharpest face in
+        # it where the faces stage found one, and how open the eyes of the largest face
+        # are. The face crop is what actually separates a blurred frame from a detailed one
+        # (see the module docstring); the frame number is unchanged and still what the
+        # uncertainty band below reads.
         measured = self._sharpness(path, self._faces_of(file_id))
         sharpness = measured.frame
         pet: str | None = None
         pet_score: float | None = None
         if self._q.pets and probs_row is not None:
             pet, pet_score = pet_verdict(probs_row, self._q.pet_threshold)
-        self._conn.execute(_QUALITY_UPSERT, (file_id, sharpness, measured.face, pet,
-                                             pet_score, self._source, self._now))
+        self._conn.execute(_QUALITY_UPSERT, (file_id, sharpness, measured.face,
+                                             measured.eyes, pet, pet_score,
+                                             self._source, self._now))
         self._stats.quality_rows += 1
         self._measured.append((file_id, path))
         if pet is not None:
@@ -3944,6 +4183,7 @@ def classify(
     vlm_classifier: VlmClassifyFn | None = None,
     vlm_classifier_factory: Callable[[str], VlmClassifyFn] | None = None,
     sharpness_detector: SharpnessFn | None = None,
+    eye_landmarks_factory: Callable[[], EyeLandmarkFn] | None = None,
     quality_vlm: QualityAskFn | None = None,
     quality_vlm_factory: Callable[[str], QualityAskFn] | None = None,
     pet_vlm: PetAskFn | None = None,
@@ -4017,6 +4257,14 @@ def classify(
     laplacians — over the whole preview and over the sharpest face in it — because they
     come out of one decode and a second pass over the collection for the second number is
     the one cost this signal is not worth.
+
+    eye_landmarks_factory (F179): builds the 106-point contour model the eye number is
+    fitted with, ONCE and on the first face of the run (`lazy_eye_landmarks`) — so a
+    collection with no faces in it never builds one, and a machine that cannot build one
+    loses `frame_quality.eye_openness` and nothing else. It is handed to the sharpness
+    detector rather than run in a pass of its own, for the F155 reason: the pixels it needs
+    are the ones that decode already has in memory. An injected `sharpness_detector` (every
+    mock in the suite) answers for all three numbers and this factory is then unused.
 
     pet_vlm / pet_vlm_factory (F130): the animal check — the same shape and the same
     graceful fallback again, behind `features.pets_verify` (which needs `features.pets`).
@@ -4347,8 +4595,17 @@ def classify(
     # F121: has the faces stage ever run here? One row is enough to tell — after that,
     # "this frame has no face" is a fact rather than an absence of evidence.
     faces_known = faces_stage_ran(conn)
+    # F179: the eye number rides in the sharpness decode, so the model that produces it is
+    # handed to that detector rather than to a pass of its own. Lazily, and only where
+    # there are faces to fit it to: `lazy_eye_landmarks` builds on the first face of the
+    # run, so a collection with none — or a first run, before `sorta faces` — pays nothing,
+    # and a machine that cannot build it loses this one column and no more.
     quality = _QualityPass(
-        conn, q, sharpness_detector or preview_sharpness_detector(q.sharpness_max_edge),
+        conn, q,
+        sharpness_detector or preview_sharpness_detector(
+            q.sharpness_max_edge,
+            lazy_eye_landmarks(eye_landmarks_factory or insightface_eye_landmarks)
+            if faces_known else None),
         quality_ask,
         quality_scope_ids(cfg, conn, q.vlm_scope) if quality_ask is not None else None,
         quality_source, quality_ids, now, stats, faces_known, pet_ask)

@@ -32,7 +32,7 @@ from sorta import i18n, junk, sorter, ui
 from sorta.db import SCHEMA_VERSION, connect
 from sorta.junk import QualityFlags, parse_quality_answer
 
-from tests.schema_history import roll_back_to
+from tests.schema_history import roll_back_to, version_that_added
 from tests.test_docs_guides import GUIDES, read
 from tests.test_ui_review import ReviewTestBase
 
@@ -86,9 +86,12 @@ class MigrationCase(unittest.TestCase):
                        source, updated_at)
                    VALUES (?, 120.0, ?, ?, 'vlm#abc12345', '2026-08-03')""",
                 (number, eyes_open, has_subject))
-        # The shape does not change with this version, so the fixture rolls the NUMBER
-        # back and leaves the columns alone — which is what a live database looks like.
-        roll_back_to(conn, SCHEMA_VERSION - 1)
+        # F177 changed no SHAPE, only data, so this fixture is the version BEFORE it and
+        # is named by the last column any version added ahead of it. It used to say
+        # `SCHEMA_VERSION - 1`, which meant the same thing exactly once: F179 took v27, the
+        # arithmetic landed on v26 — the very version whose migration is under test — and
+        # the fixture quietly stopped being old enough to migrate.
+        roll_back_to(conn, version_that_added("frame_quality.face_sharpness"))
         conn.commit()
         conn.close()
         return db
@@ -246,13 +249,13 @@ class TestTheSliceIsGoneFromTheInterface(ReviewTestBase):
         self.assertIn("error", json.loads(body))
 
     def test_the_counters_do_not_carry_it(self):
-        self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
+        self.add_reviewable("eyes.jpg", sharpness=500.0, eye_openness=self.CLOSED)
         self.start_server()
         counts = self.counts(self.review("?slice=blurred"))
         self.assertEqual(set(counts), {"dupes", "blurred", "eyes"})
 
     def test_the_overview_does_not_count_it(self):
-        self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
+        self.add_reviewable("eyes.jpg", sharpness=500.0, eye_openness=self.CLOSED)
         self.start_server()
         _status, body, _ctype = self.get("/api/overview")
         collection = json.loads(body)["collection"]

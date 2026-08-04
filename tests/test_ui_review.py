@@ -30,9 +30,16 @@ from tests.test_ui import UiServerTestBase
 class ReviewTestBase(UiServerTestBase):
     """Photographs with `media_class`/`frame_quality` rows on top of the U1 server."""
 
+    # F179: the eyes slice is selected by `eye_openness` — the eyelid geometry — where it
+    # used to read the VLM's `eyes_open`. CLOSED and OPEN below are a value inside the
+    # default window (`features.eye_openness_max` = 0.18) and one well outside it; the
+    # tests name them rather than repeating numbers, so moving the default moves one line.
+    CLOSED = 0.05
+    OPEN = 0.30
+
     def add_reviewable(self, rel: str, *, verdict: str = "photo",
                        sharpness: float | None = 100.0,
-                       eyes_open: int | None = None,
+                       eye_openness: float | None = None,
                        source: str = "vlm#aaaaaaaa") -> int:
         file_id, _p, _c = self.add_photo_file(rel)
         self.conn.execute(
@@ -40,10 +47,10 @@ class ReviewTestBase(UiServerTestBase):
                VALUES (?, ?, 'clip', 0.9, '2026-01-01', 'clip')""",
             (file_id, verdict))
         self.conn.execute(
-            """INSERT INTO frame_quality (file_id, sharpness, eyes_open,
+            """INSERT INTO frame_quality (file_id, sharpness, eye_openness,
                    source, updated_at)
                VALUES (?, ?, ?, ?, '2026-01-01')""",
-            (file_id, sharpness, eyes_open, source))
+            (file_id, sharpness, eye_openness, source))
         self.conn.commit()
         return file_id
 
@@ -90,8 +97,8 @@ class ReviewTestBase(UiServerTestBase):
 class TestSliceSelection(ReviewTestBase):
     def test_each_slice_returns_its_own_frames(self):
         blurred = self.add_reviewable("blur.jpg", sharpness=10.0)
-        eyes = self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
-        sharp = self.add_reviewable("fine.jpg", sharpness=900.0, eyes_open=1)
+        eyes = self.add_reviewable("eyes.jpg", sharpness=500.0, eye_openness=self.CLOSED)
+        sharp = self.add_reviewable("fine.jpg", sharpness=900.0, eye_openness=self.OPEN)
         self.start_server()
         for slice_, expected in (("blurred", [blurred]), ("eyes", [eyes])):
             with self.subTest(slice=slice_):
@@ -100,9 +107,9 @@ class TestSliceSelection(ReviewTestBase):
                 self.assertNotIn(sharp, [it["file_id"] for it in data["items"]])
 
     def test_a_null_answer_is_not_a_no(self):
-        # NULL in eyes_open means "not asked" — a frame nobody looked at must never be
-        # offered as an answer.
-        self.add_reviewable("unasked.jpg", sharpness=500.0, eyes_open=None)
+        # NULL in eye_openness means "not measured" — a frame nobody measured must never
+        # be offered as an answer.
+        self.add_reviewable("unasked.jpg", sharpness=500.0, eye_openness=None)
         self.start_server()
         self.assertEqual(self.review("?slice=eyes")["total"], 0)
 
@@ -111,7 +118,7 @@ class TestSliceSelection(ReviewTestBase):
         # product shot, so those frames are not offered for review at all.
         for verdict in ("screenshot", "document", "product", "meme"):
             self.add_reviewable(f"{verdict}.jpg", verdict=verdict, sharpness=1.0,
-                                eyes_open=0)
+                                eye_openness=self.CLOSED)
         self.start_server()
         data = self.review("?slice=blurred")
         self.assertEqual(self.counts(data), {"dupes": 0, "blurred": 0, "eyes": 0})
@@ -119,9 +126,9 @@ class TestSliceSelection(ReviewTestBase):
             self.assertEqual(self.review(f"?slice={slice_}")["items"], [])
 
     def test_duplicates_and_read_errors_are_in_no_slice(self):
-        canonical = self.add_reviewable("a.jpg", sharpness=5.0, eyes_open=0)
-        duplicate = self.add_reviewable("b.jpg", sharpness=5.0, eyes_open=0)
-        broken = self.add_reviewable("c.jpg", sharpness=5.0, eyes_open=0)
+        canonical = self.add_reviewable("a.jpg", sharpness=5.0, eye_openness=self.CLOSED)
+        duplicate = self.add_reviewable("b.jpg", sharpness=5.0, eye_openness=self.CLOSED)
+        broken = self.add_reviewable("c.jpg", sharpness=5.0, eye_openness=self.CLOSED)
         self.conn.execute("UPDATE files SET dup_of = ? WHERE id = ?",
                           (canonical, duplicate))
         self.conn.execute("UPDATE files SET error = 'nope' WHERE id = ?", (broken,))
@@ -303,7 +310,7 @@ class TestEyesWithoutFacesRun(ReviewTestBase):
         self.assertEqual(self.review("?slice=eyes")["eyes_reason"], "no_faces_run")
 
     def test_a_found_face_clears_the_reason(self):
-        fid = self.add_reviewable("a.jpg", sharpness=500.0, eyes_open=0)
+        fid = self.add_reviewable("a.jpg", sharpness=500.0, eye_openness=self.CLOSED)
         self.add_real_face(fid)
         self.start_server()
         data = self.review("?slice=eyes")
@@ -334,7 +341,7 @@ class TestOneDecisionPerFrame(ReviewTestBase):
         self.assertEqual(self.actions(), {})
 
     def test_a_frame_in_two_slices_carries_one_decision_visible_in_both(self):
-        fid = self.add_reviewable("a.jpg", sharpness=10.0, eyes_open=0)
+        fid = self.add_reviewable("a.jpg", sharpness=10.0, eye_openness=self.CLOSED)
         self.add_real_face(fid)
         self.start_server()
         self.post("/api/review/mark", {"file_ids": [fid], "action": "to_delete"})
@@ -451,9 +458,9 @@ class TestNoBulkDeleteRoute(ReviewTestBase):
 class TestOverviewCounters(ReviewTestBase):
     def test_the_overview_counts_the_same_slices_the_tab_does(self):
         self.add_reviewable("blur.jpg", sharpness=10.0)
-        self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
+        self.add_reviewable("eyes.jpg", sharpness=500.0, eye_openness=self.CLOSED)
         self.add_reviewable("screenshot.jpg", verdict="screenshot", sharpness=1.0,
-                            eyes_open=0)
+                            eye_openness=self.CLOSED)
         self.start_server()
         _status, body, _ctype = self.get("/api/overview")
         collection = json.loads(body)["collection"]

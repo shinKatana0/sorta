@@ -2084,21 +2084,35 @@ QUALITY_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
                 "JOIN media_class mc ON mc.file_id = f.id")
 QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
 
-# `eyes_open` is `= 0` and never `IS NOT 1`: NULL there means "not asked" (schema), and a
-# frame nobody looked at must not be shown to a user as an answer.
+# Both are `IS NOT NULL` and never a comparison against a stored verdict: NULL means "not
+# measured" (schema), and a frame nobody looked at must not be shown to a user as an
+# answer. F179 put the eyes on that footing too — the slice used to read `fq.eyes_open = 0`,
+# the answer a VLM gave about 135 frames before the question was retired at 60% precision
+# and 9% recall. It is now `eye_openness`, geometry over the eye contour, and the number
+# that decides membership is a WINDOW read at query time (see below) rather than a verdict
+# frozen into the row by whatever threshold the last run happened to have — the F137 lesson,
+# where a moved threshold left the live archive selecting 966 animals at a gate of 0.30 long
+# after the gate had gone back to 0.50.
 _QUALITY_MEMBER = {
     "blurred": "fq.sharpness IS NOT NULL",
-    "eyes_closed": "fq.eyes_open = 0",
+    "eyes_closed": "fq.eye_openness IS NOT NULL",
 }
 
 
-def quality_slice_where(kind: str, blur_max: float | None) -> tuple[str, list[object]]:
+def quality_slice_where(kind: str, blur_max: float | None,
+                        eye_max: float | None = None) -> tuple[str, list[object]]:
     """The WHERE of one quality slice + its parameters, against `QUALITY_FROM`.
 
     `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
-    applies to that slice alone; None — no ceiling (the workspace's "show more", which
-    continues past the window). The window is a prefix of the same ordering, so
-    continuing past it neither repeats a frame nor skips one.
+    `eye_max` the one the closed-eyes list opens to (`features.eye_openness_max`), each
+    applying to its own slice; None — no ceiling (the workspace's "show more", which
+    continues past the window). A window is a prefix of the same ordering, so continuing
+    past it neither repeats a frame nor skips one.
+
+    The two numbers measure unrelated things — a variance in the hundreds and a ratio
+    under one — and both windows are still `< the number`, because on both scales SMALLER
+    is the interesting end: a blurred frame has little variance, and a closed eye is a
+    thin slit.
 
     An album is ALWAYS gathered inside the window: the button collects what was shown,
     and past the window sit thousands of frames nobody has looked at.
@@ -2108,6 +2122,9 @@ def quality_slice_where(kind: str, blur_max: float | None) -> tuple[str, list[ob
     if kind == "blurred" and blur_max is not None:
         where += " AND fq.sharpness < ?"
         params.append(float(blur_max))
+    if kind == "eyes_closed" and eye_max is not None:
+        where += " AND fq.eye_openness < ?"
+        params.append(float(eye_max))
     return where, params
 
 # --- F152: the face slices — three questions the `faces` table already answers ------
@@ -2273,9 +2290,9 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     an album — gathering somebody's passports into one folder in one click is exactly
     what it exists to prevent.
     kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`): the slice = the "Review"
-    workspace's flat list of that name (`quality_slice_where`, the shared rule), blurred
-    inside the `features.blur_review_max` window. No selector; the default album name
-    comes from the catalog.
+    workspace's flat list of that name (`quality_slice_where`, the shared rule), each
+    inside its own window — `features.blur_review_max`, `features.eye_openness_max` (F179).
+    No selector; the default album name comes from the catalog.
     kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
     `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
     fact that covers 77% of what a person would call a photo of people (measured). Like
@@ -2342,7 +2359,7 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         # outer WHERE keeps applying `dup_of`/`error` to the file being planned.
         resolved_name = i18n.folder(ALBUM_FOLDER_KEYS[kind], lang)
         quality_cond, quality_params = quality_slice_where(
-            kind, cfg.features.blur_review_max)
+            kind, cfg.features.blur_review_max, cfg.features.eye_openness_max)
         subject_cond = f"f.id IN (SELECT f.id {QUALITY_FROM} WHERE {quality_cond})"
         subject_params = list(quality_params)
     elif kind in FACE_ALBUM_KINDS:

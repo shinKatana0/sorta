@@ -276,11 +276,13 @@ product that deletes files and the one that has been run against a live collecti
 GET carries the counters of all three slices (a slice with nothing in it stays in the
 switcher with a zero — an empty slice is an answer, a missing one is a riddle) plus one
 bounded page of the current flat slice, over photographs only (`media_class.verdict =
-'photo'`, F120) that are canonical and readable. The blurred list is ordered by ascending
-sharpness and opens as far as `features.blur_review_max`; `beyond=1` continues past that
-window, which is a prefix of the same ordering, so nothing is lost or repeated at the
-seam. Without a faces run the eyes slice answers `eyes_reason='no_faces_run'` rather than
-a zero (F125: the question is only asked where a face was found). The POST writes the
+'photo'`, F120) that are canonical and readable. Both flat lists are ORDERED by the number
+they exist for, ascending in both cases (little variance = blurred, a thin slit = a closed
+eye), and each opens as far as its own window — `features.blur_review_max`,
+`features.eye_openness_max` (F179); `beyond=1` continues past that window, which is a
+prefix of the same ordering, so nothing is lost or repeated at the seam. Without a faces
+run the eyes slice answers `eyes_reason='no_faces_run'` rather than a zero (F125: the eyes
+are only measured where a face was found). The POST writes the
 decision into the EXISTING `dedup_choice` (`keep`/`to_delete`, or `clear` to drop the
 row) — `file_id` is its primary key, so a frame that appears in two slices carries one
 decision, and `to_delete` is already understood by the sorter. There is deliberately no
@@ -2064,11 +2066,15 @@ _REVIEW_SLICES = ("dupes", "blurred", "eyes")
 # program that deletes files — collecting them into a folder is not what they are for.
 _REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed"}
 
-# Blurred is ranked by the number the slice exists for; the other one has no ranking of
-# its own, so it goes in index order — stable between pages, which is what paging needs.
+# Each flat slice is ranked by the number it exists for, most interesting first — and for
+# both of them that means ASCENDING: a blurred frame has little variance, and a closed eye
+# is a thin slit. F179 gave the eyes such a number; before it they went in index order,
+# because the VLM answer behind them was a yes/no with nothing to sort by. The `f.id` tail
+# is what makes either ordering total, and paging needs that: two frames of equal sharpness
+# must not swap places between page one and page two.
 _REVIEW_SLICE_ORDER = {
     "blurred": "fq.sharpness ASC, f.id",
-    "eyes": "f.id",
+    "eyes": "fq.eye_openness ASC, f.id",
 }
 
 # The membership rule itself lives in sorter.py (`quality_slice_where`, `QUALITY_FROM`)
@@ -2077,33 +2083,38 @@ _REVIEW_SLICE_ORDER = {
 _REVIEW_FROM = QUALITY_FROM
 
 
-def _review_where(slice_: str, blur_max: float | None) -> tuple[str, list[object]]:
+def _review_where(slice_: str, blur_max: float | None,
+                  eye_max: float | None = None) -> tuple[str, list[object]]:
     """The WHERE of one flat slice + its parameters — the shared rule, by slice name.
 
     `blur_max` is the window the blurred list opens to (`features.blur_review_max`) and
-    applies to that slice alone; None — "show more" has been pressed and the list runs on
-    without a ceiling.
+    `eye_max` the one the closed-eyes list opens to (`features.eye_openness_max`, F179);
+    each applies to its own slice, and None means "show more" has been pressed and the list
+    runs on without a ceiling.
     """
-    return quality_slice_where(_REVIEW_SLICE_KIND[slice_], blur_max)
+    return quality_slice_where(_REVIEW_SLICE_KIND[slice_], blur_max, eye_max)
 
 
-def _review_count(conn: sqlite3.Connection, slice_: str,
-                  blur_max: float | None) -> int:
+def _review_count(conn: sqlite3.Connection, slice_: str, blur_max: float | None,
+                  eye_max: float | None = None) -> int:
     """How many frames one flat slice holds, under the same WHERE the page uses."""
-    where, params = _review_where(slice_, blur_max)
+    where, params = _review_where(slice_, blur_max, eye_max)
     return int(conn.execute(
         f"SELECT COUNT(*) {_REVIEW_FROM} WHERE {where}", params).fetchone()[0])
 
 
-def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, int]:
+def _review_flat_counts(conn: sqlite3.Connection, blur_max: float,
+                        eye_max: float) -> dict[str, int]:
     """The flat slice counters — plain aggregates, cheap enough for "Overview".
 
-    Blurred is counted INSIDE the window, so the chip, the "Overview" row and the length
-    of the list the tab opens with are the same number.
+    BOTH are counted INSIDE their window, so the chip, the "Overview" row and the length of
+    the list the tab opens with are one number per slice. F179 made that true of the eyes
+    too: the slice is a ranking now, and a counter that ignored the window would advertise
+    every frame a face was measured on — the whole face population, not the closed eyes.
     """
     return {
         "blurred": _review_count(conn, "blurred", blur_max),
-        "eyes": _review_count(conn, "eyes", None),
+        "eyes": _review_count(conn, "eyes", None, eye_max),
     }
 
 
@@ -2114,20 +2125,21 @@ def _review_flat_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, 
 _REVIEW_PENDING_FROM = f"{_REVIEW_FROM} LEFT JOIN dedup_choice dc ON dc.file_id = f.id"
 
 
-def _review_pending_count(conn: sqlite3.Connection, slice_: str,
-                          blur_max: float | None) -> int:
+def _review_pending_count(conn: sqlite3.Connection, slice_: str, blur_max: float | None,
+                          eye_max: float | None = None) -> int:
     """How many frames of one flat slice still carry no decision."""
-    where, params = _review_where(slice_, blur_max)
+    where, params = _review_where(slice_, blur_max, eye_max)
     return int(conn.execute(
         f"SELECT COUNT(*) {_REVIEW_PENDING_FROM} WHERE {where} AND dc.action IS NULL",
         params).fetchone()[0])
 
 
-def _review_pending_counts(conn: sqlite3.Connection, blur_max: float) -> dict[str, int]:
+def _review_pending_counts(conn: sqlite3.Connection, blur_max: float,
+                           eye_max: float) -> dict[str, int]:
     """The undecided part of each flat slice, under the same WHERE the page uses."""
     return {
         "blurred": _review_pending_count(conn, "blurred", blur_max),
-        "eyes": _review_pending_count(conn, "eyes", None),
+        "eyes": _review_pending_count(conn, "eyes", None, eye_max),
     }
 
 
@@ -2164,7 +2176,8 @@ def _review_item_to_json(row: sqlite3.Row, action: str | None) -> dict:
 
 
 def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
-                    beyond: bool, blur_max: float, max_distance: int) -> dict:
+                    beyond: bool, blur_max: float, eye_max: float,
+                    max_distance: int) -> dict:
     """`GET /api/review` — the slice counters + one bounded page of the current slice.
 
     `counts` is always the full set (it is what the switcher draws, and a slice with
@@ -2178,21 +2191,27 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     The client renders that slice from `/api/dupes`, exactly as it did when it was a tab
     of its own.
 
-    `eyes_reason='no_faces_run'` (F125) — the eyes question is asked only where a face
-    was found, so without a faces run the honest answer is why there is no data, not a
-    zero that looks like "your subjects all had their eyes open".
+    `eyes_reason='no_faces_run'` (F125) — the eye number is measured only where a face was
+    found, so without a faces run the honest answer is why there is no data, not a zero
+    that looks like "your subjects all had their eyes open".
+
+    F179: `window_total` is the count of the CURRENT slice's window, because both flat
+    slices have one now — the blurred list opens down to `features.blur_review_max`, the
+    closed-eyes list down to `features.eye_openness_max`, and "show more" walks either of
+    them past its window into the frames the ranking is less sure about.
     """
     conn = _connect(db_path)
     try:
-        counts = _review_flat_counts(conn, blur_max)
-        pending = _review_pending_counts(conn, blur_max)
+        counts = _review_flat_counts(conn, blur_max, eye_max)
+        pending = _review_pending_counts(conn, blur_max, eye_max)
         eyes_reason = None if faces_stage_ran(conn) else "no_faces_run"
-        window_total = counts["blurred"]
+        window_total = counts.get(slice_, counts["blurred"])
         items: list[dict] = []
         total = 0
         if slice_ != "dupes":
-            ceiling = None if (beyond or slice_ != "blurred") else blur_max
-            where, params = _review_where(slice_, ceiling)
+            blur_ceiling = None if beyond else blur_max
+            eye_ceiling = None if beyond else eye_max
+            where, params = _review_where(slice_, blur_ceiling, eye_ceiling)
             total = int(conn.execute(
                 f"SELECT COUNT(*) {_REVIEW_FROM} WHERE {where}", params).fetchone()[0])
             rows = conn.execute(
@@ -2233,6 +2252,10 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
         "pending_total": sum(pending.values()),
         "eyes_reason": eyes_reason,
         "blur_max": float(blur_max),
+        # F179: the number the closed-eyes caption states — and it states the PRECISION
+        # measured at it, not a count, because 62% right is the fact a person needs before
+        # looking at the list.
+        "eye_max": float(eye_max),
         "window_total": window_total,
         "beyond": bool(beyond),
         "total": total,
@@ -3070,7 +3093,8 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
             name: (_face_slice_count(conn, cfg, name) if faces_ran else None)
             for name in FACE_SLICES
         }
-        review = _review_flat_counts(conn, features.blur_review_max)
+        review = _review_flat_counts(conn, features.blur_review_max,
+                                     features.eye_openness_max)
         place = _overview_place(conn)
         classes_total = conn.execute(
             f"""SELECT COUNT(*) FROM files f JOIN media_class mc ON mc.file_id = f.id
@@ -5163,13 +5187,24 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_quality_label": {
         "ru": "Качество кадров", "en": "Frame quality", "ja": "コマの品質",
     },
+    # F179: the hint used to read "whether the eyes are open — what nothing cheap can
+    # decide", and that is no longer true. The "Closed eyes" slice is computed from the
+    # eyelid geometry on every run, with no model and no toggle, and it is right 62% of the
+    # time against this question's 60% while finding five times as many frames. The switch
+    # stays (it still asks and still fills `frame_quality.eyes_open`), but a person deciding
+    # whether to spend ~92 minutes on it has to be told that the slice does not wait for it.
     "process_quality_hint": {
-        "ru": "Открыты ли глаза — то, чего не решить дёшево. Нужен "
-              "`uv sync --extra vlm`.",
-        "en": "Whether the eyes are open — what nothing cheap can decide. Needs "
-              "`uv sync --extra vlm`.",
-        "ja": "目が開いているか — 安価な手段では決められないものです。"
-              "`uv sync --extra vlm` が必要です。",
+        "ru": "Спросить модель, открыты ли глаза. Срез «Закрытые глаза» и без этого "
+              "считается по геометрии век на каждом прогоне — на размеченной выборке "
+              "модель дала 60% точности против 62% у геометрии, найдя впятеро меньше "
+              "кадров. Нужен `uv sync --extra vlm`.",
+        "en": "Ask the model whether the eyes are open. The “Closed eyes” slice is computed "
+              "from the eyelid geometry on every run without it — on a labelled sample the "
+              "model was 60% right against the geometry's 62%, and found five times fewer "
+              "frames. Needs `uv sync --extra vlm`.",
+        "ja": "目が開いているかをモデルに尋ねます。「目を閉じた」区分はこれがなくても毎回"
+              "まぶたの形状から算出されます。ラベル付きサンプルではモデルの正解率 60% に対し"
+              "形状では 62% で、検出数は 5 分の 1 でした。`uv sync --extra vlm` が必要です。",
     },
     "process_quality_scope_label": {
         "ru": "У каких кадров спрашивать",
@@ -6657,19 +6692,36 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "なく表示範囲です。ぼやけたコマは 400 までのどの帯にも現れるため、"
               "「しきい値以下をすべて削除」というボタンはなく、既定では何も削除しません。",
     },
+    # F179: the caption states the MEASURED PRECISION and not a count. "Found 730 frames"
+    # reads as a verdict about 730 photographs; on 249 hand-labelled frames this list is
+    # right about 62% of what it points at, which is the one thing a person needs to know
+    # before opening it. The list is ordered from the most closed, so the top is where the
+    # 62% lives and "show more" walks into the doubtful part on purpose.
     "review_hint_eyes": {
-        "ru": "Кадры, на которых у людей закрыты глаза. Вопрос задаётся только там, где "
-              "найдено лицо.",
-        "en": "Frames where the people have their eyes closed. The question is only "
-              "asked where a face was found.",
-        "ja": "人物が目を閉じているコマです。この質問は顔が検出されたコマにのみ行われます。",
+        "ru": "Кадры, на которых у людей, скорее всего, закрыты глаза: посчитано по "
+              "геометрии век самого крупного лица, а не спрошено у модели. На 249 "
+              "размеченных кадрах такой список верен в 62% случаев — каждый третий кадр "
+              "здесь на самом деле с открытыми глазами, поэтому ничего не удаляется само. "
+              "Сверху самые закрытые; «показать ещё» продолжает список за порог {max}, в "
+              "сомнительную часть. Мерится только там, где найдено лицо.",
+        "en": "Frames where the people most likely have their eyes closed — computed from "
+              "the eyelid geometry of the largest face, not asked of a model. On 249 "
+              "hand-labelled frames a list like this is right 62% of the time: one frame "
+              "in three here actually has its eyes open, so nothing is ever deleted "
+              "automatically. The most closed come first, and “show more” continues past "
+              "the {max} mark into the doubtful part. Measured only where a face was found.",
+        "ja": "最も大きい顔のまぶたの形状から算出した、目を閉じている可能性が高いコマです"
+              "（モデルへの質問ではありません）。手作業でラベル付けした 249 コマでは、この"
+              "一覧の正解率は 62% です。3 コマに 1 コマは実際には目が開いているため、自動的"
+              "な削除は行いません。閉じている度合いの高い順に並び、「もっと見る」はしきい値 "
+              "{max} を越えて確度の低い部分へ進みます。顔が検出されたコマのみで計測します。",
     },
     "review_eyes_no_faces": {
-        "ru": "Данных нет: стадия «лица» не запускалась, а про глаза спрашивают только "
-              "там, где найдено лицо. Прогоните лица и повторите разбор.",
-        "en": "No data: the faces stage never ran, and the eyes question is only asked "
-              "where a face was found. Run faces and come back to this slice.",
-        "ja": "データがありません。顔ステージが実行されておらず、目の質問は顔が検出された"
+        "ru": "Данных нет: стадия «лица» не запускалась, а глаза мерятся только там, где "
+              "найдено лицо. Прогоните лица и повторите разбор.",
+        "en": "No data: the faces stage never ran, and the eyes are only measured where a "
+              "face was found. Run faces and come back to this slice.",
+        "ja": "データがありません。顔ステージが実行されておらず、目の計測は顔が検出された"
               "コマにのみ行われます。顔ステージを実行してから、この区分を開いてください。",
     },
     "review_empty": {
@@ -12743,8 +12795,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var REVIEW_SLICES = ["dupes", "blurred", "eyes"];
   var reviewSlice = "dupes";
   var reviewOffset = 0;
-  // Blur opens to `features.blur_review_max` and continues past it only when asked:
-  // the number is a window, not a verdict.
+  // Each flat slice opens to a window — `features.blur_review_max`,
+  // `features.eye_openness_max` (F179) — and continues past it only when asked: the
+  // number is a window, not a verdict.
   var reviewBeyond = false;
   var reviewWindowTotal = 0;
   var reviewSelected = {};
@@ -12789,7 +12842,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function reviewHintText(data) {
     if (reviewSlice === "eyes") {
       return data.eyes_reason === "no_faces_run"
-          ? I18N.review_eyes_no_faces : I18N.review_hint_eyes;
+          ? I18N.review_eyes_no_faces
+          : fmt(I18N.review_hint_eyes, { max: data.eye_max });
     }
     return fmt(I18N.review_hint_blurred, { max: data.blur_max });
   }
@@ -12862,7 +12916,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // Past the end of the window the button changes its meaning, not just its target:
     // the next page is no longer "more of the same list" but a step outside the window
     // the list opened to.
-    var beyondNext = reviewSlice === "blurred" && !reviewBeyond &&
+    // F179: both flat slices have a window now — sharpness down to `blur_review_max`,
+    // eye openness down to `eye_openness_max` — so the button changes its meaning on
+    // either of them, and only the duplicates (which have no ranking) never leave one.
+    var beyondNext = reviewSlice !== "dupes" && !reviewBeyond &&
         shown >= reviewWindowTotal;
     var more = shown < data.total || beyondNext;
     var moreBtn = document.getElementById("review-more-btn");
@@ -13609,6 +13666,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             self._send_json(_review_payload(
                 db_path, slice_, offset, limit, beyond=beyond,
                 blur_max=cfg.features.blur_review_max,
+                eye_max=cfg.features.eye_openness_max,
                 max_distance=cfg.index.phash_max_distance))
 
         def _serve_search(self, query: dict[str, list[str]]) -> None:

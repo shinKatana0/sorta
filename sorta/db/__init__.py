@@ -115,6 +115,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # fingerprint will have them re-asked; that is recomputation, not deletion.
         conn.execute("UPDATE frame_quality SET has_subject = NULL "
                      "WHERE has_subject IS NOT NULL")
+    if 15 <= version <= 26:  # v27: frame_quality.eye_openness (F179 — the eyelid geometry)
+        conn.execute("ALTER TABLE frame_quality ADD COLUMN eye_openness REAL")
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

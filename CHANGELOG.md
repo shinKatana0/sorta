@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **"Closed eyes" is a real slice again, and it is arithmetic rather than a model**
+  (F179). The question "are the eyes open" used to be asked of a local VLM: 60% precision
+  over 9% of the frames it was meant to find, for ~92 minutes a run. It was retired
+  (F177) and the population was not — the same labelling puts it at **~948 frames, 15.6%
+  of everything with a face in it**, and nothing pointed at them. F178 priced three
+  cheaper ways to see them against the SAME 249 hand labels, and eyelid **geometry** won:
+  **62% precision at 48% recall** — five times the model's recall at slightly better
+  precision — against 46% for a classifier over the eye crop and 58% for CLIP over the
+  same crop. So `frame_quality.eye_openness` (schema v27) is now measured on every run:
+  the height of the eye opening over its width, off the 106-point face contour of the
+  `buffalo_l` set the faces stage already downloads. **No new pass and no new weights** —
+  it rides in the decode the sharpness of F155 already pays for, the model is built on the
+  first face of a run and never on a run without one, and a machine that cannot build it
+  loses this one column and nothing else. **The coordinates are rescaled** from the
+  original frame into the preview (`face_crop_boxes`, the same guard), which is the
+  mistake that made the first version of this measurement report 100% recall over the
+  crops that happened to survive; a broken crop flatters the result rather than failing.
+  **Several faces → the largest one decides**: a frame where somebody at the back blinked
+  is not a portrait with closed eyes. In the interface the slice is now **ordered from the
+  most closed**, opens as far as `features.eye_openness_max` (default `0.18`) and
+  continues past that window on "show more" — and its caption states the **measured 62%**
+  rather than a count, because one frame in three of that list has its eyes open and
+  nothing there is ever marked automatically. `vlm.quality` still asks its question and
+  still fills `frame_quality.eyes_open`; what changed is that no list waits for it.
 - **"Try to improve" no longer trades real pixels for invented ones in silence** (F169).
   The button of F149 scaled every frame to one ceiling before the model — `1024` px, a
   constant in `restore.py` — and the model is ×4. For a small frame that is a clean gain

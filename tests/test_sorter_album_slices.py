@@ -33,6 +33,12 @@ from sorta.sorter import (
 
 from tests.test_sorter import SorterTestBase
 
+# F179: the eyes slice selects on `eye_openness` — the eyelid geometry — inside the window
+# `features.eye_openness_max` (0.18 by default). One value comfortably inside it and one
+# comfortably outside, named so that moving the default moves one line and not a dozen.
+CLOSED = 0.05
+OPEN = 0.30
+
 
 class SliceAlbumTestBase(SorterTestBase):
     def classify(self, file_id: int, verdict: str) -> None:
@@ -48,19 +54,21 @@ class SliceAlbumTestBase(SorterTestBase):
         return file_id
 
     def add_quality(self, rel: str, *, sharpness: float | None = 500.0,
-                    eyes_open: int | None = None,
+                    eye_openness: float | None = None,
                     verdict: str = "photo", **kwargs) -> int:
         """A photograph with a `frame_quality` row — the population of the flat slices.
 
         The default sharpness sits far above `features.blur_review_max`, so a frame made
-        for the eyes case does not quietly join the blurred one as well.
+        for the eyes case does not quietly join the blurred one as well. F179: the eyes
+        case says how OPEN the eyes are — CLOSED/OPEN below are one value inside the
+        default window (`features.eye_openness_max`) and one outside it.
         """
         file_id = self.add_classified(rel, verdict, **kwargs)
         self.conn.execute(
-            """INSERT INTO frame_quality (file_id, sharpness, eyes_open,
+            """INSERT INTO frame_quality (file_id, sharpness, eye_openness,
                    source, updated_at)
                VALUES (?, ?, ?, 'clip', '2026-01-01')""",
-            (file_id, sharpness, eyes_open))
+            (file_id, sharpness, eye_openness))
         self.conn.commit()
         return file_id
 
@@ -160,14 +168,14 @@ class TestSensitiveClassesHaveNoAlbum(SliceAlbumTestBase):
 class TestQualitySlices(SliceAlbumTestBase):
     def test_each_quality_slice_gathers_its_own_frames(self):
         blurred = self.add_quality("blurred.jpg", sharpness=10.0)
-        eyes = self.add_quality("eyes.jpg", eyes_open=0)
-        self.add_quality("fine.jpg", eyes_open=1)
+        eyes = self.add_quality("eyes.jpg", eye_openness=CLOSED)
+        self.add_quality("fine.jpg", eye_openness=OPEN)
         self.assertEqual(self.ids("blurred"), [blurred])
         self.assertEqual(self.ids("eyes_closed"), [eyes])
 
     def test_a_frame_nobody_asked_about_is_not_an_answer(self):
         # NULL means "not asked" (schema) and must never be shown as "eyes closed".
-        self.add_quality("unasked.jpg", eyes_open=None)
+        self.add_quality("unasked.jpg", eye_openness=None)
         self.assertEqual(self.ids("eyes_closed"), [])
 
     def test_only_photographs_are_in_a_quality_slice(self):
@@ -231,7 +239,7 @@ class TestBlurIsAWindowNotAThreshold(SliceAlbumTestBase):
     def test_the_window_bounds_no_other_slice(self):
         # A frame is in "closed eyes" because its eyes are closed, not because it is
         # also blurred — the ceiling belongs to one slice.
-        eyes = self.add_quality("eyes.jpg", sharpness=900.0, eyes_open=0)
+        eyes = self.add_quality("eyes.jpg", sharpness=900.0, eye_openness=CLOSED)
         self.assertEqual(self.ids("eyes_closed"), [eyes])
 
 
@@ -250,7 +258,7 @@ class TestApplyAndJournal(SliceAlbumTestBase):
         self.add_classified("shot.jpg", "screenshot", content=b"shot")
         self.add_classified("meme.jpg", "meme", content=b"meme")
         self.add_quality("blurred.jpg", sharpness=10.0, content=b"blur")
-        self.add_quality("eyes.jpg", eyes_open=0, content=b"eyes")
+        self.add_quality("eyes.jpg", eye_openness=CLOSED, content=b"eyes")
         for kind in CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS:
             with self.subTest(kind=kind):
                 report = self.gather(kind, mode="link", apply=True)
@@ -335,7 +343,7 @@ class TestMoveWarns(SliceAlbumTestBase):
         self.add_classified("shot.jpg", "screenshot")
         self.add_classified("meme.jpg", "meme")
         self.add_quality("blurred.jpg", sharpness=10.0)
-        self.add_quality("eyes.jpg", eyes_open=0)
+        self.add_quality("eyes.jpg", eye_openness=CLOSED)
         expected = i18n.cli_text("cli.album.warn_move", "en")
         for kind in CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS:
             with self.subTest(kind=kind):
