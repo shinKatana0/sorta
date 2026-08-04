@@ -57,10 +57,16 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
 
     def test_the_three_vlm_options_are_named_as_subordinate(self):
         """They are named in one list, so a fourth one cannot reach the screen without
-        a decision about which switch owns it."""
+        a decision about which switch owns it.
+
+        F161 is what that sentence was written for: the deep junk tier was the master
+        switch's own effect and therefore in no list at all, and giving it a line of its
+        own (`process-products-checkbox`) meant declaring which switch owns it.
+        """
         listed = self.html[self.html.index("var VLM_SUBORDINATE_IDS = ["):]
         listed = listed[:listed.index("];")]
-        for control in ("process-pets-verify-checkbox", "process-quality-checkbox",
+        for control in ("process-products-checkbox",
+                        "process-pets-verify-checkbox", "process-quality-checkbox",
                         "process-quality-scope", "process-keeper-checkbox"):
             with self.subTest(control=control):
                 self.assertIn('"' + control + '"', listed)
@@ -81,9 +87,9 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         body = self.body("updateVlmSubordinatesDisabled")
         self.assertIn('document.querySelectorAll(".vlm-off-hint")', body)
         self.assertIn('el.style.display = off ? "" : "none"', body)
-        # one caption per option, all three of them
+        # one caption per option — four of them since F161 gave the deep tier a line
         self.assertEqual(self.html.count('class="process-toggle-hint cost-hint '
-                                         'vlm-off-hint"'), 3)
+                                         'vlm-off-hint"'), 4)
 
     def test_their_price_is_zero_and_not_the_old_number(self):
         """The estimate has to add up to what the run will do — a dash would say
@@ -97,20 +103,25 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         self.assertIn("0", ui._UI_STRINGS["costs_off"]["ru"])
 
     def test_every_vlm_priced_line_is_marked_as_one(self):
-        """The three priced lines that cost MODEL time carry `vlm: true`; the ones that
-        do not — the base pass, faces, events, the CLIP pet group — must not, or the
-        master switch would zero out a price it has nothing to do with."""
+        """The priced lines that cost MODEL time carry `vlm: true`; the ones that do not
+        — the base pass, faces, events, the CLIP pet group — must not, or the master
+        switch would zero out a price it has nothing to do with.
+
+        `deep` is on neither side of that list: it IS the master switch, and F161 marks
+        it as such so that it zeroes itself rather than being zeroed.
+        """
         rows = self.html[self.html.index("var COST_ROWS = ["):]
         rows = rows[:rows.index("];")]
         entries = {}
         for match in re.finditer(r"\{ key: \"(\w+)\"(.*?)\}", rows, re.S):
             entries[match.group(1)] = "vlm: true" in match.group(2)
         self.assertEqual({key for key, marked in entries.items() if marked},
-                         {"pets_verify", "quality", "keeper"})
+                         {"products", "pets_verify", "quality", "keeper"})
+        self.assertNotIn("vlm: true", rows.split('{ key: "deep"', 1)[1].split("}", 1)[0])
 
     def test_the_sum_is_recomputed_whenever_the_master_moves(self):
         self.assertIn("updateVlmSubordinatesDisabled();", self.body("renderCosts"))
-        self.assertIn('"process-deep-checkbox", "process-quality-checkbox"', self.html)
+        self.assertIn('"process-deep-checkbox", "process-products-checkbox"', self.html)
 
 
 class TestNoSmartSwitchingOn(MarkupCase):

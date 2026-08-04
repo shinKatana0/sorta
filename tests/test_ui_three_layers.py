@@ -167,11 +167,13 @@ class TestEmptyCollection(ThreeLayersTestBase):
         # The invitation must not send anyone to another tab — that is the §2 claim, and
         # it still holds.
         self.assertNotIn('activateTab("process")', html)
-        # It used to also move the caret into the picker
-        # (`getElementById("process-source-dir").focus()`). That call is gone from ui.py
-        # entirely — dropped somewhere in F135/F138 while the run controls were rebuilt.
-        # Not asserted here because it is no longer true; it is a small real regression,
-        # written down in the backlog rather than quietly deleted with the assertion.
+        # And it moves the caret into the picker. The call was written by F133, was lost
+        # somewhere in F135/F138 while the run controls were rebuilt, and F161 put it
+        # back — this is the one screen where a first-time reader has nothing else to go
+        # on, and the field is right here, so nobody is taken anywhere.
+        focus = html.split("if (overviewEmpty) {", 1)[1].split("}", 1)[0]
+        self.assertIn('document.getElementById("process-source-dir")', focus)
+        self.assertIn(".focus()", focus)
 
 
 class TestSettingsBehindTheGear(MarkupTestBase):

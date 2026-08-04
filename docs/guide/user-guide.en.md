@@ -406,12 +406,22 @@ reflecting `config.yaml` and acting as a full override for this run only (checke
 force on, unchecked = force off) — the UI equivalent of the CLI's `--deep`/`--no-deep`
 and `--geo online`/`--geo offline` (§8):
 
-- **"Deep analysis (VLM)"** — use the deep VLM tier instead of the fast CLIP tier
-  for junk/document classification. It only actually takes effect if it's *both*
-  requested (this checkbox, `--deep`, or `vlm.enabled: true` in config)
-  *and* installed (the `vlm` extra, e.g. `uv tool install ".[gpu,vlm]"` or
-  `uv sync --extra gpu --extra vlm --extra dev`) — without that extra it silently
+- **"Deep analysis (VLM)"** — **permission to load the model, and nothing else**. The
+  checkbox computes nothing by itself and costs nothing: the time is on the lines below
+  it, and each of them states its own. Anything at all only takes effect if the model is
+  *both* permitted (this checkbox, `--deep`, or `vlm.enabled: true` in config) *and*
+  installed (the `vlm` extra, e.g. `uv tool install ".[gpu,vlm]"` or
+  `uv sync --extra gpu --extra vlm --extra dev`) — without that extra the run silently
   falls back to the fast CLIP tier, and the UI hint under the checkbox says so.
+- **"Product recognition"** — `vlm.products` (§21), the line under the master switch.
+  This is the deep classification tier, named after what it gives you: the `_Products`
+  folder of the layout and the slice of the same name come from here, as do the
+  corrected `document` verdicts. Without it products are **not few, there are none** —
+  the fast tier never produces the `product` class at all. On by default, so a run
+  started from an older config does what it always did. The price is a pass over the
+  frames the fast tier is unsure about (≈ 95 minutes on the 24,196-photo collection; with
+  `features.junk_rescue` on, the candidates are the band above its threshold — 955
+  frames, ≈ 12 minutes). The estimate on the run screen shows whichever price applies.
 - **"Online geo (more accurate abroad)"** — use online Nominatim reverse‑geocoding
   instead of the bundled offline GeoNames data for this run; sends only GPS
   coordinates, never photos (see §15).
@@ -1583,7 +1593,8 @@ copy per process, so the settings are shared.
 
 | Key | What it does |
 |---|---|
-| `vlm.enabled` | Turns the deep tier on for good, in the config. Default `false`. For a single run the same is done by `--deep`/`--no-deep` and by the "Deep analysis (VLM)" checkbox in the web UI. Without the `vlm` extra a run falls back gracefully to the fast CLIP tier. |
+| `vlm.enabled` | **The master switch for the model, and nothing else.** Default `false`. It permits the VLM to be loaded; by itself it runs nothing and costs nothing — every question the model is asked has a key of its own (`vlm.products`, `vlm.quality`, `features.pets_verify`, `features.landmarks_verify`, `dedup.keeper_vlm`, `features.junk_rescue`), and this one decides whether there is anybody to ask. For a single run the same is done by `--deep`/`--no-deep` and by the "Deep analysis (VLM)" checkbox in the web UI. Without the `vlm` extra a run falls back gracefully to the fast CLIP tier. |
+| `vlm.products` | **Product recognition** — the deep classification tier, named after what it gives you. Default `true`, the only subordinate key with that default: before this key existed the deep tier was what `vlm.enabled` did by itself, and a config written earlier has to keep working. This tier is the only producer of the `product` class — without it the layout has no `_Products` folder and the products slice is empty (not thin: empty) — and it is also what *corrects* a wrong `document` verdict. Subordinate to `vlm.enabled`: with the master clear nothing is loaded. The price is a pass over the frames the fast tier is unsure about: ≈ 95 minutes on the live 24,196-photo collection, or the band above the threshold of `features.junk_rescue` when that is on (955 frames, ≈ 12 minutes). |
 | `vlm.model` | The model id. Default `Qwen/Qwen2.5-VL-3B-Instruct`. |
 | `vlm.workers` | Threads preparing frames (decode + preprocessing) while the GPU classifies the previous one. Default `min(4, cores)`. It does not affect verdicts — labels are applied in candidate order whatever it is set to. |
 | `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |

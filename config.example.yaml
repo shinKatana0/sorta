@@ -279,20 +279,37 @@ naming:
 # both places is taken from `vlm:`; a key given only in the old place logs one warning
 # per run.
 vlm:
-  # The deep tier is opt-in: it needs the [vlm] extra (uv sync --extra vlm), and with
-  # the extra missing it falls back gracefully to the fast CLIP tier. The same is
-  # switched on for a single run by `--deep` and by the "Deep analysis (VLM)" checkbox
-  # in the web app. It is worth switching on when the hardware allows: on a live run it
-  # changed 10.7% of the verdicts, mostly into `product`, a class CLIP never produces.
+  # THE MASTER SWITCH, AND SINCE F161 NOTHING ELSE. It is opt-in and needs the [vlm]
+  # extra (uv sync --extra vlm); with the extra missing every question below falls back
+  # gracefully to what the cheap tiers answer. The same is switched on for a single run
+  # by `--deep` and by the "Deep analysis (VLM)" checkbox in the web app.
   #
-  # F145: IT IS ALSO THE MASTER SWITCH FOR EVERY OTHER QUESTION THE MODEL IS ASKED.
-  # `vlm.quality`, `features.pets_verify`, `features.landmarks_verify`,
-  # `dedup.keeper_vlm` and `features.junk_rescue` each say WHAT to ask; this one says
-  # whether a model may be raised at all. With it false none of them loads a single
-  # weight, whatever they are set to, and every one of those stages behaves exactly as
-  # it does with its own key off. Nothing here is rewritten when it is switched off —
-  # the keys keep their values and start working again the moment it is back on.
+  # F145: `vlm.products`, `vlm.quality`, `features.pets_verify`,
+  # `features.landmarks_verify`, `dedup.keeper_vlm` and `features.junk_rescue` each say
+  # WHAT to ask; this one says whether a model may be raised at all. With it false none
+  # of them loads a single weight, whatever they are set to, and every one of those
+  # stages behaves exactly as it does with its own key off. Nothing here is rewritten
+  # when it is switched off — the keys keep their values and start working again the
+  # moment it is back on.
   enabled: false
+  # F161: the deep junk tier, which until F161 was what `enabled` above did BY ITSELF —
+  # the one effect of the master switch that was not a named line with a price. Named
+  # after what it produces, because that is what a person gets: the tier is the only
+  # producer of the `product` class (the fast tier never emits one), and on the live run
+  # of 2026-07-28 it moved 2 202 of its 2 592 changed verdicts into exactly that class.
+  # Without it the "Products" folder of the layout and the products slice are not thin —
+  # they are empty.
+  #
+  # It is the one subordinate key here that defaults to TRUE, and deliberately: a config
+  # file written before this key existed has to run what it ran yesterday, and yesterday
+  # `enabled: true` meant this tier. Subordinate all the same — with the master off it
+  # asks nothing.
+  #
+  # The price is a pass over the frames the fast tier is unsure about: ~95 minutes on the
+  # live 24 196-file collection, or ~12 if `features.junk_rescue` narrows the candidates
+  # to the band above its threshold (955 frames there). The run screen prices whichever
+  # of the two this config selects.
+  products: true
   model: "Qwen/Qwen2.5-VL-3B-Instruct"
   # F101: threads that prepare frames (decode + image preprocessing) for the deep tier
   # while the GPU classifies the previous one — the pass is not heavy but sequential,

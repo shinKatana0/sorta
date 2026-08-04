@@ -501,7 +501,7 @@ import numpy as np
 from PIL import Image
 
 from . import imaging
-from .config import Config, FeaturesConfig, vlm_allowed
+from .config import Config, FeaturesConfig, products_allowed, vlm_allowed
 from .detect import (
     ANIMAL_QUERY_PROMPTS,
     STORE_FLOOR,
@@ -4371,8 +4371,11 @@ def classify(
 
     # F37 (Phase B): the tier gate. use_clip=False — an explicit heuristics-only
     # mode, deep does not enter there (symmetric with CLIP below).
+    # F161: and `vlm.products` — the tier is a named line of the run screen with a price
+    # of its own now, not the private effect of the master switch (see products_allowed,
+    # which still requires `vlm_on`).
     vlm_fn: VlmClassifyFn | None = None
-    if use_clip and vlm_on:
+    if use_clip and products_allowed(cfg):
         if vlm_classifier is not None:
             vlm_fn = vlm_classifier
         else:

@@ -191,16 +191,22 @@ class TestAnEmptyLogSaysItIsGuessing(EstimateTestBase):
         data = self.estimate()
 
         self.assertIsNone(data["measured_at"])
-        for key in ("base", "faces", "events", "deep", "keeper", "quality_all"):
+        for key in ("base", "faces", "events", "products", "keeper", "quality_all"):
             with self.subTest(key=key):
                 self.assertEqual(data["sources"][key], "default")
 
     def test_the_animal_line_is_neither_measured_nor_guessed(self):
         """It costs 0 because the prompts ride inside a CLIP call that runs anyway — a
-        structural zero has no pedigree to state."""
+        structural zero has no pedigree to state.
+
+        F161 gave the master switch the same answer for the same reason: with the deep
+        tier moved out into `products`, "Deep analysis (VLM)" runs nothing at all.
+        """
         self.add_photo("a.jpg")
         self.start_server()
-        self.assertEqual(self.estimate()["sources"]["pets"], "fixed")
+        sources = self.estimate()["sources"]
+        self.assertEqual(sources["pets"], "fixed")
+        self.assertEqual(sources["deep"], "fixed")
 
     def test_the_screen_has_somewhere_to_say_it(self):
         html = ui._render_index_html("en")
@@ -292,12 +298,12 @@ class TestTheLogIsBelievedOverTheConstants(EstimateTestBase):
         self.start_server()
         data = self.estimate()
 
-        self.assertEqual(data["counts"]["deep"], 2)
-        self.assertAlmostEqual(data["seconds"]["deep"],
+        self.assertEqual(data["counts"]["products"], 2)
+        self.assertAlmostEqual(data["seconds"]["products"],
                                round(2 * MEASURED["stage=classify phase=junk_vlm"], 1))
         self.assertAlmostEqual(data["seconds"]["quality_all"],
                                round(3 * MEASURED["stage=junk phase=junk_vlm"], 1))
-        for key in ("deep", "quality_all", "pets_verify"):
+        for key in ("products", "quality_all", "pets_verify"):
             with self.subTest(key=key):
                 self.assertEqual(data["sources"][key], "measured")
 
@@ -408,7 +414,7 @@ class TestTheEstimateAndTheRunAgree(EstimateTestBase):
         data = self.estimate()["seconds"]
 
         budget = sum(data[key] for key in
-                     ("base", "faces", "events", "pets", "deep", "keeper"))
+                     ("base", "faces", "events", "pets", "products", "keeper"))
         actual = self.elapsed_of_a_run(photos, len(deep_ids), sizes)
         self.assertLessEqual(abs(budget - actual), 0.1 * actual,
                              f"budget {budget:.1f}s vs run {actual:.1f}s")
