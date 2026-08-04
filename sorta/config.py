@@ -714,6 +714,100 @@ def _detect_from(data: dict) -> DetectConfig:
 
 
 @dataclass(frozen=True)
+class SavedSlice:
+    """F151: one pinned query — the name of a slice and the phrases it is ranked by.
+
+    A slice, not a filter with a threshold. The whole point of the shape is that both
+    halves are DATA: the name is what the interface labels the pin with, and the phrases
+    are what the search index is asked, so a slice can be added, retuned or dropped by
+    editing `config.yaml` and never by editing code.
+
+    The phrases are ENGLISH and stay English whatever `language:` says. They are not shown
+    as an interface string but sent to a CLIP text tower, and while the measured pairs
+    (children 61%/89%, products 65%/95%) were produced by English wording, translating
+    them is a change nobody has measured — see `DEFAULT_SAVED_SLICES`.
+    """
+
+    name: str
+    queries: tuple[str, ...]
+
+
+# The three slices this ships with, and why these three rather than six (measured
+# 2026-08-02 on a hand-labelled sample of 200 frames out of 22 096):
+#
+#     concept    today's filter          the same vectors, asked
+#                recall  precision       recall@N  recall@2N  precision@N
+#     children   no filter at all          61%        89%         61%
+#     products      0%        —             65%        95%         65%
+#     animals      33%       71%            60%        87%         60%
+#
+# Children and products had no slice in the product at all and the query makes them out of
+# nothing. Animals HAS one (the `pet` label, CLIP plus a VLM cascade) and keeps it: at 71%
+# precision that label answers "is this confidently an animal", which is a different
+# question from "show me every animal", so the two coexist and the interface labels them
+# apart.
+#
+# Blurred is deliberately NOT here. The sharpness filter is 100% precise on that sample
+# and the query is 36%, so folding them together would sink an exact signal into an
+# approximate one; joining those two is a different feature with a different order.
+#
+# Three phrases each, and the count is NOT the reason it works — measured on the same
+# sample, one phrase, three, and six differ by less than the noise floor (animals 67/60/73,
+# children 68/61/68, products 65/65/60, where one labelled frame is worth ~6.7 points).
+# The list exists so a slice can be retuned without a release, not for accuracy.
+DEFAULT_SAVED_SLICES: tuple[SavedSlice, ...] = (
+    SavedSlice("children", ("a photo of a child",
+                            "children playing",
+                            "a photo of a kid at a party")),
+    SavedSlice("products", ("a photo of a product",
+                            "a product photo of an item for sale",
+                            "a catalogue photo of goods")),
+    SavedSlice("animals", ("a photo of an animal",
+                           "a pet at home",
+                           "a photo of a dog or a cat")),
+)
+
+
+def _as_saved_slices(value: object,
+                     default: tuple[SavedSlice, ...]) -> tuple[SavedSlice, ...]:
+    """F151: `features.saved_slices` — a mapping of slice name -> list of phrases.
+
+    An EMPTY mapping is a real answer ("pin nothing") and survives, the
+    `_as_exclude_classes` rule: absence and emptiness are different wishes. Anything that
+    is not a mapping falls back to the default with a warning, a name with no usable
+    phrase is dropped (a pin that ranks nothing would be a slice that cannot answer), and
+    a mapping in which nothing at all survived falls back rather than silently emptying
+    the row — a file full of typos is not a request to remove every slice.
+
+    The ORDER of the mapping is kept: it is the order of the pins on screen, and YAML
+    mappings load into ordered dicts, so what a person wrote is what they get.
+    """
+    if not isinstance(value, dict):
+        if value is not None:
+            _log.warning("config: features.saved_slices=%r — ожидалось отображение "
+                         "«имя среза: список формулировок», использую значение "
+                         "по умолчанию", value)
+        return default
+    out: list[SavedSlice] = []
+    for raw_name, raw_queries in value.items():
+        name = str(raw_name).strip()
+        # A single phrase written as a plain string is a list of one, not a mistake — and
+        # one phrase is as good as three (the table above), so it must not be refused.
+        items = [raw_queries] if isinstance(raw_queries, str) else raw_queries
+        phrases = items if isinstance(items, (list, tuple)) else []
+        queries = tuple(dict.fromkeys(
+            q.strip() for q in phrases if isinstance(q, str) and q.strip()))
+        if name and queries:
+            out.append(SavedSlice(name, queries))
+        else:
+            _log.warning("config: features.saved_slices[%r] — ожидался непустой список "
+                         "формулировок, срез пропущен", raw_name)
+    if value and not out:
+        return default
+    return tuple(out)
+
+
+@dataclass(frozen=True)
 class FeaturesConfig:
     """`features:` — the F113 frame-quality cascade: one toggle, then its thresholds.
 
@@ -993,6 +1087,16 @@ class FeaturesConfig:
     # `_features_from`): a config file on somebody's machine must not lose its setting to
     # a rename. 200 is a screenful a human can actually go through in one sitting.
     search_page: int = 200
+    # F151: the pinned queries — name -> the phrases that slice is ranked by. A slice is a
+    # SAVED QUERY here and not a filter of its own: the engine (F129), the index (F141) and
+    # the paging (F173) already exist, so "children" costs a config entry rather than a
+    # threshold, a calibration and a code path. `DEFAULT_SAVED_SLICES` above carries the
+    # measurement these three were chosen by and the reason the phrases are English.
+    #
+    # The page of one of them is `search_page` and the depth past it is the "show more"
+    # button: doubling the list is the one lever of completeness the measurement confirmed
+    # (children 61% -> 89%), and there is no membership threshold anywhere in this.
+    saved_slices: tuple[SavedSlice, ...] = DEFAULT_SAVED_SLICES
     # F152: the two numbers the face slices need, and the only two they have. Everything
     # else about those slices is a FACT of the `faces` table — either the detector found
     # a face on this frame or it did not — so these are not confidence thresholds and
@@ -1092,6 +1196,7 @@ def _features_from(raw: dict) -> FeaturesConfig:
         store_embeddings=_as_bool(raw.get("store_embeddings"), d.store_embeddings),
         search_page=_as_positive_int(
             _renamed_value(raw, "features", "search_page", "search_limit"), d.search_page),
+        saved_slices=_as_saved_slices(raw.get("saved_slices"), d.saved_slices),
         group_photo_faces=_as_positive_int(
             raw.get("group_photo_faces"), d.group_photo_faces),
         portrait_face_share=_as_float(

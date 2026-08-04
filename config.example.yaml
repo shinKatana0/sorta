@@ -620,6 +620,52 @@ features:
   # well; and the population is personal photographs only (screenshots and documents have
   # no vector at all).
   search_page: 200
+  # F151: the PINNED SLICES of the "Slices" tab — a name and the phrases it is ranked by.
+  # A slice here is a SAVED QUERY, not a filter with a threshold of its own: it is the
+  # search engine above, asked with words that live in this file. Costs nothing extra —
+  # the vectors are the ones `search_index` already stores, and the query is one matrix
+  # multiplication (0.9 ms measured).
+  # WHY THESE THREE (measured 2026-08-02 on 200 hand-labelled frames out of 22 096, the
+  # first time RECALL was measured and not just the precision of the top):
+  #
+  #   concept    the filter today          the same vectors, asked
+  #              recall  precision         recall@N  recall@2N  precision@N
+  #   children   no filter at all             61%       89%         61%
+  #   products      0%        —               65%       95%         65%
+  #   animals      33%       71%              60%       87%         60%
+  #
+  # Children and products had no slice at all and the query makes them out of nothing;
+  # animals gains 27 points of recall over the `pets` label. That label STAYS and is shown
+  # beside this slice: at 71% precision it answers "is this confidently an animal", which
+  # is a different question from "show me every animal" — the interface labels the two
+  # apart ("Animals" against "Animals · by query"), and nothing about the existing filter
+  # changed.
+  # NOT HERE, on purpose: people (the `faces` table already answers that exactly and for
+  # free — 7 341 frames) and blurred (the sharpness filter is 100% precise on that sample
+  # and the query 36%, so merging them would sink an exact signal into an approximate one).
+  # THE PHRASES ARE ENGLISH AND SHOULD STAY ENGLISH. They are not interface text — they go
+  # to a CLIP text tower — so `language:` does not touch them, and the numbers above were
+  # produced by this wording. Translating them changes the slice into something nobody has
+  # measured.
+  # HOW MANY phrases does not matter: one, three and six differ by less than the noise of
+  # the sample (animals 67/60/73, children 68/61/68, products 65/65/60 — one labelled frame
+  # is worth ~6.7 points there). The list is here so a slice can be retuned WITHOUT CODE,
+  # not for accuracy. Add a name, edit a phrase, delete an entry — the pins follow.
+  # There is no membership threshold and there will not be one: the list is ranked, and
+  # depth is the lever ("Show more" continues the same ranking, `search_page` at a time).
+  saved_slices:
+    children:
+      - "a photo of a child"
+      - "children playing"
+      - "a photo of a kid at a party"
+    products:
+      - "a photo of a product"
+      - "a product photo of an item for sale"
+      - "a catalogue photo of goods"
+    animals:
+      - "a photo of an animal"
+      - "a pet at home"
+      - "a photo of a dog or a cat"
   # F152: the two numbers the FACE SLICES need — "photographs with people", "group
   # photographs", "portraits" in the Slices tab, and `sorta album people|group|portrait`.
   # Nothing here is a confidence threshold: those slices are read off the `faces` table,
