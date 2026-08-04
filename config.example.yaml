@@ -659,6 +659,25 @@ features:
   # photograph. Its link to the original is stored, and the pair is never shown as a
   # duplicate to sort out.
   restore_model: "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+  # F169: the longer side the frame is scaled to BEFORE the model, and the single number
+  # that decides what you get back. It used to be a constant in the code; it is a setting
+  # now because the trade it makes is not the same for every frame:
+  #
+  #   a frame BELOW it (a scan, a downloaded picture, an old small shot) goes to the model
+  #     untouched — 800 px in, 3200 px out, nothing given up, the case this was built for;
+  #   a frame ABOVE it is reduced first, and the x4 brings it back to about its own size:
+  #     4032 px -> 1024 px -> 4096 px. Same size out, but the real detail of the original
+  #     was dropped on the way in and the model drew plausible detail instead. The Review
+  #     tab says exactly that when it happens, rather than calling the copy an improvement.
+  #
+  # Raising it costs memory as the SQUARE of the number and on the x4 OUTPUT, not on the
+  # input: 2048 is four times the pixels of 1024, and a full 4000 px frame would be 16 000
+  # px wide inside the model — around 780 megapixels, which does not fit on 32 GB. Before
+  # you move it, run `python scripts/measure_restore.py`: it prints time, weight and peak
+  # memory per frame population (< 1024 px, 1024-2500 px, > 2500 px) at each candidate
+  # ceiling, and lays out blind pairs of "original / processed" — the only honest judge of
+  # whether the copy is better is a person looking at it, and "sharper" is not "better".
+  restore_max_edge: 1024
 
 # F67: lazy preview cache. Each frame is decoded ONCE (into a 1536px JPEG) and every
 # later stage — pHash, CLIP, OCR, VLM, UI thumbnails — reads that instead of decoding

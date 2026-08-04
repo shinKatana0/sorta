@@ -2356,6 +2356,18 @@ def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
     return item
 
 
+def _restore_notice(src: Path, max_edge: int) -> dict:
+    """F169: what the answer owes about the ceiling — `rebuilt` and the two numbers.
+
+    Recomputed from the source rather than remembered, because the same sentence is owed
+    on the press that REUSES a copy: the frame and the ceiling are what they are, so the
+    second press must not quietly drop the warning the first one carried.
+    """
+    edge = restore.source_edge(src)
+    return {"rebuilt": edge > int(max_edge) > 0, "source_edge": edge,
+            "max_edge": int(max_edge)}
+
+
 def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dict:
     """`POST /api/review/restore` for ONE id -> the card of the copy, or the reason.
 
@@ -2364,6 +2376,13 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
     reason travels as a CODE (`restore.ERROR_*`), which the client translates: the weights
     come from the network and offline is an ordinary state for this product, so "the model
     is not here" has to be an answer a person can read rather than an empty result.
+
+    F169: the ceiling comes from `features.restore_max_edge` and is PASSED — it used to be
+    a constant the engine defaulted to, i.e. one number for every frame with nobody told —
+    and the answer carries `rebuilt` whenever the frame was larger than it. The action is
+    not refused for such a frame: what should happen to a 12 Mpx one is the measurement's
+    decision (`scripts/measure_restore.py`), and until it is made the honest thing is to
+    do the work and say what was done.
     """
     conn = _connect(db_path)
     try:
@@ -2371,18 +2390,22 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
         if row is None:
             return {"ok": False, "error": "file not found"}
         model = features.restore_model
+        notice = _restore_notice(Path(row["path"]), features.restore_max_edge)
         existing = restore.existing_copy(conn, file_id, model)
         if existing is not None:
             copy_id, copy_path = existing
             if Path(copy_path).exists():
-                return {"ok": True, "reused": True,
+                return {"ok": True, "reused": True, **notice,
                         "item": _restored_item_to_json(_restored_row(conn, copy_id), file_id)}
             # The person deleted it in their file manager. Answering "you already have one"
             # and drawing a card for a file that is gone is worse than doing the work again.
             restore.forget_copy(conn, copy_id)
-        result = restore.restore_frame(Path(row["path"]), model)
+        result = restore.restore_frame(Path(row["path"]), model,
+                                       max_edge=features.restore_max_edge)
         if not result.ok or result.path is None:
             return {"ok": False, "reason": result.error, "detail": result.detail}
+        notice = {"rebuilt": result.rebuilt, "source_edge": result.source_edge,
+                  "max_edge": int(features.restore_max_edge)}
         copy_id = restore.record_restored(conn, file_id, result.path, model=model)
         item = _restored_item_to_json(_restored_row(conn, copy_id), file_id)
     finally:
@@ -2391,7 +2414,7 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int) -> dic
     # layout no longer describe the collection. It is never a duplicate of its source
     # (`dedup`), which is a statement about the GROUPS and not about the cache.
     _dupes_cache_clear()
-    return {"ok": True, "reused": False, "item": item}
+    return {"ok": True, "reused": False, "item": item, **notice}
 
 
 def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
@@ -6729,6 +6752,28 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Такая копия уже была — показываем её, второй не делаем.",
         "en": "That copy already existed — here it is; a second one is not made.",
         "ja": "その複製はすでに存在します。既存のものを表示し、二つ目は作りません。",
+    },
+    # F169: the sentence a full-sized frame is owed. The model is x4 and cannot be shown
+    # the whole frame, so a big one is REDUCED first and blown back up to about its own
+    # size — the copy comes out the same size and holds less of what was really there.
+    # Said next to "done", every time it happens, because it is the one outcome a person
+    # cannot see by looking: the copy usually looks sharper, and sharper is not truer.
+    "review_restore_rebuilt": {
+        "ru": "Внимание: кадр больше предела ({max_edge} px по длинной стороне, здесь "
+              "{source_edge}). Копия пересобрана из уменьшенной: настоящая детализация "
+              "оригинала не попала в модель, и на её месте дорисована правдоподобная. "
+              "Это не улучшение оригинала — предел меняется ключом "
+              "features.restore_max_edge.",
+        "en": "Note: this frame is larger than the limit ({max_edge} px on the longer "
+              "side, this one is {source_edge}). The copy was rebuilt from a reduced "
+              "frame: the real detail of the original never reached the model, and "
+              "plausible detail was drawn in its place. This is not an improved original "
+              "— the limit is the features.restore_max_edge key.",
+        "ja": "注意: このコマは上限 (長辺 {max_edge} px、このコマは {source_edge} px) を"
+              "超えています。複製は縮小した画像から作り直されました。元の写真の本当の"
+              "細部はモデルに渡らず、代わりにそれらしい細部が描き足されています。"
+              "元の写真が良くなったわけではありません。上限は "
+              "features.restore_max_edge で変えられます。",
     },
     "review_restore_error_model_unavailable": {
         "ru": "Модель не загрузилась. Веса качаются из сети и нужен дополнительный "
@@ -12964,6 +13009,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           insertRestoredCard(resp.item);
           status.textContent = resp.reused ? I18N.review_restore_reused
                                            : I18N.review_restore_done;
+          // F169: a frame above the ceiling is reduced before the model and blown back
+          // up, so the copy is the same size and holds less of what was really there.
+          // Said in the same breath as "done" — the copy looks sharper either way, and
+          // this is the part nobody can see by looking at it.
+          if (resp.rebuilt) {
+            status.textContent += " " + fmt(I18N.review_restore_rebuilt, {
+              max_edge: resp.max_edge, source_edge: resp.source_edge });
+          }
         } else {
           // A reason, never an empty result: the weights come off the network and being
           // offline is an ordinary state for this program.
