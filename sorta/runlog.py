@@ -26,6 +26,10 @@ writes the same three kinds of line: `started`, a periodic `progress` (interval 
 `logging.progress_interval_sec`), and a summary written the moment that unit is over.
 The summary in particular is no longer held back until the stage ends, which is what
 used to make a cut-short run lose the timings of phases that had long finished.
+
+F159 closes the loop by READING those lines back (`read_measurements`). Once a machine
+has run a stage, the file holds how fast that stage is HERE — and a rate read from there
+beats any constant measured once on somebody else's collection and shipped in a wheel.
 """
 from __future__ import annotations
 
@@ -33,11 +37,13 @@ import logging
 import logging.handlers
 import os
 import platform
+import re
 import sys
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -615,6 +621,179 @@ def stage_timer(name: str, *, total: int | None = None) -> Iterator[StageResult]
     elapsed = time.perf_counter() - started
     _close_phases(name, None)
     _LOG.info("stage=%s elapsed=%.3f%s", name, elapsed, _counters(result.processed, elapsed))
+
+
+# --- F159: reading the timings back, so an estimate stops carrying constants --------
+#
+# Everything above WRITES timings; this reads them. The run screen used to price a stage
+# with a number measured once, on a developer's collection, and baked into `ui.py` — 1.32
+# seconds for a comparative question that really costs 0.45 s plus 1.03 s per frame in it,
+# a 3.7x understatement on the collection it was checked against. The file already holds
+# the true rate of every stage ON THIS MACHINE, which is the number a person deciding
+# whether to wait four hours actually wants.
+#
+# Only the SUMMARY lines are read. `started` and `progress` say nothing about a finished
+# unit; `failed` and `interrupted (...)` describe one that stopped early, where the
+# seconds are real but the denominator is not — a rate built from those would promise a
+# run faster than any run has ever been. The three are told apart by shape: a summary is
+# the only line where `elapsed=` follows the unit immediately.
+_MEASUREMENT_RE = re.compile(
+    r"^(?P<at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+\s+\w+\s+\S+\s+\[[^\]]*\]\s+"
+    r"stage=(?P<stage>[^\s=]+)(?:\s+phase=(?P<phase>[^\s=]+))?"
+    r"\s+elapsed=(?P<elapsed>\d+(?:\.\d+)?)"
+    r"(?:\s+processed=(?P<processed>\d+))?"
+)
+# The `  sorta: <version>` line of the environment header. It has no timestamp prefix —
+# `log_environment` emits the whole header as ONE record — which is also why it can never
+# collide with the pattern above.
+_BUILD_RE = re.compile(r"^\s+sorta:\s*(?P<build>\S+)\s*$")
+
+# How long a timing is worth trusting, in days. Ninety is deliberately generous: the guard
+# that actually matters is the build below, and this one only catches the case that guard
+# cannot see — the same version of the tool, running months later on a machine whose disk,
+# GPU or collection has moved on since.
+DEFAULT_MEASUREMENT_MAX_AGE_DAYS = 90.0
+
+
+def measurement_unit(stage: str, phase: str | None = None) -> str:
+    """The key one timed unit is remembered under — the log's own `stage=`/`phase=`.
+
+    Callers name what they want to price in the same words the file uses, so there is no
+    second vocabulary to keep in step with `log_phase`.
+    """
+    return f"stage={stage}" if phase is None else f"stage={stage} phase={phase}"
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """How fast one timed unit ran here, the last time it ran (F159).
+
+    `processed` is not decoration: seconds alone cannot tell an expensive question asked
+    rarely from a cheap one asked of every frame, which is exactly why F147 wrote the
+    denominator next to the numerator in the first place.
+    """
+
+    unit: str
+    seconds: float
+    processed: int
+    at: datetime
+    build: str
+
+    @property
+    def seconds_per_unit(self) -> float:
+        """Seconds per item — the rate an estimate multiplies a count by."""
+        return self.seconds / self.processed
+
+
+def _usable(seconds: float, processed: int) -> bool:
+    """A rate needs both halves, and neither of them may be zero.
+
+    `processed=0` cannot be divided by. `elapsed=0.000` reads as "instant", and the far
+    likelier reading is a stage that recognised its whole population as already done
+    (the F68 incremental skip) — pricing the next run at nothing on the strength of that
+    is the one thing an estimate may not do. Falling back to the shipped default is the
+    conservative direction, and it costs only accuracy.
+    """
+    return seconds > 0 and processed > 0
+
+
+def _measurement_files(path: Path) -> list[Path]:
+    """The log and its most recent backup, oldest first.
+
+    The backup is read because rotation is not aware of runs: the 5 MB boundary can fall
+    between the environment header of a run and the stage summaries that belong to it,
+    and a measurement whose build is unknown is a measurement this module refuses to use.
+    One backup is enough for that — going further back would only offer timings older
+    than the ones already in hand.
+    """
+    return [p for p in (path.with_name(path.name + ".1"), path) if p.is_file()]
+
+
+def measurement_files(path: str | Path | None = None) -> list[Path]:
+    """The files `read_measurements` would read, oldest first; empty — there are none.
+
+    Exposed so a caller that CACHES an answer built on them can key that cache on their
+    state, the way the web app keys the run estimate on the state of the index: a run
+    that has just written its own timings must not be answered with the old prices.
+    """
+    return _measurement_files(_resolve_path(path))
+
+
+def read_measurements(
+    path: str | Path | None = None,
+    *,
+    build: str | None = None,
+    max_age_days: float = DEFAULT_MEASUREMENT_MAX_AGE_DAYS,
+    now: datetime | None = None,
+) -> dict[str, Measurement]:
+    """The latest usable timing of every stage and phase in the run log, by unit name.
+
+    A stale measurement is worse than none, because it is believed. Two guards, and both
+    are the `frame_quality.source` device — an answer is kept only while the question
+    behind it is still the same one:
+
+    * the BUILD. Every run opens with an environment header carrying `sorta: <version>`,
+      and a timing from another version is a timing of a stage that may since have been
+      rewritten. Deliberately blunt: it discards timings that were still valid rather
+      than keep one that is not, and a discarded timing costs only the default estimate.
+      A timing no header vouches for is discarded on the same rule.
+    * the AGE, `max_age_days`. 0 or less switches it off.
+
+    Never raises and never blocks: an unreadable, missing or half-written log is simply a
+    machine with no measurements yet, which is a case the caller has to handle anyway.
+    """
+    wanted = build if build is not None else _running_build()
+    cutoff: datetime | None = None
+    if max_age_days > 0:
+        cutoff = (now or datetime.now()) - timedelta(days=max_age_days)
+    found: dict[str, Measurement] = {}
+    for source in _measurement_files(_resolve_path(path)):
+        current_build: str | None = None
+        try:
+            with source.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    header = _BUILD_RE.match(line)
+                    if header is not None:
+                        current_build = header.group("build")
+                        continue
+                    if current_build != wanted:
+                        continue
+                    parsed = _parse_measurement(line, current_build, cutoff)
+                    if parsed is not None:
+                        found[parsed.unit] = parsed
+        except OSError as exc:
+            _LOG.debug("runlog: run log %s is unreadable (%s)", source, exc)
+    return found
+
+
+def _parse_measurement(line: str, build: str, cutoff: datetime | None) -> Measurement | None:
+    """One log line -> a Measurement, or None if it is not a usable summary."""
+    match = _MEASUREMENT_RE.match(line)
+    if match is None or match.group("processed") is None:
+        return None
+    seconds, processed = float(match.group("elapsed")), int(match.group("processed"))
+    if not _usable(seconds, processed):
+        return None
+    try:
+        at = datetime.strptime(match.group("at"), _DATEFMT)
+    except ValueError:
+        return None
+    if cutoff is not None and at < cutoff:
+        return None
+    return Measurement(
+        unit=measurement_unit(match.group("stage"), match.group("phase")),
+        seconds=seconds, processed=processed, at=at, build=build,
+    )
+
+
+def _running_build() -> str:
+    """The version of the package doing the asking — see `read_measurements`."""
+    try:
+        from . import __version__
+
+        return str(__version__)
+    except Exception:  # a source tree without the package metadata is not fatal
+        return "unknown"
 
 
 def _package_origin() -> str:
