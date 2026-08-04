@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **"Try to improve" no longer trades real pixels for invented ones in silence** (F169).
+  The button of F149 scaled every frame to one ceiling before the model — `1024` px, a
+  constant in `restore.py` — and the model is ×4. For a small frame that is a clean gain
+  (800 px in, 3200 px out, the case the action was built for). For a phone shot it was a
+  trade nobody was told about: **4032 × 3024 → 1024 × 768 → 4096 × 3072**, the same size
+  out, through a quarter and back, with the real detail of the original dropped on the way
+  in and plausible detail drawn in its place. The frame can come back looking sharper and
+  holding less of what was there. Two things follow, and both are here. **The ceiling is a
+  setting** — `features.restore_max_edge` — because it is the single number that decides
+  what a person gets back, and a threshold in the code is a threshold nobody can move; the
+  route now passes it, which it did not, so the constant really did decide for everybody.
+  **A frame above it is told so**: the answer carries `rebuilt` with both numbers, the
+  Review tab prints that beside "done" in all three languages, and a frame under the
+  ceiling is handed to the model untouched and says nothing — because nothing was given
+  up. What should ultimately happen to a 12-megapixel frame (tile it at native resolution,
+  supersample back down, or close the action for that population and treat defocus as the
+  different problem it is) is **not** decided here: `scripts/measure_restore.py` is the
+  phase-0 measurement it will be decided from. It prints the three frame populations
+  separately (< 1024 px, 1024–2500 px, > 2500 px), each against the original as the
+  baseline, with size, weight, time, peak memory and the share of the frame's own pixels
+  the model was even shown, at the current ceiling, at 2048 and at the full frame (a run
+  that does not fit is a row, not a crash) — and lays out **blind** pairs for the eyes,
+  both halves at the same size, the order seeded, the key in a file meant to be opened
+  afterwards. It deliberately does not compute "better": the first probe of F149 used a
+  model trained on clean bicubic downscaling and its numbers flattered a result a human
+  eye then rejected, and "sharper" is not "truer".
 - **«Not personal photos» was the wrong name for four different buckets** (F175). The
   slice showed **4 980** frames, which is exactly `product` 2 107 + `screenshot` 1 782 +
   `document` 1 015 + `meme` 76 — the classifier's whole output under one name — and that

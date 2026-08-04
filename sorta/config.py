@@ -1017,6 +1017,19 @@ class FeaturesConfig:
     # "classical" is trained on clean bicubic downscaling, a degradation an archive of
     # real photographs does not contain. Against `realworld-sr-x4` the mask lost outright.
     restore_model: str = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+    # F169: the longer side the frame is scaled to BEFORE that model — and, until this
+    # key existed, a constant in `restore.py` that decided for everybody. The model is x4
+    # and works at the UPSCALED resolution, so 1024 becomes 4096 in memory and a full 12
+    # Mpx frame would become 16 000 px, which fits on no card here.
+    #
+    # What that costs is the reason the number is a setting. A frame BELOW it is handed to
+    # the model as it is — a small scan, a downloaded picture, the case the action was
+    # built for, pure gain. A frame ABOVE it is reduced first and the x4 brings it back to
+    # roughly its own size: same pixels count, real detail dropped, plausible detail drawn
+    # in its place. The interface says so on such a frame instead of calling it an
+    # improvement, and `scripts/measure_restore.py` prints what raising this costs in time
+    # and memory on the three frame populations separately.
+    restore_max_edge: int = 1024
 
 
 def _features_from(raw: dict) -> FeaturesConfig:
@@ -1058,6 +1071,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         search_model=_as_model_name(raw.get("search_model"), d.search_model),
         restore_model=_as_repo_id(
             "features.restore_model", raw.get("restore_model"), d.restore_model),
+        restore_max_edge=_as_positive_int(
+            raw.get("restore_max_edge"), d.restore_max_edge),
     )
 
 
