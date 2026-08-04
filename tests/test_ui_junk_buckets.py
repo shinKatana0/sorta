@@ -465,7 +465,7 @@ class TestJunkMarkup(JunkViewTestBase):
 class TestJunkStringsAreTranslated(unittest.TestCase):
     KEYS = ("tab_junk", "junk_intro", "junk_bucket_product",
             "junk_bucket_document", "junk_bucket_screenshot", "junk_bucket_meme",
-            "junk_empty", "junk_restore_button", "junk_restore_confirm",
+            "junk_empty", "slice_return_button", "junk_restore_confirm",
             "junk_undo_restore_button", "junk_restored_mark",
             "junk_select_all", "junk_select_none", "junk_load_more",
             "junk_shown_label", "junk_document_no_preview", "junk_document_hint",
