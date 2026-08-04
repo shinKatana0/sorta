@@ -581,12 +581,13 @@ class TestRetiredAnswerColumns(FrameQualityCase):
         self.assertIsNone(row["has_subject"])
         self.assertIsNone(row["is_accidental"])
 
-    def test_no_model_is_built_for_them(self):
+    def test_no_asker_runs_over_the_band_that_used_to_feed_one(self):
         """The frames of the uncertain band used to be the population of a model call.
 
-        A run over exactly such a frame (sharpness inside the band, CLIP unsure) must now
-        raise nothing at all — the stand-in factory below fails the case if the deep tier
-        is entered for a question that no longer exists.
+        A run over exactly such a frame (sharpness inside the band) must now ask nothing:
+        the stand-in factories fail the case if either surviving asker is built for it,
+        and the tier marker is the second half of the statement — `classic` is the marker
+        of a row no asker touched, so a question creeping back in would move it.
         """
         self.features(sharpness_band_min=30.0, sharpness_band_max=300.0)
         fid = self.add_file("blurry.jpg")
@@ -597,7 +598,9 @@ class TestRetiredAnswerColumns(FrameQualityCase):
         classify(self.cfg, self.conn, classifier=QualityClassifier(),
                  text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
                  pet_vlm_factory=factory, junk_rescue_vlm_factory=factory)
-        self.assertIsNone(self.quality(fid)["eyes_open"])
+        row = self.quality(fid)
+        self.assertIsNone(row["eyes_open"])
+        self.assertEqual(row["source"], junk.QUALITY_SOURCE_CLASSIC)
 
     def test_false_and_null_are_distinguishable_on_the_way_out(self):
         """The read layer's own promise, and it outlives what used to write those rows.
