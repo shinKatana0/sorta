@@ -236,7 +236,9 @@ class TestBlurIsAWindowNotAThreshold(SliceAlbumTestBase):
     """Requirement 3: the button collects what was SHOWN. The blurred list opens to
     `features.blur_review_max`, and an album that ignored it would gather thousands of
     frames nobody has looked at — while the whole point of this slice is that the
-    decision is taken by eye."""
+    decision is taken by eye. F157 turned that window into the depth of the first page of
+    a ranking, which changes what the number means and not what the album does: "the
+    first N in order" is an album, "everything below, for ever" is the collection."""
 
     def setUp(self):
         super().setUp()
@@ -245,13 +247,14 @@ class TestBlurIsAWindowNotAThreshold(SliceAlbumTestBase):
         self.sharp = self.add_quality("sharp.jpg", sharpness=900.0)
 
     def test_the_album_stops_at_the_configured_window(self):
-        self.assertEqual(self.cfg.features.blur_review_max, 90.0)
-        self.assertEqual(self.ids("blurred"), [self.inside])
+        self.assertEqual(self.cfg.features.blur_review_max, 300.0)
+        self.assertEqual(sorted(self.ids("blurred")), sorted([self.inside, self.edge]))
 
     def test_raising_the_key_grows_the_album(self):
         self.cfg.features = dataclasses.replace(
-            self.cfg.features, blur_review_max=300.0)
-        self.assertEqual(sorted(self.ids("blurred")), sorted([self.inside, self.edge]))
+            self.cfg.features, blur_review_max=1000.0)
+        self.assertEqual(sorted(self.ids("blurred")),
+                         sorted([self.inside, self.edge, self.sharp]))
 
     def test_lowering_the_key_empties_it(self):
         self.cfg.features = dataclasses.replace(self.cfg.features, blur_review_max=5.0)

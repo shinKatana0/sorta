@@ -8,7 +8,9 @@ What this file is really guarding, in the order the risk runs:
 * a slice must contain its own frames and nobody else's — not a screenshot (F120), not
   an exact duplicate, not a file that failed to read;
 * the blur window is a WINDOW: the list opens to `features.blur_review_max`, "show more"
-  continues past it, and the seam neither loses a frame nor shows one twice;
+  continues past it, and the seam neither loses a frame nor shows one twice. F157 renamed
+  what that window means — it is the depth of the first page of a ranking now, and what
+  the ranking itself owes is pinned in test_blurred_is_a_ranking.py;
 * one decision per file, in the existing `dedup_choice`, surviving a recompute of
   `frame_quality` — and no route anywhere that marks a whole slice at once.
 
@@ -251,10 +253,13 @@ class TestBlurWindow(ReviewTestBase):
     def test_the_window_bounds_the_list(self):
         inside = [self.add_reviewable(f"in{i}.jpg", sharpness=10.0 + i)
                   for i in range(3)]
-        self.add_reviewable("out.jpg", sharpness=300.0)
+        self.add_reviewable("out.jpg", sharpness=900.0)
         self.start_server()
         data = self.review("?slice=blurred")
-        self.assertEqual(data["blur_max"], 90.0)
+        # F157 raised the default from 90 to 300 — the number is read off the config
+        # here rather than repeated, because what this test is about is that the list
+        # and the answer agree on it.
+        self.assertEqual(data["blur_max"], self.cfg.features.blur_review_max)
         self.assertEqual(data["window_total"], 3)
         self.assertEqual(data["total"], 3)
         self.assertEqual([it["file_id"] for it in data["items"]], inside)
@@ -274,7 +279,7 @@ class TestBlurWindow(ReviewTestBase):
         # it must neither repeat a frame nor skip one.
         inside = [self.add_reviewable(f"in{i}.jpg", sharpness=10.0 + i)
                   for i in range(3)]
-        outside = [self.add_reviewable(f"out{i}.jpg", sharpness=100.0 + i)
+        outside = [self.add_reviewable(f"out{i}.jpg", sharpness=900.0 + i)
                    for i in range(3)]
         self.start_server()
         window = self.review("?slice=blurred")
@@ -751,7 +756,9 @@ class TestReviewTabHtml(ReviewTestBase):
                 "review_mark_delete", "review_mark_keep", "review_mark_clear",
                 "review_select_label", "review_select_all", "review_select_none",
                 "review_marked_status", "review_load_more", "review_load_more_beyond",
-                "review_shown_label", "review_error_prefix", "error_loading_review",
+                "review_shown_label", "review_shown_ranked",
+                "review_hint_blurred_faces", "review_error_prefix",
+                "error_loading_review",
                 "overview_blurred", "overview_eyes_closed",
                 "settings_scope_faces")
         for key in keys:
@@ -765,6 +772,10 @@ class TestReviewTabHtml(ReviewTestBase):
             self.assertIn("{value}", ui._UI_STRINGS["review_sharpness_label"][lang])
             self.assertIn("{shown}", ui._UI_STRINGS["review_shown_label"][lang])
             self.assertIn("{total}", ui._UI_STRINGS["review_shown_label"][lang])
+            # F157: the ranked counter says how long the list is and NOTHING about a
+            # total — a length is the only honest number a ranking has.
+            self.assertIn("{shown}", ui._UI_STRINGS["review_shown_ranked"][lang])
+            self.assertNotIn("{total}", ui._UI_STRINGS["review_shown_ranked"][lang])
             self.assertIn("{n}", ui._UI_STRINGS["review_marked_status"][lang])
 
     def test_the_view_says_nothing_is_deleted_by_the_number(self):

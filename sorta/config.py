@@ -1036,21 +1036,47 @@ class FeaturesConfig:
     # The other way in: the junk-group CLIP probability of "a photograph" below this is
     # CLIP saying it does not know what it is looking at.
     subject_score_min: float = 0.9
-    # F126: how far down the blur review list opens by default. NOT a verdict — the
-    # measurement that produced it says the opposite. Reviewing frames by eye in bands,
-    # the user found blurred frames in EVERY band up to 400: sharpness ranks, it does not
-    # classify, and no cutoff separates junk from a soft but wanted photograph. What the
-    # bands did show is where the yield falls off — around 90-120:
+    # F126/F157: how far down the blur review list opens by default — the DEPTH OF THE
+    # FIRST PAGE of a ranking, and not the edge of "blurred". The slice is ordered by
+    # ascending sharpness and "show more" walks straight on past this number; where to
+    # stop reading is the person's call, which is the whole reason this is not a filter.
     #
-    #     < 70    378 frames  1.9% of the collection
-    #     < 90    530         2.7%
-    #     < 120   785         4.0%
-    #     < 160  1215         6.1%
+    # F157 raised it from 90, and the two measurements say why. On 300 frames labelled by
+    # the STRICT criterion the user chose ("visibly smeared", not "a little soft"; 17
+    # blurred), a cutoff buys recall far faster than it loses precision:
     #
-    # So the list opens at 90 and continues on demand. Nothing is ever deleted by this
-    # number: "almost everything is blurred and I would delete it, except a couple I keep
-    # for the memory" — a frame this cannot know about is exactly why the human marks.
-    blur_review_max: float = 90.0
+    #     threshold  flagged  right  precision  recall
+    #        90          7      2       29%       12%    <- the old default
+    #       200         23      5       22%       29%
+    #       300         47      9       19%       53%
+    #       450         73     10       14%       59%
+    #       700        120     14       12%       82%
+    #
+    # And the same signal read as an ordering, with no threshold at all: the top 5% of the
+    # list holds 24% of the blurred frames, the top 10% 41%, the top 20% 53%, the top 30%
+    # 65%. Precision falls slowly, recall climbs quickly — the profile where a threshold is
+    # the wrong instrument and a list is the right one.
+    #
+    # How long that list is on a real archive (2026-08-04, 19 211 photographs carrying a
+    # sharpness; `python scripts/measure_frame_quality.py --features sharpness` prints
+    # this sweep for any collection):
+    #
+    #     threshold  first page  of the photographs
+    #        90            523         2.7%
+    #       200          1 663         8.7%
+    #       300          2 968        15.4%
+    #       450          4 988        26.0%
+    #       700          7 859        40.9%
+    #
+    # 300 is where those two tables meet: half of the blurred frames inside the first
+    # page, and a first page of ~15% of the collection rather than the 41% that 700 opens.
+    # Below it the list simply stops too early — 90 cut it at 12% recall.
+    #
+    # NOT a verdict, at any value. Four of five frames on that page are not blurred, and
+    # nothing is ever deleted by this number: "almost everything is blurred and I would
+    # delete it, except a couple I keep for the memory" — a frame this cannot know about
+    # is exactly why the human marks.
+    blur_review_max: float = 300.0
     # F150: the ceiling of the "low resolution" slice, in MEGAPIXELS — a photograph whose
     # `files.width * files.height` is below this many million pixels is in it.
     #
