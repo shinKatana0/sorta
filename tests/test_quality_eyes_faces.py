@@ -3,8 +3,8 @@
 The prompt already says "use neither word if there are no people" and the model does not
 obey it — a review of the first live run found cats answered as `eyes_open` and people in
 glasses answered as `eyes_closed`. The detector knows where a face is, so the cheap fix
-is to stop believing the answer elsewhere. Asking stays free (one prompt, three
-questions, one call); believing is what costs.
+is to stop believing the answer elsewhere. Asking stays free (one prompt, one call);
+believing is what costs.
 
 The trap this guards against is the other direction: if `faces` has never run, "no face
 on this frame" and "nobody has looked" are the same row, and dropping the answer on both
@@ -25,8 +25,10 @@ from tests.test_frame_quality import (
 
 
 def answer_all(_path: str) -> str:
-    """The model answering every question, eyes included — as it does on a cat."""
-    return "eyes_closed subject deliberate"
+    """The model answering every keyword it has ever known, eyes included — as it does
+    on a cat. The retired words (F122, F177) are there on purpose: a model still says
+    them, and they must not turn into a stored answer."""
+    return "eyes_closed no_subject deliberate"
 
 
 class TestEyesAreBelievedOnlyWhereAFaceIs(FrameQualityCase):
@@ -56,18 +58,19 @@ class TestEyesAreBelievedOnlyWhereAFaceIs(FrameQualityCase):
         self.assertEqual(self.quality(with_face)["eyes_open"], 0)
         self.assertIsNone(self.quality(no_face)["eyes_open"])
 
-    def test_the_other_two_answers_survive_on_a_frame_without_a_face(self):
-        """Only the eyes question depends on a face — dropping the whole answer would
-        throw away two findings to fix one."""
+    def test_a_frame_without_a_face_carries_no_answer_at_all(self):
+        """F177: the eyes are the whole answer now, so dropping them on a faceless frame
+        leaves nothing behind. Until F177 the row kept `has_subject` here; the question
+        is retired and the column must stay NULL whatever the model volunteers."""
         with_face = self.add_file("with_face.jpg", has_face=True)
         no_face = self.add_file("no_face.jpg")
         self.run_junk()
         row = self.quality(no_face)
         self.assertIsNone(row["eyes_open"])
-        # `has_subject` is the other question that survives. `is_accidental` is not
-        # checked here any more: F122 retired that question outright (5% precision on a
-        # labelled sample), so it is NULL on every frame regardless of faces.
-        self.assertEqual(row["has_subject"], 1)
+        self.assertIsNone(row["has_subject"])
+        self.assertIsNone(row["is_accidental"])
+        # the row itself is still written by the cheap tier — only the answers are absent
+        self.assertIsNotNone(row["sharpness"])
         self.assertIsNotNone(self.quality(with_face))
 
     def test_without_a_faces_run_the_answer_is_kept(self):

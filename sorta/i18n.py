@@ -52,7 +52,6 @@ FOLDER_KEYS: tuple[str, ...] = (
     "memes",
     "blurred",
     "eyes_closed",
-    "no_subject",
     "people",
     "group_photos",
     "portraits",
@@ -87,7 +86,6 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     "memes": {"ru": "_Мемы", "en": "_Memes", "ja": "_ミーム"},
     "blurred": {"ru": "_Размытые", "en": "_Blurred", "ja": "_ぼやけ"},
     "eyes_closed": {"ru": "_Закрытые_глаза", "en": "_Closed_eyes", "ja": "_目を閉じた"},
-    "no_subject": {"ru": "_Без_сюжета", "en": "_No_subject", "ja": "_被写体なし"},
     # F152: the three face slices have no selector either — the collection holds exactly
     # one of each — so their album folders are named the same way the animal one is.
     # "People" here is the question "is there a face in this frame", not "who is it":
@@ -659,13 +657,13 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     "cli.album.selector_required": {
         "ru": "альбому person/event/query нужен селектор: имя человека, имя или id "
               "события либо слова запроса. Срезы animal, product, screenshot, meme, "
-              "blurred, eyes_closed и no_subject собираются без селектора",
+              "blurred и eyes_closed собираются без селектора",
         "en": "a person/event/query album needs a selector: a person's name, an event's "
               "name or id, or the words to search for. The animal, product, screenshot, "
-              "meme, blurred, eyes_closed and no_subject slices are gathered without one",
+              "meme, blurred and eyes_closed slices are gathered without one",
         "ja": "person/event/query のアルバムにはセレクタが必要です: 人物の名前、"
               "イベントの名前か id、または検索する語。animal・product・screenshot・"
-              "meme・blurred・eyes_closed・no_subject のスライスはセレクタなしで"
+              "meme・blurred・eyes_closed のスライスはセレクタなしで"
               "作成できます",
     },
     # F129: search by words — the engine's two refusals and the sentence that closes a
@@ -855,14 +853,12 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "なりません。フラグなしの場合は config.yaml のとおり",
     },
     "cli.help.opt.quality": {
-        "ru": "Вопросы VLM о качестве кадра на этот прогон (vlm.quality): открыты ли "
-              "глаза, есть ли сюжет; нужен `uv sync --extra vlm`; без флага — как в "
-              "config.yaml",
-        "en": "The VLM frame-quality questions on this run (vlm.quality): are the eyes "
-              "open, is there a subject at all; needs `uv sync --extra vlm`; without "
-              "the flag — as in config.yaml",
+        "ru": "Вопрос VLM о качестве кадра на этот прогон (vlm.quality): открыты ли "
+              "глаза; нужен `uv sync --extra vlm`; без флага — как в config.yaml",
+        "en": "The VLM frame-quality question on this run (vlm.quality): are the eyes "
+              "open; needs `uv sync --extra vlm`; without the flag — as in config.yaml",
         "ja": "この実行で VLM にフレームの品質を問い合わせます (vlm.quality): "
-              "目が開いているか、被写体があるか。`uv sync --extra vlm` が必要です。"
+              "目が開いているか。`uv sync --extra vlm` が必要です。"
               "フラグなしの場合は config.yaml のとおり",
     },
     "cli.help.opt.quality_scope": {
@@ -1189,11 +1185,11 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     "cli.help.album.kind": {
         "ru": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject | people | group | portrait",
+              "blurred | eyes_closed | people | group | portrait",
         "en": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject | people | group | portrait",
+              "blurred | eyes_closed | people | group | portrait",
         "ja": "person | event | animal | query | product | screenshot | meme | "
-              "blurred | eyes_closed | no_subject | people | group | portrait",
+              "blurred | eyes_closed | people | group | portrait",
     },
     "cli.help.album.selector": {
         "ru": "имя человека / имя или id события / слова запроса; для animal, срезов "

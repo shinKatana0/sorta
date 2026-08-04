@@ -1,4 +1,4 @@
-"""F126: the "Review" workspace — four slices of one job, one decision per frame.
+"""F126: the "Review" workspace — the slices of one job, one decision per frame.
 
 What this file is really guarding, in the order the risk runs:
 
@@ -33,7 +33,6 @@ class ReviewTestBase(UiServerTestBase):
     def add_reviewable(self, rel: str, *, verdict: str = "photo",
                        sharpness: float | None = 100.0,
                        eyes_open: int | None = None,
-                       has_subject: int | None = None,
                        source: str = "vlm#aaaaaaaa") -> int:
         file_id, _p, _c = self.add_photo_file(rel)
         self.conn.execute(
@@ -41,10 +40,10 @@ class ReviewTestBase(UiServerTestBase):
                VALUES (?, ?, 'clip', 0.9, '2026-01-01', 'clip')""",
             (file_id, verdict))
         self.conn.execute(
-            """INSERT INTO frame_quality (file_id, sharpness, eyes_open, has_subject,
+            """INSERT INTO frame_quality (file_id, sharpness, eyes_open,
                    source, updated_at)
-               VALUES (?, ?, ?, ?, ?, '2026-01-01')""",
-            (file_id, sharpness, eyes_open, has_subject, source))
+               VALUES (?, ?, ?, ?, '2026-01-01')""",
+            (file_id, sharpness, eyes_open, source))
         self.conn.commit()
         return file_id
 
@@ -92,51 +91,43 @@ class TestSliceSelection(ReviewTestBase):
     def test_each_slice_returns_its_own_frames(self):
         blurred = self.add_reviewable("blur.jpg", sharpness=10.0)
         eyes = self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
-        subject = self.add_reviewable("nosubject.jpg", sharpness=500.0, has_subject=0)
-        sharp = self.add_reviewable("fine.jpg", sharpness=900.0,
-                                    eyes_open=1, has_subject=1)
+        sharp = self.add_reviewable("fine.jpg", sharpness=900.0, eyes_open=1)
         self.start_server()
-        for slice_, expected in (("blurred", [blurred]), ("eyes", [eyes]),
-                                 ("subject", [subject])):
+        for slice_, expected in (("blurred", [blurred]), ("eyes", [eyes])):
             with self.subTest(slice=slice_):
                 data = self.review(f"?slice={slice_}")
                 self.assertEqual([it["file_id"] for it in data["items"]], expected)
                 self.assertNotIn(sharp, [it["file_id"] for it in data["items"]])
 
     def test_a_null_answer_is_not_a_no(self):
-        # NULL in eyes_open/has_subject means "not asked" — a frame nobody looked at
-        # must never be offered as an answer.
-        self.add_reviewable("unasked.jpg", sharpness=500.0,
-                            eyes_open=None, has_subject=None)
+        # NULL in eyes_open means "not asked" — a frame nobody looked at must never be
+        # offered as an answer.
+        self.add_reviewable("unasked.jpg", sharpness=500.0, eyes_open=None)
         self.start_server()
         self.assertEqual(self.review("?slice=eyes")["total"], 0)
-        self.assertEqual(self.review("?slice=subject")["total"], 0)
 
     def test_non_photos_are_in_no_slice(self):
         # F120: the quality signals mean nothing on a screenshot, a document or a
         # product shot, so those frames are not offered for review at all.
         for verdict in ("screenshot", "document", "product", "meme"):
             self.add_reviewable(f"{verdict}.jpg", verdict=verdict, sharpness=1.0,
-                                eyes_open=0, has_subject=0)
+                                eyes_open=0)
         self.start_server()
         data = self.review("?slice=blurred")
-        self.assertEqual(self.counts(data), {"dupes": 0, "blurred": 0, "eyes": 0,
-                                             "subject": 0})
-        for slice_ in ("blurred", "eyes", "subject"):
+        self.assertEqual(self.counts(data), {"dupes": 0, "blurred": 0, "eyes": 0})
+        for slice_ in ("blurred", "eyes"):
             self.assertEqual(self.review(f"?slice={slice_}")["items"], [])
 
     def test_duplicates_and_read_errors_are_in_no_slice(self):
-        canonical = self.add_reviewable("a.jpg", sharpness=5.0, eyes_open=0,
-                                        has_subject=0)
-        duplicate = self.add_reviewable("b.jpg", sharpness=5.0, eyes_open=0,
-                                        has_subject=0)
-        broken = self.add_reviewable("c.jpg", sharpness=5.0, eyes_open=0, has_subject=0)
+        canonical = self.add_reviewable("a.jpg", sharpness=5.0, eyes_open=0)
+        duplicate = self.add_reviewable("b.jpg", sharpness=5.0, eyes_open=0)
+        broken = self.add_reviewable("c.jpg", sharpness=5.0, eyes_open=0)
         self.conn.execute("UPDATE files SET dup_of = ? WHERE id = ?",
                           (canonical, duplicate))
         self.conn.execute("UPDATE files SET error = 'nope' WHERE id = ?", (broken,))
         self.conn.commit()
         self.start_server()
-        for slice_ in ("blurred", "eyes", "subject"):
+        for slice_ in ("blurred", "eyes"):
             with self.subTest(slice=slice_):
                 data = self.review(f"?slice={slice_}")
                 self.assertEqual([it["file_id"] for it in data["items"]], [canonical])
@@ -147,7 +138,7 @@ class TestSliceSelection(ReviewTestBase):
         self.start_server()
         data = self.review("?slice=eyes")
         counts = self.counts(data)
-        self.assertEqual(set(counts), {"dupes", "blurred", "eyes", "subject"})
+        self.assertEqual(set(counts), {"dupes", "blurred", "eyes"})
         self.assertEqual(counts["eyes"], 0)
         self.assertEqual(data["total"], 0)
         self.assertEqual(data["items"], [])
@@ -461,19 +452,18 @@ class TestOverviewCounters(ReviewTestBase):
     def test_the_overview_counts_the_same_slices_the_tab_does(self):
         self.add_reviewable("blur.jpg", sharpness=10.0)
         self.add_reviewable("eyes.jpg", sharpness=500.0, eyes_open=0)
-        self.add_reviewable("nosubject.jpg", sharpness=500.0, has_subject=0)
         self.add_reviewable("screenshot.jpg", verdict="screenshot", sharpness=1.0,
-                            eyes_open=0, has_subject=0)
+                            eyes_open=0)
         self.start_server()
         _status, body, _ctype = self.get("/api/overview")
         collection = json.loads(body)["collection"]
         counts = self.counts(self.review("?slice=blurred"))
         self.assertEqual(collection["blurred"], counts["blurred"])
         self.assertEqual(collection["eyes_closed"], counts["eyes"])
-        self.assertEqual(collection["no_subject"], counts["subject"])
         self.assertEqual(collection["blurred"], 1)
         self.assertEqual(collection["eyes_closed"], 1)
-        self.assertEqual(collection["no_subject"], 1)
+        # F177: the "no subject" row is gone from the payload, not merely zero
+        self.assertNotIn("no_subject", collection)
 
     def test_the_blurred_counter_uses_the_same_window_as_the_list(self):
         self.add_reviewable("a.jpg", sharpness=50.0)
@@ -489,9 +479,7 @@ class TestOverviewCounters(ReviewTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/api/overview")
         collection = json.loads(body)["collection"]
-        self.assertEqual(
-            (collection["blurred"], collection["eyes_closed"], collection["no_subject"]),
-            (0, 0, 0))
+        self.assertEqual((collection["blurred"], collection["eyes_closed"]), (0, 0))
 
 
 class TestReviewTabHtml(ReviewTestBase):
@@ -519,13 +507,12 @@ class TestReviewTabHtml(ReviewTestBase):
         self.assertIn("/api/dupes/choices", self.html)
         self.assertIn("/api/dupes/trash", self.html)
 
-    def test_all_four_slices_are_in_the_markup_with_a_counter_each(self):
-        for slice_ in ("dupes", "blurred", "eyes", "subject"):
+    def test_all_three_slices_are_in_the_markup_with_a_counter_each(self):
+        for slice_ in ("dupes", "blurred", "eyes"):
             with self.subTest(slice=slice_):
                 self.assertIn(f'id="review-slice-{slice_}"', self.html)
                 self.assertIn(f'id="review-count-{slice_}"', self.html)
-        self.assertIn('var REVIEW_SLICES = ["dupes", "blurred", "eyes", "subject"];',
-                      self.html)
+        self.assertIn('var REVIEW_SLICES = ["dupes", "blurred", "eyes"];', self.html)
 
     def test_the_grid_is_paged_rather_than_rendered_whole(self):
         # F70: 530 cards with previews must not land in the DOM at once.
@@ -560,14 +547,14 @@ class TestReviewTabHtml(ReviewTestBase):
 
     def test_every_new_string_is_translated_three_ways(self):
         keys = ("tab_review", "review_intro", "review_slice_dupes",
-                "review_slice_blurred", "review_slice_eyes", "review_slice_subject",
-                "review_hint_blurred", "review_hint_eyes", "review_hint_subject",
+                "review_slice_blurred", "review_slice_eyes",
+                "review_hint_blurred", "review_hint_eyes",
                 "review_eyes_no_faces", "review_empty", "review_sharpness_label",
                 "review_mark_delete", "review_mark_keep", "review_mark_clear",
                 "review_select_label", "review_select_all", "review_select_none",
                 "review_marked_status", "review_load_more", "review_load_more_beyond",
                 "review_shown_label", "review_error_prefix", "error_loading_review",
-                "overview_blurred", "overview_eyes_closed", "overview_no_subject",
+                "overview_blurred", "overview_eyes_closed",
                 "settings_scope_faces")
         for key in keys:
             with self.subTest(key=key):

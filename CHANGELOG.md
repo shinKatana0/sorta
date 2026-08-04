@@ -89,6 +89,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time is on the table next to the few points that separate it from F158.
 
 ### Removed
+- **The "is there a subject" question is gone, and so are the answers it collected**
+  (F177). The frame-quality prompt asked two things in one call — are the eyes open, and
+  does the frame have a clear subject. The second one ran for the first and only time on
+  2026-08-03: **6,111 frames asked, 212 called subjectless**. Looked at by eye, those 212
+  are ordinary photographs — street shots and studio work side by side — so the signal
+  separates nothing, which is the same fate `is_accidental` met in F122 (measured at 5%
+  precision and retired). Gone with it: the **"No subject" slice** of the Review
+  workspace, its row in "Overview", and the **`no_subject` album kind** — deleted rather
+  than hidden, because a hidden slice comes back at the first edit of the file that hides
+  it, and `sorta album no_subject` is now refused as an unknown kind. **The stored
+  answers are erased by a migration** (schema v26), and that is the part that had to be
+  written rather than left to happen: nothing else would ever reach those rows — the
+  question is out of the prompt so the stage cannot overwrite them, `vlm.quality` is off
+  so the stage does not run at all, and a stale prompt fingerprint only means "recompute
+  this row", never "the answer stored here is wrong". Without it the slice would keep
+  listing 212 frames of a question nobody asks. **The eyes answers are NOT erased**: the
+  migration touches one column. Editing the prompt does make every quality answer formally
+  stale — they were given under a different wording — and the fingerprint will have them
+  re-asked if quality is ever switched on again; but dropping the second question does not
+  change the answer to the first, and those 6,083 answers (135 of them "eyes closed") are
+  the only ones a person has checked by eye. The column `frame_quality.has_subject` stays
+  and stays NULL, exactly as `is_accidental` does: NULL already means "not asked", and
+  dropping a column in SQLite costs a table rebuild. The **blurred** slice is untouched
+  and is not a VLM question at all (a Laplacian in the cheap tier, plus the sharpness
+  inside the face box from F155), and the **closed eyes** question keeps working — its own
+  cost is a separate conversation.
 - **The cloud naming provider is gone, and with it the only code that could send a
   photograph anywhere** (F170). `naming.provider: claude` named events by uploading a
   few sample frames of each one to a vendor API; it was opt-in and off by default, and

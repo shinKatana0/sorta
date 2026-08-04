@@ -67,8 +67,8 @@ class TestOnlyRealFacesAreAsked(FacesScopeCase):
         self.run_junk(quality_vlm=self.ask)
 
         self.assertEqual(self.asked, ["/photos/face.jpg"])
-        self.assertEqual(self.quality(with_face)["has_subject"], 1)
-        self.assertIsNone(self.quality(without)["has_subject"])
+        self.assertEqual(self.quality(with_face)["eyes_open"], 1)
+        self.assertIsNone(self.quality(without)["eyes_open"])
 
     def test_the_processed_marker_is_not_a_face(self):
         """The trap. `bbox = '[]'` stands on nearly every processed file, and taking it
@@ -79,8 +79,8 @@ class TestOnlyRealFacesAreAsked(FacesScopeCase):
 
         self.run_junk(quality_vlm=self.ask)
         self.assertEqual(self.asked, ["/photos/face.jpg"])
-        self.assertEqual(self.quality(with_face)["has_subject"], 1)
-        self.assertIsNone(self.quality(marked)["has_subject"])
+        self.assertEqual(self.quality(with_face)["eyes_open"], 1)
+        self.assertIsNone(self.quality(marked)["eyes_open"])
 
     def test_a_frame_that_is_not_a_photograph_is_left_out(self):
         """F120 still applies on top: a screenshot with a face in it is not asked about
@@ -147,7 +147,7 @@ class TestWithoutAFacesRun(FacesScopeCase):
         self.mark_processed(fid)
         with self.assertLogs("sorta.junk", level="WARNING"):
             self.run_junk(quality_vlm_factory=self.factory)
-        self.assertIsNone(self.quality(fid)["has_subject"])
+        self.assertIsNone(self.quality(fid)["eyes_open"])
 
         # `faces` runs and finds one
         self.conn.execute(
@@ -156,7 +156,7 @@ class TestWithoutAFacesRun(FacesScopeCase):
         self.conn.commit()
         self.run_junk(quality_vlm=self.ask)
         self.assertEqual(self.asked, ["/photos/face.jpg"])
-        self.assertEqual(self.quality(fid)["has_subject"], 1)
+        self.assertEqual(self.quality(fid)["eyes_open"], 1)
 
 
 class TestAnimalsKeepTheirOwnPopulation(FacesScopeCase):
@@ -177,7 +177,7 @@ class TestAnimalsKeepTheirOwnPopulation(FacesScopeCase):
 
         self.assertEqual(self.asked, ["/photos/face.jpg"])
         self.assertEqual(self.quality(cat)["pet"], junk.PET_CLASS)
-        self.assertIsNone(self.quality(cat)["has_subject"])
+        self.assertIsNone(self.quality(cat)["eyes_open"])
         self.assertEqual(stats.quality_rows, 2)   # both frames measured
         self.assertEqual(stats.pets_found, 1)
         self.assertEqual(stats.quality_candidates, 1)  # one asked about
@@ -213,7 +213,7 @@ class TestTheOtherScopesAreUnchanged(FacesScopeCase):
 
         self.run_junk(quality_vlm=self.ask)
         self.assertEqual(self.asked, ["/photos/g1.jpg"])
-        self.assertIsNone(self.quality(lonely_face)["has_subject"])
+        self.assertIsNone(self.quality(lonely_face)["eyes_open"])
 
     def test_all_still_means_all(self):
         self.vlm(quality=True, quality_scope="all")
