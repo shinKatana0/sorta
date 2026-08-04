@@ -531,15 +531,15 @@ class TestIncrementality(RescueCase):
     def test_the_fingerprint_moves_only_when_the_question_is_asked(self):
         """A collection scored without the deep tier must not be invalidated by wording
         nobody used on it."""
-        plain = junk.quality_prompt_fingerprint(False, with_vlm=False, rescue=True)
+        plain = junk.quality_prompt_fingerprint(False, rescue=True)
         with unittest.mock.patch.object(junk, "_JUNK_RESCUE_PROMPT", "something else"):
             self.assertEqual(
-                junk.quality_prompt_fingerprint(False, with_vlm=False, rescue=True),
+                junk.quality_prompt_fingerprint(False, rescue=True),
                 plain)
-            moved = junk.quality_prompt_fingerprint(False, with_vlm=False, rescue=True,
+            moved = junk.quality_prompt_fingerprint(False, rescue=True,
                                                     rescue_vlm=True)
         self.assertNotEqual(moved, junk.quality_prompt_fingerprint(
-            False, with_vlm=False, rescue=True, rescue_vlm=True))
+            False, rescue=True, rescue_vlm=True))
 
     def test_switching_the_check_on_marks_the_rows_as_the_model_tier(self):
         source = junk._quality_source(True, False, None, rescue=True,

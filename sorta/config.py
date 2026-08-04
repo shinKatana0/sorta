@@ -103,14 +103,15 @@ class DatesConfig:
 @dataclass
 class DedupConfig:
     canonical_strategy: str = "prefer_exif_then_largest"
-    # F132: ask the local VLM which frame of a near-duplicate group is the one to keep —
-    # one comparative question over the whole group instead of a score per frame. Its own
-    # knob (the rule every model feature follows here) and OFF by default: it needs the
-    # VLM runtime installed and loaded, and with it off the interface keeps recommending
-    # by sharpness exactly as it does today. Nothing is ever deleted by it either way —
-    # the answer is a recommendation stored in `group_keeper`, and `dedup_choice` stays
-    # the user's alone.
-    keeper_vlm: bool = False
+    # F186 retired `keeper_vlm` — the comparative question about which frame of a group to
+    # keep. Measured on 2026-08-04 over 111 groups labelled blind by the owner: the model
+    # agreed with the person on 32% of them against 30.4% for picking a frame at random,
+    # for 451 seconds of GPU. Nothing replaced it, because there was nothing to buy.
+    #
+    # The two sizes below outlive the question they were chosen for: they describe the
+    # POPULATION of near-duplicate groups (`dedup.keeper_groups`, the ranking the
+    # Duplicates tab shows) and the measurement worksheet still reads them.
+    #
     # How many frames of a group go into ONE question. The live collection holds a group
     # of 38 near-duplicates: a 3B model asked to compare 38 pictures answers nothing
     # usable and the context grows for no return. The frames sent are the best N by
@@ -137,14 +138,16 @@ def _dedup_from(raw: dict) -> DedupConfig:
     """The `dedup:` section — every value tolerant of garbage, like `features:` below.
 
     `canonical_strategy` keeps its plain str() reading (dedup._canonical falls back to
-    `largest` for anything it does not know); the F132 keys go through the shared
-    validators, so a typo in a number cannot switch a model on or send 0 frames into a
-    question.
+    `largest` for anything it does not know); the F132 sizes go through the shared
+    validators, so a typo in a number cannot leave a group of 0 frames.
+
+    A `keeper_vlm` still written in somebody's config.yaml is simply not read (F186) —
+    an unknown key here has never been an error, which is what lets a retired question
+    disappear without taking a working file down with it.
     """
     d = DedupConfig()
     return DedupConfig(
         canonical_strategy=str(raw.get("canonical_strategy", d.canonical_strategy)),
-        keeper_vlm=_as_bool(raw.get("keeper_vlm"), d.keeper_vlm),
         keeper_max_frames=_as_positive_int(
             raw.get("keeper_max_frames"), d.keeper_max_frames),
         keeper_min_group_size=_as_positive_int(
@@ -158,38 +161,15 @@ class EstimateConfig:
 
     The rest of the budget is read out of the run log — after F147 the file holds how
     fast every stage ran ON THIS MACHINE, and that beats any number measured once
-    somewhere else. The comparative keeper question is the exception, and it is why this
-    section exists: it is asked inside the junk stage's VLM phase, so the log cannot
-    separate its seconds from the per-frame questions asked in the same phase. It gets
-    the only two numbers here, and they are settings rather than constants in `ui.py`
-    because the last set of constants sat there for two features being wrong.
+    somewhere else.
+
+    F186 emptied this section of the two prices it was created for. They priced the
+    comparative keeper question, which was asked inside the junk stage's VLM phase and so
+    could not be told from the per-frame questions by the log — and that question is gone,
+    because it agreed with a person no more often than a coin does. A budget must not
+    quote a price for a stage that no longer runs.
     """
 
-    # Measured 2026-08-03 over a live collection, one question per group, seconds:
-    #
-    #     frames in the group   median   min    max    asked one by one
-    #             2              1.47    1.40   2.03         1.54
-    #             3              2.45     2.31   2.96         2.31
-    #             4              3.46     3.34   4.65         3.08
-    #             5              4.56     4.37   5.05         3.85
-    #
-    # The slope through those four points is 1.03 s per frame, and the fixed cost is
-    # 0.45 s. The 1.32 s this replaced was the price of a PAIR, quoted for groups "of up
-    # to five" — on the collection above it estimated the stage at half a minute against
-    # a measured 1.9.
-    #
-    # Read the line honestly: `0.45 + 1.03 x frames` sits about a second above each
-    # median (the same four points also fit `0.45 + 1.03 x (frames - 1)`). The higher of
-    # the two is the one that ships, because the two errors are not symmetric — an
-    # estimate that runs long is a warning, and one that runs short is a broken promise.
-    # Both numbers are settings for the same reason: a machine that disagrees can say so.
-    #
-    # The same table also retires the premise the option was built on: from three frames
-    # up, one question over the group is NOT cheaper than asking about the frames one at
-    # a time. The stage still answers something separate questions cannot ("which of
-    # these is the best one"), and that is now the only thing said for it.
-    keeper_call_sec: float = 0.45
-    keeper_frame_sec: float = 1.03
     # How many days a timing from the run log is worth trusting. Mirrors
     # `runlog.DEFAULT_MEASUREMENT_MAX_AGE_DAYS`; 0 or less switches the expiry off. The
     # guard that does the real work is the build check inside `read_measurements` — this
@@ -199,18 +179,14 @@ class EstimateConfig:
 
 
 def _estimate_from(raw: dict) -> EstimateConfig:
-    """The `estimate:` section — garbage-tolerant like every section around it."""
+    """The `estimate:` section — garbage-tolerant like every section around it.
+
+    The retired `keeper_call_sec`/`keeper_frame_sec` (F186) are read by nobody now, and a
+    config.yaml that still carries them loads exactly as it did: an unknown key in a
+    section has never been an error here.
+    """
     d = EstimateConfig()
-
-    def price(key: str, default: float) -> float:
-        # A negative price is not a cheap stage, it is a typo — and it would make the
-        # total shrink as options are switched on.
-        value = _as_float(raw.get(key), default)
-        return value if value >= 0 else default
-
     return EstimateConfig(
-        keeper_call_sec=price("keeper_call_sec", d.keeper_call_sec),
-        keeper_frame_sec=price("keeper_frame_sec", d.keeper_frame_sec),
         measurement_max_age_days=_as_float(
             raw.get("measurement_max_age_days"), d.measurement_max_age_days),
     )
@@ -348,17 +324,6 @@ def default_vlm_workers() -> int:
     return min(_VLM_WORKERS_CAP, os.cpu_count() or 1)
 
 
-# F113: the scopes `vlm.quality_scope` accepts — which frames the quality VLM may be
-# asked about at all, on top of the uncertainty band. `all` is the expensive one and says
-# so in config.example.yaml (0.78 s per frame is 4.3 hours on a 20k collection).
-#
-# F125: `faces` — the frames a face was actually FOUND on. Measured on the live
-# collection: 7 341 photographs against 19 757 for `all`, so ~95 minutes instead of 4.3
-# hours, and the frames it drops are the ones where "are the eyes open" has no meaning
-# anyway. It is a HARD dependency and not a filter: without a `faces` run the population
-# is empty and the quality VLM does not run at all (see junk.quality_scope_ready).
-VLM_QUALITY_SCOPES = ("groups", "events", "faces", "all")
-
 # F153: how the two indexes answer one query. Two vectors per photograph exist once the
 # search index is on (F141) — the classification one (`clip_embeddings`, ViT-L-14) and the
 # search one (`search_embeddings`, the multilingual model) — and the measurement that
@@ -428,18 +393,11 @@ class VlmConfig:
     model: str = DEFAULT_VLM_MODEL
     workers: int = field(default_factory=default_vlm_workers)
     max_edge: int = DEFAULT_VLM_MAX_EDGE
-    # F113: the SECOND consumer of the same runtime — the frame-quality question the
-    # cheap tiers cannot answer (eyes open; F122 and F177 retired the other two). Its
-    # own toggle, deliberately not `enabled`: the deep junk tier and the quality band
-    # are different populations and a user may well want one without the other.
-    quality: bool = False
-    # Which frames the quality VLM may be asked about (the uncertainty band narrows this
-    # further). groups — frames of pHash near-duplicate groups (the default: that is
-    # where "which of these five is the good one" is actually asked), events, faces
-    # (F125: the frames with a detected face), all. The default does NOT move with F125:
-    # which population a collection wants is the user's call, not a side effect of a new
-    # value appearing in the list.
-    quality_scope: str = "groups"
+    # F186 retired `quality` and `quality_scope`. The frame-quality question the model was
+    # asked had been down to one line — "are the eyes open" — and F179 answered it off the
+    # eyelid geometry the faces stage already produces: 62% precision at 48% recall
+    # against the model's 60% at 9%, for no call at all. The replacement arrived; the
+    # question it replaced is removed here, along with the scope that chose who was asked.
     # F120: privacy — media classes no VLM is ever shown, by verdict of the fast tier.
     # Empty tuple = send everything, which is what happened before this key existed.
     exclude_classes: tuple[str, ...] = DEFAULT_VLM_EXCLUDE_CLASSES
@@ -556,19 +514,6 @@ def _as_float(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return number if number == number and abs(number) != float("inf") else default
-
-
-def _as_scope(value: Any, default: str) -> str:
-    """One of VLM_QUALITY_SCOPES; anything else -> the default, with a warning.
-
-    A misspelled scope must not silently become `all` — that is the 4.3-hour option.
-    """
-    if isinstance(value, str) and value.strip().lower() in VLM_QUALITY_SCOPES:
-        return value.strip().lower()
-    if value is not None:
-        _log.warning("config: vlm.quality_scope=%r не из %s — использую %r",
-                     value, "/".join(VLM_QUALITY_SCOPES), default)
-    return default
 
 
 # F170: who may name an event — and every one of them runs on this machine. The cloud
@@ -707,7 +652,12 @@ def _as_exclude_classes(value: object, default: tuple[str, ...]) -> tuple[str, .
 
 
 def _vlm_from(data: dict) -> VlmConfig:
-    """The `vlm:` section of the whole YAML, with the legacy `naming.*` keys honoured."""
+    """The `vlm:` section of the whole YAML, with the legacy `naming.*` keys honoured.
+
+    `quality` and `quality_scope` are retired (F186) and simply not read: a live
+    config.yaml carrying either loads unchanged, which is the whole point of tolerating
+    unknown keys in a section.
+    """
     new = _mapping(data.get("vlm"))
     old = _mapping(data.get("naming"))
     d = VlmConfig()
@@ -718,8 +668,6 @@ def _vlm_from(data: dict) -> VlmConfig:
         model=model.strip() if isinstance(model, str) and model.strip() else d.model,
         workers=resolve_vlm_workers(data),
         max_edge=_as_positive_int(new.get("max_edge"), d.max_edge),
-        quality=_as_bool(new.get("quality"), d.quality),
-        quality_scope=_as_scope(new.get("quality_scope"), d.quality_scope),
         exclude_classes=_as_exclude_classes(new.get("exclude_classes"),
                                             d.exclude_classes),
     )
@@ -1461,9 +1409,9 @@ class Config:
 def vlm_allowed(cfg: Config) -> bool:
     """F145: may this run load the VLM at all? — `vlm.enabled`, the master switch.
 
-    Every question the model is asked has a toggle of its own (`vlm.quality`,
-    `features.pets_verify`, `features.landmarks_verify`, `dedup.keeper_vlm`,
-    `features.junk_rescue`), and until F145 each of them could raise the weights by
+    Every question the model is asked has a toggle of its own (`vlm.products`,
+    `features.pets_verify`, `features.landmarks_verify`, `features.junk_rescue`), and
+    until F145 each of them could raise the weights by
     itself: a run started WITHOUT deep analysis still loaded 20 GB because one
     subordinate key was true in config.yaml. The hierarchy nobody wrote down is this
     function — the subordinate keys decide WHAT to ask, this one decides whether there

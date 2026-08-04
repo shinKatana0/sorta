@@ -11,15 +11,18 @@ The fix is not a better constant. After F147 the run log holds the true rate of 
 stage ON THIS MACHINE, so the estimate reads it from there and says that it did; a
 constant is what it falls back to, and the screen calls that a default in as many words.
 
+F186 then retired the question this feature was found on. The two prices it was given
+(`estimate.keeper_call_sec`/`keeper_frame_sec`) went with it, and so did the cases that
+priced a group and the ones that policed the captions of that line — a budget must not
+quote a price for a stage that no longer runs. What the feature IS survives it intact:
+the log is read, believed, aged out, and named as the source of every number.
+
 What is pinned here is the whole of that:
 
-* a group of five costs more than a group of three, and the bill is the SUM over the
-  actual groups, not an average times a count (§1, test 1);
 * an empty log falls back to the defaults AND says so (§2, test 2);
 * a log with timings in it is believed over the constants (§3, test 3 — the main one);
 * a timing of a stage that has changed since is not used (§5, test 4);
-* the estimate and the run it describes agree within 10% on staged data (test 5);
-* no caption claims the group question is the cheap way to ask (§4, test 6).
+* the estimate and the run it describes agree within 10% on staged data (test 5).
 """
 from __future__ import annotations
 
@@ -92,83 +95,35 @@ class EstimateTestBase(RunCostsTestBase):
         return json.loads(body)
 
 
-class TestTheGroupQuestionIsPricedByTheGroup(EstimateTestBase):
-    """Test 1 and §1. The old flat rate per group was the price of a PAIR applied to
-    every size, which is the arithmetic that turns 1.9 minutes into 0.5."""
+class TestTheConfigSectionSurvivesTheRetiredPrices(EstimateTestBase):
+    """`estimate:` outlived the two numbers it was created for (F186).
 
-    def price(self, frames: int) -> float:
-        cfg = self.cfg.estimate
-        return cfg.keeper_call_sec + cfg.keeper_frame_sec * frames
+    They priced the comparative keeper question, which was asked inside the junk stage's
+    VLM phase and so could never be told from the per-frame questions by the log. The
+    section still holds the one key that is read by everything here — how long a timing
+    from the log stays trustworthy — and a config.yaml that still carries the retired
+    prices has to load exactly as it did.
+    """
 
-    def test_a_group_of_five_costs_more_than_a_group_of_three(self):
-        three = ui._keeper_seconds(self.cfg, [[1, 2, 3]])
-        five = ui._keeper_seconds(self.cfg, [[1, 2, 3, 4, 5]])
-        self.assertGreater(five, three)
-        self.assertAlmostEqual(three, self.price(3))
-        self.assertAlmostEqual(five, self.price(5))
+    def test_the_key_that_stayed_is_read(self):
+        self.config_path.write_text(
+            "estimate:\n  measurement_max_age_days: 7\n", encoding="utf-8")
+        loaded = load_config(self.config_path)
+        self.assertAlmostEqual(loaded.estimate.measurement_max_age_days, 7)
 
-    def test_the_bill_is_the_sum_over_the_groups_not_an_average_times_a_count(self):
-        """Two groups cost exactly what they cost apart — and two collections with the
-        SAME number of groups get different bills when the groups differ in size. That
-        is the property the old flat rate per group did not have, and the reason it
-        priced an archive of nines, tens and elevens as an archive of pairs."""
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_min_group_size=3,
-                                             keeper_max_frames=5)
-        mixed = ui._keeper_seconds(self.cfg, [list(range(3)), list(range(5))])
-        self.assertAlmostEqual(mixed, self.price(3) + self.price(5))
-        self.assertNotAlmostEqual(
-            mixed, ui._keeper_seconds(self.cfg, [list(range(3)), list(range(3))]))
-        # Where the price stops being a straight line — the cap on the frames a prompt
-        # may hold — the sum and the average part company outright: two groups of 3 and
-        # 11 are not two groups of 7.
-        capped = ui._keeper_seconds(self.cfg, [list(range(3)), list(range(11))])
-        self.assertAlmostEqual(capped, self.price(3) + self.price(5))
-        self.assertNotAlmostEqual(capped, 2 * self.price(5))
-
-    def test_only_the_frames_that_are_actually_sent_are_paid_for(self):
-        """`dedup.keeper_max_frames` caps what one question holds — the rest of a group
-        is never shown to the model, so pricing it would invent work."""
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_max_frames=5)
-        eleven = ui._keeper_seconds(self.cfg, [list(range(11))])
-        self.assertAlmostEqual(eleven, self.price(5))
-
-    def test_a_group_below_the_configured_size_is_not_paid_for(self):
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_min_group_size=3)
-        self.assertAlmostEqual(ui._keeper_seconds(self.cfg, [[1, 2]]), 0.0)
-
-    def test_the_endpoint_sums_the_real_groups_of_this_index(self):
-        self.add_group("three", 3, "f" * 16)
-        self.add_group("five", 5, "0" * 16)
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_min_group_size=3,
-                                             keeper_max_frames=5)
-        self.start_server()
-        data = self.estimate()
-
-        self.assertEqual(data["counts"]["keeper"], 2)
-        self.assertAlmostEqual(data["seconds"]["keeper"],
-                               round(self.price(3) + self.price(5), 1))
-
-    def test_the_two_prices_are_settings_rather_than_constants_in_the_page(self):
-        """The last set of constants sat in `ui.py` for two features being wrong. These
-        move with the config, so a slower machine can be told about it."""
-        self.cfg.estimate = EstimateConfig(keeper_call_sec=10.0, keeper_frame_sec=1.0)
-        self.assertAlmostEqual(ui._keeper_seconds(self.cfg, [[1, 2, 3]]), 13.0)
-
-    def test_the_config_file_carries_both_of_them(self):
+    def test_a_file_that_still_carries_the_retired_prices_loads(self):
         self.config_path.write_text(
             "estimate:\n  keeper_call_sec: 0.9\n  keeper_frame_sec: 2.5\n"
             "  measurement_max_age_days: 7\n", encoding="utf-8")
         loaded = load_config(self.config_path)
-        self.assertAlmostEqual(loaded.estimate.keeper_call_sec, 0.9)
-        self.assertAlmostEqual(loaded.estimate.keeper_frame_sec, 2.5)
         self.assertAlmostEqual(loaded.estimate.measurement_max_age_days, 7)
+        self.assertFalse(hasattr(loaded.estimate, "keeper_call_sec"))
+        self.assertFalse(hasattr(loaded.estimate, "keeper_frame_sec"))
 
-    def test_a_garbled_price_falls_back_instead_of_stopping_the_app(self):
+    def test_a_garbled_value_falls_back_instead_of_stopping_the_app(self):
         self.config_path.write_text(
-            "estimate:\n  keeper_call_sec: yes\n  keeper_frame_sec: -3\n",
-            encoding="utf-8")
-        loaded = load_config(self.config_path)
-        self.assertEqual(loaded.estimate, EstimateConfig())
+            "estimate:\n  measurement_max_age_days: yes\n", encoding="utf-8")
+        self.assertEqual(load_config(self.config_path).estimate, EstimateConfig())
 
 
 class TestAnEmptyLogSaysItIsGuessing(EstimateTestBase):
@@ -191,7 +146,7 @@ class TestAnEmptyLogSaysItIsGuessing(EstimateTestBase):
         data = self.estimate()
 
         self.assertIsNone(data["measured_at"])
-        for key in ("base", "faces", "events", "products", "keeper", "quality_all"):
+        for key in ("base", "faces", "events", "products"):
             with self.subTest(key=key):
                 self.assertEqual(data["sources"][key], "default")
 
@@ -301,9 +256,7 @@ class TestTheLogIsBelievedOverTheConstants(EstimateTestBase):
         self.assertEqual(data["counts"]["products"], 2)
         self.assertAlmostEqual(data["seconds"]["products"],
                                round(2 * MEASURED["stage=classify phase=junk_vlm"], 1))
-        self.assertAlmostEqual(data["seconds"]["quality_all"],
-                               round(3 * MEASURED["stage=junk phase=junk_vlm"], 1))
-        for key in ("products", "quality_all", "pets_verify"):
+        for key in ("products", "pets_verify"):
             with self.subTest(key=key):
                 self.assertEqual(data["sources"][key], "measured")
 
@@ -327,15 +280,22 @@ class TestTheLogIsBelievedOverTheConstants(EstimateTestBase):
         self.assertEqual(self.estimate()["sources"]["faces"], "measured")
 
     def test_a_mixture_is_reported_as_a_mixture(self):
-        """The keeper line can never be measured — its question shares a log phase with
-        the per-frame ones — so a run with it switched on is a mixture by construction,
-        and the screen has a string for exactly that."""
-        self.add_group("dup", 3, "f" * 16)
-        self.write_run_log()
+        """A log this machine has only partly filled prices some lines and not others,
+        and the screen has a string for exactly that state.
+
+        Until F186 the mixture was guaranteed by the keeper line, which could never be
+        measured — its question shared a log phase with the per-frame ones. With that
+        line gone the mixture has to be staged, which is what the partial log below is.
+        """
+        for i in range(4):
+            self.add_photo(f"p{i}.jpg")
+        partial = {unit: rate for unit, rate in MEASURED.items()
+                   if unit != "stage=events"}
+        self.write_run_log(rates=partial)
         self.start_server()
         data = self.estimate()
 
-        self.assertEqual(data["sources"]["keeper"], "default")
+        self.assertEqual(data["sources"]["events"], "default")
         self.assertEqual(data["sources"]["base"], "measured")
 
 
@@ -378,21 +338,18 @@ class TestTheEstimateAndTheRunAgree(EstimateTestBase):
     set of checkboxes would actually execute.
     """
 
-    def elapsed_of_a_run(self, photos: int, deep: int, groups: list[int]) -> float:
+    def elapsed_of_a_run(self, photos: int, deep: int) -> float:
         """What a run over this collection would take at the rates in the log.
 
         Written out stage by stage rather than reusing the payload — the two agreeing
-        because they are the same expression would prove nothing.
+        because they are the same expression would prove nothing. The keeper term left
+        this sum with F186: the stage it priced is not run, so a budget that still
+        carried it would describe a longer run than the one about to happen.
         """
         total = photos * BASE_RATE                    # index/geo/landmarks/phash
         total += photos * MEASURED["stage=faces"]     # faces, switched on
         total += photos * MEASURED["stage=events"]    # events, switched on
         total += deep * MEASURED["stage=classify phase=junk_vlm"]   # the deep tier
-        for size in groups:                           # the keeper question
-            if size >= int(self.cfg.dedup.keeper_min_group_size):
-                total += (self.cfg.estimate.keeper_call_sec
-                          + self.cfg.estimate.keeper_frame_sec
-                          * min(size, int(self.cfg.dedup.keeper_max_frames)))
         return total
 
     def test_the_budget_lands_within_a_tenth_of_the_run_it_describes(self):
@@ -407,57 +364,12 @@ class TestTheEstimateAndTheRunAgree(EstimateTestBase):
                 "INSERT INTO media_class (file_id, verdict, source, tier, updated_at)"
                 " VALUES (?, 'photo', 'vlm', 'vlm', '2026-01-01')", (file_id,))
         self.conn.commit()
-        self.cfg.dedup = dataclasses.replace(self.cfg.dedup, keeper_min_group_size=3,
-                                             keeper_max_frames=5)
         self.write_run_log()
         self.start_server()
         data = self.estimate()["seconds"]
 
         budget = sum(data[key] for key in
-                     ("base", "faces", "events", "pets", "products", "keeper"))
-        actual = self.elapsed_of_a_run(photos, len(deep_ids), sizes)
+                     ("base", "faces", "events", "pets", "products"))
+        actual = self.elapsed_of_a_run(photos, len(deep_ids))
         self.assertLessEqual(abs(budget - actual), 0.1 * actual,
                              f"budget {budget:.1f}s vs run {actual:.1f}s")
-
-
-class TestNoCaptionClaimsTheGroupQuestionSaves(EstimateTestBase):
-    """Test 6 and §4. The same measurement that fixed the number retired the premise:
-    from three frames up, one question over a group is not cheaper than asking about the
-    frames one at a time — and the pairs it IS cheaper for are the ones
-    `keeper_min_group_size: 3` stopped asking about.
-    """
-
-    # Claims of thrift, in the three languages the captions are written in.
-    THRIFT = ("дешевл", "экономи", "выгодн", "быстрее, чем",
-              "cheaper", "saves", "saving", "less time than", "faster than",
-              "節約", "お得", "安上が")
-
-    def keeper_strings(self) -> dict[str, str]:
-        return {f"{key}/{lang}": value
-                for key in ("process_keeper_label", "process_keeper_hint",
-                            "costs_estimate_note", "costs_title")
-                for lang, value in ui._UI_STRINGS[key].items()}
-
-    def test_no_keeper_caption_promises_a_saving(self):
-        for name, value in self.keeper_strings().items():
-            for claim in self.THRIFT:
-                with self.subTest(string=name, claim=claim):
-                    self.assertNotIn(claim, value.lower())
-
-    def test_the_caption_says_the_price_grows_with_the_group(self):
-        """Silence about the cost would leave "one question per group" reading as the
-        saving it is not, so the replacement states the shape of the price."""
-        for lang, expected in (("ru", "растёт с размером группы"),
-                               ("en", "grows with the group"),
-                               ("ja", "グループの大きさに比例")):
-            with self.subTest(lang=lang):
-                self.assertIn(expected, ui._t("process_keeper_hint", lang))
-
-    def test_the_caption_still_says_what_the_question_is_for(self):
-        """The stage is not being talked out of: it answers something separate questions
-        do not, which is now the only thing said for it."""
-        for lang in ("ru", "en", "ja"):
-            with self.subTest(lang=lang):
-                self.assertTrue(ui._t("process_keeper_hint", lang).strip())
-        self.assertIn("which frame is the best one",
-                      ui._t("process_keeper_hint", "en"))

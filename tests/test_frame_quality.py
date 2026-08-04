@@ -1,4 +1,4 @@
-"""F113: the frame-quality cascade — classic -> CLIP -> VLM only for the uncertain.
+"""F113: the frame-quality cascade — classic -> CLIP, and the columns nobody asks about.
 
 The properties under test are the ones the feature is about, not the plumbing:
 
@@ -7,16 +7,19 @@ The properties under test are the ones the feature is about, not the plumbing:
 * `features.pets` off leaves the pet columns empty; on, they fill — and WITHOUT a second
   CLIP pass: the classifier makes exactly the calls it made before the feature existed,
   and the junk verdicts do not move under the pet prompts;
-* `vlm.quality` off leaves the three model columns NULL; on, only frames of the uncertain
-  band are asked about and the rest stay NULL;
-* the second run asks nothing again (incrementality on `frame_quality.source`);
-* an answer that does not parse leaves NULL — never False — and NULL and False stay
-  distinguishable on the way back out;
-* a model that fails on a frame costs that frame's answers and nothing else: the classic
-  and CLIP signals are still there afterwards.
+* the three answer columns (`eyes_open`, `has_subject`, `is_accidental`) stay NULL on
+  every run — F186 retired the question that filled them, and NULL is what "not asked"
+  means in a column that is still read;
+* NULL and False stay distinguishable on the way back out;
+* the second run measures nothing again (incrementality on `frame_quality.source`).
 
-No model is loaded anywhere below: the classifier, the sharpness detector and the VLM are
-all injected, exactly as the rest of the junk suite does it.
+F186 retired the third tier of the cascade — the model asked about the frames of the
+uncertain band. What went with it: the prompt and its parser, the scope that chose who was
+asked, and the cases that drove a fake asker through `classify`. What stayed: the band
+itself (`scripts/measure_frame_quality.py` prices the cascade over it) and the columns.
+
+No model is loaded anywhere below: the classifier and the sharpness detector are injected,
+exactly as the rest of the junk suite does it.
 """
 from __future__ import annotations
 
@@ -34,11 +37,9 @@ from sorta import junk
 from sorta.config import Config, FeaturesConfig, VlmConfig, _naming_from
 from sorta.db import SCHEMA_VERSION, connect
 from sorta.junk import (
-    QualityFlags,
     classify,
     clip_prompts,
     laplacian_variance,
-    parse_quality_answer,
     pet_verdict,
     read_frame_quality,
     uncertain_band,
@@ -140,7 +141,7 @@ class FrameQualityCase(unittest.TestCase):
     def deep_analysis_on(self):
         """F145: `vlm.enabled` — the master switch every VLM question of this stage needs.
 
-        A subordinate key (`vlm.quality`, `features.pets_verify`, `dedup.keeper_vlm`,
+        A subordinate key (`vlm.products`, `features.pets_verify`,
         `features.junk_rescue`) says WHAT to ask; this one says whether a model may be
         raised at all, so a case about any of them has to switch it on.
 
@@ -322,56 +323,18 @@ class TestPetGroup(unittest.TestCase):
         self.assertEqual(score, 0.0)
 
 
-class TestQualityAnswerParsing(unittest.TestCase):
-    """Brief test 7: what the model says, read leniently — and NULL when it says nothing."""
-
-    def test_the_expected_answer(self):
-        # F122/F177: `accidental`/`deliberate` and `subject`/`no_subject` are no longer
-        # asked, so the words are no longer read. The keywords may still appear in an
-        # answer; they must be ignored.
-        flags = parse_quality_answer("eyes_open subject deliberate")
-        self.assertEqual(flags, QualityFlags(True, None, None))
-
-    def test_spaces_punctuation_and_case_are_not_a_format(self):
-        flags = parse_quality_answer("Eyes-Open, No Subject. Accidental!")
-        self.assertEqual(flags, QualityFlags(True, None, None))
-
-    def test_prose_around_the_keywords_still_parses(self):
-        flags = parse_quality_answer(
-            "The photo shows a person whose eyes_closed, and it has subject.")
-        self.assertEqual(flags.eyes_open, False)
-        self.assertIsNone(flags.has_subject)
-        self.assertIsNone(flags.is_accidental)
-
-    def test_the_retired_keywords_are_ignored(self):
-        """F122/F177: the questions are gone, so a model that still volunteers the words
-        gets no column for them. NULL is the honest value — nobody asked."""
-        self.assertIsNone(parse_quality_answer("not accidental").is_accidental)
-        self.assertIsNone(parse_quality_answer("accidental").is_accidental)
-        self.assertIsNone(parse_quality_answer("no_subject").has_subject)
-        self.assertIsNone(parse_quality_answer("subject").has_subject)
-
-    def test_an_unparsable_answer_is_all_none(self):
-        for answer in ("", "I cannot help with that", "42", "да"):
-            with self.subTest(answer=answer):
-                flags = parse_quality_answer(answer)
-                self.assertEqual(flags, QualityFlags())
-                self.assertFalse(flags.known)
-
-    def test_a_partial_answer_keeps_the_rest_none(self):
-        flags = parse_quality_answer("eyes_open")
-        self.assertTrue(flags.known)
-        self.assertIsNone(flags.has_subject)
-        self.assertIsNone(flags.is_accidental)
-
-
 class TestUncertainBand(unittest.TestCase):
-    """Which frames the model is asked about at all (brief part 3, item 2)."""
+    """The band where the cheap tiers decided nothing (brief part 3, item 2).
+
+    F186 retired its consumer — the band used to select the frames the quality model was
+    asked about — and the function stayed for `scripts/measure_frame_quality.py`, which
+    sweeps `features.sharpness_band_*` and `features.subject_score_min` over it. What it
+    answers is unchanged, so the cases below are too.
+    """
 
     def q(self, **kwargs):
         base = dict(pets=False, pet_threshold=0.6, sharpness_max_edge=512,
-                    sharpness_band=(30.0, 300.0), subject_score_min=0.9,
-                    vlm_quality=True, vlm_scope="groups")
+                    sharpness_band=(30.0, 300.0), subject_score_min=0.9)
         base.update(kwargs)
         return junk.QualitySettings(**base)
 
@@ -575,11 +538,11 @@ class TestPetsToggle(FrameQualityCase):
 
 
 class TestQualityIncrementality(FrameQualityCase):
-    """Brief test 6: a second run neither re-measures nor re-asks."""
+    """Brief test 6: a second run does not re-measure what the first one measured."""
 
     def setUp(self):
         super().setUp()
-        self.deep_analysis_on()  # F145: `vlm.quality` alone raises nothing
+        self.deep_analysis_on()  # F145: a subordinate key alone raises nothing
 
     def test_the_second_run_writes_nothing_new(self):
         self.add_file("IMG_0001.jpg")
@@ -591,131 +554,73 @@ class TestQualityIncrementality(FrameQualityCase):
                           sharpness_detector=flat_sharpness(500.0))
         self.assertEqual(second.quality_rows, 0)
 
-    def test_the_second_run_does_not_re_ask_the_model(self):
-        self.vlm(quality=True, quality_scope="all")
-        self.add_file("IMG_0002.jpg")
-        asked: list[str] = []
 
-        def ask(path):
-            asked.append(path)
-            return "eyes_open subject deliberate"
+class TestRetiredAnswerColumns(FrameQualityCase):
+    """F186: the three answer columns stay, and stay NULL — nobody is asked about them.
 
-        clf = QualityClassifier()
-        classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                 sharpness_detector=flat_sharpness(100.0), quality_vlm=ask)
-        self.assertEqual(len(asked), 1)
-        classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                 sharpness_detector=flat_sharpness(100.0), quality_vlm=ask)
-        self.assertEqual(len(asked), 1)
-
-
-class TestQualityVlm(FrameQualityCase):
-    """Brief tests 4, 5, 8, 9: the model tier — its toggle, its population, its failures."""
+    `eyes_open`, `has_subject` and `is_accidental` are what is left of a question that is
+    no longer put to a model (F122, F177 and finally F167/F179 closed the three halves of
+    it). Keeping the columns and keeping them empty is the honest record of that: NULL in
+    a column that is still read means "not asked", where a dropped column would mean
+    "never existed". The case below is the guard on that, and it is the reason the columns
+    are not quietly reused for something else.
+    """
 
     def setUp(self):
         super().setUp()
-        self.deep_analysis_on()  # F145: `vlm.quality` alone raises nothing
+        self.deep_analysis_on()  # F145: the master switch is on and STILL nothing is asked
 
-    def test_disabled_leaves_the_model_columns_null(self):
+    def test_a_full_run_leaves_the_three_answer_columns_null(self):
         fid = self.add_file("IMG_0001.jpg")
+        self.features(pets=True, pet_threshold=0.5)
+        classify(self.cfg, self.conn, classifier=QualityClassifier(),
+                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0))
+        row = self.quality(fid)
+        self.assertAlmostEqual(row["sharpness"], 100.0)  # the stage did run
+        self.assertIsNone(row["eyes_open"])
+        self.assertIsNone(row["has_subject"])
+        self.assertIsNone(row["is_accidental"])
+
+    def test_no_asker_runs_over_the_band_that_used_to_feed_one(self):
+        """The frames of the uncertain band used to be the population of a model call.
+
+        A run over exactly such a frame (sharpness inside the band) must now ask nothing:
+        the stand-in factories fail the case if either surviving asker is built for it,
+        and the tier marker is the second half of the statement — `classic` is the marker
+        of a row no asker touched, so a question creeping back in would move it.
+        """
+        self.features(sharpness_band_min=30.0, sharpness_band_max=300.0)
+        fid = self.add_file("blurry.jpg")
 
         def factory(_model):
-            raise AssertionError("the quality VLM must not be built when vlm.quality is off")
+            raise AssertionError("no model may be built for the retired quality question")
 
         classify(self.cfg, self.conn, classifier=QualityClassifier(),
                  text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
-                 quality_vlm_factory=factory)
+                 pet_vlm_factory=factory, junk_rescue_vlm_factory=factory)
         row = self.quality(fid)
         self.assertIsNone(row["eyes_open"])
-        self.assertIsNone(row["has_subject"])
-        self.assertIsNone(row["is_accidental"])
-
-    def test_only_the_uncertain_band_is_asked_about(self):
-        self.vlm(quality=True, quality_scope="all")
-        self.features(sharpness_band_min=30.0, sharpness_band_max=300.0)
-        uncertain = self.add_file("blurry.jpg")
-        certain = self.add_file("sharp.jpg")
-        sharpness = {"/photos/blurry.jpg": 100.0, "/photos/sharp.jpg": 5000.0}
-        # CLIP is confident about BOTH frames, so sharpness is the only thing that can put
-        # one of them in the band — otherwise the test would pass for the wrong reason.
-        clf = QualityClassifier(logits={"blurry.jpg": {_PHOTO_IDX: CONFIDENT},
-                                        "sharp.jpg": {_PHOTO_IDX: CONFIDENT}})
-        asked: list[str] = []
-
-        def ask(path):
-            asked.append(path)
-            return "eyes_open subject deliberate"
-
-        classify(self.cfg, self.conn, classifier=clf,
-                 text_detector=NO_OCR, sharpness_detector=sharpness_by_path(sharpness),
-                 quality_vlm=ask)
-        self.assertEqual(asked, ["/photos/blurry.jpg"])
-        self.assertEqual(self.quality(uncertain)["eyes_open"], 1)
-        self.assertIsNone(self.quality(certain)["eyes_open"])
-
-    def test_the_scope_narrows_the_population_to_phash_groups(self):
-        self.vlm(quality=True)  # quality_scope='groups' — the default
-        grouped_a = self.add_file("g1.jpg", phash="ffffffffffffffff")
-        grouped_b = self.add_file("g2.jpg", phash="ffffffffffffffff")
-        lonely = self.add_file("solo.jpg", phash="0000000000000000")
-        asked: list[str] = []
-
-        def ask(path):
-            asked.append(path)
-            return "eyes_open"
-
-        classify(self.cfg, self.conn, classifier=QualityClassifier(),
-                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
-                 quality_vlm=ask)
-        self.assertEqual(sorted(asked), ["/photos/g1.jpg", "/photos/g2.jpg"])
-        self.assertEqual(self.quality(grouped_a)["eyes_open"], 1)
-        self.assertEqual(self.quality(grouped_b)["eyes_open"], 1)
-        self.assertIsNone(self.quality(lonely)["eyes_open"])
-
-    def test_the_events_scope_asks_about_event_frames(self):
-        self.vlm(quality=True, quality_scope="events")
-        in_event = self.add_file("e1.jpg")
-        outside = self.add_file("e2.jpg")
-        self.conn.execute(
-            "INSERT INTO events (id, started_at, ended_at, name) "
-            "VALUES (1, '2026-01-01', '2026-01-02', 'x')")
-        self.conn.execute(
-            "INSERT INTO event_files (event_id, file_id) VALUES (1, ?)", (in_event,))
-        self.conn.commit()
-        asked: list[str] = []
-
-        classify(self.cfg, self.conn, classifier=QualityClassifier(),
-                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
-                 quality_vlm=lambda p: asked.append(p) or "eyes_open")
-        self.assertEqual(asked, ["/photos/e1.jpg"])
-        self.assertIsNone(self.quality(outside)["eyes_open"])
-
-    def test_an_unparsable_answer_leaves_null_not_false(self):
-        self.vlm(quality=True, quality_scope="all")
-        fid = self.add_file("odd.jpg")
-        classify(self.cfg, self.conn, classifier=QualityClassifier(),
-                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
-                 quality_vlm=lambda _p: "I'm not sure what this is")
-        row = self.quality(fid)
-        self.assertIsNone(row["eyes_open"])
-        self.assertIsNone(row["has_subject"])
-        self.assertIsNone(row["is_accidental"])
+        self.assertEqual(row["source"], junk.QUALITY_SOURCE_CLASSIC)
 
     def test_false_and_null_are_distinguishable_on_the_way_out(self):
-        self.vlm(quality=True, quality_scope="all")
+        """The read layer's own promise, and it outlives what used to write those rows.
+
+        A collection measured before F186 still carries `eyes_open = 0` rows, and the one
+        thing the reader must never do is turn that 0 into the same value as NULL: False
+        is an answer, NULL is the absence of one. Nothing in the pipeline writes a 0 there
+        any more, so the row is written by hand — which is also exactly the shape of the
+        rows on disk this has to keep reading.
+        """
         answered = self.add_file("closed.jpg")
         unasked = self.add_file("crisp.jpg")
-        sharpness = {"/photos/closed.jpg": 100.0, "/photos/crisp.jpg": 9000.0}
-        clf = QualityClassifier(logits={"closed.jpg": {_PHOTO_IDX: CONFIDENT},
-                                        "crisp.jpg": {_PHOTO_IDX: CONFIDENT}})
-        classify(self.cfg, self.conn, classifier=clf,
-                 text_detector=NO_OCR, sharpness_detector=sharpness_by_path(sharpness),
-                 quality_vlm=lambda _p: "eyes_closed no_subject accidental")
+        classify(self.cfg, self.conn, classifier=QualityClassifier(),
+                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0))
+        self.conn.execute(
+            "UPDATE frame_quality SET eyes_open = 0 WHERE file_id = ?", (answered,))
+        self.conn.commit()
+
         rows = read_frame_quality(self.conn)
         self.assertIs(rows[answered].eyes_open, False)
-        # F122/F177: retired questions, and the point of the case is that False and None
-        # stay distinguishable — these two now demonstrate the None half of it, on an
-        # answer that names both retired keywords out loud.
         self.assertIsNone(rows[answered].has_subject)
         self.assertIsNone(rows[answered].is_accidental)
         self.assertIsNone(rows[unasked].eyes_open)
@@ -736,83 +641,16 @@ class TestQualityVlm(FrameQualityCase):
         self.assertEqual(set(rows), {fid})
         self.assertAlmostEqual(rows[fid].sharpness, 42.0)
 
-    def test_a_model_failure_on_one_frame_keeps_the_cheap_signals(self):
-        self.vlm(quality=True, quality_scope="all")
-        self.features(pets=True, pet_threshold=0.5)
-        boom = self.add_file("boom.jpg")
-        fine = self.add_file("fine.jpg")
-
-        def ask(path):
-            if path.endswith("boom.jpg"):
-                raise RuntimeError("CUDA error: device-side assert triggered")
-            return "eyes_open subject deliberate"
-
-        clf = QualityClassifier(logits={"boom.jpg": {_CAT_IDX: CONFIDENT}})
-        stats = classify(self.cfg, self.conn, classifier=clf, text_detector=NO_OCR,
-                         sharpness_detector=flat_sharpness(100.0), quality_vlm=ask)
-        failed = self.quality(boom)
-        self.assertAlmostEqual(failed["sharpness"], 100.0)   # the classic tier survived
-        self.assertEqual(failed["pet"], junk.PET_CLASS)      # the CLIP tier survived
-        self.assertIsNone(failed["eyes_open"])               # only the answers are missing
-        self.assertEqual(self.quality(fine)["eyes_open"], 1)  # the neighbour is unaffected
-        self.assertEqual(stats.quality_candidates, 2)
-        self.assertEqual(stats.quality_answered, 1)
-
-    def test_a_factory_that_raises_falls_back_to_the_cheap_tiers(self):
-        self.vlm(quality=True, quality_scope="all")
-        fid = self.add_file("IMG_0003.jpg")
-
-        def broken_factory(_model):
-            raise RuntimeError("transformers not installed")
-
-        classify(self.cfg, self.conn, classifier=QualityClassifier(),
-                 text_detector=NO_OCR, sharpness_detector=flat_sharpness(100.0),
-                 quality_vlm_factory=broken_factory)
-        row = self.quality(fid)
-        self.assertAlmostEqual(row["sharpness"], 100.0)
-        self.assertIsNone(row["eyes_open"])
-        # the row is marked by the tier that actually ran, so a later run with a working
-        # model picks it up instead of considering it done
-        self.assertEqual(row["source"], junk.QUALITY_SOURCE_CLASSIC)
-
     def test_heuristics_only_runs_touch_nothing(self):
         self.features(pets=True)
-        self.vlm(quality=True, quality_scope="all")
         fid = self.add_file("Screenshot_1.png", camera_make=None, camera_model=None)
 
         def factory(_model):
             raise AssertionError("no model may be built on a heuristics-only run")
 
-        classify(self.cfg, self.conn, use_clip=False, quality_vlm_factory=factory,
+        classify(self.cfg, self.conn, use_clip=False, pet_vlm_factory=factory,
                  sharpness_detector=flat_sharpness(100.0))
         self.assertIsNone(self.quality(fid))
-
-
-class TestVlmQualityAsker(unittest.TestCase):
-    """The real asker, over a fake runtime: the prompt goes out, the frame is decoded."""
-
-    def test_the_frame_is_decoded_and_the_prompt_is_asked(self):
-        seen: list[tuple[int, str, int]] = []
-
-        def describe(frames, prompt, max_new_tokens):
-            seen.append((len(frames), prompt, max_new_tokens))
-            return "eyes_open subject deliberate"
-
-        ask = junk.vlm_quality_asker(describe, max_edge=128)
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "x.jpg"
-            Image.new("RGB", (256, 192), (30, 60, 90)).save(path, "JPEG")
-            answer = ask(str(path))
-        self.assertEqual(parse_quality_answer(answer), QualityFlags(True, None, None))
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(seen[0][0], 1)
-        self.assertIn("eyes_open", seen[0][1])
-
-    def test_a_missing_file_is_an_empty_answer_not_a_crash(self):
-        def describe(_frames, _prompt, _tokens):
-            raise AssertionError("a vanished frame must never reach the model")
-
-        self.assertEqual(junk.vlm_quality_asker(describe, 128)("/nowhere/x.jpg"), "")
 
 
 class TestQualitySettings(unittest.TestCase):
@@ -822,18 +660,19 @@ class TestQualitySettings(unittest.TestCase):
         cfg = Config(features=FeaturesConfig(pets=True, pet_threshold=0.42,
                                              sharpness_band_min=1.0,
                                              sharpness_band_max=2.0),
-                     vlm=VlmConfig(quality=True, quality_scope="events"))
+                     vlm=VlmConfig(exclude_classes=("document",)))
         q = junk.quality_settings(cfg)
         self.assertTrue(q.pets)
         self.assertAlmostEqual(q.pet_threshold, 0.42)
         self.assertEqual(q.sharpness_band, (1.0, 2.0))
-        self.assertTrue(q.vlm_quality)
-        self.assertEqual(q.vlm_scope, "events")
+        self.assertEqual(q.exclude_classes, frozenset({"document"}))
 
     def test_the_source_marker_names_the_tier_that_ran(self):
         tier = junk.quality_tier
         self.assertEqual(tier(junk._quality_source(True, False, None)), "classic")
         self.assertEqual(tier(junk._quality_source(True, True, None)), "clip")
+        # F186: the pet check is the asker that puts a row in the `vlm` tier now — the
+        # frame-quality question that used to do it is retired.
         self.assertEqual(tier(junk._quality_source(True, True, lambda _p: "")), "vlm")
         # a heuristics-only run has no CLIP, so pets cannot have been computed
         self.assertEqual(tier(junk._quality_source(False, True, None)), "classic")
@@ -850,7 +689,8 @@ class TestQualitySettings(unittest.TestCase):
         self.assertRegex(with_pets, r"^clip#[0-9a-f]{8}$")
         with_model = junk._quality_source(True, True, lambda _p: "")
         self.assertRegex(with_model, r"^vlm#[0-9a-f]{8}$")
-        # The model is asked a question of its own, so its tier has its own fingerprint.
+        # The check the model runs has a question of its own, so its tier has its own
+        # fingerprint.
         self.assertNotEqual(with_pets.split("#")[1], with_model.split("#")[1])
         # Sharpness depends on no prompt: a sharpness-only collection must NOT be
         # invalidated every time somebody edits a CLIP prompt.
@@ -858,14 +698,14 @@ class TestQualitySettings(unittest.TestCase):
 
     def test_editing_a_prompt_changes_the_fingerprint(self):
         """The property the whole mechanism exists for, stated against the real list."""
-        before = junk.quality_prompt_fingerprint(True, with_vlm=False)
+        before = junk.quality_prompt_fingerprint(True)
         # `_PET_CLASSES` is what clip_prompts reads; `_PET_ANTI_CLASSES` is folded into
         # it at import, so patching that one would change nothing and prove nothing.
         extra = junk._PET_CLASSES + (("statue", "a photo of a statue of an animal"),)
         with unittest.mock.patch.object(junk, "_PET_CLASSES", extra):
-            after = junk.quality_prompt_fingerprint(True, with_vlm=False)
+            after = junk.quality_prompt_fingerprint(True)
         self.assertNotEqual(before, after)
-        self.assertEqual(before, junk.quality_prompt_fingerprint(True, with_vlm=False))
+        self.assertEqual(before, junk.quality_prompt_fingerprint(True))
 
 
 class TestFrameQualityWithTheOldJunkMock(FrameQualityCase):

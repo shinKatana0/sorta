@@ -14,14 +14,15 @@ What the cases below check is the feature and the three ways it could quietly go
   otherwise `sorta faces` on a fresh index would find nothing at all — and a frame the
   deep tier moves back to `photo` gets its faces on the next run, so the economy cannot
   turn into lost data;
-* the four things `junk` reads out of the `faces` table still work, because that half did
-  NOT move: `frame_quality.face_sharpness` (F155) is measured inside the boxes the faces
-  stage wrote, and `vlm.quality_scope: faces` still has its population. A naive swap of the
-  two stages would have broken both silently, which is why the split is by dependency and
-  the test for it is a regression test for F155.
+* what `junk` reads out of the `faces` table still works, because that half did NOT move:
+  `frame_quality.face_sharpness` (F155) is measured inside the boxes the faces stage
+  wrote. A naive swap of the two stages would have broken that silently, which is why the
+  split is by dependency and the test for it is a regression test for F155. (The second
+  reader of those boxes was `vlm.quality_scope: faces`, and F186 retired it with the
+  question it chose a population for.)
 
-No model is loaded anywhere: the classifier, the sharpness detector, the quality VLM and
-the face analyzer are all injected, as everywhere else in this suite.
+No model is loaded anywhere: the classifier, the sharpness detector and the face analyzer
+are all injected, as everywhere else in this suite.
 """
 from __future__ import annotations
 
@@ -34,7 +35,6 @@ from sorta import cli, faces, junk
 from sorta.faces import EMBED_DIM, detect_faces
 from sorta.junk import QUALITY_VERDICT, classify
 from tests.test_frame_quality import (
-    CONFIDENT,
     FrameQualityCase,
     QualityClassifier,
     flat_sharpness,
@@ -227,26 +227,6 @@ class TestTheHalfAfterFacesStillHasIts(ClassifyBeforeFacesCase):
         self.assertEqual(row["sharpness"], 100.0)
         self.assertEqual(row["face_sharpness"], 42.0)
 
-    def test_the_quality_scope_faces_still_has_its_population(self):
-        # Brief test 5: `vlm.quality_scope: faces` is a hard dependency on the faces stage
-        # (F125) — it stays satisfiable because `junk` still runs after it.
-        self.deep_analysis_on()
-        self.vlm(quality=True, quality_scope="faces")
-        self.features(sharpness_band_min=30.0, sharpness_band_max=300.0)
-        with_face = self.add_file("IMG_0001.jpg")
-        without = self.add_file("IMG_0002.jpg")
-        self.run_classify()
-        self.detect(hits={"/photos/IMG_0001.jpg": [_hit()]})
-
-        asked: list[str] = []
-        self.run_junk(classifier=QualityClassifier(
-                          logits={"IMG_0001.jpg": {_PHOTO_IDX: CONFIDENT},
-                                  "IMG_0002.jpg": {_PHOTO_IDX: CONFIDENT}}),
-                      quality_vlm=lambda path: asked.append(path) or "eyes_open")
-        self.assertEqual(asked, ["/photos/IMG_0001.jpg"])
-        self.assertEqual(self.quality(with_face)["eyes_open"], 1)
-        self.assertIsNone(self.quality(without)["eyes_open"])
-
 
 class TestTheSplitItself(ClassifyBeforeFacesCase):
     """One function, two stages: what each half does, and what it leaves alone."""
@@ -267,16 +247,13 @@ class TestTheSplitItself(ClassifyBeforeFacesCase):
         # F145 in the small: every question of the half after faces belongs to that half,
         # and a factory called here would mean weights loaded before the faces stage.
         self.deep_analysis_on()
-        self.vlm(quality=True, quality_scope="all")
         self.features(pets=True, pets_verify=True, junk_rescue=True)
-        self.cfg.dedup.keeper_vlm = True
         self.add_file("IMG_0001.jpg")
 
         def factory(_model):
             raise AssertionError("no cascade model may be built by the verdicts half")
 
-        self.run_classify(quality_vlm_factory=factory, pet_vlm_factory=factory,
-                          keeper_vlm_factory=factory, junk_rescue_vlm_factory=factory)
+        self.run_classify(pet_vlm_factory=factory, junk_rescue_vlm_factory=factory)
 
     def test_the_second_half_does_not_reclassify_what_the_first_one_settled(self):
         # The economy of the split: incrementality is `media_class.tier`, so the frames

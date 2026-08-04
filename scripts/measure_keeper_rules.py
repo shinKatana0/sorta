@@ -42,13 +42,16 @@ group where the owner picked a frame outside that window was lost by the model b
 was asked.
 
 No model runs here. The price of the model is `KEEPER_CALL_S + KEEPER_FRAME_S x frames`,
-measured by scripts/measure_group_keeper.py on this collection and carried in as a constant
-— a phase 0 that re-priced the baseline on whatever machine it happened to run on would
-compare the arithmetic against seconds the pipeline never paid.
+measured on this collection and on the stage's own asker by the worksheet that priced the
+keeper question, and carried in as a constant — a phase 0 that re-priced the baseline on
+whatever machine it happened to run on would compare the arithmetic against seconds the
+pipeline never paid. That worksheet went with the question it priced (F186 retired the
+comparative keeper call); the number it produced stays here, as the record of what the
+model cost when it was still asked.
 
 Privacy: counts, seconds and group sizes only. No path, no basename and no file id reaches
 the OUTPUT — a near-duplicate group is a burst of one moment, and the rule of
-measure_group_keeper.py and measure_eye_state.py holds here too. The worksheet is the one
+measure_eye_state.py holds here too. The worksheet is the one
 place file ids are written, because a person has to be able to look the frames up, and it
 is a file the owner asked for rather than a report. The database is opened read-only.
 
@@ -117,10 +120,10 @@ MARGIN_GRID = (0.0, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.0, 2.0)
 
 # --- the price of the model ----------------------------------------------------------
 #
-# One keeper call, in seconds: a fixed part and a part per frame in the prompt. Measured by
-# scripts/measure_group_keeper.py on this collection and on the stage's own asker; see the
-# module docstring for why it is not re-measured here. `--call-seconds` / `--frame-seconds`
-# carry a re-measurement in without touching the code.
+# One keeper call, in seconds: a fixed part and a part per frame in the prompt. Measured on
+# this collection and on the stage's own asker, by a worksheet that no longer exists (F186
+# retired the call itself); see the module docstring for why it is not re-measured here.
+# `--call-seconds` / `--frame-seconds` carry a re-measurement in without touching the code.
 KEEPER_CALL_S = 0.45
 KEEPER_FRAME_S = 1.03
 

@@ -27,7 +27,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from sorta import cli, imaging
-from sorta.config import VLM_QUALITY_SCOPES
 from sorta.junk import quality_settings
 
 
@@ -127,72 +126,34 @@ class TestPets(_CapturesTheRunConfig):
         self.assertTrue(quality_settings(self.junk_cfg(["--pets"])).pets)
 
 
-class TestQuality(_CapturesTheRunConfig):
-    """Requirement 2.1: `--quality`/`--no-quality` overrides `vlm.quality`."""
+class TestTheRetiredFlagsAreGone(_FlagCase):
+    """F186: `--quality`, `--no-quality` and `--quality-scope` retired with the question.
 
-    def test_the_flag_switches_the_quality_questions_on(self):
-        for command, cfg_of in (("junk", self.junk_cfg), ("run", self.run_cfg)):
-            with self.subTest(command=command):
-                self.assertTrue(quality_settings(cfg_of(["--quality"])).vlm_quality)
+    Two classes stood here — one per flag — and both drove `vlm.quality` and
+    `vlm.quality_scope` through `junk` and `run`. The keys are gone, so the flags could
+    not stay: an override of a value nothing reads is a promise the run cannot keep.
 
-    def test_no_quality_switches_off_what_the_config_switched_on(self):
-        self.write_config("vlm:\n  quality: true\n")
-        for command, cfg_of in (("junk", self.junk_cfg), ("run", self.run_cfg)):
-            with self.subTest(command=command):
-                self.assertFalse(
-                    quality_settings(cfg_of(["--no-quality"])).vlm_quality)
+    What is asserted instead is that they are refused rather than IGNORED. An unknown
+    option makes typer exit non-zero; a flag quietly swallowed would let a command line
+    from somebody's notes look like it still switches something on.
+    """
 
-    def test_without_the_flag_the_config_decides(self):
-        self.write_config("vlm:\n  quality: true\n")
-        self.assertTrue(quality_settings(self.junk_cfg([])).vlm_quality)
-        self.write_config("vlm:\n  quality: false\n")
-        self.assertFalse(quality_settings(self.junk_cfg([])).vlm_quality)
-
-    def test_the_quality_flag_does_not_touch_the_deep_junk_tier(self):
-        """Two consumers of one runtime (F113): `--quality` is not `--deep`."""
-        cfg = self.junk_cfg(["--quality"])
-        self.assertFalse(cfg.naming.vlm_enabled)
-        self.assertFalse(cfg.vlm.enabled)
-
-
-class TestQualityScope(_CapturesTheRunConfig):
-    """Requirement 2.2/2.3: a closed list of scopes, and a typo says so."""
-
-    def test_faces_reaches_the_quality_settings(self):
-        # F125's value in particular: the point of the dependency this feature waited on.
-        for command, cfg_of in (("junk", self.junk_cfg), ("run", self.run_cfg)):
-            with self.subTest(command=command):
-                self.assertEqual(
-                    quality_settings(cfg_of(["--quality-scope", "faces"])).vlm_scope,
-                    "faces")
-
-    def test_every_scope_the_config_accepts_is_accepted_here(self):
-        for scope in VLM_QUALITY_SCOPES:
-            with self.subTest(scope=scope):
-                self.assertEqual(
-                    quality_settings(
-                        self.junk_cfg(["--quality-scope", scope])).vlm_scope, scope)
-
-    def test_without_the_flag_the_config_decides(self):
-        self.write_config("vlm:\n  quality_scope: events\n")
-        self.assertEqual(quality_settings(self.junk_cfg([])).vlm_scope, "events")
-
-    def test_a_typo_is_an_error_that_lists_the_values(self):
+    def test_the_retired_flags_are_not_accepted(self):
         for command in ("junk", "run"):
-            with self.subTest(command=command):
-                result = self.invoke([command, "--quality-scope", "facse"])
-                self.assertNotEqual(result.exit_code, 0)
-                printed = " ".join(result.output.split())
-                for scope in VLM_QUALITY_SCOPES:
-                    self.assertIn(scope, printed)
+            for argv in (["--quality"], ["--no-quality"],
+                         ["--quality-scope", "faces"]):
+                with self.subTest(command=command, argv=" ".join(argv)):
+                    result = self.invoke([command, *argv])
+                    self.assertNotEqual(result.exit_code, 0)
 
-    def test_a_typo_does_not_quietly_fall_back_to_the_default(self):
-        """The whole reason the list is closed: a misspelt scope must not run the
-        wrong population for four hours."""
-        with patch.object(cli, "_cmd_junk") as cmd:
-            result = self.invoke(["junk", "--quality-scope", "all-of-them"])
-        self.assertNotEqual(result.exit_code, 0)
-        cmd.assert_not_called()
+    def test_the_flag_beside_them_still_works(self):
+        """The other half — a case that passed because `junk` itself broke would say
+        nothing."""
+        with patch.object(cli, "classify_junk",
+                          lambda cfg, conn, classifier=None, progress=None:
+                          SimpleNamespace(total=0, processed=0, by_verdict={})):
+            result = self.invoke(["junk", "--pets"])
+        self.assertEqual(result.exit_code, 0, result.output)
 
 
 class TestAlbumSelectorIsOptionalOnlyForAnimals(_FlagCase):
@@ -314,8 +275,8 @@ class TestNoFlagWritesTheConfig(_CapturesTheRunConfig):
         self.write_config("features:\n  pets: true\nvlm:\n  quality: true\n"
                           "imaging:\n  preview_cache_max_gb: 40\n")
         before = self.cfg_path.read_bytes()
-        self.junk_cfg(["--no-pets", "--no-quality", "--quality-scope", "faces"])
-        self.run_cfg(["--pets", "--quality", "--quality-scope", "all"])
+        self.junk_cfg(["--no-pets"])
+        self.run_cfg(["--pets"])
         with patch.dict(os.environ, {imaging.ENV_PREVIEW_DIR:
                                      str(self.root / "previews")}):
             os.environ.pop(imaging.ENV_PREVIEW_MAX_GB, None)

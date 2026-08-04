@@ -8,9 +8,9 @@ weights because a key was true in config.yaml from some earlier experiment.
 
 The rule now, and what every case below is a form of:
 
-* the subordinate keys (`vlm.quality`, `features.pets_verify`,
-  `features.landmarks_verify`, `dedup.keeper_vlm`, `features.junk_rescue`) decide WHAT
-  is asked; `vlm.enabled` decides whether there is anybody to ask;
+* the subordinate keys (`vlm.products`, `features.pets_verify`,
+  `features.landmarks_verify`, `features.junk_rescue`) decide WHAT is asked;
+  `vlm.enabled` decides whether there is anybody to ask;
 * with the master off NO FACTORY IS CALLED — asserted by counting calls and not by
   looking at the result, because "the model answered nothing" and "the model was never
   built" differ by five seconds and several gigabytes;
@@ -19,6 +19,11 @@ The rule now, and what every case below is a form of:
 
 The master switch on with every subordinate key off is here too: permission is not an
 instruction, and `vlm.enabled` alone must raise nothing either.
+
+F186 retired two of the questions this file was written over — the frame-quality one
+(`vlm.quality`) and the comparative keeper one (`dedup.keeper_vlm`) — and their cases went
+with them. The invariant does not weaken by losing subjects: every question that is still
+asked is still held here, the deep product tier included.
 """
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ import dataclasses
 import unittest
 
 from sorta import junk, landmarks
-from sorta.config import DedupConfig, FeaturesConfig, VlmConfig, _naming_from, vlm_allowed
+from sorta.config import FeaturesConfig, VlmConfig, _naming_from, vlm_allowed
 from sorta.junk import classify
 
 from tests.test_frame_quality import FrameQualityCase, QualityClassifier, flat_sharpness
@@ -89,37 +94,6 @@ class MasterSwitchCase(FrameQualityCase):
         return classify(self.cfg, self.conn, **kwargs)
 
 
-class TestQualityQuestionsNeedTheMaster(MasterSwitchCase):
-    """`vlm.quality` — brief tests 1 and 2 for the frame-quality band."""
-
-    def setUp(self):
-        super().setUp()
-        self.vlm(quality=True, quality_scope="all")
-
-    def test_the_factory_is_never_called(self):
-        self.add_photos("IMG_0001.jpg")
-        factory = Counter("eyes_open subject deliberate")
-        self.run_junk(quality_vlm_factory=factory)
-        self.assertEqual(factory.calls, [])
-
-    def test_the_row_is_the_one_the_toggle_off_writes(self):
-        self.add_photos("IMG_0001.jpg")
-        self.run_junk(quality_vlm_factory=Counter())
-        with_master_off = self._row()
-
-        self.setUp()
-        self.vlm(quality=False)
-        self.add_photos("IMG_0001.jpg")
-        self.run_junk(quality_vlm_factory=Counter())
-        self.assertEqual(with_master_off, self._row())
-
-    def _row(self):
-        row = self.conn.execute(
-            "SELECT sharpness, eyes_open, has_subject, is_accidental, source"
-            " FROM frame_quality").fetchone()
-        return tuple(row)
-
-
 class TestPetVerifyNeedsTheMaster(MasterSwitchCase):
     """`features.pets_verify` — the animal check."""
 
@@ -161,40 +135,32 @@ class TestPetVerifyNeedsTheMaster(MasterSwitchCase):
             " JOIN files f ON f.id = fq.file_id ORDER BY f.path"))
 
 
-class TestKeeperNeedsTheMaster(MasterSwitchCase):
-    """`dedup.keeper_vlm` — the best frame of a near-duplicate group."""
+class TestTheProductTierNeedsTheMaster(MasterSwitchCase):
+    """`vlm.products` — the deep junk tier, and the fourth question left standing.
+
+    It joined the F145 list at F161, after the two questions retired here had been
+    written up: the tier used to BE what the master did by itself, so there was nothing to
+    hold it to. It has a key of its own now, and the rule is the one every line above
+    follows — the key says what to ask, the master says whether anybody may be asked.
+    """
 
     def setUp(self):
         super().setUp()
-        self.cfg.dedup = DedupConfig(keeper_vlm=True)
-
-    def add_group(self):
-        for member in range(3):
-            self.add_file(f"burst_{member}.jpg",
-                          phash=f"{(1 << member):016x}")
+        self.vlm(products=True)  # and the master left off
 
     def test_the_factory_is_never_called(self):
-        self.add_group()
-        factory = Counter("2")
-        self.run_junk(keeper_vlm_factory=factory)
+        self.add_photos("shoe.jpg")
+        factory = Counter("product")
+        self.run_junk(vlm_classifier_factory=factory)
         self.assertEqual(factory.calls, [])
 
-    def test_no_recommendation_is_stored_at_all(self):
-        """With the question off the interface recommends by sharpness, which is not a
-        row in `group_keeper` but the absence of one."""
-        self.add_group()
-        self.run_junk(keeper_vlm_factory=Counter("2"))
-        self.assertEqual(self._keepers(), [])
-
-        self.setUp()
-        self.cfg.dedup = DedupConfig(keeper_vlm=False)
-        self.add_group()
-        self.run_junk(keeper_vlm_factory=Counter("2"))
-        self.assertEqual(self._keepers(), [])
-
-    def _keepers(self):
-        return [tuple(r) for r in self.conn.execute(
-            "SELECT group_key, keeper_id, source FROM group_keeper")]
+    def test_the_verdict_is_the_one_the_fast_tier_wrote(self):
+        """Not merely "no products": the row a run without the master produces."""
+        fid = self.add_photos("shoe.jpg")[0]
+        self.run_junk(vlm_classifier_factory=Counter("product"))
+        row = self.conn.execute(
+            "SELECT verdict, tier FROM media_class WHERE file_id = ?", (fid,)).fetchone()
+        self.assertEqual((row["verdict"], row["tier"]), ("photo", "clip"))
 
 
 class TestJunkRescueNeedsTheMaster(MasterSwitchCase):
@@ -232,15 +198,13 @@ class TestPermissionIsNotAnInstruction(MasterSwitchCase):
 
     def test_no_subordinate_factory_is_called(self):
         self.cfg.naming = dataclasses.replace(self.cfg.naming, vlm_enabled=True)
-        self.vlm(quality=False)
+        self.vlm(products=False)
         self.features(pets=True, pets_verify=False, junk_rescue=False)
-        self.cfg.dedup = DedupConfig(keeper_vlm=False)
         self.add_photos("IMG_0001.jpg")
         factories = {name: Counter() for name in
-                     ("quality_vlm_factory", "pet_vlm_factory", "keeper_vlm_factory",
+                     ("vlm_classifier_factory", "pet_vlm_factory",
                       "junk_rescue_vlm_factory")}
-        self.run_junk(classifier=PetClassifier({"IMG_0001.jpg": 0.95}),
-                      vlm_classifier=lambda _path: "personal_photo", **factories)
+        self.run_junk(classifier=PetClassifier({"IMG_0001.jpg": 0.95}), **factories)
         for name, factory in factories.items():
             with self.subTest(factory=name):
                 self.assertEqual(factory.calls, [])
@@ -348,17 +312,15 @@ class TestNothingIsRewrittenInTheConfig(unittest.TestCase):
     def test_the_subordinate_keys_keep_their_values(self):
         cfg = dataclasses.replace(
             _cfg(),
-            vlm=VlmConfig(enabled=False, quality=True),
+            vlm=VlmConfig(enabled=False, products=True),
             features=FeaturesConfig(pets=True, pets_verify=True, junk_rescue=True,
                                     landmarks_verify=True),
-            dedup=DedupConfig(keeper_vlm=True),
         )
         self.assertFalse(vlm_allowed(cfg))
-        self.assertTrue(cfg.vlm.quality)
+        self.assertTrue(cfg.vlm.products)
         self.assertTrue(cfg.features.pets_verify)
         self.assertTrue(cfg.features.landmarks_verify)
         self.assertTrue(cfg.features.junk_rescue)
-        self.assertTrue(cfg.dedup.keeper_vlm)
 
 
 if __name__ == "__main__":

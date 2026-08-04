@@ -426,7 +426,6 @@ from send2trash import send2trash as send_to_trash
 
 from . import db, faces, i18n, imaging, restore
 from .config import (
-    VLM_QUALITY_SCOPES,
     Config,
     # F160 replaced its own uses of FeaturesConfig with Config and dropped the import;
     # F149 landed `_restore_frame(db_path, features: FeaturesConfig, ...)` in main
@@ -458,7 +457,6 @@ from .junk import (
     CLASSIFY_STAGE,
     VERDICTS_STAGE,
     faces_stage_ran,
-    quality_scope_ids,
     search_index_model,
     search_index_settings,
 )
@@ -4585,10 +4583,11 @@ def _process_defaults_payload(cfg: Config) -> dict:
     (`features.pets`), which the settings column also edits. Two entry points, one
     source of truth, exactly as `deep` lives next to `naming.vlm_enabled`.
 
-    F138: the three knobs that moved onto this screen out of the settings column ride
-    here too, from the same place — `vlm.quality`/`vlm.quality_scope`,
-    `features.pets_verify`, `dedup.keeper_vlm`. The column no longer offers them, so
-    the file is now their ONLY home and this is what a run starts from.
+    F138: the knobs that moved onto this screen out of the settings column ride here too,
+    from the same place — `features.pets_verify`. The column no longer offers them, so the
+    file is now their ONLY home and this is what a run starts from. F186 retired three of
+    that set (`vlm.quality`, `vlm.quality_scope`, `dedup.keeper_vlm`) with the two
+    questions they switched on.
 
     F161: `products` joins them from `vlm.products`, and its default is the reason the
     key exists — a file that never heard of it answers True here, so the screen opens
@@ -4600,9 +4599,6 @@ def _process_defaults_payload(cfg: Config) -> dict:
         "geo_online": cfg.geo.provider == "online",
         "pets": bool(cfg.features.pets),
         "pets_verify": bool(cfg.features.pets_verify),
-        "quality": bool(cfg.vlm.quality),
-        "quality_scope": str(cfg.vlm.quality_scope),
-        "keeper": bool(cfg.dedup.keeper_vlm),
         "vlm_available": importlib.util.find_spec("transformers") is not None,
     }
 
@@ -4658,9 +4654,9 @@ _RATE_FIXED = "fixed"
 # (`junk`). Both phases are called `junk_vlm`, so pricing the deep line off the wrong one
 # would quietly charge it the rate of a different population.
 #
-# The keeper question is deliberately absent. It is asked inside the junk stage's VLM
-# phase, next to the per-frame questions, so the log cannot separate its seconds from
-# theirs — it is priced from `estimate:` in the config instead (see `_keeper_seconds`).
+# F186 removed a fourth reader of that phase — the keeper question, which was priced from
+# `estimate:` because the log could not tell its seconds from the per-frame ones. It is not
+# asked any more, so nothing quotes a price for it.
 _RATE_UNITS: dict[str, tuple[str, ...]] = {
     "base": tuple(measurement_unit(stage)
                   for stage in ("index", "geo", "landmarks", "phash")),
@@ -4700,22 +4696,6 @@ def _resolve_rates(measurements: dict[str, Measurement]) -> dict[str, _Rate]:
     return rates
 
 
-def _keeper_seconds(cfg: Config, groups: Sequence[Sequence[Any]]) -> float:
-    """What the comparative question costs over THESE groups (F159).
-
-    Summed over the actual sizes rather than an average times a count, because the price
-    is linear in the frames a prompt carries — 0.45 s plus 1.03 s each, measured — and a
-    collection whose groups run to nine and eleven frames is not described by its mean.
-    Only the frames that are really sent are counted: `dedup.keeper_max_frames` caps what
-    one question may hold, and the rest of a group is never shown to the model.
-    """
-    per_call = float(cfg.estimate.keeper_call_sec)
-    per_frame = float(cfg.estimate.keeper_frame_sec)
-    cap = int(cfg.dedup.keeper_max_frames)
-    smallest = int(cfg.dedup.keeper_min_group_size)
-    return sum(per_call + per_frame * min(len(group), cap)
-               for group in groups if len(group) >= smallest)
-
 # The photographs a run actually works on: `sorta` skips a duplicate and a file it could
 # not read, so counting them in would price frames nobody looks at. Same predicate the
 # faces measurement script samples by.
@@ -4726,30 +4706,6 @@ _LIVE_PHOTOS_SQL = ("SELECT COUNT(*) FROM files "
 def _positive_or_none(value: int) -> int | None:
     """A count of zero from a stage that has never run is "unknown", not "nothing"."""
     return value or None
-
-
-def _quality_scope_counts(cfg: Config, conn: sqlite3.Connection,
-                          photos: int, group_ids: int | None) -> dict[str, int | None]:
-    """How many frames each `vlm.quality_scope` would hand the model.
-
-    The scope is a select next to the checkbox, and the four options differ by hours —
-    so all four prices travel to the browser at once and switching between them costs
-    no request. `groups` reuses the near-duplicate grouping computed for the keeper
-    line above rather than asking `junk.quality_scope_ids` to build it a second time
-    (it costs seconds on a real collection).
-
-    Unknown, i.e. a dash, wherever the population is not a population yet: no pHashes
-    (`groups`), no events built (`events`), no faces run (`faces` — which `junk` refuses
-    outright, see `quality_scope_ready`).
-    """
-    counts: dict[str, int | None] = {"all": _positive_or_none(photos),
-                                     "groups": group_ids}
-    events = int(conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
-    counts["events"] = (None if not events else
-                        len(quality_scope_ids(cfg, conn, "events") or ()))
-    counts["faces"] = (len(quality_scope_ids(cfg, conn, "faces") or ())
-                       if faces_stage_ran(conn) else None)
-    return counts
 
 
 # The estimate is asked for on every open of the first tab, and one of its counts is the
@@ -4804,10 +4760,8 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
     line that is structurally free.
     """
     key = (str(db_path), _db_fingerprint(db_path), cfg.index.phash_max_distance,
-           int(cfg.dedup.keeper_min_group_size), int(cfg.dedup.keeper_max_frames),
            float(cfg.features.pet_candidate_threshold),
            bool(cfg.features.junk_rescue), float(cfg.features.junk_rescue_threshold),
-           float(cfg.estimate.keeper_call_sec), float(cfg.estimate.keeper_frame_sec),
            float(cfg.estimate.measurement_max_age_days), _run_log_fingerprint())
     with _estimate_cache_lock:
         cached = _estimate_cache.get(key)
@@ -4844,18 +4798,6 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         pets_verify = None if not pet_scored else int(conn.execute(
             "SELECT COUNT(*) FROM frame_quality WHERE pet_score >= ?",
             (float(cfg.features.pet_candidate_threshold),)).fetchone()[0])
-        hashed = bool(conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM files WHERE phash IS NOT NULL)").fetchone()[0])
-        keeper: int | None = None
-        keeper_seconds: float | None = None
-        group_frames: int | None = None
-        if hashed:
-            groups = near_duplicate_groups(conn, cfg.index.phash_max_distance)
-            keeper = sum(1 for g in groups
-                         if len(g) >= int(cfg.dedup.keeper_min_group_size))
-            keeper_seconds = _keeper_seconds(cfg, groups)
-            group_frames = sum(len(g) for g in groups)
-        scopes = _quality_scope_counts(cfg, conn, photos, group_frames)
     finally:
         conn.close()
     rates = _resolve_rates(read_measurements(
@@ -4871,8 +4813,6 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         # what this one used to is `products`.
         "deep": _positive_or_none(photos),
         "products": products,
-        "keeper": keeper,
-        **{f"quality_{scope}": value for scope, value in scopes.items()},
     }
     per_line: dict[str, _Rate] = {
         "base": rates["base"],
@@ -4887,17 +4827,11 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         # F165 moved the deep tier ahead of faces, into a stage of its own — so this is
         # the one model line whose rate comes from `classify` rather than from `junk`.
         "products": rates["vlm_verdict"],
-        # The keeper line is the one that is not a rate times a count at all — see
-        # `_keeper_seconds`. It carries the config's constants, so it is a `default`
-        # until the day the log can tell its seconds from the per-frame ones.
-        "keeper": _Rate(0.0, _RATE_DEFAULT),
-        **{f"quality_{scope}": rates["vlm_frame"] for scope in scopes},
     }
     seconds: dict[str, float | None] = {}
     for name, rate in per_line.items():
         count = counts[name]
         seconds[name] = None if count is None else round(count * rate.seconds, 1)
-    seconds["keeper"] = None if keeper_seconds is None else round(keeper_seconds, 1)
     measured = [rate.at for rate in per_line.values() if rate.at is not None]
     payload = {
         "seconds": seconds,
@@ -4995,25 +4929,20 @@ class _RunOptions:
     events: bool = False
     pets: bool = False
     pets_verify: bool | None = None
-    quality: bool | None = None
-    quality_scope: str | None = None
-    keeper: bool | None = None
 
 
 def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None:
     """Parse `{"source_dir": str, "deep": bool=False, "geo_online": bool=False,
     "faces": bool=False, "events": bool=False, "pets": bool=False,
-    "products": bool?, "pets_verify": bool?, "quality": bool?, "quality_scope": str?,
-    "keeper": bool?}`
+    "products": bool?, "pets_verify": bool?}`
     (F50/#34: opt-in VLM tier / online geo for THIS run, without editing config.yaml;
     F53/#39: opt-in steps faces/events, the same principle — default False; F123:
     `pets` is an opt-in of the THIRD shape — neither a tier nor a step, but a config
     override on the junk stage, `features.pets`; F138: the same third shape for
-    `features.pets_verify`, `vlm.quality`, `dedup.keeper_vlm` and the scope select).
+    `features.pets_verify`. F186 retired the other three of that set — `vlm.quality`,
+    the scope select and `dedup.keeper_vlm` — with the questions behind them.)
     None -> invalid: not dict / `source_dir` not a string or empty after strip / a flag
-    given but not bool / `quality_scope` outside VLM_QUALITY_SCOPES — a misspelling
-    there is the 4.3-hour option, so it is refused rather than defaulted (the rule
-    `_validate_settings_payload` set for the same key)."""
+    given but not bool."""
     if not isinstance(payload, dict):
         return None
     source_dir = payload.get("source_dir")
@@ -5025,16 +4954,11 @@ def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None
         if not isinstance(value, bool):
             return None
         flags[key] = value
-    for key in ("products", "pets_verify", "quality", "keeper"):
+    for key in ("products", "pets_verify"):
         value = payload.get(key)
         if value is not None and not isinstance(value, bool):
             return None
         flags[key] = value
-    scope = payload.get("quality_scope")
-    if scope is not None and (not isinstance(scope, str)
-                              or scope not in VLM_QUALITY_SCOPES):
-        return None
-    flags["quality_scope"] = scope
     return source_dir.strip(), _RunOptions(**flags)  # type: ignore[arg-type]
 
 
@@ -5077,16 +5001,10 @@ def _run_cfg(cfg: Config, source_dir: str | None, opts: _RunOptions) -> Config:
     vlm_changed: dict[str, Any] = {}
     if opts.products is not None:
         vlm_changed["products"] = opts.products
-    if opts.quality is not None:
-        vlm_changed["quality"] = opts.quality
-    if opts.quality_scope is not None:
-        vlm_changed["quality_scope"] = opts.quality_scope
     vlm = dataclasses.replace(cfg.vlm, **vlm_changed) if vlm_changed else cfg.vlm
-    dedup_cfg = (cfg.dedup if opts.keeper is None
-                 else dataclasses.replace(cfg.dedup, keeper_vlm=opts.keeper))
     sources = [Path(source_dir).resolve()] if source_dir is not None else cfg.sources
     return dataclasses.replace(cfg, sources=sources, naming=naming, geo=geo,
-                               features=features, vlm=vlm, dedup=dedup_cfg)
+                               features=features, vlm=vlm)
 
 
 def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
@@ -5863,57 +5781,6 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "or none. More accurate, but it is one model question per frame.",
         "ja": "候補を 1 枚ずつモデルに見せます（実際の動物か、その画像か、いないか）。"
               "精度は上がりますが、コマごとにモデルへ問い合わせます。",
-    },
-    "process_quality_label": {
-        "ru": "Качество кадров", "en": "Frame quality", "ja": "コマの品質",
-    },
-    # F179: the hint used to read "whether the eyes are open — what nothing cheap can
-    # decide", and that is no longer true. The "Closed eyes" slice is computed from the
-    # eyelid geometry on every run, with no model and no toggle, and it is right 62% of the
-    # time against this question's 60% while finding five times as many frames. The switch
-    # stays (it still asks and still fills `frame_quality.eyes_open`), but a person deciding
-    # whether to spend ~92 minutes on it has to be told that the slice does not wait for it.
-    "process_quality_hint": {
-        "ru": "Спросить модель, открыты ли глаза. Срез «Закрытые глаза» и без этого "
-              "считается по геометрии век на каждом прогоне — на размеченной выборке "
-              "модель дала 60% точности против 62% у геометрии, найдя впятеро меньше "
-              "кадров. Нужен `uv sync --extra vlm`.",
-        "en": "Ask the model whether the eyes are open. The “Closed eyes” slice is computed "
-              "from the eyelid geometry on every run without it — on a labelled sample the "
-              "model was 60% right against the geometry's 62%, and found five times fewer "
-              "frames. Needs `uv sync --extra vlm`.",
-        "ja": "目が開いているかをモデルに尋ねます。「目を閉じた」区分はこれがなくても毎回"
-              "まぶたの形状から算出されます。ラベル付きサンプルではモデルの正解率 60% に対し"
-              "形状では 62% で、検出数は 5 分の 1 でした。`uv sync --extra vlm` が必要です。",
-    },
-    "process_quality_scope_label": {
-        "ru": "У каких кадров спрашивать",
-        "en": "Which frames to ask about",
-        "ja": "どのコマについて尋ねるか",
-    },
-    "process_keeper_label": {
-        "ru": "Лучший кадр в группе", "en": "Best frame of a group",
-        "ja": "グループ内のベストショット",
-    },
-    # F159 rewrote the second sentence. It used to sell the group question as the cheap
-    # way to ask — one call instead of one per frame — and the 2026-08-03 measurement
-    # took that away: the price is linear in the frames the prompt carries, so from three
-    # frames up the group question costs what the separate ones cost. What is left is the
-    # honest reason to switch it on, which was never the price.
-    "process_keeper_hint": {
-        "ru": "Один сравнительный вопрос модели на группу почти-дублей: какой кадр "
-              "оставить. Время растёт с размером группы — на группу из пяти уходит "
-              "примерно столько же, сколько на пять отдельных вопросов, зато отдельные "
-              "вопросы не говорят, который кадр лучше. Ничего не удаляет — только "
-              "подсказка на вкладке «Разбор».",
-        "en": "One comparative question per near-duplicate group: which frame to keep. "
-              "The time grows with the group — five frames take about what five separate "
-              "questions take, but separate questions do not say which frame is the best "
-              "one. It deletes nothing — it is a recommendation on the Review tab.",
-        "ja": "類似写真のグループごとに 1 回、どのコマを残すかをモデルに比較させます。"
-              "所要時間はグループの大きさに比例し、5 コマなら個別に 5 回尋ねるのとほぼ"
-              "同じです。ただし個別の質問ではどれが最良かは分かりません。"
-              "削除は行いません —「確認」タブでの推奨にとどまります。",
     },
     # F145: said next to every option that asks the SAME model the "Deep analysis"
     # checkbox loads. With the checkbox clear each of them costs nothing and does
@@ -6788,13 +6655,6 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "そもそもどのコマについて尋ねるかを決めるしきい値です。計算は安価で、"
               "高価な部分を節約します — 帯が狭いほど、モデルに届くコマは減ります。",
     },
-    "settings_scope_groups": {
-        "ru": "Группы похожих", "en": "Near-duplicate groups", "ja": "類似のグループ",
-    },
-    "settings_scope_events": {"ru": "События", "en": "Events", "ja": "イベント"},
-    # F125 added the value; the entry in the list is F126's, which owns this file.
-    "settings_scope_faces": {"ru": "По лицам", "en": "By faces", "ja": "顔で"},
-    "settings_scope_all": {"ru": "Все кадры", "en": "Every frame", "ja": "すべてのコマ"},
     "settings_features_pet_threshold_label": {
         "ru": "Порог уверенности для животных",
         "en": "Animal confidence threshold",
@@ -9061,22 +8921,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="process-toggle-hint cost-hint">{{process_products_hint}}</span>
 <span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
 </span>
-</div>
-<div class="cost-row">
-<label class="process-toggle-label"><input type="checkbox" id="process-quality-checkbox"> {{process_quality_label}}</label>
-<span class="cost-price" data-cost="quality"></span>
-<span class="process-toggle-hint cost-hint">{{process_quality_hint}}</span>
-<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
-<span class="cost-child" id="process-quality-scope-row" style="display:none">
-<label class="process-toggle-label" for="process-quality-scope">{{process_quality_scope_label}}
-<select id="process-quality-scope"><option value="groups">{{settings_scope_groups}}</option><option value="events">{{settings_scope_events}}</option><option value="faces">{{settings_scope_faces}}</option><option value="all">{{settings_scope_all}}</option></select></label>
-</span>
-</div>
-<div class="cost-row">
-<label class="process-toggle-label"><input type="checkbox" id="process-keeper-checkbox"> {{process_keeper_label}}</label>
-<span class="cost-price" data-cost="keeper"></span>
-<span class="process-toggle-hint cost-hint">{{process_keeper_hint}}</span>
-<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
 </div>
 </div>
 </div>
@@ -11783,15 +11627,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         document.getElementById("process-products-checkbox").checked = !!data.products;
         document.getElementById("process-geo-online-checkbox").checked = !!data.geo_online;
         document.getElementById("process-pets-checkbox").checked = !!data.pets;
-        // F138: the four that moved here out of the settings column start from the
-        // config exactly as deep/pets do — the file is where they live, this screen is
-        // where one run overrides them.
+        // F138: the one that moved here out of the settings column starts from the
+        // config exactly as deep/pets do — the file is where it lives, this screen is
+        // where one run overrides it. (F186 retired the other three of that set.)
         document.getElementById("process-pets-verify-checkbox").checked = !!data.pets_verify;
-        document.getElementById("process-quality-checkbox").checked = !!data.quality;
-        document.getElementById("process-keeper-checkbox").checked = !!data.keeper;
-        if (data.quality_scope) {
-          document.getElementById("process-quality-scope").value = data.quality_scope;
-        }
         vlmAvailable = !!data.vlm_available;
         updateVlmMissingWarning();
         renderCosts();
@@ -11833,9 +11672,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     { key: "pets_verify", id: "process-pets-verify-checkbox",
       parent: "process-pets-checkbox", vlm: true },
     { key: "deep", id: "process-deep-checkbox", master: true },
-    { key: "products", id: "process-products-checkbox", vlm: true },
-    { key: "quality", id: "process-quality-checkbox", scoped: true, vlm: true },
-    { key: "keeper", id: "process-keeper-checkbox", vlm: true }
+    { key: "products", id: "process-products-checkbox", vlm: true }
   ];
 
   // --- F145: "Deep analysis (VLM)" is the master switch ----------------------
@@ -11857,8 +11694,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   // effect, which is why it was not here — a line nobody could see could not be marked
   // as subordinate to anything.
   var VLM_SUBORDINATE_IDS = ["process-products-checkbox",
-                             "process-pets-verify-checkbox", "process-quality-checkbox",
-                             "process-quality-scope", "process-keeper-checkbox"];
+                             "process-pets-verify-checkbox"];
 
   function vlmMasterOn() {
     return document.getElementById("process-deep-checkbox").checked;
@@ -11875,13 +11711,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     });
   }
 
-  function currentQualityScope() {
-    return document.getElementById("process-quality-scope").value;
-  }
-
-  // The seconds behind one line, or null when this index cannot say. `quality` is the
-  // only line whose price depends on a second control — the scope select carries four
-  // populations that differ by hours.
+  // The seconds behind one line, or null when this index cannot say.
   function costSeconds(row) {
     // F161: the master switch grants permission and runs nothing, so its own price is
     // zero on a collection this index knows nothing else about too — a dash there would
@@ -11892,8 +11722,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     // "free".
     if (row.vlm && !vlmMasterOn()) return 0;
     if (!costEstimate) return null;
-    var key = row.scoped ? "quality_" + currentQualityScope() : row.key;
-    var value = costEstimate[key];
+    var value = costEstimate[row.key];
     return (typeof value === "number") ? value : null;
   }
 
@@ -11903,7 +11732,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   function costSource(row) {
     if (!costSources) return null;
     if (row.vlm && !vlmMasterOn()) return null;
-    return costSources[row.scoped ? "quality_" + currentQualityScope() : row.key] || null;
+    return costSources[row.key] || null;
   }
 
   function formatCost(seconds) {
@@ -11923,13 +11752,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   }
 
   function renderCosts() {
-    // The subordinate controls exist only while their parent is on: a scope for a
-    // question nobody is asking is a choice about nothing.
+    // The subordinate control exists only while its parent is on: a check of a label
+    // nobody is computing is a choice about nothing.
     var petsOn = document.getElementById("process-pets-checkbox").checked;
-    var qualityOn = document.getElementById("process-quality-checkbox").checked;
     document.getElementById("process-pets-verify-row").style.display = petsOn ? "" : "none";
-    document.getElementById("process-quality-scope-row").style.display =
-        qualityOn ? "" : "none";
     updateVlmSubordinatesDisabled();
     var total = 0;
     var unknown = false;
@@ -11992,9 +11818,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   document.getElementById("process-deep-checkbox")
       .addEventListener("change", updateVlmMissingWarning);
   ["process-faces-checkbox", "process-events-checkbox", "process-pets-checkbox",
-   "process-pets-verify-checkbox", "process-deep-checkbox", "process-products-checkbox",
-   "process-quality-checkbox",
-   "process-quality-scope", "process-keeper-checkbox"].forEach(function (id) {
+   "process-pets-verify-checkbox", "process-deep-checkbox",
+   "process-products-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", renderCosts);
   });
   // Draw once before either answer arrives: dashes and the right nested rows, rather
@@ -12271,9 +12096,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       // F161: sent explicitly like the four above — an unticked box has to force the
       // deep tier OFF for this run, which is the whole point of giving it a line.
       products: document.getElementById("process-products-checkbox").checked,
-      quality: document.getElementById("process-quality-checkbox").checked,
-      quality_scope: currentQualityScope(),
-      keeper: document.getElementById("process-keeper-checkbox").checked,
     }).then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
@@ -12352,9 +12174,8 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
      ["process-faces-checkbox", I18N.process_faces_label],
      ["process-events-checkbox", I18N.process_events_label],
      ["process-pets-checkbox", I18N.process_pets_label],
-     ["process-pets-verify-checkbox", I18N.process_pets_verify_label],
-     ["process-quality-checkbox", I18N.process_quality_label],
-     ["process-keeper-checkbox", I18N.process_keeper_label]].forEach(function (pair) {
+     ["process-pets-verify-checkbox", I18N.process_pets_verify_label]
+    ].forEach(function (pair) {
       if (document.getElementById(pair[0]).checked) on.push(pair[1]);
     });
     return I18N.step_options_summary_prefix +
@@ -12615,8 +12436,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   ["process-deep-checkbox", "process-products-checkbox",
    "process-geo-online-checkbox", "process-faces-checkbox",
    "process-events-checkbox", "process-pets-checkbox",
-   "process-pets-verify-checkbox", "process-quality-checkbox",
-   "process-keeper-checkbox"].forEach(function (id) {
+   "process-pets-verify-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", updateStepLayout);
   });
 

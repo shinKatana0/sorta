@@ -488,13 +488,6 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "--geo must be offline or online",
         "ja": "--geo は offline か online でなければなりません",
     },
-    # F127: a closed list, and the message names every value of it — the scope decides
-    # how many frames a 20 GB model is shown, so a typo must not fall back to a default.
-    "cli.quality.scope_choice": {
-        "ru": "--quality-scope должен быть одним из: {values}",
-        "en": "--quality-scope must be one of: {values}",
-        "ja": "--quality-scope は次のいずれかでなければなりません: {values}",
-    },
     # doctor
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
@@ -878,9 +871,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Path to config.yaml",
         "ja": "config.yaml へのパス",
     },
-    # F127: the frame-quality flags, offered by `junk` and by `run` — one override, one
-    # text. Each says which config key it replaces: a flag that only overrides for one
+    # F127: the frame-quality flag, offered by `junk` and by `run` — one override, one
+    # text. It says which config key it replaces: a flag that only overrides for one
     # run is worth nothing if the reader cannot find the permanent setting behind it.
+    # F186 retired the other two of the set with the question they overrode.
     "cli.help.opt.pets": {
         "ru": "Искать животных на этот прогон (features.pets): три дополнительных "
               "запроса внутри CLIP-вызова стадии junk, отдельной стадии не "
@@ -891,29 +885,6 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "この実行で動物を検出します (features.pets): junk ステージが行う "
               "CLIP 呼び出しに 3 つのプロンプトを追加するだけで、独立したステージには"
               "なりません。フラグなしの場合は config.yaml のとおり",
-    },
-    "cli.help.opt.quality": {
-        "ru": "Вопрос VLM о качестве кадра на этот прогон (vlm.quality): открыты ли "
-              "глаза; нужен `uv sync --extra vlm`; без флага — как в config.yaml",
-        "en": "The VLM frame-quality question on this run (vlm.quality): are the eyes "
-              "open; needs `uv sync --extra vlm`; without the flag — as in config.yaml",
-        "ja": "この実行で VLM にフレームの品質を問い合わせます (vlm.quality): "
-              "目が開いているか。`uv sync --extra vlm` が必要です。"
-              "フラグなしの場合は config.yaml のとおり",
-    },
-    "cli.help.opt.quality_scope": {
-        "ru": "groups|events|faces|all — какие кадры попадают в вопросы о качестве "
-              "(vlm.quality_scope). Цена: all ≈ 4,3 часа на 20 тысяч кадров, "
-              "faces ≈ 95 минут на 7 341 (faces требует прогона стадии faces); "
-              "без флага — как в config.yaml",
-        "en": "groups|events|faces|all — which frames reach the quality questions "
-              "(vlm.quality_scope). The price: all ≈ 4.3 hours on 20 thousand frames, "
-              "faces ≈ 95 minutes on 7 341 (faces needs a faces run first); without "
-              "the flag — as in config.yaml",
-        "ja": "groups|events|faces|all — 品質の質問の対象になるフレーム "
-              "(vlm.quality_scope)。コスト: all は 2 万フレームで約 4.3 時間、"
-              "faces は 7 341 フレームで約 95 分（faces は先に faces ステージの実行が"
-              "必要）。フラグなしの場合は config.yaml のとおり",
     },
     # index
     "cli.help.index": {

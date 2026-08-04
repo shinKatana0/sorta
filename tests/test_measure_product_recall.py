@@ -129,8 +129,8 @@ class TestNoModelIsEverAsked(IndexCase):
         for module, name in ((junk, "qwen_vlm_classifier"),
                              (junk, "qwen_vlm_classifier_factory"),
                              (junk, "vlm_classifier_from"),
-                             (junk, "qwen_vlm_quality"),
                              (junk, "qwen_vlm_pet"),
+                             (junk, "qwen_vlm_junk_rescue"),
                              (naming, "shared_vlm"),
                              (naming, "qwen_vlm")):
             self.patch(module, name, self.recorder(f"{module.__name__}.{name}"))

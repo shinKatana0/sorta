@@ -28,7 +28,6 @@ import urllib.request
 from unittest import mock
 
 from sorta import ui
-from sorta.config import VLM_QUALITY_SCOPES
 
 from tests.test_ui import UiServerTestBase
 
@@ -728,20 +727,6 @@ class TestReviewTabHtml(ReviewTestBase):
         self.assertNotIn("https://", self.html)
         self.assertNotIn("<link", self.html)
 
-    def test_the_quality_scope_select_offers_by_faces(self):
-        self.assertIn('<option value="faces">', self.html)
-        for lang, expected in (("ru", "По лицам"), ("en", "By faces"), ("ja", "顔で")):
-            with self.subTest(lang=lang):
-                _status, body, _ctype = self.get(f"/?lang={lang}")
-                self.assertIn(expected, body.decode("utf-8"))
-
-    def test_the_select_offers_nothing_the_server_would_refuse(self):
-        # F138 moved the select onto the run screen — the scope is what makes the
-        # quality question 95 minutes or 4.3 hours — so the accepted set is now the run
-        # route's, checked against the same closed list of scopes.
-        offered = {"groups", "events", "faces", "all"}
-        self.assertTrue(offered <= set(VLM_QUALITY_SCOPES))
-
     def test_i18n_ru_en_ja(self):
         for lang, expected in (("ru", "Разбор"), ("en", "Review"), ("ja", "仕分け")):
             with self.subTest(lang=lang):
@@ -759,8 +744,7 @@ class TestReviewTabHtml(ReviewTestBase):
                 "review_shown_label", "review_shown_ranked",
                 "review_hint_blurred_faces", "review_error_prefix",
                 "error_loading_review",
-                "overview_blurred", "overview_eyes_closed",
-                "settings_scope_faces")
+                "overview_blurred", "overview_eyes_closed")
         for key in keys:
             with self.subTest(key=key):
                 entry = ui._UI_STRINGS[key]

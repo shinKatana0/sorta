@@ -18,7 +18,7 @@ else:
     _TYPER_AVAILABLE = True
 
 from . import __version__, imaging
-from .config import VLM_QUALITY_SCOPES, Config, configure_logging, load_config
+from .config import Config, configure_logging, load_config
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import (
@@ -353,8 +353,7 @@ def _cmd_phash(config_path: str) -> None:
     print(_t("cli.phash.done", lang, n=n))
 
 
-def _quality_overrides(cfg, *, pets: bool | None = None, quality: bool | None = None,
-                       quality_scope: str | None = None):
+def _quality_overrides(cfg, *, pets: bool | None = None):
     """F127: the frame-quality knobs of ONE run, from flags instead of config.yaml.
 
     The same principle `--deep`/`--geo` have followed since F50: a copy of the config
@@ -363,28 +362,18 @@ def _quality_overrides(cfg, *, pets: bool | None = None, quality: bool | None = 
     `--no-pets` able to switch OFF what `features.pets: true` switched on, instead of
     the flag only ever being able to add.
 
-    The three live in one helper because they are one cascade and two commands
-    (`junk` and `run`) offer all three: `features.pets` is computed inside the junk
-    stage's CLIP call, and `vlm.quality`/`vlm.quality_scope` decide which of those
-    frames the quality VLM is then asked about.
+    F186 left one knob of the three here. `--quality` and `--quality-scope` overrode the
+    frame-quality question and the population it was asked of, and both are retired with
+    it; `features.pets` is the CLIP prompt group, which is untouched.
     """
     if pets is not None:
         cfg = dataclasses.replace(
             cfg, features=dataclasses.replace(cfg.features, pets=pets))
-    changed: dict[str, object] = {}
-    if quality is not None:
-        changed["quality"] = quality
-    if quality_scope is not None:
-        changed["quality_scope"] = quality_scope
-    if changed:
-        cfg = dataclasses.replace(cfg, vlm=dataclasses.replace(cfg.vlm, **changed))
     return cfg
 
 
-def _cmd_junk(config_path: str, *, pets: bool | None = None,
-              quality: bool | None = None, quality_scope: str | None = None) -> None:
-    cfg = _quality_overrides(load_config(config_path), pets=pets, quality=quality,
-                             quality_scope=quality_scope)
+def _cmd_junk(config_path: str, *, pets: bool | None = None) -> None:
+    cfg = _quality_overrides(load_config(config_path), pets=pets)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
     conn = connect(cfg.database)
@@ -397,9 +386,8 @@ def _cmd_junk(config_path: str, *, pets: bool | None = None,
 def _cmd_classify(config_path: str) -> None:
     """F165: the verdicts alone — the half of the junk stage that runs before faces.
 
-    No flags of its own: the three the `junk` command offers (`--pets`,
-    `--quality`/`--quality-scope`) all belong to the frame-quality cascade, and that
-    cascade is precisely what this half does not run.
+    No flags of its own: `--pets`, the one the `junk` command offers, belongs to the
+    frame-quality cascade, and that cascade is precisely what this half does not run.
     """
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
@@ -537,8 +525,7 @@ def _pipeline_steps() -> list[tuple[str, object]]:
 def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
              deep: bool | None = None, geo: str | None = None,
              faces: bool = False, events: bool = False,
-             src: str | None = None, pets: bool | None = None,
-             quality: bool | None = None, quality_scope: str | None = None) -> None:
+             src: str | None = None, pets: bool | None = None) -> None:
     """`deep`/`geo` (F50/#34) — an opt-in override for THIS run, not written to
     config.yaml: `deep` -> `naming.vlm_enabled`, `geo` ("offline"|"online") ->
     `geo.provider`. None (flag not passed) -> the value stays from config.
@@ -550,9 +537,9 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     `index/geo/landmarks/classify/junk`, the heaviest/longest steps are skipped.
     Independent of each other and of `deep`/`geo`.
 
-    `pets`/`quality`/`quality_scope` (F127) — the same kind of per-run override as
-    `deep`, on the frame-quality cascade (see `_quality_overrides`). NOT stages: they
-    change what the `junk` stage computes and leave the list of steps as it was."""
+    `pets` (F127) — the same kind of per-run override as `deep`, on the frame-quality
+    cascade (see `_quality_overrides`). NOT a stage: it changes what the `junk` stage
+    computes and leaves the list of steps as it was."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
@@ -567,8 +554,7 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
         cfg = dataclasses.replace(cfg, naming=dataclasses.replace(cfg.naming, vlm_enabled=deep))
     if geo is not None:
         cfg = dataclasses.replace(cfg, geo=dataclasses.replace(cfg.geo, provider=geo))
-    cfg = _quality_overrides(cfg, pets=pets, quality=quality,
-                             quality_scope=quality_scope)
+    cfg = _quality_overrides(cfg, pets=pets)
     conn = connect(cfg.database)
     try:
         enabled_optional = {"faces": faces, "events": events}
@@ -963,27 +949,12 @@ def build_app(lang: Lang) -> typer.Typer:
     app = typer.Typer(help=h("cli.help.app", version=__version__))
     cfg_opt = typer.Option(_DEFAULT_CONFIG, "--config", "-c",
                            help=h("cli.help.opt.config"))
-    # F127: the frame-quality flags are offered by two commands (`junk` and `run`) and
-    # are one and the same override, so they are declared once. `None` by default —
-    # "as in config.yaml" — which is what lets `--no-pets` turn OFF what the file
-    # turned on (an option that defaulted to False could only ever add).
+    # F127: the frame-quality flag is offered by two commands (`junk` and `run`) and is
+    # one and the same override, so it is declared once. `None` by default — "as in
+    # config.yaml" — which is what lets `--no-pets` turn OFF what the file turned on (an
+    # option that defaulted to False could only ever add). F186 retired the other two
+    # (`--quality`, `--quality-scope`) with the question they overrode.
     pets_opt = typer.Option(None, "--pets/--no-pets", help=h("cli.help.opt.pets"))
-    quality_opt = typer.Option(None, "--quality/--no-quality",
-                               help=h("cli.help.opt.quality"))
-    quality_scope_opt = typer.Option(None, "--quality-scope",
-                                     help=h("cli.help.opt.quality_scope"))
-
-    def check_quality_scope(value: str | None, config: str) -> None:
-        """A closed list, and a typo has to say so.
-
-        A silent fallback to the default is the failure this guards against: the scope
-        decides how many frames a 20 GB model is shown, and a misspelt one would run
-        the wrong population for hours without ever printing why.
-        """
-        if value is not None and value not in VLM_QUALITY_SCOPES:
-            raise typer.BadParameter(
-                _t("cli.quality.scope_choice", _lang_of(config),
-                   values=", ".join(VLM_QUALITY_SCOPES)))
 
     @app.command(help=h("cli.help.index"))
     def index(
@@ -1031,12 +1002,9 @@ def build_app(lang: Lang) -> typer.Typer:
     @app.command(help=h("cli.help.junk"))
     def junk(
         pets: bool = pets_opt,
-        quality: bool = quality_opt,
-        quality_scope: str = quality_scope_opt,
         config: str = cfg_opt,
     ):
-        check_quality_scope(quality_scope, config)
-        _cmd_junk(config, pets=pets, quality=quality, quality_scope=quality_scope)
+        _cmd_junk(config, pets=pets)
 
     @app.command(help=h("cli.help.doctor"))
     def doctor(config: str = cfg_opt):
@@ -1202,16 +1170,12 @@ def build_app(lang: Lang) -> typer.Typer:
             False, "--events/--no-events", help=h("cli.help.run.events")),
         src: str = typer.Option(None, "--src", help=h("cli.help.run.src")),
         pets: bool = pets_opt,
-        quality: bool = quality_opt,
-        quality_scope: str = quality_scope_opt,
         config: str = cfg_opt,
     ):
         if geo is not None and geo not in ("offline", "online"):
             raise typer.BadParameter(_t("cli.run.geo_choice", _lang_of(config)))
-        check_quality_scope(quality_scope, config)
         _cmd_run(config, by=by, dest=str(dest) if dest else None, deep=deep, geo=geo,
-                 faces=faces, events=events, src=src, pets=pets, quality=quality,
-                 quality_scope=quality_scope)
+                 faces=faces, events=events, src=src, pets=pets)
 
     return app
 
