@@ -1,6 +1,7 @@
 """F52: log_level in config + configure_logging (level, idempotency, invalid input)."""
 from __future__ import annotations
 
+import dataclasses
 import logging
 import tempfile
 import unittest
@@ -9,7 +10,8 @@ from pathlib import Path
 from sorta.config import (
     SEARCH_FUSION_MODES,
     SEARCH_FUSION_OFF,
-    VLM_QUALITY_SCOPES,
+    DedupConfig,
+    EstimateConfig,
     FeaturesConfig,
     VlmConfig,
     configure_logging,
@@ -57,8 +59,11 @@ class TestExampleConfigLoads(unittest.TestCase):
         # F113: the example documents the frame-quality section at its defaults — the
         # toggles off, so copying it changes nothing about how a run behaves.
         self.assertEqual(cfg.features, FeaturesConfig())
-        self.assertFalse(cfg.vlm.quality)
-        self.assertEqual(cfg.vlm.quality_scope, "groups")
+        # F186: and it documents the sections the retired questions left behind at their
+        # defaults too — the example is what a user copies, so a key nobody reads must
+        # not be sitting in it.
+        self.assertEqual(cfg.dedup, DedupConfig())
+        self.assertEqual(cfg.estimate, EstimateConfig())
 
 
 class TestRawOnlyKeysDoNotCrash(unittest.TestCase):
@@ -299,8 +304,21 @@ class TestSearchFusionKey(unittest.TestCase):
         self.assertEqual(cfg.features.search_model, d.search_model)
 
 
-class TestVlmQualityKeys(unittest.TestCase):
-    """F113: `vlm.quality` / `vlm.quality_scope` — the band's own toggle and population."""
+class TestRetiredKeys(unittest.TestCase):
+    """F186: the keys of the two retired questions are not read — and do not break a file.
+
+    `vlm.quality`, `vlm.quality_scope` and `dedup.keeper_vlm` switched the frame-quality
+    question and the comparative keeper question on, and `estimate.keeper_call_sec` /
+    `estimate.keeper_frame_sec` priced the second one. All five are gone from the
+    dataclasses.
+
+    They are NOT gone from the config.yaml files people already have — the owner's own
+    file names every one of them — and that is what the first case is about. An unknown
+    key in a section has never been an error here, and that is exactly what lets a
+    question retire without taking a working file down with it. The rest of the file has
+    to survive it too: a retired key sitting next to a live one must not cost the live
+    one its value.
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -311,48 +329,53 @@ class TestVlmQualityKeys(unittest.TestCase):
         self.cfg_path.write_text(body, encoding="utf-8")
         return load_config(str(self.cfg_path))
 
-    def test_defaults_are_off_and_groups(self):
-        cfg = self._load("")
-        self.assertFalse(cfg.vlm.quality)
-        self.assertEqual(cfg.vlm.quality_scope, "groups")
+    RETIRED_CONFIG = (
+        "vlm:\n"
+        "  quality: true\n"
+        "  quality_scope: faces\n"
+        "  max_edge: 640\n"
+        "dedup:\n"
+        "  keeper_vlm: true\n"
+        "  keeper_max_frames: 3\n"
+        "estimate:\n"
+        "  keeper_call_sec: 0.45\n"
+        "  keeper_frame_sec: 1.03\n"
+        "  measurement_max_age_days: 30\n"
+    )
 
-    def test_the_quality_toggle_is_separate_from_the_deep_tier(self):
-        cfg = self._load("vlm:\n  quality: true\n")
-        self.assertTrue(cfg.vlm.quality)
-        self.assertFalse(cfg.vlm.enabled)  # the deep junk tier stays off
+    def test_a_config_that_still_names_them_loads(self):
+        cfg = self._load(self.RETIRED_CONFIG)  # must not raise
+        self.assertIsNotNone(cfg)
 
-    def test_every_scope_is_accepted(self):
-        # F125: `faces` joins the three that existed, and the list is what the UI select
-        # is built from — a value the config refuses must never be offered there.
-        self.assertEqual(VLM_QUALITY_SCOPES, ("groups", "events", "faces", "all"))
-        for scope in VLM_QUALITY_SCOPES:
-            with self.subTest(scope=scope):
-                self.assertEqual(
-                    self._load(f"vlm:\n  quality_scope: {scope}\n").vlm.quality_scope,
-                    scope)
+    def test_the_live_keys_beside_them_keep_their_values(self):
+        """The half that makes the case above worth having: the sections are still read."""
+        cfg = self._load(self.RETIRED_CONFIG)
+        self.assertEqual(cfg.vlm.max_edge, 640)
+        self.assertEqual(cfg.dedup.keeper_max_frames, 3)
+        self.assertAlmostEqual(cfg.estimate.measurement_max_age_days, 30.0)
 
-    def test_the_new_scope_does_not_move_the_default(self):
-        """F125 adds a value, not a policy: which population a collection wants stays the
-        user's decision."""
-        self.assertEqual(VlmConfig().quality_scope, "groups")
-        self.assertEqual(self._load("vlm:\n  quality: true\n").vlm.quality_scope, "groups")
+    def test_nothing_reads_them_back(self):
+        cfg = self._load(self.RETIRED_CONFIG)
+        for section, key in (("vlm", "quality"), ("vlm", "quality_scope"),
+                             ("dedup", "keeper_vlm"), ("estimate", "keeper_call_sec"),
+                             ("estimate", "keeper_frame_sec")):
+            with self.subTest(key=f"{section}.{key}"):
+                self.assertFalse(hasattr(getattr(cfg, section), key))
+        # and they are not fields of the dataclasses either — the defaults are gone with
+        # the readers, so nothing can start honouring them again by accident
+        for owner, key in ((VlmConfig, "quality"), (VlmConfig, "quality_scope"),
+                           (DedupConfig, "keeper_vlm"), (EstimateConfig, "keeper_call_sec"),
+                           (EstimateConfig, "keeper_frame_sec")):
+            with self.subTest(field=f"{owner.__name__}.{key}"):
+                self.assertNotIn(key, {f.name for f in dataclasses.fields(owner)})
 
-    def test_a_misspelled_scope_does_not_become_the_expensive_one(self):
-        with self.assertLogs("sorta.config", level=logging.WARNING):
-            cfg = self._load("vlm:\n  quality_scope: everything\n")
-        self.assertEqual(cfg.vlm.quality_scope, "groups")
-
-    def test_a_near_miss_of_the_new_scope_is_refused_too(self):
-        """`face`, `faces_only`, `Faces ` — the plural and the spelling are the contract,
-        and a typo must not quietly select a different population."""
-        for typo in ("face", "faces_only"):
-            with self.subTest(typo=typo):
-                with self.assertLogs("sorta.config", level=logging.WARNING):
-                    cfg = self._load(f"vlm:\n  quality_scope: {typo}\n")
-                self.assertEqual(cfg.vlm.quality_scope, "groups")
-        # case and surrounding space are normalized, as they always were
-        self.assertEqual(
-            self._load("vlm:\n  quality_scope: ' Faces '\n").vlm.quality_scope, "faces")
+    def test_they_are_still_in_raw_so_nothing_is_silently_dropped(self):
+        """`Config.raw` is the file as written — a key no dataclass reads is kept there,
+        which is how the settings screen can save a file without erasing what it does not
+        understand."""
+        cfg = self._load(self.RETIRED_CONFIG)
+        self.assertIs((cfg.raw.get("vlm") or {}).get("quality"), True)
+        self.assertIs((cfg.raw.get("dedup") or {}).get("keeper_vlm"), True)
 
 
 class TestConfigureLogging(unittest.TestCase):

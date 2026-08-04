@@ -29,17 +29,8 @@ logging:
 # F159: the run screen says how long a run will take before it starts. Every stage it
 # can price is priced from the run log above — the real speed of THIS machine, from the
 # last time that stage ran here — and the screen says which numbers came from there and
-# which are still defaults. These are the defaults that cannot be read back, because the
-# comparative keeper question shares a log phase with the per-frame questions.
+# which are still defaults.
 estimate:
-  # One comparative question over a near-duplicate group: a fixed cost plus a cost per
-  # frame that goes into it. Measured 2026-08-03 on a live collection (median seconds):
-  # 2 frames — 1.47, 3 — 2.45, 4 — 3.46, 5 — 4.56: a slope of 1.03 s per frame on top of
-  # 0.45 s of fixed cost. The line deliberately sits about a second above each median —
-  # an estimate that runs long is a warning, one that runs short is a broken promise.
-  # Move them if this machine disagrees; they are settings so that it can.
-  keeper_call_sec: 0.45
-  keeper_frame_sec: 1.03
   # How many days a timing from the run log stays trustworthy. 0 switches the expiry
   # off. A timing written by another version of sorta is discarded whatever this says —
   # the stage behind it may have been rewritten since.
@@ -79,26 +70,20 @@ dedup:
   # Choosing the canonical file among exact duplicates:
   # prefer_exif_then_largest — the file with an EXIF date first, then the larger one
   canonical_strategy: prefer_exif_then_largest
-  # F132: ask the local VLM which frame of a near-duplicate group is the one to keep —
-  # one comparative question over the whole group ("which of these is best"), which a
-  # model answers far more reliably than it scores frames one at a time. It sees what
-  # sharpness cannot: closed eyes, a face turned away, a hand across the lens.
-  # F159 measured what it costs: 0.45 s plus 1.03 s per frame in the question, so from
-  # three frames up it is not cheaper than asking about the frames one at a time. What
-  # it buys is an answer separate questions do not give — which of them is the best one.
-  # Needs the VLM extra installed; off by default. A RECOMMENDATION only — it is stored
-  # in `group_keeper` and nothing is ever deleted or marked by it. With this off the
-  # interface keeps recommending by sharpness, exactly as before — and F145 made
-  # `vlm.enabled: false` mean the same thing here: no model, sharpness as before.
-  keeper_vlm: false
-  # How many frames of one group go into that question (the best N by sharpness). The
-  # rest of the group is not shown, and the answer applies to the whole group. Groups of
-  # a few dozen frames exist and a 3B model asked to compare 38 pictures answers nothing
-  # usable.
+  # F186 retired `keeper_vlm` — the comparative question about which frame of a
+  # near-duplicate group to keep. Over 111 groups labelled blind the model agreed with the
+  # person on 32% of them against 30.4% for picking one at random, so there was nothing to
+  # buy. The Duplicates tab recommends by sharpness, exactly as it did with the key off.
+  #
+  # The two sizes below describe the POPULATION of near-duplicate groups — which of them
+  # get a recommendation at all — and outlived the question they were chosen for.
+  #
+  # How many frames of a group are compared (the best N by sharpness); the rest of the
+  # group is not looked at, and the recommendation applies to the whole group.
   keeper_max_frames: 5
-  # The smallest group worth asking the model about. 2 = every group. Set 3 to pay only
-  # where the choice is genuinely unclear: on a PAIR of the same scene, sharpness already
-  # compares the two frames honestly, and pairs are the overwhelming majority of groups.
+  # The smallest group worth a recommendation of its own. 2 = every group. 3 leaves pairs
+  # alone: on a PAIR of the same scene sharpness already compares the two frames honestly,
+  # and pairs are the overwhelming majority of groups.
   keeper_min_group_size: 3
 
 geo:
@@ -284,8 +269,8 @@ vlm:
   # gracefully to what the cheap tiers answer. The same is switched on for a single run
   # by `--deep` and by the "Deep analysis (VLM)" checkbox in the web app.
   #
-  # F145: `vlm.products`, `vlm.quality`, `features.pets_verify`,
-  # `features.landmarks_verify`, `dedup.keeper_vlm` and `features.junk_rescue` each say
+  # F145: `vlm.products`, `features.pets_verify`, `features.landmarks_verify` and
+  # `features.junk_rescue` each say
   # WHAT to ask; this one says whether a model may be raised at all. With it false none
   # of them loads a single weight, whatever they are set to, and every one of those
   # stages behaves exactly as it does with its own key off. Nothing here is rewritten
@@ -325,11 +310,6 @@ vlm:
   # frames (scripts/measure_vlm_workers.py). Raise it only against a sweep of your own;
   # the value written here is respected whatever a sweep says.
   # workers: 4
-  # F113: the second consumer of these weights — the frame-quality question no cheap
-  # tool answers (are the eyes open; F177 retired the rest).
-  # Its own toggle, separate from `enabled` above: the deep junk tier and the quality
-  # band are different populations, and wanting one says nothing about the other.
-  # F145: subordinate to `enabled` above — with the deep tier off this asks nothing.
   # F120: privacy — media classes no VLM is ever shown, by the verdict of the fast tier.
   # `[]` sends everything, which is what happened before this key existed.
   # The default protects `document`: that bucket is passports, medical forms and bank
@@ -341,24 +321,13 @@ vlm:
   # the fast tier decided about it. Accepted names: document, product, screenshot, meme.
   # `photo` is not accepted — excluding it would leave the tier with nothing to do.
   # exclude_classes: [document]
-  quality: false
-  # Which frames the quality VLM may be asked about at all — the uncertainty band
-  # (features.sharpness_band_* / features.subject_score_min) narrows it further:
-  #   groups — frames of pHash near-duplicate groups (default). That is where the
-  #            question is actually asked: five frames of one moment, which is the keeper.
-  #   events — every frame that belongs to an event.
-  #   faces  — the frames a face was actually FOUND on (F125). This is the population the
-  #            eyes question really has: on a live 24 196-file collection that is 7 341
-  #            photographs, ~95 minutes of GPU, against 19 757 frames and 4.3 hours for
-  #            `all` — and the frames it leaves out are the ones where "are the eyes open"
-  #            means nothing anyway. The numbers above are measured on that collection, so
-  #            read them as a ratio rather than a promise about yours.
-  #            IT NEEDS THE FACES STAGE: without one there are no faces to ask about, and
-  #            the quality VLM then does not run at all (it says so in the log; sharpness
-  #            and animals are still measured).
-  #   all    — no restriction. READ THE PRICE FIRST: ~0.78 s per frame, so a 20 000-frame
-  #            collection is about 4.3 hours of GPU. It is a weekend job, not a default.
-  quality_scope: groups
+  #
+  # F186 retired `quality` and `quality_scope` — the frame-quality question and the
+  # population it was asked of. What was left of it was one line ("are the eyes open"),
+  # and F179 answers that from the eyelid geometry the faces stage already produces: 62%
+  # precision at 48% recall against the model's 60% at 9%, without a single model call.
+  # Sharpness, face sharpness and eye openness are measured as they were.
+  #
   # F102: the longer side the frame is scaled to before the model sees it — the main
   # lever on what the deep tier costs, since after F101 the remaining time is the GPU
   # half and the GPU half is decided by the number of image tokens. Lowering it is NOT
@@ -393,8 +362,8 @@ detect:
 # already decoded — milliseconds, so it has no toggle and is always written. Pets are a
 # prompt group inside the CLIP call the junk stage already makes, so switching them on
 # costs no second pass over the collection — but a new function gets a new toggle, and
-# this is it. Everything the two of them cannot decide is a question for the VLM, over the
-# uncertain band only (see vlm.quality above).
+# this is it. Nothing here is put to a model any more: the third tier of the cascade asked
+# about the frames the two cheap ones did not settle, and F186 retired that question.
 features:
   pets: false
   # The pet-group CLIP score at or above which cat/dog/pet is written to the frame.
