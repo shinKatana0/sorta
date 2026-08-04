@@ -350,8 +350,8 @@ happens to the files:
    progress (index → geo → landmarks → [faces] → [events] → junk → near‑duplicates).
    You can close the tab; processing continues.
 2. **Review** tab → one workspace for everything that has to be looked at by eye and
-   partly deleted: **Duplicates**, **Blurred**, **Closed eyes**, **No subject** — four
-   slices of a single tab, described in §22.
+   partly deleted: **Duplicates**, **Blurred**, **Closed eyes** — three slices of a
+   single tab, described in §22.
 3. **Layout** tab → the canon: the proposed structure (`Country/City/Year/District`),
    where to lay it out, move or copy, and the button that starts it. Always visible.
 4. **Slices** tab → everything built **on top of** the canon: **With people**, **Group
@@ -576,8 +576,7 @@ written to `config.yaml`):
 --pets / --no-pets         Look for animals this run (features.pets, §24). CLIP answers
                             it on a pass that runs anyway, so it is cheap.
 --quality / --no-quality   Ask the model about frame quality this run (vlm.quality):
-                            are the eyes open, is there a subject at all. Needs the
-                            `vlm` extra.
+                            are the eyes open. Needs the `vlm` extra.
 --quality-scope groups|events|faces|all
                            Which frames reach those questions (vlm.quality_scope). The
                             price is measured: `all` ≈ 4.3 hours on 20 thousand frames,
@@ -892,7 +891,6 @@ sorta album meme --dest /path/to/albums --apply
 # A quality slice of the Review workspace (§22) — no selector either:
 sorta album blurred --dest /path/to/albums --apply
 sorta album eyes_closed --dest /path/to/albums --apply
-sorta album no_subject --dest /path/to/albums --apply
 
 # The face slices (§6) — also without a selector: the collection has exactly one of
 # each. Every frame a face was found on, the group photographs, the portraits:
@@ -902,9 +900,8 @@ sorta album portrait --dest /path/to/albums --apply
 ```
 
 - **Slices without a selector**: `animal`, `product`, `screenshot`, `meme`, `blurred`,
-  `eyes_closed`, `no_subject`, `people`, `group`, `portrait`. There is nothing to choose
-  inside them — the collection has exactly one products bucket and exactly one blurred
-  list — so `sorta album <kind> --dest …` is the whole command, and the folder is named
+  `eyes_closed`, `people`, `group`, `portrait`. There is nothing to choose inside them
+  — the collection has exactly one products bucket and exactly one blurred list — so `sorta album <kind> --dest …` is the whole command, and the folder is named
   after the slice unless `--name` says otherwise.
 - **`person` / `event` / `query`** require the selector, because the selector *is* the
   subject of the album (a person's name, an event's name, the words themselves). A
@@ -926,8 +923,8 @@ sorta album portrait --dest /path/to/albums --apply
   into one album (ambiguous) — those are blocked; use link/copy.
 - In the UI, use **Collect into folder** — on the People/Events cards, on the
   **Animals** slice, on a classifier bucket (Products, Screenshots, Memes) and on the
-  three quality slices of **Review** (Blurred, Closed eyes, No subject). It is the same
-  row everywhere: mode, an optional folder name, a destination. The marking buttons
+  two quality slices of **Review** (Blurred, Closed eyes). It is the same row
+  everywhere: mode, an optional folder name, a destination. The marking buttons
   ("Return to photos", "To trash") stay in their own block — one movement never both
   gathers and deletes.
 
@@ -1073,7 +1070,7 @@ sorta sort --by MODE [--dest DIR] [--apply] [--copy|--move]
 sorta album person|event|query <selector> --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album animal --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album product|screenshot|meme --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
-sorta album blurred|eyes_closed|no_subject --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
+sorta album blurred|eyes_closed --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
 sorta album people|group|portrait --dest DIR [--copy|--move] [--where …] [--name N] [--apply]
                                   Collect a slice into a named folder (hardlink by
                                   default); only person/event/query take a selector,
@@ -1544,7 +1541,7 @@ copy per process, so the settings are shared.
 | `vlm.model` | The model id. Default `Qwen/Qwen2.5-VL-3B-Instruct`. |
 | `vlm.workers` | Threads preparing frames (decode + preprocessing) while the GPU classifies the previous one. Default `min(4, cores)`. It does not affect verdicts — labels are applied in candidate order whatever it is set to. |
 | `vlm.max_edge` | The long edge the frame is scaled to before the model sees it — the main lever on what the tier costs. Default `896`. Lowering it is not free: documents are recognised by small text. |
-| `vlm.quality` | A toggle of its own for the questions about a frame's quality: are the eyes open, is there a subject worth keeping. Default `false`. A third question — is this an accidental shot — was asked until F122 and has been retired: on a labelled sample it was right 5% of the time, which is noise. The eyes answer is believed only where the face detector found a face. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
+| `vlm.quality` | A toggle of its own for the question about a frame's quality: are the eyes open. Default `false`. Another question — is this an accidental shot — was asked until F122 and has been retired: on a labelled sample it was right 5% of the time, which is noise. The eyes answer is believed only where the face detector found a face. Sharpness and pets are computed without it — by a Laplacian and by CLIP, both free — and the model is asked only about what neither of them decides. |
 | `vlm.quality_scope` | Who gets asked: `groups` (frames of near-duplicate groups, the default), `events` (plus a sample from every event), `all` (every live photo). On 20 000 frames `all` means hours of GPU, which is why the default is narrow. |
 | `vlm.exclude_classes` | **Privacy:** classes no VLM is ever shown. The default is `[document]` — that bucket holds passports, medical forms and bank papers, and the project already refuses to DECODE them for display. The model is local and nothing leaves the machine, but the call is yours. **The cost is real:** the deep tier is what *corrects* a wrong `document` verdict (a beach photo scored 0.95 as a document on a live run), so an excluded class keeps whatever the fast tier decided. Accepted: `document`, `product`, `screenshot`, `meme`; `[]` shows everything. `photo` cannot be excluded. |
 
@@ -1674,7 +1671,7 @@ named as a verdict — forwarded pictures are often worth looking through.
 ## 22. The Review workspace
 
 The **Review** tab (§6) is one workspace for everything that has to be looked at by eye
-and partly deleted. Four slices, switched by the buttons at the top, and each button
+and partly deleted. Three slices, switched by the buttons at the top, and each button
 carries the number of frames still undecided:
 
 - **Duplicates** — near‑duplicate groups, with the recommended keeper (★) pre‑selected
@@ -1685,16 +1682,14 @@ carries the number of frames still undecided:
 - **Closed eyes** — the model's answers about frame quality (`vlm.quality`, §24). The
   question is only asked where the detector found a face, so without a `faces` run this
   slice is empty and says so.
-- **No subject** — frames where the model found no subject at all: a shot of the floor,
-  a smeared wall, an accidental press.
 
 **The decision goes into one shared journal, one per file.** There are three buttons:
 **Mark for deletion**, **Keep**, **Clear the mark**. Marking "delete" is a mark, not a
 deletion: those files leave for the `_delete` folder on the next layout (§9), and until
 then nothing happens. A **Keep survives a recompute** — a frame you have decided about
 is not asked about a second time, even if the next run scores it as blurred again. The
-journal is shared by all four slices, so a file that turns up both in "blurred" and in
-"no subject" has one decision, not two.
+journal is shared by all three slices, so a file that turns up both in "blurred" and in
+"closed eyes" has one decision, not two.
 
 **A third action: "Try to improve"** (`features.restore_model`, §21). Select **exactly
 one** frame and press it: a model makes a **processed copy** and it appears as a **second
@@ -1825,8 +1820,8 @@ on either by a flag for one run (§8) or by a key in `config.yaml` (§21).
 ### Frame quality
 
 Sharpness is the variance of a Laplacian, computed with no model at all, while "are the
-eyes open" and "is there a subject" are asked of the local VLM (`vlm.quality`) — those
-are the ones that cost time. Who gets asked is decided by `vlm.quality_scope`:
+eyes open" is asked of the local VLM (`vlm.quality`) — that is the one that costs
+time. Who gets asked is decided by `vlm.quality_scope`:
 
 | Value | Who is asked | Price |
 |---|---|---|

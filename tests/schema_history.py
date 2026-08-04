@@ -27,9 +27,10 @@ from __future__ import annotations
 import sqlite3
 
 # version -> what that version INTRODUCED. "table" for a whole table, "table.column" for
-# a column added to one that already existed. Only additions are listed because that is
-# all the schema has ever done — a version that dropped something would have to say how
-# to put it back, and there is none.
+# a column added to one that already existed. Only additions are listed: nothing has ever
+# been dropped, and a version that dropped something would have to say how to put it back.
+# A version that changed DATA rather than shape (v26) introduces nothing and is listed as
+# an empty tuple — rolling back to it is rolling back to the shape of the version before.
 SCHEMA_HISTORY: dict[int, tuple[str, ...]] = {
     2: ("files.orientation",),
     3: ("media_class",),
@@ -55,6 +56,7 @@ SCHEMA_HISTORY: dict[int, tuple[str, ...]] = {
     23: ("detections",),
     24: ("restored_files",),
     25: ("frame_quality.face_sharpness",),
+    26: (),  # F177: no new shape — it empties frame_quality.has_subject.
 }
 
 

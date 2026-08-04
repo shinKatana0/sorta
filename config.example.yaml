@@ -286,8 +286,8 @@ vlm:
   # frames (scripts/measure_vlm_workers.py). Raise it only against a sweep of your own;
   # the value written here is respected whatever a sweep says.
   # workers: 4
-  # F113: the second consumer of these weights — the frame-quality questions no cheap
-  # tool answers (are the eyes open, is there a subject at all, is this a pocket shot).
+  # F113: the second consumer of these weights — the frame-quality question no cheap
+  # tool answers (are the eyes open; F177 retired the rest).
   # Its own toggle, separate from `enabled` above: the deep junk tier and the quality
   # band are different populations, and wanting one says nothing about the other.
   # F145: subordinate to `enabled` above — with the deep tier off this asks nothing.
@@ -316,8 +316,7 @@ vlm:
   #            read them as a ratio rather than a promise about yours.
   #            IT NEEDS THE FACES STAGE: without one there are no faces to ask about, and
   #            the quality VLM then does not run at all (it says so in the log; sharpness
-  #            and animals are still measured). The trade is deliberate — `has_subject` is
-  #            not collected on frames without people, because the model never sees them.
+  #            and animals are still measured).
   #   all    — no restriction. READ THE PRICE FIRST: ~0.78 s per frame, so a 20 000-frame
   #            collection is about 4.3 hours of GPU. It is a weekend job, not a default.
   quality_scope: groups

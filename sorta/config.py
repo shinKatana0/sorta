@@ -328,8 +328,8 @@ class VlmConfig:
     model: str = DEFAULT_VLM_MODEL
     workers: int = field(default_factory=default_vlm_workers)
     max_edge: int = DEFAULT_VLM_MAX_EDGE
-    # F113: the SECOND consumer of the same runtime — the frame-quality questions the
-    # cheap tiers cannot answer (eyes open, a subject at all, an accidental shot). Its
+    # F113: the SECOND consumer of the same runtime — the frame-quality question the
+    # cheap tiers cannot answer (eyes open; F122 and F177 retired the other two). Its
     # own toggle, deliberately not `enabled`: the deep junk tier and the quality band
     # are different populations and a user may well want one without the other.
     quality: bool = False

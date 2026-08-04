@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 25;
+PRAGMA user_version = 26;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -133,10 +133,16 @@ CREATE TABLE IF NOT EXISTS frame_quality (
     -- label with. `pet` above is the DECISION: 'animal' when pet_vlm = 'real', or when
     -- pet_vlm IS NULL and pet_score >= features.pet_threshold.
     pet_vlm TEXT,
-    eyes_open INTEGER,                    -- the VLM answers: 1 | 0 | NULL (not asked, or the
-    has_subject INTEGER,                  -- answer did not parse — never guessed as 0).
-    --                                       eyes_open is kept only where a face was detected
-    --                                       (F121): the model answers it on cats otherwise.
+    eyes_open INTEGER,                    -- the VLM answer: 1 | 0 | NULL (not asked, or the
+    --                                       answer did not parse — never guessed as 0). Kept
+    --                                       only where a face was detected (F121): the model
+    --                                       answers it on cats otherwise.
+    has_subject INTEGER,                  -- RETIRED by F177, always NULL — the v26 migration
+    --                                       emptied the 6 111 answers the one live run
+    --                                       collected. Looked at by eye, the 212 frames it
+    --                                       called subjectless were ordinary photographs, so
+    --                                       the signal separated nothing. Same fate and same
+    --                                       reasoning as is_accidental below.
     is_accidental INTEGER,                -- RETIRED by F122, always NULL. The question was
     --                                       right 5% of the time on a labelled sample. The
     --                                       column stays because NULL already means "not
