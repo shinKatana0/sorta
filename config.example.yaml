@@ -26,6 +26,25 @@ logging:
   # and the summaries of finished stages/phases are written either way.
   progress_interval_sec: 60
 
+# F159: the run screen says how long a run will take before it starts. Every stage it
+# can price is priced from the run log above — the real speed of THIS machine, from the
+# last time that stage ran here — and the screen says which numbers came from there and
+# which are still defaults. These are the defaults that cannot be read back, because the
+# comparative keeper question shares a log phase with the per-frame questions.
+estimate:
+  # One comparative question over a near-duplicate group: a fixed cost plus a cost per
+  # frame that goes into it. Measured 2026-08-03 on a live collection (median seconds):
+  # 2 frames — 1.47, 3 — 2.45, 4 — 3.46, 5 — 4.56: a slope of 1.03 s per frame on top of
+  # 0.45 s of fixed cost. The line deliberately sits about a second above each median —
+  # an estimate that runs long is a warning, one that runs short is a broken promise.
+  # Move them if this machine disagrees; they are settings so that it can.
+  keeper_call_sec: 0.45
+  keeper_frame_sec: 1.03
+  # How many days a timing from the run log stays trustworthy. 0 switches the expiry
+  # off. A timing written by another version of sorta is discarded whatever this says —
+  # the stage behind it may have been rewritten since.
+  measurement_max_age_days: 90
+
 index:
   # F81: folders that must not be SCANNED at all — no stat, no hash, no later
   # stage. Different from sort.exclude_dirs, which indexes the files and only
@@ -61,9 +80,12 @@ dedup:
   # prefer_exif_then_largest — the file with an EXIF date first, then the larger one
   canonical_strategy: prefer_exif_then_largest
   # F132: ask the local VLM which frame of a near-duplicate group is the one to keep —
-  # ONE comparative question over the whole group ("which of these is best"), which a
+  # one comparative question over the whole group ("which of these is best"), which a
   # model answers far more reliably than it scores frames one at a time. It sees what
   # sharpness cannot: closed eyes, a face turned away, a hand across the lens.
+  # F159 measured what it costs: 0.45 s plus 1.03 s per frame in the question, so from
+  # three frames up it is not cheaper than asking about the frames one at a time. What
+  # it buys is an answer separate questions do not give — which of them is the best one.
   # Needs the VLM extra installed; off by default. A RECOMMENDATION only — it is stored
   # in `group_keeper` and nothing is ever deleted or marked by it. With this off the
   # interface keeps recommending by sharpness, exactly as before — and F145 made
