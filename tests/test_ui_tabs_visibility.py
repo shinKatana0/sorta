@@ -4,7 +4,12 @@ the DB (variant B, stateless, without a meta table) — GET /api/tabs/visibility
 F152 adds `face` to the same payload and deliberately NOT to the same rule: the three
 face slices appear as soon as the index holds a canonical photograph, before any faces
 run, because their empty state is a sentence ("the faces stage has not run") and a pin
-that hides itself never gets to say it. Their own cases live in test_ui_face_slices."""
+that hides itself never gets to say it. Their own cases live in test_ui_face_slices.
+
+F156 takes that rule the rest of the way: an empty built-in slice has to say WHICH empty
+it is, so the three slices here appear whenever their stage has NOT run — and hide, as
+they always did, once it has run and found nothing. That is the difference the `reasons`
+map carries, and the cases for the two answers live in test_pin_a_query."""
 from __future__ import annotations
 
 import json
@@ -53,51 +58,73 @@ class TabsVisibilityTestBase(UiServerTestBase):
 
 
 class TestApiTabsVisibility(TabsVisibilityTestBase):
+    def visibility(self) -> dict:
+        _status, body, _ctype = self.get("/api/tabs/visibility")
+        data = json.loads(body)
+        data.pop("reasons")   # F156's half, asserted in test_pin_a_query
+        return data
+
+    def measured_animals(self, file_id: int) -> None:
+        """The animals question ASKED of this frame — a stored `pet_score`, F156.
+
+        Without one the slice is not empty but unmeasured, and it then appears in order
+        to say so; the older cases below are all about a slice that was measured.
+        """
+        self.conn.execute(
+            "INSERT INTO frame_quality (file_id, pet_score, source, updated_at) "
+            "VALUES (?, 0.01, 'clip', '2026-01-01')", (file_id,))
+        self.conn.commit()
+
     def test_empty_db_hides_both(self):
         self.start_server()
         status, body, ctype = self.get("/api/tabs/visibility")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        self.assertEqual(json.loads(body), {"person": False, "event": False,
-                          "animal": False, "face": False, "indexed": False})
+        data = json.loads(body)
+        data.pop("reasons")
+        self.assertEqual(data, {"person": False, "event": False,
+                                "animal": False, "face": False, "indexed": False})
 
     def test_clustered_faces_show_person_only(self):
         fid, _p, _c = self.add_photo_file("a.jpg")
         self.add_clustered_face(fid)
+        self.add_event(fid)
+        self.measured_animals(fid)
         self.start_server()
-        _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": True, "event": False,
-                                            "animal": False, "face": True,
-                                            "indexed": True})
+        self.assertEqual(self.visibility(), {"person": True, "event": True,
+                                             "animal": False, "face": True,
+                                             "indexed": True})
 
     def test_noise_only_faces_do_not_show_person(self):
         fid, _p, _c = self.add_photo_file("noise.jpg")
         self.add_noise_face(fid)
+        self.add_event(fid)
+        self.measured_animals(fid)
         self.start_server()
-        _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": False, "event": False,
-                                            "animal": False, "face": True,
-                                            "indexed": True})
+        self.assertEqual(self.visibility(), {"person": False, "event": True,
+                                             "animal": False, "face": True,
+                                             "indexed": True})
 
     def test_events_show_event_only(self):
         fid, _p, _c = self.add_photo_file("b.jpg")
         self.add_event(fid)
+        self.add_noise_face(fid)          # the faces stage ran and clustered nothing
+        self.measured_animals(fid)
         self.start_server()
-        _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": False, "event": True,
-                                            "animal": False, "face": True,
-                                            "indexed": True})
+        self.assertEqual(self.visibility(), {"person": False, "event": True,
+                                             "animal": False, "face": True,
+                                             "indexed": True})
 
     def test_both_independent_when_both_present(self):
         fid1, _p1, _c1 = self.add_photo_file("a.jpg")
         fid2, _p2, _c2 = self.add_photo_file("b.jpg")
         self.add_clustered_face(fid1)
         self.add_event(fid2)
+        self.measured_animals(fid1)
         self.start_server()
-        _status, body, _ctype = self.get("/api/tabs/visibility")
-        self.assertEqual(json.loads(body), {"person": True, "event": True,
-                                            "animal": False, "face": True,
-                                            "indexed": True})
+        self.assertEqual(self.visibility(), {"person": True, "event": True,
+                                             "animal": False, "face": True,
+                                             "indexed": True})
 
 
 class TestIndexedFlag(TabsVisibilityTestBase):

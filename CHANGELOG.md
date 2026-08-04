@@ -384,6 +384,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Added
+- **Pin a query of your own as a slice** (F156). The measurement cancelled ten features
+  before it added one. On a random sample of 200 frames, **65 — a third — fall into no
+  class at all**, so rather than inventing slices for them, each candidate was asked of the
+  collection as a query and scored by how much of those 65 it actually reached: nature 26%,
+  city 23%, plants 22%, sky 20%, signage 18%, sea 17%, transport 15%, interiors 12%, food
+  12%, celebrations 6%. **Not one covers a third of a third**, and **food came out at 8
+  frames** — smaller than sky or signage — though both the user and the author held it in
+  mind as a large slice. Ten slices for 65 frames out of 200 would rebuild the
+  thirteen-control remote F133 took apart. So the product **stops guessing which facets
+  matter**: for one person they are mountains and children, for another receipts and cars,
+  and the list belongs to the owner of the archive. Search for something, and when there
+  are results **“Pin as a slice”** appears beside the line, asks for a name (the query
+  itself is offered) and the query becomes a pin **indistinguishable from a built-in one**
+  — the same grid, the same **Collect into folder** with link / copy / move
+  (`move_batches.mode='album_query'`), the same **Show more**. The mechanism is untouched:
+  F129 ranks, F151 pins, and all that is new is who writes the list. Four decisions carry
+  it. **The pins live in `config.yaml`** (`features.saved_slices`, beside the three that
+  ship) and **not in the index** — `sorta reset` and every re-processing rebuild the index,
+  and a slice somebody named must not be one re-index away from gone; the file is written
+  line by line, so the comments and settings around the key survive. **Unpinning** sits
+  inside the slice, asks first, and removes a config entry and **not one photograph**.
+  **The order** is the file's order and is changed with arrows on the panel — one way to
+  reorder, not two. **The number of pins is bounded** (`features.max_pinned_slices`, 12) —
+  F133's reason and not a resource one, since a pin costs a line and one matmul — and
+  reaching the bound is **said out loud** rather than being a button that quietly does
+  nothing. Two things are stated at the moment of pinning rather than afterwards: a pinned
+  query is an **estimate** with the same numbers as every other query slice (~60% of what
+  you want in the first portion, ~90% in a doubled one, precision falling with depth —
+  «mountains» will bring hills and clouds), and **the wording goes to the model as it
+  stands**, so a Russian or Japanese pin will rank badly until the multilingual index is
+  built. There are **no suggestions to pin anything**, ever: a product that proposes the
+  facets is the product this replaces.
+- **An empty slice now says WHICH empty it is** (F156). The same feature settled that the
+  standard slices — people, events, animals, duplicates — **do not unpin and are never
+  hidden by hand**: they are the core of the product and there is already one control for
+  them, the checkboxes on the run screen (do not need animals → do not compute animals →
+  the slice is not there). A second way to take the same thing off the screen would
+  inevitably disagree with the first, leaving a person to guess whether a slice is missing
+  because they hid it or because they never computed it. What such a slice **does** owe is
+  an account of its own emptiness, and it now gives one: **“this was not computed”** with a
+  link straight to the run screen when the stage has never run (`features.pets: false`
+  included — that is where the switch is), and the slice's own **“none were found”** when
+  it has. `GET /api/tabs/visibility` carries the two as `reasons`, and a slice whose stage
+  has not run is **shown** rather than hidden, the F152 rule — a pin that hides itself never
+  gets to say why it is empty. This is the `frame_quality` principle of F125 applied to a
+  whole slice: **NULL means “nobody asked”, not “there are none”**, and a bare zero reads
+  as the second when it is nearly always the first.
 - **A slice is a saved query, not a sixth filter with a threshold of its own** (F151).
   Measured on 2026-08-02 — 200 frames out of 22 096, labelled by hand, and the first time
   **recall** was measured rather than the precision of the top — the hand-written filters

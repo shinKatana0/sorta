@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import yaml
 
@@ -1160,6 +1160,16 @@ class FeaturesConfig:
     # button: doubling the list is the one lever of completeness the measurement confirmed
     # (children 61% -> 89%), and there is no membership threshold anywhere in this.
     saved_slices: tuple[SavedSlice, ...] = DEFAULT_SAVED_SLICES
+    # F156: how many pins the interface will let a person add to that list. NOT a resource
+    # bound — a pin costs a config entry and one matrix multiplication when it is opened —
+    # but the same bound F133 put on the screen when it took thirteen controls off it: a row
+    # of forty pins is a remote control again, and the slice somebody actually wanted is
+    # then the hardest thing on the tab to find. Twelve is roughly two rows of pins beside
+    # the built-in ones. Raising it is a line in this file; the limit is stated to the person
+    # who reaches it (never a pin that silently does not appear), and a file edited BY HAND
+    # past the limit keeps every slice in it — this number governs what the interface adds,
+    # not what the config file is allowed to say.
+    max_pinned_slices: int = 12
     # F152: the two numbers the face slices need, and the only two they have. Everything
     # else about those slices is a FACT of the `faces` table — either the detector found
     # a face on this frame or it did not — so these are not confidence thresholds and
@@ -1276,6 +1286,8 @@ def _features_from(raw: dict) -> FeaturesConfig:
         search_page=_as_positive_int(
             _renamed_value(raw, "features", "search_page", "search_limit"), d.search_page),
         saved_slices=_as_saved_slices(raw.get("saved_slices"), d.saved_slices),
+        max_pinned_slices=_as_positive_int(
+            raw.get("max_pinned_slices"), d.max_pinned_slices),
         group_photo_faces=_as_positive_int(
             raw.get("group_photo_faces"), d.group_photo_faces),
         portrait_face_share=_as_float(
@@ -1619,6 +1631,90 @@ def save_setting(path: str | Path, key: str, value: bool | int | float | str) ->
     scalar = _yaml_scalar(value)
     updated = (_set_in_section(text, section, leaf, scalar) if section
                else _set_top_level(text, leaf, scalar))
+    p.write_text(updated, encoding="utf-8")
+
+
+def _set_block_in_section(text: str, section: str, key: str,
+                          block: Sequence[str]) -> str:
+    """`_set_in_section` for a value that is a BLOCK rather than a scalar (F156).
+
+    `block` is written relative to the key — its first line is `key:` with no indentation
+    of its own — and every line is prefixed here with the indentation the file already
+    uses, so a config written with four spaces stays written with four.
+
+    The old block is everything under its `key:` line that is blank or indented deeper
+    than the key: that is what a nested mapping looks like, and it is the only thing
+    removed. Whatever stood ABOVE the key — the comments explaining the setting, and in
+    `config.example.yaml` there are thirty lines of them — is untouched, which is the
+    whole reason this is a line-level edit and not `yaml.safe_dump`.
+    """
+    lines = text.split("\n")
+    header = re.compile(rf"^{re.escape(section)}:\s*(#.*)?$")
+    start = next((i for i, line in enumerate(lines) if header.match(line)), None)
+    if start is None:
+        head = text.rstrip("\n") + "\n" if text.strip() else ""
+        fresh = "\n".join(f"  {line}" if line else "" for line in block)
+        return f"{head}{section}:\n{fresh}\n"
+    end = start + 1
+    while end < len(lines):
+        line = lines[end]
+        if line.strip() and not line[:1].isspace():
+            break
+        end += 1
+    entry = re.compile(rf"^(\s+){re.escape(key)}:.*$")
+    indent = "  "
+    last_filled = start
+    for i in range(start + 1, end):
+        match = entry.match(lines[i])
+        if match is not None:
+            indent = match.group(1)
+            stop = i + 1
+            while stop < end and (not lines[stop].strip()
+                                  or lines[stop].startswith(indent + " ")):
+                stop += 1
+            body = [f"{indent}{line}" if line else "" for line in block]
+            return "\n".join(lines[:i] + body + lines[stop:])
+        if lines[i].strip():
+            last_filled = i
+            if not lines[i].lstrip().startswith("#"):
+                indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+    body = [f"{indent}{line}" if line else "" for line in block]
+    return "\n".join(lines[:last_filled + 1] + body + lines[last_filled + 1:])
+
+
+def _saved_slices_block(slices: Sequence[SavedSlice]) -> list[str]:
+    """The `saved_slices:` mapping as YAML lines, relative to its own key.
+
+    An empty list is written as `saved_slices: {}` and not as an absent key: "pin
+    nothing" is a real wish (`_as_saved_slices`), and an omitted key would come back as
+    the three slices that ship — unpinning the last pin would silently restore them.
+    """
+    if not slices:
+        return ["saved_slices: {}"]
+    lines = ["saved_slices:"]
+    for slice_ in slices:
+        lines.append(f"  {_yaml_scalar(slice_.name)}:")
+        lines.extend(f"    - {_yaml_scalar(phrase)}" for phrase in slice_.queries)
+    return lines
+
+
+def save_saved_slices(path: str | Path, slices: Sequence[SavedSlice]) -> None:
+    """Persist `features.saved_slices` into config.yaml, preserving the rest of the file.
+
+    F156: the pins a person makes for themselves live HERE and not in the index. The index
+    is rebuilt by `reset` and by any re-processing, and a slice somebody named and ordered
+    must not be one re-index away from gone — while the config file is the one thing in
+    this product that is never rewritten from the collection.
+
+    The phrases are written back exactly as they were typed. They go to a CLIP text tower,
+    so quoting is the only transformation there is (`_yaml_scalar`): a name like «горы» or
+    a phrase with a colon in it has to survive the round trip through the file unchanged,
+    or the slice on screen stops being the slice that was pinned.
+    """
+    p = Path(path)
+    text = p.read_text(encoding="utf-8") if p.exists() else ""
+    updated = _set_block_in_section(text, "features", "saved_slices",
+                                    _saved_slices_block(slices))
     p.write_text(updated, encoding="utf-8")
 
 

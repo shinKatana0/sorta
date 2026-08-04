@@ -354,6 +354,19 @@ no_place"), because one folder name out of twelve deceives a person who ticked d
 folder is `sorter.destinations`, i.e. the code that builds the plan, asked with the
 correction already assumed; nothing is applied any earlier than before.
 
+(26) `POST /api/saved-slices/pin | /unpin | /move` (F156, a query of one's own) — the
+three writes of `features.saved_slices`, and the only three. They add a typed query as a
+named pin, take a pin away, or step one up/down the row; each answers with the WHOLE list,
+which the pin row is redrawn from. The storage is `config.yaml` and not the index, because
+`reset` and every re-processing rebuild the index and a slice somebody named must not be
+one re-index away from gone. `features.max_pinned_slices` bounds what the interface may
+add (F133's reason, not a resource one) and reaching it is an answer with `reason='limit'`
+rather than a pin that quietly does not appear. Unpinning removes a config entry and
+touches no file. Nothing here ranks anything or loads a model — a pin saves words.
+`GET /api/tabs/visibility` gains `reasons` in the same feature: a built-in slice that is
+empty says WHICH empty it is (`not_run`, and then the panel links to the run screen, or
+`none_found`), because a bare zero reads as a claim about somebody's photographs.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -408,6 +421,7 @@ from .config import (
     FeaturesConfig,
     SavedSlice,
     save_language,
+    save_saved_slices,
     save_setting,
 )
 from .dedup import (KEEPER_SOURCE_SHARPNESS, assign_duplicates, compute_phashes,
@@ -2939,13 +2953,44 @@ def _events_payload(db_path: Path,
     ]
 
 
-def _tabs_visibility_payload(db_path: Path, cfg: Config) -> dict[str, bool]:
+# --- F156: why a built-in slice is empty --------------------------------------------
+# A zero with no explanation reads as "your archive holds none of these", and far more
+# often it means "nobody has looked yet" — the `frame_quality` rule of F125 (NULL is "not
+# asked", not "no") applied to a whole slice. So each of the three exact slices answers
+# with one of three things, and never with a bare emptiness:
+#
+#   None          the slice holds photographs
+#   not_run       the stage that fills it never ran — the run screen is where that is
+#                 fixed, and the interface links straight to it
+#   none_found    the stage ran over this collection and there is nothing of the kind
+#
+# The two reasons are two on purpose: only one of them is a fact about the person's
+# photographs, and only the other one has an action attached to it.
+#
+# `not_run` is also what a stage SWITCHED OFF looks like (`features.pets: false` — the
+# quality stage runs and never asks about animals), and that is right rather than a
+# compromise: the run screen holds that checkbox, so the sentence and the link lead to the
+# same place either way. Which is the whole reason the standard slices are not made
+# hideable a second time — one control for "do not compute animals", not two.
+_SLICE_NOT_RUN = "not_run"
+_SLICE_NONE_FOUND = "none_found"
+
+
+def _tabs_visibility_payload(db_path: Path, cfg: Config) -> dict[str, object]:
     """F54: visibility of the "People"/"Events"/"Animals" tabs — by data presence
     (variant B, without a meta table). person ⇔ there is a faces row with a non-empty
     cluster_id (the same source as `_clusters_payload`); event ⇔ non-empty `events`;
     animal (F123) ⇔ some `frame_quality` row counts as an animal, which is false for
     every collection processed with `features.pets` off. Light EXISTS queries, we do not
     build the full payload.
+
+    F156: ...or there is something to SAY. A slice whose stage has never run appears too,
+    exactly as the face slices have since F152, because its emptiness is a sentence with a
+    link in it and a pin that hides itself never gets to say it. `reasons` carries which
+    of the two empty states each slice is in (`_SLICE_NOT_RUN` / `_SLICE_NONE_FOUND`, and
+    `None` when the slice holds something) — the answer the panel captions itself with.
+    A slice that ran and found nothing keeps hiding: there the zero IS the fact, the
+    collection has already said it, and a pin over an empty page teaches nothing.
 
     The animal question is deliberately asked of what the tab would LIST
     (`_animals_population`) and not of what it would count: a user who has taken the mark
@@ -2986,10 +3031,44 @@ def _tabs_visibility_payload(db_path: Path, cfg: Config) -> dict[str, bool]:
         indexed = bool(conn.execute(
             "SELECT EXISTS(SELECT 1 FROM files)"
         ).fetchone()[0])
+        # F156: which of the two empty states each of the three is in. One EXISTS per
+        # slice, and each one asks whether the STAGE left anything behind — not whether
+        # the slice came out non-empty, which is the question already answered above.
+        #
+        # faces: a real box (`faces_stage_ran` excludes the "processed, none here" marker
+        #   row). events: the stage groups every canonical frame that carries a date, so
+        #   its own output is the only marker there is — with dated frames and no events
+        #   nothing has grouped them, and with no dated frames there was nothing to group.
+        #   animals: a STORED `pet_score`, which the stage writes whether or not it reached
+        #   the threshold and never writes with `features.pets` off. A fact of the table
+        #   rather than the switch as it stands right now (F137's rule): the question is
+        #   what was asked of THIS collection, and the switch may have moved since.
+        dated = bool(conn.execute(
+            f"SELECT EXISTS(SELECT 1 FROM files f WHERE {_OVERVIEW_LIVE} "
+            "AND f.taken_at IS NOT NULL)").fetchone()[0])
+        stage_ran = {
+            "person": faces_stage_ran(conn),
+            "event": bool(conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM events)").fetchone()[0]) or not dated,
+            "animal": bool(conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM frame_quality WHERE pet_score IS NOT NULL)"
+            ).fetchone()[0]),
+        }
     finally:
         conn.close()
-    return {"person": person, "event": event, "animal": animal, "face": face,
-            "indexed": indexed}
+    found = {"person": person, "event": event, "animal": animal}
+    reasons = {
+        name: None if has else (_SLICE_NONE_FOUND if stage_ran[name]
+                                else _SLICE_NOT_RUN)
+        for name, has in found.items()
+    }
+    # A slice is offered when it holds photographs OR when it has something to say and a
+    # collection to say it over — the population being the one its own stage walks
+    # (canonical photographs for faces and animals, any indexed file for events).
+    over = {"person": face, "event": indexed, "animal": face}
+    visible = {name: has or (over[name] and reasons[name] == _SLICE_NOT_RUN)
+               for name, has in found.items()}
+    return {**visible, "face": face, "indexed": indexed, "reasons": reasons}
 
 
 # --- F108: the "Overview" tab — the state of the collection in one screen -----------
@@ -3570,6 +3649,10 @@ def _saved_slices_payload(cfg: Config, db_path: Path, name: str | None, offset: 
             # route serves is a ranking, and the day one of them is not, it will not be
             # served from here.
             "approximate": True,
+            # F156: how many pins the interface may add (`features.max_pinned_slices`).
+            # It travels with every answer so the "pin this" button can say the limit is
+            # reached BEFORE somebody types a name for a slice that will be refused.
+            "max_pinned": int(cfg.features.max_pinned_slices),
             **_page_payload([], total=0, offset=offset, limit=limit),
         })
         if current is None or not payload["available"]:
@@ -3604,6 +3687,149 @@ def _parse_saved_slice_query(cfg: Config, query: dict[str, list[str]],
     if name and _saved_slice_by_name(cfg, name) is None:
         return None
     return (name or None), window[0], window[1]
+
+
+# --- F156: pinning a query of one's own (`POST /api/saved-slices/{pin,unpin,move}`) ----
+# The measurement that turned this feature around (2026-08-02, a random sample of 200
+# frames): 65 of them — a third — fall into no class at all, and the ten candidate slices
+# for those 65 cover 26%, 23%, 22%, 20%, 18%, 17%, 15%, 12%, 12%, 6%. Not one of them
+# reaches a third of a third. Ten slices for 65 frames out of 200 is the thirteen-control
+# remote F133 took apart, and food — which both the user and the author had in mind as a
+# large slice — came out at 8 frames, smaller than sky or signage.
+#
+# So the product stops guessing which facets matter. For one person they are mountains and
+# children, for another receipts and cars, and nobody but the owner of the archive knows
+# which. The mechanism is unchanged (F129 ranks, F151 pins) — what is new is WHO writes
+# the list.
+#
+# Three properties are the feature:
+#
+# * the list lives in `config.yaml`, beside the slices that ship. The index does not
+#   survive `reset` or a re-processing and the config file does, and a slice somebody named
+#   is not something to lose to a re-index;
+# * a pin is a SAVED QUERY and nothing else, so a pinned slice is indistinguishable from a
+#   built-in one on screen — the same grid, the same album, the same counter — and it is
+#   removed by unpinning it, which deletes a config entry and touches no file;
+# * the number of pins is bounded (`features.max_pinned_slices`) and reaching the bound is
+#   SAID. A pin that silently does not appear is worse than no pin.
+#
+# No suggestions, ever: the product does not offer to pin anything for you. That is the
+# whole point of the feature, and a "you might want to pin «food»" would be the guessing
+# it replaces, wearing a friendlier hat.
+
+# Why a pin was refused, in one word the client can caption. Not a sentence: the reason
+# has to be shown in the interface language, so the server sends the code and the catalog
+# holds the three sentences.
+_PIN_EMPTY = "empty"          # nothing was typed — there is no query to save
+_PIN_DUPLICATE = "duplicate"  # a pin of that name is already there
+_PIN_LIMIT = "limit"          # `features.max_pinned_slices` is reached
+
+
+def _validate_pin_payload(payload: object) -> tuple[str, str] | None:
+    """Parse the body of `POST /api/saved-slices/pin` -> (name, query). None -> 400.
+
+    `query` is the text that was typed and is required; `name` is optional and defaults to
+    the query itself, which is what the field is pre-filled with. Both are stripped, and an
+    empty query is refused HERE rather than in the interface: a slice with no words would
+    rank the collection by an arbitrary direction and look exactly like an answer
+    (`search.encode_queries` refuses it for the same reason).
+    """
+    if not isinstance(payload, dict):
+        return None
+    query = payload.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return None
+    name = payload.get("name")
+    if name is not None and not isinstance(name, str):
+        return None
+    return ((name or "").strip() or query.strip()), query.strip()
+
+
+def _validate_slice_name_payload(payload: object) -> str | None:
+    """`{"slice": "<name>"}` -> the name, for unpin and move. None -> 400."""
+    if not isinstance(payload, dict):
+        return None
+    name = payload.get("slice")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name.strip()
+
+
+def _validate_move_payload(payload: object) -> tuple[str, int] | None:
+    """`{"slice": …, "delta": -1|1}` -> (name, delta), the arrows. None -> 400.
+
+    Arrows and not drag-and-drop, one of the two and deliberately the smaller: the order
+    is a list of at most a dozen names, a keyboard reaches an arrow, and a drop target is a
+    second way to say the same thing that would then have to agree with the first.
+    """
+    name = _validate_slice_name_payload(payload)
+    if name is None or not isinstance(payload, dict):
+        return None
+    delta = payload.get("delta")
+    if isinstance(delta, bool) or delta not in (-1, 1):
+        return None
+    return name, int(delta)
+
+
+def _pinned_with(cfg: Config, name: str, query: str) -> tuple[SavedSlice, ...] | str:
+    """The pinned list with one more slice in it, or the code saying why it cannot be.
+
+    The new pin goes to the END of the list, where the person who made it will look for
+    it: the order is theirs to change afterwards, and inserting somewhere clever would be
+    the product having an opinion about a list it does not own.
+
+    Emptiness is not one of the answers here — `_validate_pin_payload` has already
+    refused it with `_PIN_EMPTY`, and a second copy of that rule is a second place for it
+    to drift.
+    """
+    slices = tuple(cfg.features.saved_slices)
+    if any(existing.name == name for existing in slices):
+        return _PIN_DUPLICATE
+    if len(slices) >= int(cfg.features.max_pinned_slices):
+        return _PIN_LIMIT
+    return (*slices, SavedSlice(name, (query.strip(),)))
+
+
+def _pinned_without(cfg: Config, name: str) -> tuple[SavedSlice, ...] | None:
+    """The pinned list with that slice gone, or None when there is no such slice.
+
+    Nothing but the config entry is removed. Unpinning is not a deletion of anything on
+    disk, and the confirmation the interface asks for says so — the frames the slice ranked
+    are the collection's and were never the slice's to hold.
+    """
+    slices = tuple(cfg.features.saved_slices)
+    kept = tuple(s for s in slices if s.name != name)
+    return kept if len(kept) != len(slices) else None
+
+
+def _pinned_moved(cfg: Config, name: str, delta: int) -> tuple[SavedSlice, ...] | None:
+    """The pinned list with that slice one step up or down. None -> no such slice.
+
+    A step off either end is a no-op rather than an error: the arrow at the top of the list
+    does nothing, which is what an arrow at the top of a list does.
+    """
+    slices = list(cfg.features.saved_slices)
+    index = next((i for i, s in enumerate(slices) if s.name == name), None)
+    if index is None:
+        return None
+    target = index + delta
+    if 0 <= target < len(slices):
+        slices[index], slices[target] = slices[target], slices[index]
+    return tuple(slices)
+
+
+def _apply_saved_slices(cfg: Config, slices: tuple[SavedSlice, ...]) -> None:
+    """Put the new pin list into the RUNNING config, `raw` included.
+
+    `raw` is mirrored for the reason `_apply_settings` mirrors its own section: a later
+    save of anything else must not write back the mapping this call just replaced.
+    """
+    cfg.features = dataclasses.replace(cfg.features, saved_slices=slices)
+    section = cfg.raw.get("features")
+    if not isinstance(section, dict):
+        section = {}
+        cfg.raw["features"] = section
+    section["saved_slices"] = {s.name: list(s.queries) for s in slices}
 
 
 class _LazyTextEncoder:
@@ -7456,6 +7682,104 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Could not load the query slice: ",
         "ja": "クエリのスライスを読み込めません: ",
     },
+    # --- F156: pinning a query of one's own --------------------------------------------
+    # The product stops guessing which facets matter (the sample of 200 says there is no
+    # such thing as "the" facets: ten candidate slices covered 26% of the unclassed frames
+    # at best), so these strings are all about one act — a person saving THEIR query.
+    "pin_slice_button": {
+        "ru": "Закрепить как срез", "en": "Pin as a slice", "ja": "スライスとして固定",
+    },
+    # The name is asked for, with the query itself offered: the query is usually the best
+    # name there is, and a dialog that demands a different one is a dialog that gets «мое1».
+    "pin_slice_prompt": {
+        "ru": "Название среза (запрос: {query})",
+        "en": "Name of the slice (the query: {query})",
+        "ja": "スライスの名前（クエリ: {query}）",
+    },
+    # THE warning of this feature, and it is said BEFORE the pin rather than afterwards.
+    # The phrases go to the model as they stand and the search index is English until F141
+    # reaches this collection, so a Russian or Japanese pin will rank badly — a person who
+    # learns that a week later concludes the feature is broken.
+    "pin_slice_language_warning": {
+        "ru": "Запрос не на английском. Индекс пока английский, поэтому такой срез будет "
+              "работать заметно хуже — формулировка уходит в модель как есть.",
+        "en": "The query is not in English. The index is English for now, so a slice like "
+              "this will work noticeably worse — the wording goes to the model as it is.",
+        "ja": "クエリが英語ではありません。索引は現時点で英語なので、このスライスの精度は"
+              "目に見えて落ちます（表現はそのままモデルに渡されます）。",
+    },
+    "pin_slice_done": {
+        "ru": "Срез «{name}» закреплён.", "en": "The slice “{name}” is pinned.",
+        "ja": "スライス「{name}」を固定しました。",
+    },
+    # Every refusal is a sentence, never a button that does nothing.
+    "pin_error_empty": {
+        "ru": "Пустой запрос закрепить нельзя.",
+        "en": "An empty query cannot be pinned.",
+        "ja": "空のクエリは固定できません。",
+    },
+    "pin_error_duplicate": {
+        "ru": "Срез с таким названием уже закреплён.",
+        "en": "A slice with that name is already pinned.",
+        "ja": "その名前のスライスはすでに固定されています。",
+    },
+    # F133's reason and not a resource one — and the number is in the sentence, so the
+    # person knows what to unpin and what to raise.
+    "pin_error_limit": {
+        "ru": "Закреплено {max} срезов — это предел. Открепите ненужный или поднимите "
+              "features.max_pinned_slices.",
+        "en": "{max} slices are pinned — that is the limit. Unpin one, or raise "
+              "features.max_pinned_slices.",
+        "ja": "固定できるスライスは {max} 件までです。不要なものを外すか、"
+              "features.max_pinned_slices を増やしてください。",
+    },
+    "pin_error_generic": {
+        "ru": "Не удалось закрепить срез: ", "en": "Could not pin the slice: ",
+        "ja": "スライスを固定できません: ",
+    },
+    "pin_unpin_button": {
+        "ru": "Открепить срез", "en": "Unpin the slice", "ja": "スライスを外す",
+    },
+    # The confirmation says what is removed AND what is not: "delete the slice" and
+    # "delete the photographs" are one word apart, and only one of them is happening.
+    "pin_unpin_confirm": {
+        "ru": "Открепить срез «{name}»? Удалится только закрепление — файлы останутся "
+              "на месте.",
+        "en": "Unpin the slice “{name}”? Only the pin is removed — the files stay where "
+              "they are.",
+        "ja": "スライス「{name}」を外しますか？外れるのは固定だけで、ファイルはそのまま"
+              "残ります。",
+    },
+    "pin_move_up": {"ru": "Выше", "en": "Move up", "ja": "上へ"},
+    "pin_move_down": {"ru": "Ниже", "en": "Move down", "ja": "下へ"},
+    # The album gathers what a single query ranks (`sorta album query`), and a slice asking
+    # several phrases is ranked by their average — one selector cannot reproduce it, so the
+    # button is not offered rather than gathering a different list under the same name.
+    "pin_album_one_query": {
+        "ru": "Альбом собирается по одной формулировке, а этот срез спрашивает несколько. "
+              "Оставьте в features.saved_slices одну — и кнопка появится.",
+        "en": "An album is gathered by a single wording, and this slice asks several. "
+              "Leave one of them in features.saved_slices and the button appears.",
+        "ja": "アルバムは 1 つの表現でまとめます。このスライスは複数を問い合わせている"
+              "ため、features.saved_slices に 1 つだけ残すとボタンが表示されます。",
+    },
+    # --- F156: why a built-in slice is empty -------------------------------------------
+    # The `frame_quality` rule of F125, said out loud on a whole slice: a zero with no
+    # explanation reads as "there are none of these in your archive", and far more often
+    # the truth is that nobody has looked yet. The counterpart answer — "it was computed
+    # and there is nothing" — is the slice's own existing line ("События не найдены."),
+    # which is why only this half needed writing.
+    "slice_not_computed": {
+        "ru": "Это не считалось: стадия, которая наполняет срез, не запускалась. "
+              "Пусто здесь означает «не спрашивали», а не «в архиве нет».",
+        "en": "This was not computed: the stage that fills this slice has not run. Empty "
+              "here means “nobody asked”, not “there are none”.",
+        "ja": "これは計算されていません。このスライスを埋める処理が実行されていません。"
+              "ここでの空は「該当なし」ではなく「未確認」という意味です。",
+    },
+    "slice_goto_process": {
+        "ru": "К экрану прогона", "en": "Go to the run screen", "ja": "実行画面へ",
+    },
     "slices_pinned_label": {
         "ru": "Закреплённые срезы", "en": "Pinned slices", "ja": "固定スライス",
     },
@@ -8543,9 +8867,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <input type="search" id="slice-query" placeholder="{{search_placeholder}}" disabled>
 </label>
 <button type="button" id="slice-query-btn" class="btn btn-primary btn-sm" disabled>{{search_button}}</button>
+<button type="button" id="slice-pin-btn" class="btn btn-ghost btn-sm" style="display:none">{{pin_slice_button}}</button>
 <button type="button" id="slice-query-goto" class="btn btn-ghost btn-sm" style="display:none">{{search_goto_overview}}</button>
 </div>
 <span id="slice-query-hint" class="process-toggle-hint">{{search_state_checking}}</span>
+<span id="slice-pin-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="slice-pins" class="review-slices" aria-label="{{slices_pinned_label}}"></div>
 
@@ -8563,6 +8890,14 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="tab-query" class="slice-panel">
 <p class="process-intro">{{query_slice_intro}}</p>
 <p id="query-phrases" class="override-hint"></p>
+<div class="override-controls">
+<button type="button" id="query-up-btn" class="btn btn-ghost btn-sm">{{pin_move_up}}</button>
+<button type="button" id="query-down-btn" class="btn btn-ghost btn-sm">{{pin_move_down}}</button>
+<button type="button" id="query-unpin-btn" class="btn btn-ghost btn-sm">{{pin_unpin_button}}</button>
+<span id="query-pin-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<div id="query-album" class="album-controls"></div>
 <div id="query-grid"></div>
 <div class="process-actions">
 <button type="button" id="query-more-btn" class="btn btn-primary" style="display:none">{{slice_load_more}}</button>
@@ -8844,7 +9179,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       // short, and the wrong direction of that mistake is a button that promises a page
       // which does not exist.
       hasMore = !!data.has_more;
-      if (!shown()) box.appendChild(stateEl("empty", opts.emptyText(data)));
+      // `emptyEl` for a slice whose empty state carries an action (F156: "the stage has
+      // not run" comes with a button to the run screen); `emptyText` for the rest.
+      if (!shown()) {
+        box.appendChild(opts.emptyEl ? opts.emptyEl(data)
+                                     : stateEl("empty", opts.emptyText(data)));
+      }
       paint(data);
       // Whatever else this slice prints beside the shared counter — the animal tab's
       // second number, for one. It runs after the page is in the DOM, because the number
@@ -9883,6 +10223,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var sliceCurrent = null;
   var slicePending = null;
   var sliceVisibility = { person: false, event: false, animal: false, face: false };
+  // F156: per built-in slice — null (it holds something), "not_run" (the stage that fills
+  // it never ran) or "none_found" (it ran and the collection has none). A zero on its own
+  // reads as the second when it is nearly always the first.
+  var sliceReasons = {};
   var junkBucketCounts = [];
   // F152: the counters of the three face pins, `null` for each of them until the faces
   // stage has run — the pin then carries no number at all, because "0 photographs with
@@ -9891,6 +10235,20 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 
   function sliceKeyId(key) {
     return "slice-pin-" + key.replace(/[^a-z0-9]+/g, "-");
+  }
+
+  // F156: the empty state of a built-in slice, which has to say WHICH empty it is.
+  // `foundNothing` is the slice's own "none were found" line and is used unchanged when
+  // the stage really did run; "the stage has not run" is a different sentence and comes
+  // with the one action that changes it — a button to the run screen, where the checkbox
+  // that decides whether this is computed at all also lives.
+  function sliceEmptyState(key, foundNothing) {
+    if (sliceReasons[key] !== "not_run") return stateEl("empty", foundNothing);
+    var box = stateEl("empty", I18N.slice_not_computed);
+    var goto = makeBtn("ghost", null, I18N.slice_goto_process, "btn-sm");
+    goto.addEventListener("click", function () { activateTab("overview"); });
+    box.appendChild(goto);
+    return box;
   }
 
   function slicePanelId(key) {
@@ -10042,6 +10400,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           // no photographs in it there is nothing to say, and "no slices yet" is the
           // honest line.
           savedSlices = (data.photos ? data.slices : []) || [];
+          savedSlicesMax = data.max_pinned || 0;
         })
         .catch(function () {}),
     ])
@@ -10226,6 +10585,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       // rebuilding it on every "show more" would wipe the destination somebody typed.
       if (!append) {
         renderSearchAlbumControls((data.items || []).length ? data.query : "");
+        // F156: and the same condition offers to PIN it. A query with nothing under it is
+        // not a slice yet, and the button that saves one appears when there is something
+        // to save.
+        showPinButton((data.items || []).length ? data.query : "");
       }
     },
   });
@@ -10238,6 +10601,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     showSearchPanel();
     document.getElementById("search-shown").textContent = "";
     renderSearchAlbumControls("");
+    showPinButton("");
     return searchPager.load();
   }
 
@@ -10265,6 +10629,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
   var savedSlices = [];     // [{slice, queries}] — the config's own order, the pin order
   var querySlice = null;
   var queryLoaded = false;
+  // F156: `features.max_pinned_slices`, straight off the route. Kept rather than hard-coded
+  // for the reason the page size is: a number repeated in JS is a second copy of a setting.
+  var savedSlicesMax = 0;
 
   function savedSliceLabel(name) {
     // A slice added to the config gets its own name on the pin: the catalog holds the
@@ -10300,19 +10667,199 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       return fmt(I18N.query_slice_shown_label,
                  { name: savedSliceLabel(querySlice), shown: n, total: total });
     },
-    onData: function (data) {
+    onData: function (data, append) {
       applySearchState(data);
       // The phrases on screen are what makes "edit it without code" an offer rather than
       // a claim — and they are the answer to "why is this frame here".
       document.getElementById("query-phrases").textContent =
           fmt(I18N.query_slice_phrases,
               { phrases: (data.queries || []).join(" · ") });
+      // F156: the actions belong to the SLICE and not to the page, so a "show more" leaves
+      // them alone — rebuilding the album row would ask for a default destination again and
+      // wipe a path somebody had typed into it.
+      if (!append) renderQuerySliceActions(data);
     },
   });
 
   function loadSavedSlice() {
     return queryPager.load();
   }
+
+  // --- F156: a query of one's own, pinned ------------------------------------------
+  // The measurement that produced this feature (2026-08-02, 200 random frames): 65 of them
+  // — a third — belong to no class at all, and the ten candidate slices for those 65 cover
+  // 26%, 23%, 22%, 20%, 18%, 17%, 15%, 12%, 12% and 6%. Not one of them reaches a third of
+  // a third, and food, which everyone involved expected to be large, came out at 8 frames.
+  // Ten slices for 65 frames out of 200 would be the thirteen-control remote F133 took
+  // apart. So the product stops guessing which facets matter and the owner of the archive
+  // pins their own — mountains and children for one person, receipts and cars for another.
+  //
+  // Nothing here ranks: the engine is F129's and the panel is F151's, and what this adds is
+  // who writes the list. There are no suggestions to pin anything and there will be none —
+  // a product that proposes the pins is the product this feature replaces.
+
+  function isAscii(text) {
+    for (var i = 0; i < text.length; i++) {
+      if (text.charCodeAt(i) > 127) return false;
+    }
+    return true;
+  }
+
+  function pinStatus(id, text) {
+    document.getElementById(id).textContent = text || "";
+  }
+
+  // A refusal is always a sentence. `reason` is the server's one word and the catalog holds
+  // the three sentences, so the limit reads in the interface language and says the number.
+  function pinErrorText(resp) {
+    if (resp.reason === "limit") {
+      return fmt(I18N.pin_error_limit, { max: resp.max_pinned || savedSlicesMax });
+    }
+    if (resp.reason === "duplicate") return I18N.pin_error_duplicate;
+    if (resp.reason === "empty") return I18N.pin_error_empty;
+    return I18N.pin_error_generic + (resp.error || "");
+  }
+
+  function showPinButton(query) {
+    var btn = document.getElementById("slice-pin-btn");
+    btn.style.display = query ? "" : "none";
+    btn.setAttribute("data-query", query || "");
+    if (!query) pinStatus("slice-pin-status", "");
+  }
+
+  document.getElementById("slice-pin-btn").addEventListener("click", function () {
+    var query = this.getAttribute("data-query") || "";
+    // Guarded here as well as on the server: an empty query saved as a slice would rank the
+    // collection by an arbitrary direction and look exactly like an answer.
+    if (!query) { pinStatus("slice-pin-status", I18N.pin_error_empty); return; }
+    // The warning comes BEFORE the pin and not a week later, when the slice has been
+    // quietly ranking badly: the phrases go to the model as they stand, and the index is
+    // English until F141 reaches this collection.
+    var prompt = fmt(I18N.pin_slice_prompt, { query: query });
+    if (!isAscii(query)) prompt = I18N.pin_slice_language_warning + "\\n\\n" + prompt;
+    var name = window.prompt(prompt, query);
+    if (name === null) return;
+    name = name.trim() || query;
+    pinStatus("slice-pin-status", "");
+    postJson("/api/saved-slices/pin", { name: name, query: query })
+      .then(function (resp) {
+        if (!resp.ok) { pinStatus("slice-pin-status", pinErrorText(resp)); return; }
+        pinStatus("slice-pin-status", fmt(I18N.pin_slice_done, { name: name }));
+        // The new pin is selected right away: a person who has just named a slice is
+        // looking for it, and the row it lands in is at the other end of the tab.
+        slicePending = "query:" + name;
+        loadSlices();
+      });
+  });
+
+  // The gather row of a pinned slice — the same album every other slice offers
+  // (`kind='query'`, `move_batches.mode='album_query'`), through the same
+  // dry-run-then-confirm path, so a pin is not a second-class slice on this tab.
+  //
+  // Offered when the slice asks ONE phrase, which is every slice a person pins from the
+  // search line. A slice asking several is ranked by their average and the album route
+  // gathers a single wording, so a button there would gather a different list under the
+  // slice's name — the panel says so instead.
+  function renderQuerySliceAlbum(data) {
+    var box = document.getElementById("query-album");
+    var queries = data.queries || [];
+    var one = (queries.length === 1 && (data.items || []).length) ? queries[0] : "";
+    box.textContent = "";
+    if (!one) {
+      if (queries.length > 1) box.appendChild(stateEl("empty", I18N.pin_album_one_query));
+      return;
+    }
+    var modeSelect = albumModeSelect();
+    box.appendChild(modeSelect);
+    var nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "album-name-input";
+    nameInput.placeholder = I18N.album_name_placeholder;
+    // Pre-filled with the name of the pin: the folder a person expects is the one they
+    // named, not the phrase the ranking happens to use.
+    nameInput.value = data.slice || "";
+    box.appendChild(nameInput);
+    var destInput = appendAlbumDestControls(box);
+    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
+                           "btn-sm album-gather-btn");
+    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
+    var albumStatus = document.createElement("span");
+    albumStatus.className = "album-status";
+    albumBtn.addEventListener("click", function () {
+      gatherAlbum("query", one, modeSelect.value, null,
+          nameInput.value.trim() || null, destInput.value.trim() || null, albumStatus);
+    });
+    box.appendChild(albumBtn);
+    box.appendChild(albumStatus);
+    appendAlbumBusyHint(box);
+  }
+
+  // Where this slice sits in the row, or -1 while no pinned slice is open. The arrows are
+  // drawn from it, so it is kept rather than recomputed: a run ending has to be able to
+  // wake the controls up without the panel being reloaded.
+  var querySliceIndex = -1;
+
+  // Two rules on three controls, met in one place (`registerBusyRefresh`): the ends of the
+  // row disable an arrow, and a run disables all three — every one of them writes
+  // `config.yaml`, which the server refuses mid-run.
+  function refreshQuerySliceControls() {
+    var busy = uiBusy();
+    document.getElementById("query-up-btn").disabled = busy || querySliceIndex <= 0;
+    document.getElementById("query-down-btn").disabled =
+        busy || querySliceIndex < 0 || querySliceIndex >= savedSlices.length - 1;
+    document.getElementById("query-unpin-btn").disabled = busy || querySliceIndex < 0;
+  }
+
+  registerBusyRefresh(refreshQuerySliceControls);
+
+  function renderQuerySliceActions(data) {
+    querySliceIndex = -1;
+    savedSlices.forEach(function (s, i) {
+      if (s.slice === data.slice) querySliceIndex = i;
+    });
+    refreshQuerySliceControls();
+    pinStatus("query-pin-status", "");
+    renderQuerySliceAlbum(data);
+  }
+
+  // Arrows rather than dragging: one way to reorder, and the one a keyboard reaches. The
+  // whole list comes back from the server, so the row on screen cannot drift from the file.
+  function moveSavedSlice(delta) {
+    if (!querySlice) return;
+    postJson("/api/saved-slices/move", { slice: querySlice, delta: delta })
+      .then(function (resp) {
+        if (!resp.ok) { pinStatus("query-pin-status", pinErrorText(resp)); return; }
+        // The panel is reloaded even though the slice has not changed: the arrows are
+        // drawn from the POSITION, and a pin that has just reached the top has to lose
+        // the arrow that took it there.
+        slicePending = "query:" + querySlice;
+        queryLoaded = false;
+        loadSlices();
+      });
+  }
+
+  document.getElementById("query-up-btn").addEventListener("click", function () {
+    moveSavedSlice(-1);
+  });
+  document.getElementById("query-down-btn").addEventListener("click", function () {
+    moveSavedSlice(1);
+  });
+
+  document.getElementById("query-unpin-btn").addEventListener("click", function () {
+    if (!querySlice) return;
+    // The confirmation names what goes and what stays: unpinning removes a line of the
+    // config file and not one photograph.
+    if (!window.confirm(fmt(I18N.pin_unpin_confirm,
+                            { name: savedSliceLabel(querySlice) }))) return;
+    postJson("/api/saved-slices/unpin", { slice: querySlice })
+      .then(function (resp) {
+        if (!resp.ok) { pinStatus("query-pin-status", pinErrorText(resp)); return; }
+        querySlice = null;
+        queryLoaded = false;
+        slicePending = null;
+        loadSlices();
+      });
+  });
 
   // F54: «Люди»/«События» скрыты по умолчанию (без мигания) и раскрываются
   // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
@@ -10336,6 +10883,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
           // itself never gets to say it.
           face: !!data.face,
         };
+        // F156: and WHY each of them is empty, when it is. Two answers and not one —
+        // "nobody has looked yet" carries a link to the run screen, "it was computed and
+        // there is nothing" is a fact the collection has already stated.
+        sliceReasons = data.reasons || {};
         renderSlicePins();
         // A slice that has just disappeared must not stay selected — but the person is
         // never pulled off a TAB, so the fallback is the first slice, not another tab.
@@ -11744,6 +12295,12 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
      // F145: saving the whole set of duplicate choices writes `dedup_choice` for every
      // group on the tab at once — the largest single write the review side has.
      "dupes-save-all-btn",
+     // F156: pinning writes `features.saved_slices`, and the server refuses a config
+     // write mid-run like every other one — so the button says so instead of being
+     // found out by clicking. The three controls INSIDE a pinned slice have a rule of
+     // their own (the ends of the row) and register `refreshQuerySliceControls` below,
+     // where the two rules meet in one place.
+     "slice-pin-btn",
      "folder-lang-select"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = busy; }
@@ -12482,7 +13039,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         selectedForMergeCount = 0;
         updateMergeButton();
         if (!clusters.length) {
-          container.appendChild(stateEl("empty", I18N.no_clusters));
+          container.appendChild(sliceEmptyState("person", I18N.no_clusters));
           return;
         }
         var named = clusters.filter(function (c) { return c.label; });
@@ -12591,7 +13148,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
       .then(function (events) {
         container.textContent = "";
         if (!events.length) {
-          container.appendChild(stateEl("empty", I18N.no_events));
+          container.appendChild(sliceEmptyState("event", I18N.no_events));
           return;
         }
         events.forEach(function (e) { container.appendChild(renderEventCard(e)); });
@@ -12984,6 +13541,9 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
     },
     card: renderAnimalCard,
     emptyText: function () { return I18N.animals_empty; },
+    // F156: "no animals were found" is only true once the stage has looked. With
+    // `features.pets` off, or before any run, the honest answer is the other one.
+    emptyEl: function () { return sliceEmptyState("animal", I18N.animals_empty); },
     errorText: function () { return I18N.error_loading_animals; },
     after: function (data, shown) {
       animalsTotal = data.total;
@@ -13017,7 +13577,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
         // page is not re-fetched, because a reload after every decision would send the
         // reader back to the first screen.
         var shown = animalsPager.sync(animalsTotal);
-        if (!shown) grid.appendChild(stateEl("empty", I18N.animals_empty));
+        if (!shown) grid.appendChild(sliceEmptyState("animal", I18N.animals_empty));
         renderAnimalsCounted(shown, resp.animals);
       })
       .catch(function (err) { status.textContent = I18N.animals_error_prefix + err; });
@@ -13782,6 +14342,13 @@ _BUSY_GUARDED_ROUTES = frozenset({
     "/api/dupes/trash", "/api/photo/trash", "/api/photos/trash", "/api/album",
     # ...and config.yaml.
     "/api/source-tree/excludes",
+    # F156: the three writes of `features.saved_slices`. Nothing a run reads is touched by
+    # them — the pins are read by the Slices tab and by nothing else — and the guard is
+    # here for the FILE: each one is a read-modify-write of config.yaml, `busy_lock`
+    # serializes them against each other and against the two config writers that were
+    # already guarded (`/api/settings`, `/api/config/language`), and two of those cycles
+    # crossing would lose one of the two edits entirely.
+    "/api/saved-slices/pin", "/api/saved-slices/unpin", "/api/saved-slices/move",
 })
 # The POST routes that stay live on purpose: cancelling is what a person reaches for
 # WHILE something runs, and the folder picker only reads.
@@ -13964,6 +14531,12 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_set_language()
             elif path == "/api/settings":
                 self._handle_save_settings()
+            elif path == "/api/saved-slices/pin":
+                self._handle_pin_saved_slice()
+            elif path == "/api/saved-slices/unpin":
+                self._handle_unpin_saved_slice()
+            elif path == "/api/saved-slices/move":
+                self._handle_move_saved_slice()
             elif path == "/api/browse":
                 self._handle_browse()
             elif path == "/api/source-tree/excludes":
@@ -14531,6 +15104,91 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                                         status=HTTPStatus.INTERNAL_SERVER_ERROR)
                         return
             self._send_json({"ok": True, "settings": _settings_payload(cfg)})
+
+        # --- F156: the pinned queries a person makes for themselves ------------------
+
+        def _pins_json(self) -> dict:
+            """The answer every one of the three writes below sends back.
+
+            The WHOLE list rather than the one entry that changed: the pin row is redrawn
+            from it, and a client that patched its own copy would be the second place the
+            order is decided — which is how a row on screen starts disagreeing with the
+            file that holds it.
+            """
+            return {
+                "ok": True,
+                "slices": [{"slice": s.name, "queries": list(s.queries)}
+                           for s in cfg.features.saved_slices],
+                "max_pinned": int(cfg.features.max_pinned_slices),
+            }
+
+        def _write_saved_slices(self, slices: tuple[SavedSlice, ...]) -> bool:
+            """Apply the new pin list and persist it; False -> the answer is already sent.
+
+            The running config is changed first and rolled BACK if the file cannot be
+            written, which is the one place this differs from `_handle_save_settings`: a
+            pin exists to survive a restart, so a pin that applied and did not save would
+            be a promise the next start breaks. Without a `config_path` (a server started
+            without a config file) the pin still applies for this session — nothing else
+            can be offered there, and refusing would take the feature away from it.
+            """
+            previous = cfg.features.saved_slices
+            _apply_saved_slices(cfg, slices)
+            if config_path is None:
+                return True
+            try:
+                save_saved_slices(config_path, slices)
+            except OSError as exc:
+                _apply_saved_slices(cfg, previous)
+                self._send_json({"error": f"could not save config: {exc}"},
+                                status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return False
+            return True
+
+        def _handle_pin_saved_slice(self) -> None:
+            # The query being pinned is NOT run here and no model is loaded: pinning saves
+            # words, and the ranking happens when the slice is opened, exactly as it does
+            # for the slices that ship in the config file.
+            parsed = _validate_pin_payload(self._read_json_body())
+            if parsed is None:
+                self._send_json({"error": "empty query", "reason": _PIN_EMPTY},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            name, query = parsed
+            result = _pinned_with(cfg, name, query)
+            if isinstance(result, str):
+                # The refusal is spelled out — a limit that is reached in silence looks
+                # exactly like a button that does not work.
+                self._send_json({"error": f"cannot pin: {result}", "reason": result,
+                                 "max_pinned": int(cfg.features.max_pinned_slices)},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            if self._write_saved_slices(result):
+                self._send_json({**self._pins_json(), "slice": name})
+
+        def _handle_unpin_saved_slice(self) -> None:
+            # Removes a config entry. No file is touched, no row is deleted, and the
+            # frames the slice ranked are where they were — the confirmation the interface
+            # asks for says exactly that, because "remove the slice" and "remove the
+            # photographs" are one word apart in every language this speaks.
+            name = _validate_slice_name_payload(self._read_json_body())
+            slices = _pinned_without(cfg, name) if name is not None else None
+            if slices is None:
+                self._send_json({"error": "unknown slice"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            if self._write_saved_slices(slices):
+                self._send_json(self._pins_json())
+
+        def _handle_move_saved_slice(self) -> None:
+            parsed = _validate_move_payload(self._read_json_body())
+            slices = _pinned_moved(cfg, *parsed) if parsed is not None else None
+            if slices is None:
+                self._send_json({"error": "unknown slice"},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            if self._write_saved_slices(slices):
+                self._send_json(self._pins_json())
 
         def _handle_browse(self) -> None:
             self._send_json({"path": _browse_for_folder()})
