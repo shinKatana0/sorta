@@ -402,6 +402,7 @@ def _is_under(path: str, directory: str) -> bool:
         return False
     return target.startswith(root + os.sep) or target.startswith(root + "/")
 
+
 # The population every per-file number is counted over — exactly the files the sorter
 # lays out (`plan_and_sort`), so a counter here matches what an apply will carry off.
 _OVERVIEW_LIVE = "f.dup_of IS NULL AND f.error IS NULL"

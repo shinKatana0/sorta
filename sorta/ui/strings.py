@@ -11,7 +11,6 @@ strings are substituted into.
 from __future__ import annotations
 
 
-
 # F133: the tabs are named after what a person DOES, not after the code that computed
 # the numbers. Three things can be done to a collection and they differ by what they do
 # to the file system: one canon (a physical move), any number of slices (hardlinks, free
