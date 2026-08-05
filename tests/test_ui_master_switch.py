@@ -223,12 +223,23 @@ class TestTheOverviewBlockHoldsItsHeight(MarkupCase):
         self.assertIn('if (overviewEmpty) return "\\u2014";', self.body("overviewStat"))
 
     def test_the_four_cards_are_built_either_way(self):
-        """No early return before them any more — that early return WAS the jump."""
+        """No early return before them any more — that early return WAS the jump.
+
+        The four calls used to sit in `renderOverview` and F190 moved them into
+        `overviewGroups`, which is why this asserts through it rather than at it. That
+        is the STRONGER claim, not a weaker one: the skeleton and the loaded state both
+        go through that one builder, so they cannot drift apart by editing one of them.
+        """
         body = self.body("renderOverview")
+        self.assertIn("overviewGroups(data)", body)
+        self.assertNotIn("return;", body)
+        groups = self.body("overviewGroups")
         for card in ("overviewCollectionCard", "overviewPlaceCard",
                      "overviewClassesCard", "overviewLayoutCard"):
-            self.assertIn(card + "(data)", body)
-        self.assertNotIn("return;", body)
+            self.assertIn(card + "(data)", groups)
+        # The loading state builds its cards with the same function and no other.
+        self.assertIn("overviewGroups(overviewSkeletonData())",
+                      self.body("renderOverviewSkeleton"))
 
     def test_the_stub_and_its_button_are_gone(self):
         self.assertNotIn("overview-start-btn", self.html)
