@@ -891,10 +891,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Только выбранные ({n})", "en": "Selected only ({n})",
         "ja": "選択したものだけ（{n}）",
     },
+    # Stands beside the button whenever the scope is OFF — which is both "nothing is
+    # ticked yet" and "the scope was switched off by hand", and the sentence has to be
+    # true of both: it states what the button will gather, not why.
     "album_selection_hint": {
-        "ru": "Ничего не отмечено — в папку пойдёт весь срез.",
-        "en": "Nothing is ticked — the whole slice goes into the folder.",
-        "ja": "何も選択されていません — スライス全体がフォルダに入ります。",
+        "ru": "В папку пойдёт весь срез.",
+        "en": "The whole slice goes into the folder.",
+        "ja": "スライス全体がフォルダに入ります。",
     },
     "album_error_empty_selection": {
         "ru": "Не выбрано ни одного кадра: отметьте кадры или снимите «только выбранные».",
