@@ -1482,9 +1482,17 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "修正を保存できません: ",
     },
     # F85c: assigning a place to a whole group by hand
+    # F202: the field takes a region too, and the placeholder says so — a person who
+    # reads "city or country" does not type «Карелия», which is the one name they know
+    # for the 7 492 frames this feature exists for.
     "place_search_placeholder": {
-        "ru": "Город или страна", "en": "City or country", "ja": "都市または国",
+        "ru": "Город, область или страна", "en": "City, region or country",
+        "ja": "都市・地域・国",
     },
+    # F202: the word that tells a region option from a city one in the list. One name is
+    # regularly both — «Алтай» is a Russian republic and two Mongolian towns — and the
+    # level is the whole difference between «Россия/Алтай/2023» and «Монголия/…».
+    "place_kind_region": {"ru": "область", "en": "region", "ja": "地域"},
     "place_assign_button": {
         "ru": "Назначить место", "en": "Assign place", "ja": "場所を指定",
     },
@@ -1752,6 +1760,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "no city resolved — only the country is known",
         "ja": "都市は不明で、国だけが分かっています",
     },
+    # F202: the level between the two — the region the user named by hand, with no city
+    # under it. The reason exists so the plan says WHICH level the decision was made at.
+    "dest_why_region_only": {
+        "ru": "город не указан — место назначено на уровне области",
+        "en": "no city given — the place was assigned at the region level",
+        "ja": "都市の指定はなく、地域のレベルで場所が指定されています",
+    },
     "dest_why_low_date": {
         "ru": "у кадра нет надёжной даты съёмки",
         "en": "the frame carries no reliable capture date",
@@ -1773,6 +1788,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "dest_group_city": {"ru": "в города", "en": "into cities", "ja": "都市へ"},
     "dest_group_country": {
         "ru": "на уровень страны", "en": "to the country level", "ja": "国のレベルへ",
+    },
+    "dest_group_region": {
+        "ru": "на уровень области", "en": "to the region level", "ja": "地域のレベルへ",
     },
     "dest_group_no_place": {
         "ru": "в «без места»", "en": "into “no place”", "ja": "「場所不明」へ",

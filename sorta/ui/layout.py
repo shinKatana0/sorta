@@ -39,6 +39,10 @@ from .common import (
     _CLUSTER_SAMPLE_LIMIT, _DEFAULT_ALBUM_DIRNAME, _EVENT_SAMPLE_LIMIT, _SUPPORTED_MODES,
     _UI_LANGS, _connect, _is_under, _log, _validate_file_ids_payload,
 )
+# F202: a region option has to SAY it is a region — one word can be a city and a region
+# at once («Алтай» is both) — and that word is a caption, so it comes from the catalog
+# through the same resolver the page fills its placeholders with.
+from .page import _t
 
 
 def _plan_item_to_json(item: PlanItem,
@@ -421,6 +425,9 @@ _PLACE_SEARCH_LIMIT = 12
 # short — a two-letter prefix matches a dozen country names on its own ("ma": Macao,
 # Madagascar, Malawi, Malaysia, Maldives, Mali, Malta, Marshall Islands...).
 _PLACE_COUNTRY_LIMIT = 4
+# F202: and the region half is capped for the same reason — «Se» begins the name of a
+# dozen regions, and the cities they would push out are what most searches are about.
+_PLACE_REGION_LIMIT = 4
 # Below this many characters the picker does not search at all. One letter is not a
 # request: it matches thousands of settlements, so the answer would be noise, and an
 # empty answer to it must not be read as "no such place" either (see
@@ -445,11 +452,18 @@ def _geo_resolver() -> GeoResolver:
 
 @dataclasses.dataclass(frozen=True)
 class _ManualPlace:
-    """What a `manual_places` row holds: a country, optionally narrowed to one city."""
+    """What a `manual_places` row holds: a country, narrowed to one region or one city.
+
+    F202: the three levels are one choice, never a mix — a row carries a city, or a
+    region, or neither. That is F85c's rule («the place comes from ONE source») applied
+    inside the manual row itself: a region the user named must not acquire the city the
+    program inferred, and the validator refuses a body that asks for both.
+    """
 
     country: str
     city: str | None = None
     city_geonameid: int | None = None
+    region_geonameid: int | None = None
 
 
 def _country_label(cc: str, lang: i18n.Lang) -> str:
@@ -475,10 +489,56 @@ def _city_option(gid: int, cc: str, lang: i18n.Lang) -> dict:
     city_name = resolver.name(gid, lang)
     details = ", ".join(p for p in (region_name, _country_label(cc, lang)) if p)
     return {
-        "kind": "city", "country": cc, "city_geonameid": gid,
+        "kind": "city", "country": cc, "city_geonameid": gid, "region_geonameid": None,
         "city": resolver.name(gid, "en"),
         "label": f"{city_name} ({details})" if details else city_name,
     }
+
+
+def _region_option(gid: int, cc: str, lang: i18n.Lang) -> dict:
+    """One admin1 region of the answer — F202.
+
+    The label names the LEVEL and not only the country, because one word is regularly
+    both a city and a region: «Алтай» is a Russian republic and two Mongolian towns, and
+    a list that shows the three of them without saying which is which asks the user to
+    guess. The country still follows, for the same reason a city label carries it.
+    """
+    resolver = _geo_resolver()
+    details = ", ".join((_t("place_kind_region", lang), _country_label(cc, lang)))
+    return {
+        "kind": "region", "country": cc, "city_geonameid": None, "city": None,
+        "region_geonameid": gid,
+        "label": f"{resolver.name(gid, lang)} ({details})",
+    }
+
+
+def _region_candidates(query: str, lang: i18n.Lang,
+                       limit: int = _PLACE_REGION_LIMIT) -> list[dict]:
+    """Admin1 regions whose name in ANY of the three languages starts with `query`.
+
+    The order follows `_city_candidates`: a finished name first (typing «Крым» in full
+    means that region, whatever else begins with it), then alphabetically by the shown
+    name — regions carry no population to rank by, and an arbitrary order in a list of
+    four is a list that reshuffles itself between two identical searches.
+
+    A region with no country is dropped like a city with none: the layout starts at the
+    country folder, so such an option could not be laid out at all.
+    """
+    resolver = _geo_resolver()
+    exact: set[int] = set()
+    found: set[int] = set()
+    for search_lang in _UI_LANGS:
+        exact.update(resolver.region_ids_by_name(query, search_lang))  # type: ignore[arg-type]
+        found.update(resolver.region_ids_by_prefix(query, search_lang))  # type: ignore[arg-type]
+    found |= exact
+    with_country: list[tuple[int, str]] = []
+    for gid in found:
+        key = resolver.region_key_by_id(gid)
+        if key is not None and key[0]:
+            with_country.append((gid, key[0]))
+    with_country.sort(key=lambda pair: (pair[0] not in exact,
+                                        resolver.name(pair[0], lang)))
+    return [_region_option(gid, cc, lang) for gid, cc in with_country[:limit]]
 
 
 def _city_candidates(query: str, lang: i18n.Lang, limit: int = _PLACE_SEARCH_LIMIT,
@@ -543,16 +603,20 @@ def _country_candidates(query: str, lang: i18n.Lang,
     for cc in sorted(by_prefix, key=lambda c: _country_label(c, lang)):
         add(cc)
     return [{"kind": "country", "country": cc, "city_geonameid": None, "city": None,
-             "label": _country_label(cc, lang)} for cc in ordered[:limit]]
+             "region_geonameid": None, "label": _country_label(cc, lang)}
+            for cc in ordered[:limit]]
 
 
 def _places_search(query: str, lang: i18n.Lang) -> list[dict]:
-    """`GET /api/places/search` — what the typed text may mean, country first.
+    """`GET /api/places/search` — what the typed text may mean, widest level first.
 
     Country first because it is the safer answer: a wrong country is a mistake the user
     can see in one glance at the plan, and the country level is where a file with no
-    other signal belongs anyway. Both halves read ONLY the bundled base — no network, no
-    model, and nothing is written until the user picks one and confirms.
+    other signal belongs anyway. F202 puts REGIONS second by the same measure: the
+    bigger the miss, the more visible it is in the plan, and a wrong region reads almost
+    as loudly as a wrong country while a wrong city disappears among the right ones.
+    All three halves read ONLY the bundled base — no network, no model, and nothing is
+    written until the user picks one and confirms.
 
     The text is treated as a PREFIX, because that is what a combobox promises: the field
     is typed into letter by letter, and an answer that arrives only on the finished name
@@ -564,6 +628,7 @@ def _places_search(query: str, lang: i18n.Lang) -> list[dict]:
         return []
     try:
         results = _country_candidates(text, lang)
+        results.extend(_region_candidates(text, lang))
         results.extend(_city_candidates(text, lang,
                                         limit=_PLACE_SEARCH_LIMIT - len(results)))
     except GeoDataMissing:
@@ -594,10 +659,16 @@ def _validate_place_payload(
 ) -> tuple[str, str, str, _ManualPlace | None, bool] | None:
     """Parse the body of `POST /api/place`:
     `{"kind": "event"|"source_dir", "selector": str, "action": "assign"|"clear",
-      "country": str?, "city_geonameid": int?, "include_gps": bool?}`.
+      "country": str?, "city_geonameid": int?, "region_geonameid": int?,
+      "include_gps": bool?}`.
 
     None -> invalid (400). `assign` needs a country (a city alone would leave the layout
-    without its top folder); `city_geonameid` is optional and narrows it to one city.
+    without its top folder); `city_geonameid` is optional and narrows it to one city,
+    `region_geonameid` (F202) narrows it to a region instead. The two are mutually
+    exclusive: a body carrying both asks for a place at two levels at once, and quietly
+    honouring one of them is how a hand-picked region ends up with an inferred city
+    under it. An id that is not a region of the bundled base is refused as well — the
+    layout would have nothing to name the folder with.
     The selector is NOT resolved here — an event id is looked up in the DB, and a source
     folder is only ever COMPARED against `files.path`, never opened (see
     `_place_target_ids`).
@@ -618,16 +689,23 @@ def _validate_place_payload(
     if not isinstance(country, str) or not country.strip():
         return None
     gid = payload.get("city_geonameid")
-    if gid is not None and (not isinstance(gid, int) or isinstance(gid, bool)):
+    region_gid = payload.get("region_geonameid")
+    for value in (gid, region_gid):
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+            return None
+    if gid is not None and region_gid is not None:
         return None
     city = None
-    if gid is not None:
-        try:
+    try:
+        if gid is not None:
             city = _geo_resolver().name(gid, "en")
-        except GeoDataMissing:
+        if region_gid is not None and _geo_resolver().region_key_by_id(region_gid) is None:
             return None
+    except GeoDataMissing:
+        return None
     return (kind, selector.strip(), action,
-            _ManualPlace(country=country.strip().upper(), city=city, city_geonameid=gid),
+            _ManualPlace(country=country.strip().upper(), city=city, city_geonameid=gid,
+                         region_geonameid=region_gid),
             include_gps)
 
 
@@ -689,16 +767,22 @@ def _apply_bulk_place(db_path: Path, kind: str, selector: str, action: str,
                         f"DELETE FROM manual_places WHERE file_id IN ({ph})", ids)
                 else:
                     assert place is not None  # guaranteed by _validate_place_payload
+                    # Every column of the place is written on a conflict, the empty ones
+                    # included: an assignment replaces the whole place (F85c), so a
+                    # region assigned over a city has to CLEAR that city rather than
+                    # leave it standing one level down (F202).
                     conn.executemany(
                         """INSERT INTO manual_places
-                               (file_id, country, city, city_geonameid, updated_at)
-                           VALUES (?, ?, ?, ?, ?)
+                               (file_id, country, city, city_geonameid,
+                                region_geonameid, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?)
                            ON CONFLICT(file_id) DO UPDATE SET
                                country = excluded.country, city = excluded.city,
                                city_geonameid = excluded.city_geonameid,
+                               region_geonameid = excluded.region_geonameid,
                                updated_at = excluded.updated_at""",
-                        [(fid, place.country, place.city, place.city_geonameid, now)
-                         for fid in ids])
+                        [(fid, place.country, place.city, place.city_geonameid,
+                          place.region_geonameid, now) for fid in ids])
     finally:
         conn.close()
     return {
@@ -706,6 +790,7 @@ def _apply_bulk_place(db_path: Path, kind: str, selector: str, action: str,
         "affected": len(ids), "skipped_gps": skipped_gps,
         "country": place.country if place else None,
         "city_geonameid": place.city_geonameid if place else None,
+        "region_geonameid": place.region_geonameid if place else None,
     }
 
 

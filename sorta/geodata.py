@@ -169,6 +169,14 @@ class GeoResolver:
         # casefold keys, without changing the _names/_places format.
         self._country_name_idx: dict[str, dict[str, str]] = {}
         self._city_name_idx: dict[str, dict[str, list[int]]] = {}
+        # F202: the same reverse lookup for admin1 regions — name -> geonameids. A
+        # region is a place a person names («Карелия», «Тоскана») and the picker has to
+        # find it; 3 865 of them is small enough that a scan of the built index answers
+        # a prefix without an index of its own (the reasoning of country_ccs_by_prefix).
+        self._region_name_idx: dict[str, dict[str, list[int]]] = {}
+        # geonameid -> (cc, admin1): the reverse of _region_gid, so an id that arrived
+        # from outside can be checked for being a region at all.
+        self._region_key_by_gid: dict[int, tuple[str, str]] = {}
         # F201: (word, geonameid) sorted by word — the prefix index behind the place
         # picker, lazily built per lang like the two above.
         self._city_prefix_idx: dict[str, list[tuple[str, int]]] = {}
@@ -255,6 +263,7 @@ class GeoResolver:
                 if not cc or not admin1:
                     continue
                 self._region_gid[(cc, admin1)] = gid
+                self._region_key_by_gid[gid] = (cc, admin1)
                 if name_en:
                     self._extra_en[gid] = name_en
 
@@ -493,6 +502,78 @@ class GeoResolver:
         (different countries/regions).
         """
         return list(self._city_name_index(lang).get(name.strip().casefold(), []))
+
+    # --- F202: the same lookups for admin1 REGIONS ------------------------------------
+    # The base has always known regions — every city label reads «Петрозаводск
+    # (Карельская республика, Россия)» — and nothing could be FOUND by one. People think
+    # in regions where the collection has no city: «Карелия», «Тоскана», «Крым» are the
+    # honest answer for frames whose owner remembers the trip and not the settlement.
+    # A region carries its own geonameid (admin1.tsv), so it localizes through names.tsv
+    # exactly as a city does, in the same three languages.
+
+    def _region_name_index(self, lang: Lang) -> dict[str, list[int]]:
+        """casefold(region name in lang, en fallback like in name()) -> geonameids.
+
+        A list, not one id: region names repeat across countries («Altai» is a Russian
+        republic and a Mongolian province is «Govi-Altai», but «Northern» is a region of
+        a dozen countries), and picking between them is the user's business. Built once
+        per lang and cached, like the city and country indexes above.
+
+        The short administrative name of admin1.tsv is indexed BESIDE the localized one,
+        because the base spells one region two ways and a person types either: 552548 is
+        «Republic of Karelia» in names.tsv and plainly «Karelia» in admin1.tsv. Only the
+        localized name is ever SHOWN (see `region_name`) — this is about what can be
+        found, not about what a label reads.
+        """
+        self._ensure_loaded()
+        lang_key = str(lang).strip().lower()
+        idx = self._region_name_idx.get(lang_key)
+        if idx is None:
+            idx = {}
+            for gid in self._region_gid.values():
+                for nm in (self.name(gid, lang), self._extra_en.get(gid, "")):
+                    if not nm or nm == str(gid):
+                        continue
+                    bucket = idx.setdefault(nm.casefold(), [])
+                    if gid not in bucket:
+                        bucket.append(gid)
+            self._region_name_idx[lang_key] = idx
+        return idx
+
+    def region_ids_by_name(self, name: str, lang: Lang) -> list[int]:
+        """A localized (or en) region name in lang -> geonameids; empty — not found."""
+        return list(self._region_name_index(lang).get(name.strip().casefold(), []))
+
+    def region_ids_by_prefix(self, prefix: str, lang: Lang) -> list[int]:
+        """geonameids of regions whose name in `lang` has `prefix` at a word start.
+
+        Scanned linearly for the reason `country_ccs_by_prefix` gives: 3 865 regions is
+        a fortieth of the city index, and an index over them would cost more to build
+        than every scan it saves. Order carries no meaning — the caller ranks.
+        """
+        key = prefix.strip().casefold()
+        if not key:
+            return []
+        out: list[int] = []
+        seen: set[int] = set()
+        for name, gids in self._region_name_index(lang).items():
+            if not _starts_a_word(name, key):
+                continue
+            for gid in gids:
+                if gid not in seen:
+                    seen.add(gid)
+                    out.append(gid)
+        return out
+
+    def region_key_by_id(self, geonameid: int) -> tuple[str, str] | None:
+        """(cc, admin1) of a REGION geonameid; None — not a region of admin1.tsv.
+
+        The reverse of the key `region_name` takes, and the check an id that came from
+        outside has to pass: `name()` answers anything at all (it ends its chain with the
+        number itself), so it cannot tell a region from a typo.
+        """
+        self._ensure_loaded()
+        return self._region_key_by_gid.get(geonameid)
 
     # --- F201: prefix lookups (for a picker that answers while the name is typed) ---
     # The full-name lookups above are right for `--where city=`, where the name is typed

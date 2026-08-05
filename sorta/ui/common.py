@@ -337,6 +337,10 @@ _DEST_GROUPS: dict[str, str] = {
     "city": "city",
     "manual_reassign": "city",
     "country_only": "country",
+    # F202: the third level of the place layout is a group of its own — folding it into
+    # `country` would make the caption say "to the country level" about frames that land
+    # a folder deeper, in a region the user named themselves.
+    "region_only": "region",
     "no_place": "no_place",
     "low_date": "undated",
     "downloaded": "undated",

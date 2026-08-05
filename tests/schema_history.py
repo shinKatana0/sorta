@@ -58,6 +58,7 @@ SCHEMA_HISTORY: dict[int, tuple[str, ...]] = {
     25: ("frame_quality.face_sharpness",),
     26: (),  # F177: no new shape — it empties frame_quality.has_subject.
     27: ("frame_quality.eye_openness",),
+    28: ("manual_places.region_geonameid",),
 }
 
 

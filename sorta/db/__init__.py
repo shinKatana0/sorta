@@ -117,6 +117,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
                      "WHERE has_subject IS NOT NULL")
     if 15 <= version <= 26:  # v27: frame_quality.eye_openness (F179 — the eyelid geometry)
         conn.execute("ALTER TABLE frame_quality ADD COLUMN eye_openness REAL")
+    # manual_places itself only appeared in v14, so the range starts there: an older DB
+    # gets the column with the table from executescript below.
+    if 14 <= version <= 27:  # v28: manual_places.region_geonameid (F202 — a region place)
+        conn.execute("ALTER TABLE manual_places ADD COLUMN region_geonameid INTEGER")
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
