@@ -2590,6 +2590,76 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "layout_review_goto": {
         "ru": "К «Разбору»", "en": "Go to Review", "ja": "「仕分け」へ",
     },
+    # --- F192: the layout screen is a workplace, not a control panel -------------------
+    # Thirteen controls held the top of the tab and two of them were needed every time.
+    # These are the two, and they are named as questions rather than as fields, because
+    # that is how a person arrives at this tab: where do I put it, and by what.
+    "layout_where_title": {
+        "ru": "Куда раскладывать", "en": "Where to lay it out", "ja": "どこへ振り分けるか",
+    },
+    "layout_by_title": {
+        "ru": "По какому признаку", "en": "By what", "ja": "何を基準に",
+    },
+    # The three values are `sorter.MODES` — the same criteria `sorta sort --by` has laid
+    # a collection out by since F5. Only the city one was reachable from the web app.
+    "layout_by_city": {"ru": "По городам", "en": "By city", "ja": "都市ごと"},
+    "layout_by_person": {"ru": "По людям", "en": "By person", "ja": "人物ごと"},
+    "layout_by_event": {"ru": "По событиям", "en": "By event", "ja": "イベントごと"},
+    "layout_by_hint_city": {
+        "ru": "Страна / город / год — канон коллекции.",
+        "en": "Country / city / year — the canon of the collection.",
+        "ja": "国 / 都市 / 年 — コレクションの正本です。",
+    },
+    "layout_by_hint_person": {
+        "ru": "Имя человека / год; кадры с несколькими лицами — в «общие».",
+        "en": "Person's name / year; frames with several faces go to «shared».",
+        "ja": "人物名 / 年。複数の顔が写るコマは「共有」に入ります。",
+    },
+    "layout_by_hint_event": {
+        "ru": "Год / событие; кадры вне событий — по дате.",
+        "en": "Year / event; frames outside any event go by date.",
+        "ja": "年 / イベント。イベントに属さないコマは日付順になります。",
+    },
+    # The one sentence that keeps the two relationships to the file system apart. The
+    # layout MOVES the originals; an album is a set of links built beside them and is
+    # gathered on another tab. Both can be asked for "by person", which is exactly why
+    # the difference has to be written down where the choice is made.
+    "layout_moves_hint": {
+        "ru": "Раскладка перемещает сами файлы. Альбом — ссылки рядом с каноном, он "
+              "собирается на вкладке «Срезы» и ничего не перемещает.",
+        "en": "A layout moves the files themselves. An album is a set of links beside "
+              "the canon — it is gathered on the Slices tab and moves nothing.",
+        "ja": "振り分けはファイルそのものを移動します。アルバムは正本の隣に作られる"
+              "リンクで、「スライス」タブで作成され、何も移動しません。",
+    },
+    "layout_options_button": {
+        "ru": "Настройки раскладки", "en": "Layout settings", "ja": "振り分けの設定",
+    },
+    "layout_options_title": {
+        "ru": "Настройки раскладки", "en": "Layout settings", "ja": "振り分けの設定",
+    },
+    "layout_transfer_title": {
+        "ru": "Способ переноса", "en": "Transfer mode", "ja": "転送方法",
+    },
+    "layout_transfer_hint": {
+        "ru": "«Переместить» освобождает место и откатывается по журналу; "
+              "«Копировать» оставляет исходное дерево нетронутым.",
+        "en": "«Move» frees the space and is rolled back from the journal; «Copy» "
+              "leaves the source tree untouched.",
+        "ja": "「移動」は容量を空け、履歴から元に戻せます。「コピー」は元のツリーを"
+              "そのまま残します。",
+    },
+    "layout_corrections_title": {
+        "ru": "Ручные правки плана", "en": "Manual corrections to the plan",
+        "ja": "プランの手動修正",
+    },
+    "layout_places_title": {
+        "ru": "Место для группы кадров", "en": "Place for a group of frames",
+        "ja": "コマのグループの場所",
+    },
+    "layout_tree_title": {
+        "ru": "Дерево плана", "en": "The plan tree", "ja": "プランのツリー",
+    },
     "settings_open_button": {
         "ru": "Настройки", "en": "Settings", "ja": "設定",
     },

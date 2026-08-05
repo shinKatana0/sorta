@@ -610,10 +610,34 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .place-row-btn { margin-left: var(--space-sm); }
 .place-manual { margin-left: var(--space-sm); }
 
-.sort-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; margin: var(--space-md) 0; }
-.sort-controls input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
 .sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
 .sort-mode-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
+
+/* --- F192: the desk. Two questions side by side — where to lay it out, and by what —
+   and nothing else above the fold. The rest of what the tab could do is not gone: it is
+   one click away behind the gear, in a block that opens IN PLACE rather than as a drawer
+   over the page, because the corrections and the place picker inside it are used while
+   looking at the plan tree below them. --- */
+.layout-desk { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: var(--space-md); margin: var(--space-md) 0; }
+.layout-field { display: flex; flex-direction: column; gap: var(--space-sm);
+      padding: var(--space-md); border: 1px solid var(--line);
+      border-radius: var(--radius-md); background: var(--card); }
+.layout-field-title { font-weight: 600; font-size: 0.9rem; }
+.layout-field-row { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; }
+.layout-field-row input[type="text"] { flex: 1; min-width: 200px; padding: 8px 10px; }
+.layout-by-select { flex: 1; min-width: 200px; padding: 8px 10px; }
+.layout-run { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; }
+.layout-options { display: flex; flex-direction: column; gap: var(--space-md);
+      margin: 0 0 var(--space-md) 0; padding: var(--space-md);
+      border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--card); }
+.layout-options[hidden] { display: none; }
+.layout-options-head { display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-sm); }
+.layout-option-block { display: flex; flex-direction: column; gap: var(--space-sm); }
+.layout-option-block .override-controls, .layout-option-block .place-controls,
+.layout-option-block .tree-controls { margin: 0; }
 
 /* --- F104 (layout A): the settings move into a right-hand column so the action row
    can go back to being a row about STARTING a layout. What made the old row dangerous
