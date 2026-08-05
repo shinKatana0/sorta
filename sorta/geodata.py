@@ -514,10 +514,9 @@ class GeoResolver:
     def _region_name_index(self, lang: Lang) -> dict[str, list[int]]:
         """casefold(region name in lang, en fallback like in name()) -> geonameids.
 
-        A list, not one id: region names repeat across countries («Altai» is a Russian
-        republic and a Mongolian province is «Govi-Altai», but «Northern» is a region of
-        a dozen countries), and picking between them is the user's business. Built once
-        per lang and cached, like the city and country indexes above.
+        A list, not one id: region names repeat across countries — «Northern» names a
+        region in a dozen of them — and picking between them is the user's business.
+        Built once per lang and cached, like the city and country indexes above.
 
         The short administrative name of admin1.tsv is indexed BESIDE the localized one,
         because the base spells one region two ways and a person types either: 552548 is
