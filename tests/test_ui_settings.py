@@ -448,8 +448,12 @@ class TestSettingsMarkup(SettingsTestBase):
         button that moves the collection."""
         side = self.html.split('class="settings-side"', 1)[1].split("</aside>", 1)[0]
         self.assertIn('id="folder-lang-select"', side)
-        row = self.html.split('class="sort-controls"', 1)[1].split("</div>", 1)[0]
-        self.assertNotIn("folder-lang-select", row)
+        # It used to be checked as "not in the `sort-controls` row". F192 took that row
+        # apart, so the absence became vacuous — a claim about a container that no longer
+        # exists passes for the wrong reason. What still says the same thing, and keeps
+        # saying it through the next rearrangement, is that the control exists ONCE: if
+        # it reappeared beside the button that moves the collection, there would be two.
+        self.assertEqual(self.html.count('id="folder-lang-select"'), 1)
 
     def test_no_external_resources_added(self):
         self.assertNotIn("http://", self.html)

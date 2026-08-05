@@ -193,7 +193,7 @@ class TestEverythingThatWritesIsFrozenDuringARun(MarkupCase):
         self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 7)
 
     def test_applying_the_layout_is_dead(self):
-        self.assertIn("applyBtn.disabled = busy || cityPlanCount === 0",
+        self.assertIn("applyBtn.disabled = busy || planCount === 0",
                       self.body("updateBusyControlsDisabled"))
 
     def test_each_group_says_why(self):
