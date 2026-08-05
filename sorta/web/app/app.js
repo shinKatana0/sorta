@@ -976,9 +976,9 @@
     return wrapTable(table);
   }
 
-  // F70: страница файлов одной папки. Первая грузится при раскрытии узла,
-  // следующие — по кнопке «Загрузить ещё»; `total` из ответа показывается как
-  // «показано N из M». DOM-узлы существуют только для реально загруженных строк.
+  // F70: a page of files of one folder. The first is loaded when the node is expanded,
+  // the next ones by the «Загрузить ещё» button; `total` from the response is shown as
+  // «показано N из M». DOM nodes exist only for the rows really loaded.
   var PLAN_PAGE_SIZE = 200;
 
   function renderCategoryFiles(mode, category) {
@@ -1021,18 +1021,18 @@
     return wrap;
   }
 
-  // Ленивое построение узла дерева: содержимое папки (страница файлов + дочерние
-  // папки) создаётся ТОЛЬКО при первом раскрытии <details>, и файлы при этом
-  // запрашиваются у сервера отдельным запросом — до раскрытия ни одного файла
-  // папки в браузере нет вообще.
+  // A node of the tree is built lazily: the contents of a folder (a page of files plus
+  // the child folders) are created ONLY on the first expansion of its <details>, and the
+  // files are asked of the server in a request of their own — before the expansion not a
+  // single file of that folder exists in the browser at all.
   function renderCategoryNode(mode, name, node) {
     var details = document.createElement("details");
     var summary = document.createElement("summary");
     summary.textContent = name + " (" + node.count + ")";
     if (node.category) {
-      // F77: «не трогать» на папку целиком — кнопка в заголовке категории.
-      // Клик внутри <summary> иначе раскрывает/сворачивает узел, поэтому событие
-      // до <details> не доходит.
+      // F77: «не трогать» for a whole folder — the button in the category heading. A
+      // click inside <summary> would otherwise expand or collapse the node, so the
+      // event is stopped before it reaches <details>.
       var folderBtn = makeBtn("danger", null, I18N.override_exclude_folder_button,
           "btn-sm override-folder-btn");
       folderBtn.addEventListener("click", function (e) {
@@ -1066,7 +1066,7 @@
     return details;
   }
 
-  // F43: счётчики последнего плана.
+  // F43: the counters of the last plan.
   // F104: the numbers of the confirmation itself now come from /api/sort/summary (it
   // also knows the volume and what is already in the destination); what stays here is
   // the one question the START button needs answered — is there anything to lay out at
@@ -1086,16 +1086,16 @@
     return select ? select.value : "city";
   }
 
-  // renderPlanTab: дерево папок плана режима (city/person/event) из агрегата —
-  // общий код, переиспользуемый всеми план-вкладками (U2).
+  // renderPlanTab: the folder tree of a mode's plan (city/person/event) built from the
+  // aggregate — shared code, reused by every plan tab (U2).
   function renderPlanTab(mode, containerId) {
     var container = document.getElementById(containerId);
     fetch("/api/plan?mode=" + encodeURIComponent(mode))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         var categories = data.categories || [];
-        // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
-        // в подтверждении раскладки их считать нельзя.
+        // F77: the ones marked «не трогать» stay in the list but do NOT move — they
+        // must not be counted in the layout confirmation.
         planCount = (data.total || 0) - (data.excluded || 0);
         planLoaded = true;
         updateBusyControlsDisabled();
@@ -1178,7 +1178,7 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
-  // --- вкладки ---------------------------------------------------------
+  // --- the tabs --------------------------------------------------------
 
   var dupesLoaded = false;
   var reviewLoaded = false;
@@ -1198,8 +1198,8 @@
       document.getElementById("tab-btn-" + t).classList.toggle("active", t === name);
       document.getElementById("tab-" + t).classList.toggle("active", t === name);
     });
-    // #36: чекбокс «не спрашивать удаление» релевантен только там, где удаляют
-    // (Раскладка/Разбор) — на остальных вкладках это шум, прячем.
+    // #36: the «не спрашивать удаление» checkbox is only relevant where things are
+    // deleted («Раскладка», «Разбор») — on the other tabs it is noise, so it is hidden.
     document.getElementById("delete-remember-row").style.display =
         (name === "layout" || name === "review") ? "" : "none";
     if (name === "review" && !reviewLoaded) {
@@ -1215,9 +1215,9 @@
     // of "Overview" are — the person has just come back from the Review, and a warning
     // one decision out of date is the one that teaches people to ignore warnings.
     if (name === "layout") loadLayoutWarning();
-    // F108: обзор — единственная вкладка без флага «уже загружено». Его открывают
-    // ПОСЛЕ прогона, чтобы увидеть изменения, и устаревшая цифра здесь хуже
-    // отсутствующей — поэтому числа перезапрашиваются на каждом открытии.
+    // F108: the overview is the one tab without an "already loaded" flag. It is opened
+    // AFTER a run, to see what changed, and a stale number here is worse than a missing
+    // one — so the numbers are asked for again on every opening.
     if (name === "overview") loadOverview();
   }
 
@@ -1446,7 +1446,7 @@
     activateTab("slices");
   }
 
-  // --- F134: поиск словами в блоке «Срезы» -----------------------------------
+  // --- F134: searching by words inside the «Срезы» block ---------------------
   // The line F133 drew and left disabled. Everything here is arranged around one state
   // that is not a failure: an index nobody has computed yet. `/api/search` answers with
   // the state of the index on EVERY request — including the empty query this tab asks on
@@ -1456,7 +1456,7 @@
   // from a table that was never filled.
 
   var searchState = null;
-  var searchActive = false;   // результаты на экране -> панель среза занята поиском
+  var searchActive = false;   // results on screen -> the slice panel is held by search
 
   function searchStateText(state) {
     if (!state) return I18N.search_state_checking;
@@ -1974,10 +1974,11 @@
       });
   });
 
-  // F54: «Люди»/«События» скрыты по умолчанию (без мигания) и раскрываются
-  // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
-  // EXISTS-проверок, вызывается при инициализации и после каждого прогона
-  // (refreshTabsAfterProcess), т.к. прогон мог впервые породить кластеры/события.
+  // F54: «Люди» and «События» are hidden by default (without a flash) and appear
+  // according to whether the database holds anything for them (variant B, stateless) —
+  // a fetch of cheap EXISTS checks, called at initialisation and after every run
+  // (refreshTabsAfterProcess), since a run may have produced the first clusters or
+  // events.
   // F133: these three are pinned slices rather than tabs now, and the rule has not
   // moved — there is no slice while the database has nothing to show in it.
   function applyTabVisibility() {
@@ -2070,10 +2071,10 @@
     if (e.target === this) toggleSettingsPanel(false);
   });
 
-  // --- вкладка «Обзор» (F108) --------------------------------------------
-  // Все числа приходят одним запросом /api/overview (простые агрегаты по индексу,
-  // без построения плана) и рисуются четырьмя карточками: коллекция, место,
-  // разбор, раскладка.
+  // --- the «Обзор» tab (F108) --------------------------------------------
+  // Every number arrives in one /api/overview request (plain aggregates over the index,
+  // with no plan built) and is drawn as four cards: the collection, the place, the
+  // review, the layout.
 
   // F145: the empty state draws the SAME rows with a dash where the number will be.
   // Before, it drew an invitation with a button instead — a block of a different height,
@@ -2149,8 +2150,8 @@
     return overviewLoading ? "" : text;
   }
 
-  // Числа читают глазами: 7 619 против 7619. toLocaleString берёт разделитель
-  // разрядов из локали браузера.
+  // Numbers are read by eye: 7 619 against 7619. toLocaleString takes the group
+  // separator from the browser's locale.
   function overviewNum(n) {
     return Number(n || 0).toLocaleString();
   }
@@ -2173,8 +2174,8 @@
     return el;
   }
 
-  // Число, у которого есть своя вкладка, само является переходом на неё. Ноль
-  // ссылкой не делаем: вести на заведомо пустую вкладку не за чем.
+  // A number that has a tab of its own IS the way to that tab. A zero is not made a
+  // link: there is no point leading anyone to a tab known to be empty.
   // F126: a review number leads to its SLICE, not just to the tab — the workspace has
   // four of them and landing on the wrong one is the same as landing nowhere.
   // F133: the same is now true of "Slices", where people, events, animals and the
@@ -2303,16 +2304,17 @@
   function overviewPlaceCard(data) {
     var p = data.place;
     var card = overviewCard(I18N.overview_group_place);
-    // Главное число группы: каждый такой кадр уедет в «_Без места» — это и есть
-    // качество будущей раскладки, поэтому доля в процентах стоит рядом.
+    // The main number of the group: every such frame will end up in «_Без места» —
+    // which IS the quality of the layout to come, so the share in percent stands next
+    // to it.
     card.appendChild(overviewRow(
         I18N.overview_no_place,
         overviewValue(overviewEmpty ? overviewStat(p.no_place)
                       : overviewStat(p.no_place) + " (" + p.no_place_percent + "%)"),
         true));
     p.confidence.forEach(function (row) {
-      // «unknown» — ровно те кадры, что уже названы строкой выше (правилом
-      // раскладки); второй раз их не повторяем.
+      // «unknown» is exactly the frames the row above has already named (by the layout
+      // rule); they are not repeated a second time.
       if (row.key === "unknown") return;
       card.appendChild(overviewRow(overviewDataText(overviewPlaceLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
@@ -2348,7 +2350,8 @@
       card.appendChild(overviewRow(overviewDataText(overviewTierLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
-    // Прогонялся ли глубокий ярус — вопрос, который раньше решался запросом в БД.
+    // Whether the deep tier was ever run — a question that used to be settled by a
+    // query to the database.
     // F190: which is a fact about THIS collection, so the skeleton keeps the line and
     // leaves it unwritten rather than saying either of the two answers.
     card.appendChild(overviewNote(overviewDataText(
@@ -2388,7 +2391,7 @@
       card.appendChild(overviewRow(I18N.overview_layout_batches,
                                    overviewValue(overviewStat(lay.batches))));
     }
-    // Незакрытый батч — след прерванного прогона; о нём говорим явно.
+    // An unclosed batch is the trace of an interrupted run; it is said out loud.
     if (last.unfinished || lay.unfinished) {
       card.appendChild(overviewNote(I18N.overview_layout_unfinished, true));
     }
@@ -2459,15 +2462,15 @@
       });
   }
 
-  // --- вкладка «Обработать» (F36: запуск пайплайна из веба + polling) ----
+  // --- the «Обработать» tab (F36: the pipeline started from the web + polling) ----
 
-  // F57: чекбоксы deep/geo-online должны стартовать по факту config.yaml
-  // (cfg.naming.vlm_enabled / cfg.geo.provider), а не всегда пустыми — иначе
-  // сложно понять, что реально включено, и нельзя увидеть текущее состояние
-  // до первого клика. vlmAvailable — установлен ли пакет transformers;
-  // приглушённая пометка «VLM не установлен» показывается только когда
-  // чекбокс отмечен, но пакета нет (запрос VLM ≠ его реальный запуск —
-  // junk.classify штатно фолбэчит на CLIP).
+  // F57: the deep and geo-online checkboxes have to start from what config.yaml says
+  // (cfg.naming.vlm_enabled / cfg.geo.provider) rather than always empty — otherwise it
+  // is hard to tell what is actually enabled, and the current state cannot be seen
+  // before the first click. vlmAvailable says whether the transformers package is
+  // installed; the dimmed «VLM не установлен» note is shown only when the checkbox is
+  // ticked and the package is missing (asking for the VLM ≠ actually running it —
+  // junk.classify falls back to CLIP as a matter of course).
   var vlmAvailable = true;
 
   function updateVlmMissingWarning() {
@@ -2493,7 +2496,7 @@
         vlmAvailable = !!data.vlm_available;
         updateVlmMissingWarning();
         renderCosts();
-        updateStepLayout();  // сводка блока «Параметры запуска» — по фактическим галочкам
+        updateStepLayout();  // the «Параметры запуска» summary — from the actual ticks
       })
       .catch(function () {});
   }
@@ -2685,7 +2688,7 @@
   // than a block of blank price slots for as long as the two requests take.
   renderCosts();
 
-  // F64: баннер о CPU-профиле (обработка на процессоре — медленно для лиц/VLM).
+  // F64: the banner about the CPU profile (on the CPU, faces and the VLM are slow).
   fetch("/api/env").then(function (r) { return r.json(); })
     .then(function (data) {
       if (data && !data.gpu_profile) {
@@ -2700,11 +2703,11 @@
     return stage ? (I18N["process_stage_" + stage] || stage) : "";
   }
 
-  // Чипы-этапы (F41): done/now/pending по стадиям пайплайна — тот же порядок,
-  // что и сервер (_PIPELINE_STAGE_NAMES), только для отображения. F53/#39:
-  // faces/events opt-in — currentProcessStages фиксируется по чекбоксам в
-  // момент запуска (сервер фильтрует steps так же), иначе индексы чипов
-  // разъедутся со stage_index отфильтрованного прогона.
+  // The stage chips (F41): done/now/pending over the stages of the pipeline — the same
+  // order the server has (_PIPELINE_STAGE_NAMES), for display only. F53/#39: faces and
+  // events are opt-in, so currentProcessStages is fixed from the checkboxes at the
+  // moment of the start (the server filters `steps` the same way); otherwise the chip
+  // indices drift away from the stage_index of a filtered run.
   var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "classify", "faces", "events",
                             "junk", "phash"];
   var OPTIONAL_PROCESS_STAGES = { faces: true, events: true };
@@ -2726,12 +2729,13 @@
   // what the tick had just disabled for the duration of a run.
   var processRunning = false;
 
-  // Всё, что задаёт вход пайплайна, на время прогона недоступно: менять источник
-  // у уже идущей обработки бессмысленно, а диалог выбора папки ещё и открывает
-  // отдельное окно поверх работающего процесса. Галки шагов и ярусов — там же:
-  // параметры уходят на сервер один раз, в момент старта, поэтому снятая на
-  // середине прогона галка «лица» ничего не отменяет, а выглядит так, будто
-  // отменила — и это выясняется через час, когда лица всё-таки посчитались.
+  // Everything that defines the input of the pipeline is out of reach while a run is
+  // going: changing the source of processing already under way is meaningless, and the
+  // folder dialog additionally opens a window of its own over a working process. The
+  // step and tier ticks are there for the same reason: the parameters go to the server
+  // once, at the moment of the start, so the «лица» tick cleared halfway through a run
+  // cancels nothing while looking exactly as though it had — and that is found out an
+  // hour later, when the faces have been computed after all.
   function updateProcessInputsDisabled() {
     ["process-browse-btn", "process-source-dir", "process-excludes-btn",
      "process-deep-checkbox", "process-geo-online-checkbox",
@@ -2863,7 +2867,7 @@
     clustersLoaded = false;
     eventsLoaded = false;
     movesLoaded = false;
-    junkLoaded = false;  // F103: прогон junk-яруса меняет состав корзин
+    junkLoaded = false;  // F103: a junk-tier run changes what is in the buckets
     animalsLoaded = false;  // F123: the same run recomputes the animal verdicts
     faceLoaded = false;     // F152: a faces run is what turns the reason into numbers
     refreshPlan();
@@ -2881,8 +2885,8 @@
     if (document.getElementById("tab-slices").classList.contains("active")) {
       loadSlices();
     }
-    // F108: обзор перечитывается при каждом открытии, но если человек смотрит на
-    // него прямо сейчас — обновляем немедленно: прогон только что изменил числа.
+    // F108: the overview is re-read on every opening, but if a person is looking at it
+    // right now it is refreshed immediately: the run has just changed the numbers.
     if (document.getElementById("tab-overview").classList.contains("active")) {
       loadOverview();
     }
@@ -2937,7 +2941,7 @@
     processRunning = !!data.running;
     startBtn.disabled = processRunning;
     updateProcessInputsDisabled();
-    updateBusyControlsDisabled();  // раскладка и «начать заново» — пока идёт прогон
+    updateBusyControlsDisabled();  // layout and «начать заново» while a run is going
     adoptRememberedSource(data);
     cancelBtn.style.display = data.running ? "" : "none";
     cancelBtn.disabled = !!data.cancel_requested;
@@ -2948,15 +2952,15 @@
     renderProcessSummary(data);
     if (data.running) {
       if (data.cancel_requested) {
-        // отмена запрошена — показываем фидбэк, пока стадия прерывается/дорабатывает
+        // a cancel was asked for — feedback while the stage stops or finishes up
         bar.classList.add("indeterminate");
         bar.max = 1;
         bar.removeAttribute("value");
         statusEl.textContent = I18N.process_cancel_requested;
         return;
       }
-      // #37: total>0 -> определённый прогресс (заполняется); total<=0 (индексация,
-      // total неизвестен) -> бегущая indeterminate-полоса + «обработано X».
+      // #37: total>0 -> determinate progress (it fills); total<=0 (indexing, the total
+      // is not known) -> the running indeterminate stripe plus «обработано X».
       if (data.total > 0) {
         bar.classList.remove("indeterminate");
         bar.max = data.total;
@@ -3006,7 +3010,7 @@
     var input = document.getElementById("process-source-dir");
     var path = input.value.trim();
     if (!path) { window.alert(I18N.process_enter_path); return; }
-    // запуск = «настроено»: оба блока схлопываются, экран остаётся про прогресс
+    // starting means "configured": both blocks collapse, the screen is about progress
     stepSourceOpen = false;
     stepOptionsOpen = false;
     rememberSourceDir();
@@ -3042,10 +3046,10 @@
     });
   });
 
-  // Диалог появляется через секунду-две, а кнопка всё это время оставалась
-  // активной — каждый лишний клик открывал ещё один проводник. Блокируем на время
-  // запроса; сервер тоже отказывает во втором диалоге (см. _browse_for_folder),
-  // потому что вкладку можно открыть и вторую.
+  // The dialog appears a second or two later, and the button stayed active all that
+  // time — every extra click opened one more file explorer. It is disabled for the
+  // duration of the request; the server refuses a second dialog as well (see
+  // _browse_for_folder), because a second browser tab can always be opened.
   function browseIntoField(btn, apply) {
     if (btn.disabled) { return; }
     btn.disabled = true;
@@ -3062,15 +3066,16 @@
     });
   });
 
-  // --- F81: «не сканировать» + три блока первой вкладки ------------------
+  // --- F81: «не сканировать» and the three blocks of the first tab -------
 
-  // Путь помнится между открытиями страницы: этот экран открывают многократно, и
-  // вводить один и тот же источник каждый раз — ровно тот штраф, который фича
-  // убирает.
+  // The path is remembered between openings of the page: this screen is opened again
+  // and again, and typing the same source every time is exactly the penalty this
+  // feature removes.
   var SOURCE_DIR_KEY = "sorta.sourceDir";
-  // Что сейчас исключено под текущим источником — для схлопнутой строки блока
-  // «Источник». Два числа хранятся раздельно: «не сканировать» и «не раскладывать» —
-  // разные вещи. root пустой = про этот источник ещё не спрашивали.
+  // What is excluded under the current source right now — for the collapsed line of the
+  // «Источник» block. The two counts are kept apart, because «не сканировать» and
+  // «не раскладывать» are different things. An empty root = this source has not been
+  // asked about yet.
   var excludesInfo = { root: "", scan: [], count: 0, size: 0,
                        layout: [], layoutCount: 0 };
   var stepSourceOpen = false;
