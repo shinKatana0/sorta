@@ -1,11 +1,12 @@
 (function () {
   var I18N = window.I18N;
   var THEME_KEY = "sorta-ui-theme";
-  // F80: сколько кадров ленты может листать лайтбокс (SORTA_VIDEO_FRAMES). У
-  // короткого ролика кадров реально меньше — это выясняется по первому 404.
+  // F80: how many frames of the strip the lightbox may page through
+  // (SORTA_VIDEO_FRAMES). A short clip really has fewer — which is found out from the
+  // first 404.
   var VIDEO_FRAMES = window.VIDEO_FRAMES || 1;
 
-  // --- инлайн-SVG иконки (U1: без иконочных шрифтов/эмодзи) --------------
+  // --- inline SVG icons (U1: no icon fonts, no emoji) --------------------
   var ICONS = {
     folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
         'stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 ' +
@@ -47,7 +48,7 @@
     return el;
   }
 
-  // Кнопка с опциональной иконкой: variant — "primary"/"ghost"/"danger"/null.
+  // A button with an optional icon: variant is "primary"/"ghost"/"danger"/null.
   function makeBtn(variant, iconName, label, extraClass) {
     var btn = document.createElement("button");
     btn.type = "button";
@@ -57,7 +58,7 @@
     return btn;
   }
 
-  // Единый спокойный вид для пустых/загрузочных/ошибочных состояний вкладок.
+  // One quiet look for the empty, loading and failed states of every tab.
   function stateEl(kind, text) {
     var div = document.createElement("div");
     div.className = "state-msg state-" + kind;
@@ -365,10 +366,10 @@
 
   initSettings();
 
-  // Дерево по списку элементов — осталось для вкладки «Перемещения»: там приходит
-  // ОДИН батч (ограниченный по размеру), а не весь план коллекции, поэтому строить
-  // его из готового списка по-прежнему нормально. План города/людей/событий с F70
-  // ходит другим путём — через агрегат ниже.
+  // A tree built from a list of items — kept for the «Перемещения» tab: what arrives
+  // there is ONE batch (bounded in size) rather than the whole plan of the collection,
+  // so building it from a ready list is still fine. Since F70 the city/person/event
+  // plan goes another way — through the aggregate below.
   function countFiles(node) {
     var n = node.files.length;
     Object.keys(node.children).forEach(function (k) { n += countFiles(node.children[k]); });
@@ -390,8 +391,9 @@
     return root;
   }
 
-  // Ленивое построение узла: содержимое папки создаётся ТОЛЬКО при первом
-  // раскрытии <details> — строки со всеми <img> сразу подвешивали вкладку.
+  // A node is built lazily: the contents of a folder are created ONLY on the first
+  // expansion of its <details> — the rows with all their <img> at once used to hang
+  // the tab.
   function renderNode(name, node, depth, renderFilesFn) {
     var renderFn = renderFilesFn || renderFiles;
     var details = document.createElement("details");
@@ -410,10 +412,10 @@
     return details;
   }
 
-  // F70: дерево строится из АГРЕГАТА (папка -> количество), а не из списка файлов —
-  // сервер больше не отдаёт 26 тысяч элементов одним куском. Каждый узел знает
-  // суммарное количество файлов в своей ветке; лист (`category`) знает ключ, по
-  // которому у сервера запрашивается страница файлов.
+  // F70: the tree is built from an AGGREGATE (folder -> count) rather than from a list
+  // of files — the server no longer hands over 26 thousand items in one piece. Every
+  // node knows the total number of files in its branch; a leaf (`category`) knows the
+  // key a page of files is asked for by.
   function buildCategoryTree(categories) {
     var root = { count: 0, children: {}, category: null };
     categories.forEach(function (row) {
@@ -432,7 +434,7 @@
     return root;
   }
 
-  // --- удаление отдельного кадра (общий путь для обеих вкладок) --------
+  // --- deleting a single frame (the shared path for both tabs) ---------
 
   function deletePhoto(fileId, onSuccess) {
     var remember = document.getElementById("delete-remember").checked;
@@ -442,8 +444,8 @@
     });
   }
 
-  // Массовое удаление выбранного (общий путь _trash_files, что и одиночный).
-  // onSuccess получает список реально отправленных в корзину file_id.
+  // Bulk deletion of the selection (the same _trash_files path as the single one).
+  // onSuccess gets the list of file_ids that were really sent to the bin.
   function deletePhotos(fileIds, onSuccess) {
     postJson("/api/photos/trash", { file_ids: fileIds }).then(function (resp) {
       if (resp.trashed) {
@@ -477,9 +479,9 @@
     fn();
   }
 
-  // Переиспользуемый множественный выбор + «Удалить выбранное» для любого
-  // контейнера со строками, где есть чекбокс `.row-select` (value=file_id).
-  // Делегирование на контейнер — работает и с лениво построенными строками.
+  // Reusable multiple selection plus «Удалить выбранное» for any container of rows
+  // that carries a `.row-select` checkbox (value=file_id). The listener is delegated
+  // to the container — so it works with lazily built rows too.
   // F104: barId — the row the button lives in; it is SHOWN only while something is
   // selected. A permanently visible "Delete selected" next to "Apply" is a destructive
   // button one row away from the button that moves the whole collection; in the context
@@ -522,16 +524,17 @@
     refresh();
   }
 
-  // Единое поведение превью по всему UI: клик по миниатюре (Города/Дубли/
-  // Перемещения/События/Люди) открывает лайтбокс с крупным /preview, а не новую
-  // вкладку с сырым /photo. samples/index позволяют листать соседние кадры (для
-  // одиночных строк — [fileId]/0). thumbUrl опционален (по умолчанию /thumb/id).
-  // F70: раскрытая папка — это до PLAN_PAGE_SIZE строк, то есть столько же
-  // одновременных GET /thumb/<id>. Сервер ограничивает число параллельных декодов,
-  // но очередь запросов браузера ничем не ограничена. Два простых ограничения:
-  // (1) src ставится только когда картинка реально видна (IntersectionObserver);
-  // (2) одновременно грузится не больше THUMB_CONCURRENCY штук — остальные ждут в
-  // очереди. Слот освобождается по load/error, поэтому очередь не может застрять.
+  // One behaviour for previews across the whole UI: a click on a thumbnail («Города»,
+  // «Дубли», «Перемещения», «События», «Люди») opens the lightbox with a large
+  // /preview, not a new tab with the raw /photo. samples/index make the neighbouring
+  // frames pageable (for a single row — [fileId]/0). thumbUrl is optional (/thumb/id by
+  // default).
+  // F70: an expanded folder is up to PLAN_PAGE_SIZE rows, which is that many
+  // simultaneous GET /thumb/<id>. The server caps how many decodes run in parallel, but
+  // nothing caps the browser's own request queue. Two simple limits:
+  // (1) src is set only once the picture is really visible (IntersectionObserver);
+  // (2) no more than THUMB_CONCURRENCY load at a time — the rest wait in a queue. A
+  // slot is freed on load/error, so the queue cannot get stuck.
   var THUMB_CONCURRENCY = 6;
   var thumbQueue = [];
   var thumbActive = 0;
@@ -573,9 +576,9 @@
     thumbObserver.observe(img);
   }
 
-  // F80: у видео плитка получает значок — до этого ролик в сетке был неотличим от
-  // фото. Обёртка создаётся ТОЛЬКО для видео: у фото в ячейке остаётся тот же голый
-  // <img>, что и раньше, поэтому вёрстка фото-строк не меняется вовсе.
+  // F80: a video tile gets a mark — before this a clip in the grid was indistinguishable
+  // from a photo. The wrapper is created ONLY for a video: a photo keeps the same bare
+  // <img> in its cell as before, so the layout of photo rows does not change at all.
   function videoBadge() {
     var badge = document.createElement("span");
     badge.className = "thumb-video-badge";
@@ -602,15 +605,15 @@
     return wrap;
   }
 
-  // --- F77: ручные правки раскладки (не трогать / перенести в папку) -----
-  // Правка только помечает файл в БД: физически ничего не двигается до общей
-  // раскладки. Пометка приходит вместе со страницей плана (item.override), поэтому
-  // после перерисовки список остаётся размеченным.
+  // --- F77: manual corrections to the layout (leave alone / move to a folder) ---
+  // A correction only marks the file in the database: nothing moves physically until
+  // the layout itself runs. The mark arrives with the page of the plan (item.override),
+  // so the list is still marked after a redraw.
 
-  var PLAN_ID_PAGE_SIZE = 1000;  // серверный максимум limit для страницы плана
+  var PLAN_ID_PAGE_SIZE = 1000;  // the server's maximum limit for a page of the plan
 
-  // Строка помечается ДВУМЯ разными способами: исключённая (красная рамка) и
-  // перенесённая (синяя пунктирная) — это разные состояния, путать их нельзя.
+  // A row is marked in TWO different ways: excluded (a red border) and moved (a blue
+  // dashed one) — these are different states and must not be confused.
   function markOverrideRow(tr, action, target) {
     tr.classList.remove("override-exclude", "override-reassign", "override-photo");
     var old = tr.querySelector(".override-mark");
@@ -644,8 +647,8 @@
     if (meta) meta.appendChild(chip);
   }
 
-  // Пометить уже отрисованные строки внутри scope (контейнер/узел дерева) —
-  // «список обновляется без перезагрузки страницы».
+  // Mark the rows already drawn inside `scope` (a container or a node of the tree) —
+  // this is what "the list updates without reloading the page" means.
   function markRowsOverride(scope, fileIds, action, target) {
     var wanted = {};
     fileIds.forEach(function (id) { wanted[id] = true; });
@@ -675,8 +678,8 @@
     });
   }
 
-  // Все file_id папки — страницами у сервера, поэтому «не трогать папку» работает
-  // и для нераскрытой папки, и для папки больше одной страницы.
+  // Every file_id of a folder, in pages from the server, so «не трогать папку» works
+  // both for a folder that was never expanded and for one longer than a single page.
   function fetchCategoryIds(mode, category) {
     var ids = [];
     function step(offset) {
@@ -694,8 +697,9 @@
     return step(0);
   }
 
-  // Кнопка правки в самой строке: одиночный файл — частый случай, ради него не
-  // нужно идти в выделение. Метка/подпись кнопки переключаются по состоянию строки.
+  // The correction button in the row itself: a single file is the common case, and it
+  // does not deserve a trip through the selection. The mark and the caption of the
+  // button follow the state of the row.
   function overrideRowButton(tr, item) {
     var btn = makeBtn(null, null, I18N.override_exclude_button, "btn-sm override-row-btn");
     btn.addEventListener("click", function () {
@@ -707,8 +711,8 @@
     return btn;
   }
 
-  // Панель над деревом: правка применяется к ВЫДЕЛЕНИЮ (те же чекбоксы
-  // .row-select, что и «Удалить выбранное»); одиночный файл — выделение из одного.
+  // The panel above the tree: a correction applies to the SELECTION (the same
+  // .row-select checkboxes as «Удалить выбранное»); a single file is a selection of one.
   function wireOverrideControls(containerId) {
     var container = document.getElementById(containerId);
     var excludeBtn = document.getElementById("city-override-exclude-btn");
@@ -751,11 +755,12 @@
     refresh();
   }
 
-  // Список целей переноса = папки текущего плана из уже загруженного агрегата
-  // (отдельный эндпойнт не нужен). Перетаскивание плитки в узел дерева не
-  // реализуем: дерево ленивое, узел нераскрытой (и потому отсутствующей в DOM)
-  // папки не может быть целью drop — список даёт доступ ко ВСЕМ папкам раскладки,
-  // как и требует фича.
+  // The list of move targets = the folders of the current plan, taken from the aggregate
+  // that is already loaded (no endpoint of its own is needed). Dragging a tile onto a
+  // node of the tree is deliberately not implemented: the tree is lazy, and the node of
+  // a folder that was never expanded — and is therefore not in the DOM — cannot be a
+  // drop target. The list reaches EVERY folder of the layout, which is what the feature
+  // asks for.
   function fillOverrideTargets(categories) {
     var select = document.getElementById("city-override-target");
     var previous = select.value;
@@ -773,25 +778,25 @@
     select.value = previous;
   }
 
-  // --- F85c: место, назначенное человеком, — сразу на всю группу ---------
-  // У этих файлов не осталось ни одного сигнала: ни GPS, ни соседей по времени,
-  // ни имени папки. Место знает только владелец, поэтому задача не «угадать
-  // точнее», а дать назначить его ПАЧКОЙ — событию целиком или исходной папке
-  // целиком. Пишется отдельно от places (её geo перезаписывает целиком) и
-  // применяется при построении плана; на диске здесь ничего не двигается.
+  // --- F85c: a place a person assigns, to a whole group at once ---------
+  // These files have no signal left at all: no GPS, no neighbours in time, no folder
+  // name. Only the owner knows the place, so the task is not to "guess more precisely"
+  // but to let it be assigned IN BULK — to a whole event, or to a whole source folder.
+  // It is written apart from `places` (which geo rewrites wholesale) and applied while
+  // the plan is built; nothing moves on disk here.
 
-  var PLACE_SEARCH_DELAY = 250;  // мс: поиск идёт по нажатию клавиш, не по каждой
+  var PLACE_SEARCH_DELAY = 250;  // ms: the search follows typing, not every keystroke
 
-  // Язык интерфейса берём из <html lang>: он уже проставлен сервером, отдельного
-  // состояния для этого заводить незачем. (initLang() держит одноимённую локальную
-  // переменную — имя здесь другое намеренно.)
+  // The interface language is read off <html lang>: the server has already set it, and
+  // there is no reason to keep a second copy of it in state. (initLang() holds a local
+  // variable for the same thing — the name here is different on purpose.)
   function uiLang() {
     return document.documentElement.getAttribute("lang") || "en";
   }
 
-  // Поле выбора места. Сервер отвечает ТОЧНЫМИ совпадениями по локальной базе
-  // (та же пара city_ids_by_name/country_cc_by_name, что и у --where), поэтому
-  // список короткий и однозначный: одноимённые города различаются регионом.
+  // The place picker. The server answers with EXACT matches from the local base (the
+  // same city_ids_by_name/country_cc_by_name pair `--where` uses), so the list is short
+  // and unambiguous: cities that share a name are told apart by their region.
   function renderPlacePicker(container) {
     var input = document.createElement("input");
     input.type = "text";
@@ -855,9 +860,9 @@
                      { n: resp.affected });
       if (resp.skipped_gps) text += fmt(I18N.place_skipped_gps, { n: resp.skipped_gps });
       statusEl.textContent = text;
-      // Кадры с точными координатами не перезаписываются молча: камера знала
-      // место в момент съёмки лучше, чем память о поездке. Это отдельное решение,
-      // и спрашивают о нём ровно один раз.
+      // Frames with exact coordinates are not overwritten silently: the camera knew the
+      // place at the moment of the shot better than a memory of the trip does. That is a
+      // decision of its own, and it is asked about exactly once.
       if (resp.skipped_gps && !body.include_gps &&
           window.confirm(fmt(I18N.place_include_gps_confirm, { n: resp.skipped_gps }))) {
         body.include_gps = true;
@@ -869,8 +874,8 @@
     });
   }
 
-  // Одно действие на группу: подтверждение называет и место, и размер захвата —
-  // цена ошибки тем выше, чем крупнее группа.
+  // One action per group: the confirmation names both the place and how much it takes
+  // in — the bigger the group, the more a mistake costs.
   function assignPlace(picker, kind, selector, confirmKey, confirmVals, statusEl, onDone) {
     var chosen = picker.chosen();
     if (!chosen) {
@@ -892,9 +897,10 @@
 
   var cityPlacePicker = null;
 
-  // Кнопка в строке плана: место назначается ИСХОДНОЙ папке кадра целиком — по ней
-  // и видно, что кадры одной поездки лежат вместе. Строка с уже назначенным местом
-  // предлагает обратное действие, как и кнопка ручных правок рядом.
+  // The button in a plan row: the place is assigned to the whole SOURCE folder of the
+  // frame — which is where it can be seen that the frames of one trip lie together. A
+  // row that already has a place offers the reverse action, like the manual-correction
+  // button beside it.
   function placeRowButton(item) {
     var manual = item.place_confidence === "manual";
     var btn = makeBtn(null, "pin", manual ? I18N.place_clear_button
@@ -938,13 +944,14 @@
       tr.appendChild(tdThumb);
       var tdMeta = document.createElement("td");
       tdMeta.className = "plan-meta";
-      // Исходная папка идёт первой: по ней чаще всего и видно, верна ли догадка
-      // («Колизей» из папки «карелия» — очевидная ошибка). Полный путь — в тултипе.
+      // The source folder comes first: it is usually what shows whether the guess is
+      // right («Колизей» out of a folder called «карелия» is an obvious mistake). The
+      // full path is in the tooltip.
       tdMeta.textContent = [item.src_dir, item.date, item.geo, item.category]
           .filter(Boolean).join(" \u00b7 ");
       if (item.src_path) { tdMeta.title = item.src_path; }
-      // F85c: место, выбранное человеком, помечено отдельно — иначе его не отличить
-      // от выведенного программой, а это разные по надёжности вещи.
+      // F85c: a place chosen by a person is marked apart — otherwise it cannot be told
+      // from one the program inferred, and the two are not equally reliable.
       if (item.place_confidence === "manual") {
         var placeChip = document.createElement("span");
         placeChip.className = "chip chip-good place-manual";
@@ -962,7 +969,7 @@
       tdActions.appendChild(overrideRowButton(tr, item));
       tdActions.appendChild(placeRowButton(item));
       tr.appendChild(tdActions);
-      // F77: пометка из ответа плана — строка приходит уже размеченной.
+      // F77: the mark comes with the plan response — the row arrives already marked.
       markOverrideRow(tr, item.override || null, item.override_target || null);
       table.appendChild(tr);
     });
