@@ -118,6 +118,71 @@ def compute_phashes(
     return computed
 
 
+# --- F194: the three tiers of sameness ------------------------------------------------
+# One word, "duplicate", has been covering three populations whose cost of a mistake
+# differs by orders of magnitude. Counted on the live collection 2026-08-04:
+#
+#   exact       the same BYTES (blake3): 12 350 files over 7 631 originals — HALF the
+#               archive. Losing the wrong one of two identical files loses nothing, the
+#               file is the same file, so the tier is a NUMBER and never a list: there is
+#               no judgement to make and nothing to look at.
+#   same_image  the same picture in different files (one pHash, different bytes): 299
+#               groups, 652 frames. A mistake costs a better or worse copy of one
+#               picture, and the rule that avoids it is CHECKABLE — resolution and weight
+#               are facts. So this tier gets a recommendation, and a person may overrule it.
+#   similar     frames that merely look alike, within the pHash threshold: 791 groups. A
+#               mistake here loses a photograph for good, and nobody can make the call:
+#               111 groups labelled blind by the owner (2026-08-04) gave sharpness 27%,
+#               arithmetic 28%, cascade 28%, the model 32% — against 30.4% for choosing at
+#               random. So nothing recommends here; every frame stays until a hand says
+#               otherwise.
+#
+# The tier is READ OFF the data (see `group_tier`), never stored: it follows from the
+# hashes, and a stored copy of it would be a second answer to drift from the first.
+TIER_EXACT = "exact"
+TIER_SAME_IMAGE = "same_image"
+TIER_SIMILAR = "similar"
+
+
+@dataclass(frozen=True)
+class ExactDuplicates:
+    """The first tier, as the two numbers it is worth: how many copies, over how many
+    originals."""
+    copies: int
+    originals: int
+
+
+def exact_duplicate_summary(conn: sqlite3.Connection) -> ExactDuplicates:
+    """How many byte-identical copies the index holds and how many files they fold onto.
+
+    A copy is a row carrying `dup_of` — written by `assign_duplicates`, which picks one
+    canonical file per blake3 hash and points the rest at it. Counting instead of listing
+    is the entire tier: the bytes are the same bytes, so "choose which to keep" is a
+    question about nothing, and twelve thousand rows of it would bury the two tiers where
+    there IS something to decide.
+
+    Nothing is deleted by this or by anything reading it. Collapsed means shown as one
+    line instead of twelve thousand; the files stay on disk, and removing them stays a
+    separate deliberate act of a person.
+    """
+    row = conn.execute(
+        """SELECT COUNT(*) AS copies, COUNT(DISTINCT dup_of) AS originals
+           FROM files WHERE dup_of IS NOT NULL AND error IS NULL""").fetchone()
+    return ExactDuplicates(int(row["copies"]), int(row["originals"]))
+
+
+def group_tier(phashes: Iterable[str]) -> str:
+    """`TIER_SAME_IMAGE` or `TIER_SIMILAR` for a near-duplicate group, by its pHashes.
+
+    One distinct pHash across the group means one picture stored more than once — the
+    frames are byte-different by construction (`near_duplicate_groups` excludes `dup_of`),
+    so what differs is the encoding, the scale or the metadata, and "keep the largest" is
+    a statement about facts. More than one pHash means frames that merely resemble each
+    other, which is the tier where the measurement found no rule at all.
+    """
+    return TIER_SAME_IMAGE if len(set(phashes)) == 1 else TIER_SIMILAR
+
+
 def _canonical(rows: list[sqlite3.Row], strategy: str) -> sqlite3.Row:
     if strategy == "prefer_exif_then_largest":
         return sorted(

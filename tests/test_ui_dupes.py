@@ -1,4 +1,8 @@
-"""U3/F32: the Duplicates tab — /api/dupes, choice/choices(batch)/skip/trash, HTML."""
+"""U3/F32: the Duplicates tab — /api/dupes, choice/choices(batch)/skip/trash, HTML.
+
+F194 gave the payload its outer shape (`{"exact": ..., "groups": [...]}`) and gave every
+group a tier; the routes below are the ones it did NOT move.
+"""
 from __future__ import annotations
 
 import json
@@ -57,8 +61,11 @@ class TestApiDupesGet(DupesTestBase):
         status, body, ctype = self.get("/api/dupes")
         self.assertEqual(status, 200)
         self.assertIn("application/json", ctype)
-        groups = json.loads(body)
+        groups = json.loads(body)["groups"]
         self.assertEqual(len(groups), 1)
+        # F194: one pHash over two files is the SECOND tier — the same picture stored
+        # twice — where "keep the largest" is a checkable rule and is applied.
+        self.assertEqual(groups[0]["tier"], "same_image")
         frames = groups[0]["frames"]
         self.assertEqual({f["file_id"] for f in frames}, {best, worse})
         # F120: `sharpness` — the number that decides the recommendation when the whole
@@ -82,7 +89,7 @@ class TestApiDupesGet(DupesTestBase):
         self.add_dupe("downloads/b.jpg", phash="0" * 16, width=1000, height=750, size=200_000)
         self.start_server()
         _status, body, _ctype = self.get("/api/dupes")
-        frames = json.loads(body)[0]["frames"]
+        frames = json.loads(body)["groups"][0]["frames"]
         self.assertEqual({f["src_dir"] for f in frames}, {"keep", "downloads"})
         for f in frames:
             self.assertTrue(f["src_path"].endswith(f["src_dir"]))
@@ -93,7 +100,9 @@ class TestApiDupesGet(DupesTestBase):
         self.start_server()
         status, body, _ctype = self.get("/api/dupes")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), [])
+        # F194: the groups are empty, and the first tier answers with its own number.
+        self.assertEqual(json.loads(body),
+                         {"exact": {"copies": 0, "originals": 0}, "groups": []})
 
     def test_action_reflects_dedup_choice(self):
         fid1 = self.add_dupe("a.jpg", phash="0" * 16, width=100, height=100, size=2000)
@@ -110,7 +119,7 @@ class TestApiDupesGet(DupesTestBase):
         self.conn.commit()
         self.start_server()
         _status, body, _ctype = self.get("/api/dupes")
-        by_id = {f["file_id"]: f for f in json.loads(body)[0]["frames"]}
+        by_id = {f["file_id"]: f for f in json.loads(body)["groups"][0]["frames"]}
         self.assertEqual(by_id[fid1]["action"], "keep")
         self.assertEqual(by_id[fid2]["action"], "to_delete")
 
