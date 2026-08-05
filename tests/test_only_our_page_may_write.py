@@ -315,9 +315,15 @@ class TestTheServerGrantsNoPreflight(UiServerTestBase):
         self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
 
     def test_no_route_ever_sends_a_cross_origin_header(self):
-        self.assertNotIn("Access-Control-Allow", ui.__doc__ or "")
-        self.assertNotIn("Access-Control-Allow",
-                         Path(ui.__file__).read_text(encoding="utf-8"))
+        """Read off the sources, because it is a property of the WHOLE server and not of
+        the one route the request above happened to name: a single
+        `Access-Control-Allow-Origin` anywhere would hand back the permission the
+        preflight was refused."""
+        package = Path(ui.__file__).parent
+        for path in sorted(package.rglob("*.py")) + sorted(package.parent.rglob("*.js")):
+            with self.subTest(path=path.name):
+                self.assertNotIn("Access-Control-Allow",
+                                 path.read_text(encoding="utf-8"))
 
 
 class TestRelativePathNeverReachesExiftool(unittest.TestCase):
