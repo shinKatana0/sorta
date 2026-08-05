@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Every slice behaves the same: pick some frames, name the folder, gather it** (F193).
+  Three complaints of 2026-08-04 were one defect — the slices answered "what can I do with
+  you" differently. An album was **all of a slice or nothing**; the folder could be **named**
+  in memes and screenshots and nowhere else, so "With people", "Group" and "Portraits" were
+  the odd ones out; and the **documents** bucket answered by saying nothing at all — no
+  button, no sentence, no refusal. Fixed one at a time that question would have been
+  answered three times, differently, and the fourth divergence would have arrived with the
+  next slice. So there is now **one album row and one selection**, built in one place and
+  used by every slice of the tab — the search line, a pinned query, the three face slices,
+  the animals, every class bucket and the «Просмотр» workspace — the way `makePager`
+  already gives them all the "show more" button. A slice added tomorrow gets the tick, the
+  folder-name field, the destination and the button by calling it, and a slice that does
+  not call it has no row at all. The tick on the cards feeds the album row above them:
+  ticking the first frame turns the scope to **"only the selected"** by itself and
+  unticking the last turns it back off, so the button never quietly gathers a selection
+  that holds nothing. The ids **narrow** the slice and never widen it — they are ANDed onto
+  the membership rule the slice is built from (`sorter.plan_album`) — so a request made
+  past the interface cannot pull a frame out of a slice it is not in, and no guard a slice
+  carries is something a selection can walk around. An **empty** selection is refused with
+  a reason instead of gathering a folder of zero files, which would read as "this slice is
+  empty" — a statement about somebody's archive that is not true. **Documents** keep the
+  decision they were given: they are not gathered into a folder, and `vlm.exclude_classes`
+  does not change that — the key decides what is SHOWN, never that a folder of somebody's
+  passports, medical forms and bank papers may be assembled in one click. What changed is
+  that the program now **says so**: the bucket carries the album row like every other slice
+  and the refusal comes out of the route with a reason the interface puts into a sentence,
+  because a hidden button forbade nothing and explained nothing. Every bucket now answers
+  one of the two — the kind it gathers as, or the word for why it does not — including a
+  class shipped without an album kind, which used to fall out of the interface in silence.
 - **"Try to improve" on the frame you have opened, in every slice** (F168). The action
   shipped behind one door — the «Размытые» slice — and the measurement of 2026-08-03 found
   that door nearly shut: at its threshold the sharpness filter holds **8%** of the frames a

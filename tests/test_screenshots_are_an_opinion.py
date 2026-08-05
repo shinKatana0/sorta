@@ -228,7 +228,10 @@ class TestTheWayBackIsInSight(ScreenshotSliceCase):
                               controls.split("</button>", 1)[0])
 
     def test_the_card_offers_the_same_movement_by_name(self):
-        self.assertIn("label.appendChild(document.createTextNode(I18N.slice_return_button));",
+        # F193: the tick itself is the shared one now (one selection per slice grid, fed
+        # to the album row as well) — what stays is that in THIS grid it is named after
+        # the movement it also performs.
+        self.assertIn("junkSelection.tick(item.file_id, I18N.slice_return_button",
                       self.html)
 
     def test_returning_a_screenshot_puts_it_back_into_the_city_layout(self):
