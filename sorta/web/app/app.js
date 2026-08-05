@@ -3529,7 +3529,9 @@
   function updateSortApplyBtnStyle() {
     var btn = document.getElementById("sort-apply-btn");
     var checked = document.querySelector('input[name="sort-mode"]:checked');
-    var move = !checked || checked.value === "move";
+    // F200: no radio checked means the default, and the default is copy — so the
+    // button is the alarming red one only when "move" was actually chosen.
+    var move = !!checked && checked.value === "move";
     btn.classList.toggle("btn-danger", move);
     btn.classList.toggle("btn-primary", !move);
   }
@@ -3725,7 +3727,7 @@
   function startSort() {
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
-    var mode = checked ? checked.value : "move";
+    var mode = checked ? checked.value : "copy";  // F200: the default the markup shows
     // F192: `by` is the criterion, `mode` is move-or-copy — two different questions
     // that the server has kept apart since F43 and the field names keep apart here.
     postJson("/api/sort", { dest: dest || null, mode: mode, by: layoutBy() })
@@ -3746,7 +3748,7 @@
     if (!planCount) return;
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
-    var mode = checked ? checked.value : "move";
+    var mode = checked ? checked.value : "copy";  // F200: the default the markup shows
     var statusEl = document.getElementById("sort-status");
     statusEl.textContent = "";
     // The dialog states the numbers of the plan the tab is showing, so it asks about
