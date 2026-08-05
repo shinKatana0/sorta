@@ -13,7 +13,16 @@ What is pinned here is that the move stays a move:
 
 * the template the server holds is the three files put back together, byte for byte
   (test 2 — the main one: it is the same comparison that was made against the
-  pre-split rendering at migration time, written so it keeps being made);
+  pre-split rendering at migration time, written so it keeps being made). The
+  reference taken before the move, for the record — sha256 of `_render_index_html`:
+
+      ru  0699b639aef1233c8abd6e79832f03946529575d21383c9381a060f1fd9ac0c6
+      en  ab1d2c60fdc49c347d71e2238d88b407e4963adce439133fb1b38be4a22db523
+      ja  8024dc3408261be415da1a48d957ed3f4de5fae747e1b0994969d556fd8855b0
+
+  They are not asserted here on purpose: a digest of the whole page turns the next
+  legitimate caption change into a gate failure with nothing to read. What is asserted
+  is the property that made them equal — the seams, and only the seams, join the files;
 * a checkout with CRLF line endings serves the same bytes as one with LF (test 3);
 * the three languages still substitute, and no `{{placeholder}}` survives (test 4);
 * the files reach the built wheel (test 5) — the F65 trap, where the geo base stayed
