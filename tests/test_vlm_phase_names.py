@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import re
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from sorta import __version__, cli, i18n, junk, runlog, ui
@@ -130,6 +131,22 @@ class ThreePassCase(FrameQualityCase):
 class TestThreeNamesInTheLog(ThreePassCase):
     """Test 1: three passes, three names, three units to read back."""
 
+    def write_measured_log(self, lines, seconds):
+        """A run log holding these phase lines with the given seconds, ready to read."""
+        at = datetime.now() - timedelta(hours=1)
+        out = [log_line(at, "environment:"), f"  sorta: {__version__}",
+               "  python: 3.10.0"]
+        for match in lines:
+            elapsed = seconds.get(match["phase"])
+            if elapsed is None:
+                continue
+            out.append(log_line(
+                at, f"stage={match['stage']} phase={match['phase']}"
+                    f" elapsed={elapsed:.3f} processed={match['processed']}"))
+        path = Path(self.tmp.name) / "sorta.log"
+        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return path
+
     def test_each_pass_writes_its_own_phase_with_its_own_population(self):
         lines = self.run_three_passes()
         processed = self.processed_of(lines)
@@ -142,7 +159,7 @@ class TestThreeNamesInTheLog(ThreePassCase):
             len({CLASSIFY_PHASE_VLM, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM}),
             3)
 
-    def test_read_measurements_gives_back_three_units(self, ):
+    def test_read_measurements_gives_back_three_units(self):
         """The end the names exist for: a rate per pass, not one rate for three.
 
         The seconds are rewritten on the way into the file, and only the seconds: a mock
@@ -165,24 +182,6 @@ class TestThreeNamesInTheLog(ThreePassCase):
         # And they are three different prices per frame — the fact one name could not say.
         rates = [found[unit].seconds_per_unit for unit in units.values()]
         self.assertEqual(sorted(rates), [1.0, 5.0, 21.0])
-
-    def write_measured_log(self, lines, seconds):
-        """A run log holding these phase lines with the given seconds, ready to read."""
-        from datetime import datetime, timedelta
-
-        at = datetime.now() - timedelta(hours=1)
-        out = [log_line(at, "environment:"), f"  sorta: {__version__}",
-               "  python: 3.10.0"]
-        for match in lines:
-            elapsed = seconds.get(match["phase"])
-            if elapsed is None:
-                continue
-            out.append(log_line(
-                at, f"stage={match['stage']} phase={match['phase']}"
-                    f" elapsed={elapsed:.3f} processed={match['processed']}"))
-        path = Path(self.tmp.name) / "sorta.log"
-        path.write_text("\n".join(out) + "\n", encoding="utf-8")
-        return path
 
 
 class TestTheBarIsStillTold(ThreePassCase):
