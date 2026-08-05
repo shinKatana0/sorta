@@ -52,6 +52,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
+- **The "Layout" tab asks two questions instead of showing thirteen controls** (F192).
+  The tab opened onto a destination field, a move/copy pair, the apply button, expand and
+  collapse, four buttons of manual corrections with a folder list, a place picker, a
+  delete button and the plan tree — a control panel where two things are needed **every
+  single time** and the other eleven are answered once. That is exactly the split F133
+  made on the run screen, and the same remedy applies: the tab now opens onto a desk of
+  two fields — **where** the collection goes, and **by what** it is grouped — with
+  everything else one click away behind a gear that opens in place, above the tree it is
+  used against. **Not one control was removed**: move-or-copy, the corrections, the place
+  picker and the tree buttons are all still there, in a block with headings of their own,
+  and a test pins the inventory as a set so a future tidy-up cannot quietly drop half of
+  it. The second field is new only on the screen: the criterion is `sorter.MODES` — the
+  same **city / person / event** `sorta sort --by` has laid a collection out by since F5,
+  of which the web app could reach only the city one. `POST /api/sort` and
+  `GET /api/sort/summary` now carry `by`; absent, it still means "city", which is what
+  they meant before. **Layout and albums are not mixed here** — every album is gathered
+  from "Review" or "Slices" and none of those boxes is on this tab — but the difference is
+  now written where the choice is made, because "by person" can mean either: a layout
+  moves the originals, an album is links beside them and moves nothing.
 - **The web app is a package cut by tab, not one 14 427-line file** (F182). Nothing a
   person can see changed — this is the entry for a move, and the move is the point. On
   2026-08-03/04 **ten features queued for `ui.py` in a single day**, because two workers

@@ -5,6 +5,12 @@ person puts on top of it, the place assigned to a whole group at once, the album
 built beside the canon, the people clusters they can be built from, and the settings
 column that governs the run. `PlanCache` is here because the plan is what this tab
 is: the other tabs read it, none of them build it.
+
+F192: the tab asks two questions — where the collection goes and by what it is
+grouped — and the second one is the CRITERION (`sorter.MODES`: city, person, event),
+which `PlanCache` has always keyed its modes by and which `_run_sort` used to
+hard-code to "city". Everything else the tab can do moved behind a gear on the screen;
+nothing moved in this module, because none of it was ever about placement.
 """
 from __future__ import annotations
 

@@ -353,8 +353,11 @@ happens to the files:
 2. **Review** tab → one workspace for everything that has to be looked at by eye and
    partly deleted: **Duplicates**, **Blurred**, **Closed eyes**, **Low resolution** —
    four slices of a single tab, described in §22.
-3. **Layout** tab → the canon: the proposed structure (`Country/City/Year/District`),
-   where to lay it out, move or copy, and the button that starts it. Always visible.
+3. **Layout** tab → the canon. Two questions are in the open: **where to lay it out**
+   and **by what** — by city (`Country/City/Year/District`), by person or by event.
+   The rest — move or copy, the manual corrections to the plan, the place for a group
+   of frames, expanding the tree — sits behind the **Layout settings** gear next to
+   the button that starts it. Always visible.
 4. **Slices** tab → everything built **on top of** the canon: **With people**, **Group
    photos**, **Portraits**, **People** (the named face clusters), **Events**,
    **Animals** and the classifier's buckets — **Products**, **Documents**,

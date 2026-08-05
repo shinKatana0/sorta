@@ -1132,8 +1132,12 @@
     updateBusyControlsDisabled();
     document.getElementById("layout-by-hint").textContent =
         I18N["layout_by_hint_" + this.value] || "";
-    document.getElementById("tree-city").textContent = "";
-    document.getElementById("tree-city").appendChild(stateEl("loading", I18N.loading));
+    // The tree of the previous criterion must not stay on screen while the new plan is
+    // being built: on a large collection that is seconds of a person reading folders
+    // that no longer answer the question they just asked.
+    var tree = document.getElementById("tree-city");
+    tree.textContent = "";
+    tree.appendChild(stateEl("loading", I18N.loading));
     refreshPlan();
   });
 
