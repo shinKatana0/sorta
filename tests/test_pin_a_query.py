@@ -510,8 +510,8 @@ class TestThePanelOfAPinnedSlice(PinTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         panel = html[html.index('<div id="tab-query"'):html.index('<div id="tab-person"')]
-        for element in ('id="query-unpin-btn"', 'id="query-up-btn"',
-                        'id="query-down-btn"', 'id="query-album"', 'id="query-grid"'):
+        for element in ('id="query-unpin-btn"', 'id="query-left-btn"',
+                        'id="query-right-btn"', 'id="query-album"', 'id="query-grid"'):
             with self.subTest(element=element):
                 self.assertIn(element, panel)
 
@@ -542,7 +542,7 @@ class TestThePanelOfAPinnedSlice(PinTestBase):
         self.assertIn("registerBusyRefresh(refreshQuerySliceControls);", html)
         refresh = html[html.index("function refreshQuerySliceControls"):]
         refresh = refresh[:refresh.index("registerBusyRefresh")]
-        for control in ("query-up-btn", "query-down-btn", "query-unpin-btn"):
+        for control in ("query-left-btn", "query-right-btn", "query-unpin-btn"):
             with self.subTest(control=control):
                 self.assertIn(control, refresh)
         self.assertEqual(refresh.count("busy ||"), 3)
@@ -805,7 +805,7 @@ class TestTheSettingAndTheCatalog(unittest.TestCase):
         keys = ("pin_slice_button", "pin_slice_prompt", "pin_slice_language_warning",
                 "pin_slice_done", "pin_error_empty", "pin_error_duplicate",
                 "pin_error_limit", "pin_error_generic", "pin_unpin_button",
-                "pin_unpin_confirm", "pin_move_up", "pin_move_down",
+                "pin_unpin_confirm", "pin_move_left", "pin_move_right",
                 "pin_album_one_query", "slice_not_computed", "slice_goto_process")
         for key in keys:
             with self.subTest(key=key):
