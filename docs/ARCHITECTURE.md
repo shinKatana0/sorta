@@ -76,6 +76,11 @@ Switching the sort mode does not require re-running the pipelines.
   program inferred. The whole place comes from one source: a manual row replaces country,
   city and district together (a country-only assignment leaves city/geonameid NULL and
   lands in the `country_only` branch of the layout).
+- F202: the row can also name an admin1 **region** (`region_geonameid`, city NULL) — the
+  level between the two, laid out as `<Country>/<Region>/<Year>` under the reason
+  `region_only`. One level per row and no mixing: a region assigned over a city clears
+  that city. A region is never inferred — `places` has no column for one, because GPS
+  resolves to a city or to nothing.
 - Wiped by `reset_index` like every other manual decision.
 
 ### manual_pet (written only by ui) — F124

@@ -203,8 +203,9 @@ class TestMigrations(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             conn = connect(Path(tmp) / "p.db")
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(manual_places)")}
+            # v28 (F202): `region_geonameid` — the level between the city and the country.
             self.assertEqual(cols, {"file_id", "country", "city", "city_geonameid",
-                                    "updated_at"})
+                                    "region_geonameid", "updated_at"})
             conn.execute(
                 "INSERT INTO files (path, size, mtime, ext, media_type, indexed_at) "
                 "VALUES ('/x.jpg', 1, 0.0, 'jpg', 'photo', 'now')")
