@@ -542,6 +542,7 @@ from ..sorter import (
 # `_fs`: the long-path form a filesystem call needs on Windows; `_is_the_same_file`:
 # "the file already lying at the target is byte-for-byte the one we would put there".
 from ..sorter import _fs, _is_the_same_file
+
 # F182: the tab modules, and every name they hold.
 #
 # The re-export is not tidiness, it is the property that makes the split checkable. Fifty
@@ -552,9 +553,7 @@ from ..sorter import _fs, _is_the_same_file
 # every name `sorta/ui.py` answered to — the imports above are the module's own, these are
 # the tabs. (ruff would call the unused ones dead; per-file-ignores in pyproject.toml say
 # why they are not.)
-from .strings import (
-    _UI_STRINGS,
-)
+from .strings import _UI_STRINGS
 from .common import (
     DEFAULT_PORT, _CLUSTER_SAMPLE_LIMIT, _DEFAULT_ALBUM_DIRNAME, _DEST_GROUPS, _DEST_MODE,
     _EVENT_SAMPLE_LIMIT, _ImgCacheKey, _LANG_SELF_NAMES, _OVERVIEW_LIVE, _PLAN_PAGE_DEFAULT_LIMIT,
