@@ -3,9 +3,11 @@ response, the markup that draws it, and the reset that wipes the table.
 
 Body validation is the interesting part: `manual_overrides.target` is the one value of
 this feature that later becomes a WRITE path (sorter builds a destination from it), so
-the endpoint must never let an invalid body through silently. The path check itself
-lives in sorter (see test_sorter_overrides.TestTargetEscapeIsRefused) — here we check
-that ui.py stores what it was given and answers 400 instead of raising.
+the endpoint must never let an invalid body through silently. The rule itself lives in
+sorter (`manual_target_parts`; see test_sorter_overrides.TestTargetEscapeIsRefused for
+the reader's half) — since F203 the route asks that same function before it stores
+anything and answers 400 with a reason, so here we check that ui.py stores a valid target
+as it was given and refuses the rest instead of raising.
 """
 from __future__ import annotations
 
@@ -101,15 +103,17 @@ class TestOverridesPayloadValidation(OverridesTestBase):
         status, _payload = self.post("/api/overrides", None)
         self.assertEqual(status, 400)
 
-    def test_escaping_target_is_stored_not_rejected_here(self):
-        # ui.py is not the place that decides whether a target is safe — the sorter
-        # validates it against the sort root and ignores it with a warning. What must
-        # hold here: the value is stored as given, not turned into a filesystem path.
-        status, _payload = self.post(
+    def test_escaping_target_is_refused_with_a_reason(self):
+        # F203: the target is typed rather than picked, so the route answers the person
+        # who typed it. It used to be stored here and dropped hours later by the sorter,
+        # which still refuses it when it reads the row — see test_reassign_beyond_the_plan
+        # for the reasons and for the rule both halves share.
+        status, payload = self.post(
             "/api/overrides", {"file_ids": [self.fid], "action": "reassign",
                                "target": "../../evil"})
-        self.assertEqual(status, 200)
-        self.assertEqual(self.rows(), {self.fid: ("reassign", "../../evil")})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["reason"], "parent")
+        self.assertEqual(self.rows(), {})
 
 
 class TestOverridesWrites(OverridesTestBase):

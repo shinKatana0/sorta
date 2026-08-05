@@ -26,6 +26,14 @@ SortReport.manual_excluded separately from the --exclude directories; action='re
 verdict, not_personal and geo. The reassign target comes from the DB, i.e. from
 outside, so it is validated against the sort root before a path is built from it (see
 _manual_target_parts) — an invalid target is ignored with a warning, never followed.
+F203: that target is a NAME, not a choice from a list — it may be a folder the plan
+does not contain (`Россия/` on its own, a new album directory), because the person
+knows where the frames belong and the program's own suggestions are the only thing it
+could offer otherwise. Nothing is created on disk before the apply: an unknown target is
+a folder of the plan like any other, and `_resolve_dst` gives it its `_1` suffix on a
+name conflict just the same. The naming rule is one function (`manual_target_parts`) and
+the web app asks it before it stores anything, so the folder the user is shown and the
+folder the layout writes cannot be spelled differently.
 F103 adds a third action, 'photo': "this is an ordinary photo, the classifier is
 wrong" — it neutralizes the junk/document/product verdict for ROUTING only (the file
 goes down the normal mode/date branch) and never touches media_class, so re-running the
@@ -294,32 +302,73 @@ def _sanitize(name: str) -> str:
     return s
 
 
+# F203: why a reassign target is refused, as CODES rather than sentences — the web app
+# has to say the reason in the interface language, so the catalog holds the three
+# sentences and the server sends the word (the `_ALBUM_BLOCKED_*` arrangement of F193).
+# They are four and not one because the mistakes are different: an empty field, a path
+# that is not a name at all, a climb out of the root, and invisible junk pasted in with
+# the text.
+TARGET_EMPTY = "empty"                # nothing to name a folder with
+TARGET_NOT_RELATIVE = "not_relative"  # a backslash, a colon or a leading «/»
+TARGET_PARENT = "parent"              # a «..» segment — a climb out of the sort root
+TARGET_CONTROL = "control"            # a control character inside the name
+
+
+def manual_target_parts(target: object) -> tuple[list[str] | None, str | None]:
+    """The layout segments a reassign target names — or the reason it is no name at all.
+
+    Returns `(parts, None)` or `(None, reason)`, one of the `TARGET_*` codes above.
+    Accepted: a relative POSIX path of plain segments, which is what a folder of the
+    layout is. Refused: an empty value, a backslash or a colon (`..\\..\\x`, `C:/win`,
+    UNC), a leading `/`, any `..` segment, and any control character. What survives goes
+    through `_sanitize`, like every other folder name in the layout — F203 asks the
+    question at the web app's door as well as here, and a second cleaning rule written
+    there would drift away from this one within a release.
+
+    The remaining forbidden characters (`<>"|?*`) are NOT a refusal: `_sanitize` turns
+    them into underscores for a city name the same way, and a target is held to the
+    layout's naming rules, not to a stricter set of its own.
+    """
+    if not isinstance(target, str) or not target.strip():
+        return None, TARGET_EMPTY
+    raw = target.strip()
+    if any(ord(ch) < 32 for ch in raw):
+        # `_sanitize` would quietly turn these into underscores. Here that is the wrong
+        # answer: nobody types a control character on purpose, so it arrived by a paste
+        # the user cannot see, and a folder named after it is a folder they did not ask
+        # for.
+        return None, TARGET_CONTROL
+    if "\\" in raw or ":" in raw or raw.startswith("/"):
+        return None, TARGET_NOT_RELATIVE
+    if ".." in [seg.strip() for seg in raw.split("/")]:
+        return None, TARGET_PARENT
+    parts = [_sanitize(seg) for seg in raw.split("/") if seg.strip() not in ("", ".")]
+    if not parts:
+        return None, TARGET_EMPTY
+    return parts, None
+
+
 def _manual_target_parts(target: str | None, src: str) -> list[str] | None:
     """F77: `manual_overrides.target` -> layout segments under the sort root, or None.
 
     The value is written by the web app, i.e. it reaches the sorter from OUTSIDE, and
     it is the one input of this feature that becomes a WRITE path — so it is treated as
-    untrusted. Accepted: a relative POSIX path of plain segments. Rejected (None + a
-    warning; the caller then lays the file out automatically, rather than writing
-    outside the root): an empty value, a backslash or a colon (`..\\..\\x`, `C:/win`,
-    UNC), a leading `/`, and any `..` segment. What survives still goes through
-    _sanitize, like every other folder name in the layout.
+    untrusted and asked of `manual_target_parts` again HERE, at the moment a destination
+    is built from it. The route refusing it (F203) does not make this check redundant:
+    the table is a database file on disk, and a row that got in by any other route still
+    has to be unable to write outside the root. A refused value is ignored with a warning
+    and the caller lays the file out automatically.
     """
-    if not isinstance(target, str):
-        return None
-    raw = target.strip()
-    rejected = (not raw or "\\" in raw or ":" in raw or raw.startswith("/")
-                or ".." in [seg.strip() for seg in raw.split("/")])
-    if rejected:
-        _log.warning("sort: ручная правка проигнорирована — target выходит за корень "
-                     "раскладки или не является относительным путём: %r (%s)", target, src)
-        return None
-    parts = [_sanitize(seg) for seg in raw.split("/") if seg.strip() not in ("", ".")]
-    if not parts:
+    parts, refusal = manual_target_parts(target)
+    if parts is not None:
+        return parts
+    if refusal == TARGET_EMPTY:
         _log.warning("sort: ручная правка проигнорирована — пустой target: %r (%s)",
                      target, src)
-        return None
-    return parts
+    else:
+        _log.warning("sort: ручная правка проигнорирована — target выходит за корень "
+                     "раскладки или не является относительным путём: %r (%s)", target, src)
+    return None
 
 
 def _looks_like_a_camera_shot(row: sqlite3.Row) -> bool:

@@ -262,11 +262,13 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="step-title">{{layout_corrections_title}}</span>
 <div class="override-controls">
 <button type="button" id="city-override-exclude-btn" class="btn btn-danger" disabled>{{override_exclude_button}}<span id="city-override-count"></span></button>
-<select id="city-override-target"><option value="">{{override_target_placeholder}}</option></select>
+<input type="text" id="city-override-target" class="override-target" list="city-override-target-options" autocomplete="off" placeholder="{{override_target_placeholder}}">
+<datalist id="city-override-target-options"></datalist>
 <button type="button" id="city-override-move-btn" class="btn" disabled>{{override_move_button}}</button>
 <button type="button" id="city-override-clear-btn" class="btn btn-ghost" disabled>{{override_clear_button}}</button>
 <span id="override-status" class="override-status"></span>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+<p class="override-hint">{{override_target_hint}}</p>
 <p class="override-hint">{{override_hint}}</p>
 </div>
 </div>

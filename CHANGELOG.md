@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Files can be reassigned to a folder the plan does not have** (F203). The owner
+  reported on 2026‑08‑05 that the layout would move selected frames **only into folders
+  the program had already proposed**: the picker listed the plan's own categories, so the
+  country root — `Россия/` with no city and no year, a branch the layout has carried since
+  F86 — and a directory that does not exist yet were both unsayable. This is the same gap
+  as F202 one level down: the product suggests well and listens badly, and the layout is
+  the last place where the person's decision should win, because the files really move.
+  The target is now **typed**, with the plan's folders kept as suggestions beside the
+  field, and it is checked as a **name** rather than as a path: a separator, a `..`, an
+  absolute path, a colon or a control character is refused with a **reason** the page says
+  in three languages, instead of being stored and silently dropped hours later when the
+  layout ran. The naming rule is **one function** shared with the layout
+  (`sorter.manual_target_parts`, built on the `_sanitize` every folder name goes through),
+  so the folder the field accepts and the folder the apply writes cannot be spelled
+  differently — and the sorter keeps asking it again when it reads the row, since
+  `manual_overrides` is a file on disk. Nothing is created before `--apply`, a name
+  conflict still gets its `_1` suffix instead of overwriting, and the moves journal and
+  `undo` are untouched. There is deliberately **no bulk reassign of a whole slice**: one
+  typo would carry a thousand frames.
 - **A place can be a region, not only a city or a country** (F202). The owner typed
   «Алтай» into the place picker on 2026‑08‑05 and got two Mongolian towns; «Карелия»,
   «Крым» and «Тоскана» found nothing at all. The base knew only cities and countries,
