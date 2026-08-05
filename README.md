@@ -1,3 +1,5 @@
+<img src="docs/assets/icon.png" alt="" width="72" align="left" hspace="12">
+
 # Sorta
 
 [![CI](https://github.com/shinKatana0/sorta/actions/workflows/check.yml/badge.svg)](https://github.com/shinKatana0/sorta/actions/workflows/check.yml)
@@ -75,6 +77,17 @@ app**.
 ---
 
 ![The Cities tab — the proposed Country / City / Year folder tree, reviewed before anything moves](docs/assets/process.png)
+
+### Two entry points, one job each
+
+The **CLI runs the pipeline** — every stage, `sort`, `album`, `search`, and a per‑run flag
+for every option. The **web app is where you decide**: resolving duplicates, correcting a
+place, pinning a query, restoring a frame. `sorta dupes` lists duplicates; it does not
+resolve them, because resolving them from a command line means choosing without seeing the
+frames — and on blind pairs no rule we measured beat chance at that. Everything
+reproducible is scriptable; nothing that needs an opinion pretends to be.
+
+---
 
 ## System requirements
 
