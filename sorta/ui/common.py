@@ -249,6 +249,14 @@ def _trash_files(db_path: Path, ids: list[int]) -> list[dict]:
     Reused by group deletion of duplicates (`_trash_group`, U3) and by deletion of a
     single frame (`/api/photo/trash`, U4). An id outside the current files (already
     deleted/unknown) is silently skipped — idempotent on a repeated call.
+
+    F210: the frame's PREVIEW goes with it. The preview key is a hash of
+    (path, mtime, size), and after `send2trash` not one of the three can be read off the
+    disk any more — so the row, which still holds all three, is what the key is computed
+    from, and the removal itself happens once the original is in the bin (nothing can
+    regenerate a preview of a file that is no longer there). A preview that will not go —
+    missing, locked, unwritable — is not an error: `imaging.preview_delete` never raises,
+    because the tidying of a derivative may not stop the deletion of the original.
     """
     if not ids:
         return []
@@ -256,11 +264,12 @@ def _trash_files(db_path: Path, ids: list[int]) -> list[dict]:
     try:
         placeholders = ",".join("?" * len(ids))
         rows = conn.execute(
-            f"SELECT id, path FROM files WHERE id IN ({placeholders})", ids
+            f"SELECT id, path, mtime, size FROM files WHERE id IN ({placeholders})", ids
         ).fetchall()
         trashed = []
         for r in rows:
             send_to_trash(r["path"])
+            imaging.preview_delete(r["path"], r["mtime"], r["size"])
             trashed.append({"file_id": r["id"], "name": Path(r["path"]).name})
         found_ids = [r["id"] for r in rows]
         if found_ids:
