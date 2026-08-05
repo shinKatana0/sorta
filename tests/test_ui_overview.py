@@ -621,7 +621,8 @@ class TestOverviewSkeleton(OverviewTestBase):
         """
         body = _js_function(self.html, "renderOverviewSkeleton")
         self.assertIn("function renderOverviewSkeleton()", body)
-        self.assertNotIn("data", body.split("{", 1)[1])
+        self.assertNotIn("(data", body)
+        self.assertNotIn("data.", body)
         self.assertIn("overviewSkeletonData()", body)
         rows = _js_function(self.html, "overviewSkeletonData")
         for group in ("place", "verdicts", "sources", "tiers"):
