@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="{{lang}}"><head><meta charset="utf-8">
+<title>Sorta UI</title>
+<style>
+{{style}}</style></head><body>
+<div class="header-bar">
+<div class="brand">
+<svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M4 7l8-3 8 3v10l-8 3-8-3V7z"/><path d="M4 7l8 3 8-3"/><path d="M12 10v10"/>
+</svg>
+<span class="brand-name">Sorta</span>
+</div>
+<div class="header-controls">
+<label class="lang-field">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 6 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-6-3.8-9s1.3-6.3 3.8-9z"/>
+</svg>
+<select id="lang-select" class="lang-select">{{lang_options}}</select>
+</label>
+<button type="button" id="theme-toggle-btn" class="btn btn-ghost theme-toggle-btn">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>
+<span id="theme-toggle-label">{{theme_dark}}</span></button>
+<button type="button" id="settings-toggle-btn" class="btn btn-ghost settings-toggle-btn"
+        title="{{settings_open_button}}" aria-expanded="false">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/>
+<path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34
+1.7 1.7 0 0 0-1 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.5 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06
+a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1H2a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 3.7 8.5a1.7 1.7 0 0 0-.34-1.87l-.06-.06
+a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8 4.14 1.7 1.7 0 0 0 9 2.58V2a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.56
+1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H22a2 2 0 1 1 0 4h-.09
+a1.7 1.7 0 0 0-1.56 1z"/></svg>
+<span class="settings-toggle-label">{{settings_open_button}}</span></button>
+</div>
+</div>
+<div class="tabs" role="tablist">
+<button type="button" class="tab-btn active" id="tab-btn-overview">{{tab_overview}}</button>
+<button type="button" class="tab-btn" id="tab-btn-review">{{tab_review}}</button>
+<button type="button" class="tab-btn" id="tab-btn-layout">{{tab_layout}}</button>
+<button type="button" class="tab-btn" id="tab-btn-slices">{{tab_slices}}</button>
+<button type="button" class="tab-btn" id="tab-btn-moves">{{tab_moves}}</button>
+</div>
+<p id="delete-remember-row" style="display:none"><label><input type="checkbox" id="delete-remember">
+{{delete_remember_label}}</label></p>
+
+<section id="tab-overview" class="tab-panel active">
+<div id="overview-body"><div class="state-msg state-loading">{{loading}}</div></div>
+<p class="process-intro">{{process_intro}}</p>
+<div class="process-controls">
+<div class="step" id="step-source">
+<div class="step-head">
+<span class="step-title">{{step_source_title}}</span>
+<span class="step-summary" id="step-source-summary"></span>
+<button type="button" class="btn btn-ghost step-edit-btn" id="step-source-edit">{{step_change_button}}</button>
+</div>
+<div class="step-body">
+<div class="process-path-row">
+<input type="text" id="process-source-dir" placeholder="{{process_path_placeholder}}">
+<button type="button" id="process-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
+<button type="button" id="process-excludes-btn" class="btn btn-ghost">{{excludes_button}}</button>
+</div>
+<div id="excludes-panel" class="excludes-panel" style="display:none">
+<p class="step-title">{{excludes_title}}</p>
+<span class="process-toggle-hint">{{excludes_hint}}</span>
+<ul class="excludes-legend" id="excludes-legend">
+<li><span class="tri-mark">&#9744; {{tri_none_label}}</span> — {{tri_none_hint}}</li>
+<li><span class="tri-mark">&#9680; {{tri_layout_label}}</span> — {{tri_layout_hint}}</li>
+<li><span class="tri-mark">&#9746; {{tri_scan_label}}</span> — {{tri_scan_hint}}</li>
+</ul>
+<div id="excludes-tree" class="excludes-tree"></div>
+<div class="process-actions">
+<button type="button" id="excludes-save-btn" class="btn btn-primary">{{excludes_save_button}}</button>
+<button type="button" id="excludes-close-btn" class="btn btn-ghost">{{process_cancel_button}}</button>
+<span id="excludes-status" class="override-status"></span>
+</div>
+</div>
+</div>
+</div>
+<div class="step" id="step-options">
+<div class="step-head">
+<span class="step-title">{{step_options_title}}</span>
+<span class="step-summary" id="step-options-summary"></span>
+<button type="button" class="btn btn-ghost step-edit-btn" id="step-options-edit">{{step_change_button}}</button>
+</div>
+<span class="step-hint">{{step_needs_source_hint}}</span>
+<div class="step-body">
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="process-geo-online-checkbox"> {{process_geo_online_label}}</label>
+<span class="process-toggle-hint">{{process_geo_online_hint}}</span>
+</div>
+<div class="cost-block" id="process-costs">
+<div class="cost-head">{{costs_title}}</div>
+<span class="process-toggle-hint">{{costs_estimate_note}}</span>
+<span class="process-toggle-hint" id="process-costs-source"></span>
+<span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
+<div class="cost-row">
+<span class="cost-name">{{costs_base_label}}</span>
+<span class="cost-always">{{costs_always}}</span>
+<span class="cost-price" data-cost="base"></span>
+</div>
+<div class="cost-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-faces-checkbox"> {{process_faces_label}}</label>
+<span class="cost-price" data-cost="faces"></span>
+<span class="process-toggle-hint cost-hint">{{process_faces_hint}}</span>
+</div>
+<div class="cost-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-events-checkbox"> {{process_events_label}}</label>
+<span class="cost-price" data-cost="events"></span>
+<span class="process-toggle-hint cost-hint">{{process_events_hint}}</span>
+</div>
+<div class="cost-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-pets-checkbox"> {{process_pets_label}}</label>
+<span class="cost-price" data-cost="pets"></span>
+<span class="process-toggle-hint cost-hint">{{process_pets_hint}}</span>
+<span class="cost-child" id="process-pets-verify-row" style="display:none">
+<label class="process-toggle-label"><input type="checkbox" id="process-pets-verify-checkbox"> {{process_pets_verify_label}}</label>
+<span class="cost-price" data-cost="pets_verify"></span>
+<span class="process-toggle-hint cost-hint">{{process_pets_verify_hint}}</span>
+<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
+</span>
+</div>
+<div class="cost-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-deep-checkbox"> {{process_deep_label}}</label>
+<span class="cost-price" data-cost="deep"></span>
+<span class="process-toggle-hint cost-hint">{{process_deep_hint}}</span>
+<span id="process-deep-vlm-missing" class="process-toggle-hint process-toggle-warn" style="display:none">{{process_deep_vlm_missing}}</span>
+<span class="cost-child" id="process-products-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-products-checkbox"> {{process_products_label}}</label>
+<span class="cost-price" data-cost="products"></span>
+<span class="process-toggle-hint cost-hint">{{process_products_hint}}</span>
+<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div class="step" id="step-actions">
+<div class="step-head">
+<span class="step-title">{{step_actions_title}}</span>
+</div>
+<span class="step-hint">{{step_needs_source_hint}}</span>
+<div class="step-body">
+<div class="cost-total" id="process-budget">
+<span class="cost-total-label">{{costs_total_label}}</span>
+<span class="cost-total-value" id="process-budget-value"></span>
+</div>
+<div class="process-actions">
+<button type="button" id="process-start-btn" class="btn btn-primary">{{process_start_button}}</button>
+<button type="button" id="process-cancel-btn" class="btn btn-ghost process-cancel-btn" style="display:none">{{process_cancel_button}}</button>
+<button type="button" id="process-reset-btn" class="btn btn-danger">{{process_reset_button}}</button>
+</div>
+</div>
+</div>
+</div>
+<progress id="process-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
+<div id="process-phase" class="process-phase" style="display:none"></div>
+<div id="process-stages" class="stage-chips"></div>
+<div id="process-status" class="process-status"></div>
+<div id="process-summary" class="process-summary"></div>
+<div id="env-cpu-warning" class="env-warning" style="display:none">⚠ {{env_cpu_warning}}</div>
+<div class="cache-block" id="cache-block">
+<div class="cache-head">
+<span class="step-title">{{cache_title}}</span>
+<span id="cache-sizes" class="cache-sizes">{{loading}}</span>
+</div>
+<span id="cache-limit" class="cache-sizes"></span>
+<span class="process-toggle-hint">{{cache_hint}}</span>
+<div class="process-actions">
+<button type="button" id="cache-clear-preview-btn" class="btn btn-ghost">{{cache_clear_preview_button}}</button>
+<button type="button" id="cache-clear-geo-btn" class="btn btn-ghost">{{cache_clear_geo_button}}</button>
+<span id="cache-status" class="cache-status"></span>
+</div>
+</div>
+</section>
+
+<section id="tab-layout" class="tab-panel">
+<div class="city-layout">
+<div class="city-main">
+<div id="layout-review-warning" class="layout-warning" style="display:none">
+<span id="layout-review-warning-text"></span>
+<button type="button" id="layout-review-goto-btn" class="btn btn-ghost btn-sm">{{layout_review_goto}}</button>
+</div>
+<div class="sort-controls">
+<input type="text" id="sort-dest" placeholder="{{sort_dest_placeholder}}">
+<button type="button" id="sort-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
+<label class="sort-mode-label"><input type="radio" name="sort-mode" value="move" checked> {{sort_mode_move}}</label>
+<label class="sort-mode-label"><input type="radio" name="sort-mode" value="copy"> {{sort_mode_copy}}</label>
+<button type="button" id="sort-apply-btn" class="btn btn-primary" disabled>{{sort_apply_button}}</button>
+<span class="sort-dest-hint">{{sort_dest_hint}}</span>
+<span class="sort-dest-hint" id="sort-empty-hint" style="display:none">{{sort_summary_empty}}</span>
+<span class="sort-dest-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<progress id="sort-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
+<div class="process-actions">
+<button type="button" id="sort-cancel-btn" class="btn btn-ghost" style="display:none">{{sort_cancel_button}}</button>
+</div>
+<div id="sort-status" class="process-status"></div>
+<div id="sort-warning" class="process-status"></div>
+<div class="tree-controls">
+<button type="button" class="btn btn-ghost expand-all-btn">{{expand_all}}</button>
+<button type="button" class="btn btn-ghost collapse-all-btn">{{collapse_all}}</button>
+</div>
+<div class="override-controls">
+<button type="button" id="city-override-exclude-btn" class="btn btn-danger" disabled>{{override_exclude_button}}<span id="city-override-count"></span></button>
+<select id="city-override-target"><option value="">{{override_target_placeholder}}</option></select>
+<button type="button" id="city-override-move-btn" class="btn" disabled>{{override_move_button}}</button>
+<button type="button" id="city-override-clear-btn" class="btn btn-ghost" disabled>{{override_clear_button}}</button>
+<span id="override-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+<p class="override-hint">{{override_hint}}</p>
+</div>
+<div class="place-controls" id="city-place-controls">
+<span id="city-place-picker" class="place-picker"></span>
+<span id="place-status" class="override-status"></span>
+<p class="override-hint">{{place_hint}}</p>
+</div>
+<div class="selection-controls" id="city-selection-controls" style="display:none">
+<button type="button" id="city-delete-selected-btn" class="btn btn-danger" disabled>{{delete_selected}}<span id="city-delete-selected-count"></span></button>
+<span class="override-hint">{{selection_delete_hint}}</span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<div id="tree-city"><div class="state-msg state-loading">{{loading}}</div></div>
+</div>
+</div>
+</section>
+
+<div id="settings-panel" class="settings-panel" hidden>
+<div class="settings-panel-box">
+<div class="settings-panel-head">
+<span class="settings-head">{{settings_title}}</span>
+<button type="button" id="settings-close-btn" class="btn btn-ghost btn-sm">{{settings_close_button}}</button>
+</div>
+<aside class="settings-side">
+<div class="settings-block">
+<div class="settings-head">{{settings_title}}</div>
+<span class="process-toggle-hint">{{settings_hint}}</span>
+<span class="process-toggle-hint">{{settings_costs_moved_hint}}</span>
+<label class="settings-field" for="setting-vlm-model">{{settings_vlm_model_label}}
+<input type="text" id="setting-vlm-model"></label>
+<label class="settings-field" for="setting-vlm-workers">{{settings_vlm_workers_label}}
+<input type="number" id="setting-vlm-workers" min="1" max="32" step="1"></label>
+<span class="process-toggle-hint">{{settings_vlm_workers_hint}}</span>
+<label class="settings-field" for="setting-vlm-max-edge">{{settings_vlm_max_edge_label}}
+<input type="number" id="setting-vlm-max-edge" min="128" max="4096" step="1"></label>
+<span class="process-toggle-hint">{{settings_vlm_max_edge_hint}}</span>
+<div class="settings-head">{{settings_quality_title}}</div>
+<span class="process-toggle-hint">{{settings_quality_hint}}</span>
+<div class="settings-subhead">{{settings_quality_cheap_title}}</div>
+<span class="process-toggle-hint">{{settings_quality_cheap_hint}}</span>
+<label class="settings-field" for="setting-features-pet-threshold">{{settings_features_pet_threshold_label}}
+<input type="number" id="setting-features-pet-threshold" min="0" max="1" step="0.05"></label>
+<label class="settings-field" for="setting-features-sharpness-max-edge">{{settings_features_sharpness_max_edge_label}}
+<input type="number" id="setting-features-sharpness-max-edge" min="64" max="4096" step="1"></label>
+<span class="process-toggle-hint">{{settings_features_sharpness_max_edge_hint}}</span>
+<div class="settings-subhead">{{settings_quality_gate_title}}</div>
+<span class="process-toggle-hint">{{settings_quality_gate_hint}}</span>
+<label class="settings-field" for="setting-features-sharpness-band-min">{{settings_features_sharpness_band_min_label}}
+<input type="number" id="setting-features-sharpness-band-min" min="0" max="10000" step="1"></label>
+<label class="settings-field" for="setting-features-sharpness-band-max">{{settings_features_sharpness_band_max_label}}
+<input type="number" id="setting-features-sharpness-band-max" min="0" max="10000" step="1"></label>
+<span class="process-toggle-hint">{{settings_features_sharpness_band_hint}}</span>
+<label class="settings-field" for="setting-features-subject-score-min">{{settings_features_subject_score_min_label}}
+<input type="number" id="setting-features-subject-score-min" min="0" max="1" step="0.05"></label>
+<span class="process-toggle-hint">{{settings_features_subject_score_min_hint}}</span>
+<label class="settings-field" for="setting-imaging-preview-cache-max-gb">{{settings_preview_max_gb_label}}
+<input type="number" id="setting-imaging-preview-cache-max-gb" min="0" max="4096" step="1"></label>
+<span class="process-toggle-hint">{{settings_preview_max_gb_hint}}</span>
+<span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
+<div id="settings-status" class="override-status"></div>
+</div>
+<div class="settings-block">
+<div class="settings-head">{{settings_folders_title}}</div>
+<label class="settings-field" for="folder-lang-select">{{folder_lang_label}}
+<select id="folder-lang-select"><option value="ru">Русский</option><option value="en">English</option><option value="ja">日本語</option></select></label>
+<span class="process-toggle-hint">{{settings_folder_lang_hint}}</span>
+<span class="process-toggle-hint busy-hint" style="display:none">{{settings_busy}}</span>
+</div>
+</aside>
+</div>
+</div>
+
+<section id="tab-review" class="tab-panel">
+<p class="process-intro">{{review_intro}}</p>
+<div id="review-slices" class="review-slices">
+<button type="button" class="btn btn-sm review-slice-btn active" id="review-slice-dupes">{{review_slice_dupes}}<span class="review-slice-count" id="review-count-dupes"></span></button>
+<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-blurred">{{review_slice_blurred}}<span class="review-slice-count" id="review-count-blurred"></span></button>
+<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-eyes">{{review_slice_eyes}}<span class="review-slice-count" id="review-count-eyes"></span></button>
+<button type="button" class="btn btn-sm review-slice-btn" id="review-slice-low_resolution">{{review_slice_low_resolution}}<span class="review-slice-count" id="review-count-low_resolution"></span></button>
+</div>
+<div id="review-dupes">
+<div class="dupes-controls">
+<button type="button" id="dupes-save-all-btn" class="btn btn-primary">{{save_all_choices}}</button>
+<span id="dupes-save-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<div id="dupes-list"><div class="state-msg state-loading">{{loading}}</div></div>
+</div>
+<div id="review-flat" style="display:none">
+<p id="review-hint" class="override-hint"></p>
+<div class="override-controls">
+<button type="button" id="review-delete-btn" class="btn btn-danger" disabled>{{review_mark_delete}}<span id="review-selected-count"></span></button>
+<button type="button" id="review-keep-btn" class="btn btn-primary" disabled>{{review_mark_keep}}</button>
+<button type="button" id="review-restore-btn" class="btn" disabled title="{{review_restore_hint}}">{{review_restore}}</button>
+<button type="button" id="review-clear-btn" class="btn btn-ghost" disabled>{{review_mark_clear}}</button>
+<button type="button" id="review-select-all-btn" class="btn btn-ghost">{{review_select_all}}</button>
+<button type="button" id="review-select-none-btn" class="btn btn-ghost">{{review_select_none}}</button>
+<span id="review-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<p id="review-restore-hint" class="override-hint">{{review_restore_hint}}</p>
+<div id="review-album" class="album-controls"></div>
+<div id="review-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="review-more-btn" class="btn btn-ghost" style="display:none">{{review_load_more}}</button>
+<span id="review-shown" class="override-hint"></span>
+</div>
+</div>
+</section>
+
+<section id="tab-slices" class="tab-panel">
+<p class="process-intro">{{slices_intro}}</p>
+<div class="slice-search">
+<div class="slice-query-row">
+<label class="slice-query-field" for="slice-query">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.3-4.3"/></svg>
+<input type="search" id="slice-query" placeholder="{{search_placeholder}}" disabled>
+</label>
+<button type="button" id="slice-query-btn" class="btn btn-primary btn-sm" disabled>{{search_button}}</button>
+<button type="button" id="slice-pin-btn" class="btn btn-ghost btn-sm" style="display:none">{{pin_slice_button}}</button>
+<button type="button" id="slice-query-goto" class="btn btn-ghost btn-sm" style="display:none">{{search_goto_overview}}</button>
+</div>
+<span id="slice-query-hint" class="process-toggle-hint">{{search_state_checking}}</span>
+<span id="slice-pin-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<div id="slice-pins" class="review-slices" aria-label="{{slices_pinned_label}}"></div>
+
+<div id="tab-search" class="slice-panel">
+<p id="search-kind-hint" class="process-intro">{{search_ranking_hint}}</p>
+<div id="search-other" class="album-controls"></div>
+<div id="search-album" class="album-controls"></div>
+<div id="search-grid"></div>
+<div class="process-actions">
+<button type="button" id="search-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
+<span id="search-shown" class="override-hint"></span>
+<span id="search-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
+</div>
+</div>
+
+<div id="tab-query" class="slice-panel">
+<p id="query-kind-hint" class="process-intro">{{query_slice_intro}}</p>
+<p id="query-phrases" class="override-hint"></p>
+<div class="override-controls">
+<button type="button" id="query-up-btn" class="btn btn-ghost btn-sm">{{pin_move_up}}</button>
+<button type="button" id="query-down-btn" class="btn btn-ghost btn-sm">{{pin_move_down}}</button>
+<button type="button" id="query-unpin-btn" class="btn btn-ghost btn-sm">{{pin_unpin_button}}</button>
+<span id="query-pin-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<div id="query-album" class="album-controls"></div>
+<div id="query-grid"></div>
+<div class="process-actions">
+<button type="button" id="query-more-btn" class="btn btn-primary" style="display:none">{{slice_load_more}}</button>
+<span id="query-shown" class="override-hint"></span>
+<span id="query-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
+</div>
+</div>
+
+<div id="tab-person" class="slice-panel">
+<div class="cluster-controls">
+<button type="button" id="clusters-merge-btn" class="btn btn-primary" disabled>
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="4.5" r="1.6"/><circle cx="18" cy="4.5" r="1.6"/>
+<circle cx="12" cy="19.5" r="1.6"/><path d="M6 6v3c0 2.5 2 4 4 4h1M18 6v3c0 2.5-2 4-4 4h-1M12 13v5"/></svg>
+{{merge_selected}}</button>
+</div>
+<div id="clusters-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+</div>
+
+<div id="tab-event" class="slice-panel">
+<div id="events-list"><div class="state-msg state-loading">{{loading}}</div></div>
+</div>
+
+<div id="tab-face" class="slice-panel">
+<p class="process-intro">{{face_slices_intro}}</p>
+<p id="face-hint" class="override-hint"></p>
+<div id="face-album" class="album-controls"></div>
+<div id="face-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="face-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
+<span id="face-shown" class="override-hint"></span>
+</div>
+</div>
+
+<div id="tab-animal" class="slice-panel">
+<p class="process-intro">{{animals_intro}}</p>
+<div id="animals-album" class="album-controls"></div>
+<div id="animals-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="animals-more-btn" class="btn btn-ghost" style="display:none">{{slice_load_more}}</button>
+<span id="animals-shown" class="override-hint"></span>
+<span id="animals-depth-hint" class="override-hint" style="display:none">{{slice_depth_hint}}</span>
+<span id="animals-counted" class="override-hint"></span>
+<span id="animals-mark-status" class="album-status"></span>
+</div>
+</div>
+
+<div id="tab-junk" class="slice-panel">
+<p class="process-intro">{{junk_intro}}</p>
+<p id="junk-accuracy" class="override-hint" style="display:none"></p>
+<div id="junk-doc-hint" class="override-hint" style="display:none">{{junk_document_hint}}</div>
+<div class="override-controls">
+<button type="button" id="junk-restore-btn" class="btn btn-primary" disabled>{{slice_return_button}}<span id="junk-selected-count"></span></button>
+<button type="button" id="junk-select-all-btn" class="btn btn-ghost">{{junk_select_all}}</button>
+<button type="button" id="junk-select-none-btn" class="btn btn-ghost">{{junk_select_none}}</button>
+<span id="junk-status" class="override-status"></span>
+<span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
+</div>
+<div id="junk-dest-summary" class="override-hint dest-summary"></div>
+<div id="junk-album" class="album-controls"></div>
+<div id="junk-grid"><div class="state-msg state-loading">{{loading}}</div></div>
+<div class="process-actions">
+<button type="button" id="junk-more-btn" class="btn btn-ghost" style="display:none">{{junk_load_more}}</button>
+<span id="junk-shown" class="override-hint"></span>
+</div>
+</div>
+
+<div id="slice-empty" class="state-msg state-empty" style="display:none">{{slices_empty}}</div>
+</section>
+
+<section id="tab-moves" class="tab-panel">
+<div id="moves-summary"></div>
+<div class="process-actions">
+<button type="button" id="undo-btn" class="btn btn-danger" disabled>{{undo_button}}</button>
+<button type="button" id="undo-cancel-btn" class="btn btn-ghost" style="display:none">{{undo_cancel_button}}</button>
+</div>
+<progress id="undo-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
+<div id="undo-status" class="process-status"></div>
+<div id="undo-stray" class="process-status"></div>
+<div class="tree-controls">
+<button type="button" class="btn btn-ghost expand-all-btn">{{expand_all}}</button>
+<button type="button" class="btn btn-ghost collapse-all-btn">{{collapse_all}}</button>
+</div>
+<div id="tree-moves"><div class="state-msg state-loading">{{loading}}</div></div>
+</section>
+
+<button type="button" id="top-btn" class="btn top-btn" title="{{back_to_top}}">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+{{back_to_top}}</button>
+<div id="reset-dialog" class="reset-dialog" hidden>
+<div class="reset-dialog-box">
+<p class="reset-dialog-text">{{process_reset_confirm}}</p>
+<div class="process-option">
+<label class="process-toggle-label"><input type="checkbox" id="reset-clear-geo-checkbox"> {{process_reset_clear_geo_label}}</label>
+<span class="process-toggle-hint">{{process_reset_clear_geo_hint}}</span>
+</div>
+<div class="reset-dialog-actions">
+<button type="button" id="reset-dialog-cancel" class="btn btn-ghost">{{process_reset_confirm_cancel}}</button>
+<button type="button" id="reset-dialog-ok" class="btn btn-danger">{{process_reset_confirm_ok}}</button>
+</div>
+</div>
+</div>
+<div id="undo-dialog" class="reset-dialog" hidden>
+<div class="reset-dialog-box">
+<p class="reset-dialog-text" id="undo-dialog-text"></p>
+<div class="reset-dialog-actions">
+<button type="button" id="undo-dialog-cancel" class="btn btn-ghost">{{undo_confirm_cancel}}</button>
+<button type="button" id="undo-dialog-ok" class="btn btn-danger">{{undo_confirm_ok}}</button>
+</div>
+</div>
+</div>
+<div id="sort-dialog" class="reset-dialog" hidden>
+<div class="reset-dialog-box">
+<p class="reset-dialog-text" id="sort-dialog-text"></p>
+<ul class="sort-dialog-list" id="sort-dialog-list"></ul>
+<p class="reset-dialog-text" id="sort-dialog-warning"></p>
+<div class="reset-dialog-actions">
+<button type="button" id="sort-dialog-cancel" class="btn btn-ghost">{{sort_confirm_cancel}}</button>
+<button type="button" id="sort-dialog-ok" class="btn btn-danger">{{sort_confirm_ok}}</button>
+</div>
+</div>
+</div>
+<div id="lightbox" class="lightbox" hidden title="{{lightbox_close}}">
+<img id="lightbox-img" src="" alt="">
+<button type="button" id="lightbox-prev" class="lightbox-nav lightbox-prev" hidden
+        title="{{frame_prev}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        ><path d="M15 18l-6-6 6-6"/></svg></button>
+<button type="button" id="lightbox-next" class="lightbox-nav lightbox-next" hidden
+        title="{{frame_next}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        ><path d="M9 6l6 6-6 6"/></svg></button>
+<div id="lightbox-dots" class="lightbox-dots" hidden></div>
+<div id="lightbox-restore" class="lightbox-restore" hidden>
+<span id="lightbox-restore-badge" class="lightbox-restore-badge" hidden></span>
+<button type="button" id="lightbox-restore-btn" class="btn btn-sm" hidden
+        title="{{review_restore_expanded_hint}}">{{review_restore}}</button>
+<span id="lightbox-restore-note" hidden></span>
+<span id="lightbox-restore-status"></span>
+</div>
+</div>
+<script>window.I18N = {{i18n_json}};</script>
+<script>window.VIDEO_FRAMES = {{video_frames}};</script>
+<script>
+{{script}}</script>
+</body></html>
