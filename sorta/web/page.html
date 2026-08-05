@@ -182,17 +182,18 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 </div>
 <div class="layout-desk" id="layout-desk">
 <div class="layout-field" id="layout-field-where">
-<span class="layout-field-title">{{layout_where_title}}</span>
+<span class="layout-field-title" id="layout-where-title">{{layout_where_title}}</span>
 <div class="layout-field-row">
-<input type="text" id="sort-dest" placeholder="{{sort_dest_placeholder}}">
+<input type="text" id="sort-dest" aria-labelledby="layout-where-title"
+       placeholder="{{sort_dest_placeholder}}">
 <button type="button" id="sort-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
 </div>
 <span class="sort-dest-hint">{{sort_dest_hint}}</span>
 </div>
 <div class="layout-field" id="layout-field-by">
-<span class="layout-field-title">{{layout_by_title}}</span>
+<span class="layout-field-title" id="layout-by-title">{{layout_by_title}}</span>
 <div class="layout-field-row">
-<select id="layout-by" class="layout-by-select">
+<select id="layout-by" class="layout-by-select" aria-labelledby="layout-by-title">
 <option value="city">{{layout_by_city}}</option>
 <option value="person">{{layout_by_person}}</option>
 <option value="event">{{layout_by_event}}</option>
