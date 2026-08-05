@@ -907,6 +907,65 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "album_in_progress": {
         "ru": "Идёт сбор альбома...", "en": "Gathering album...", "ja": "アルバムを収集中...",
     },
+    # --- F193: one offer for every slice — pick some frames, name the folder, gather ---
+    # The tick on a card and the line beside the button. "Only the selected" is a state a
+    # person can be in by accident (tick three, untick three), so the count is always on
+    # screen and the refusal below is reachable rather than theoretical.
+    "album_select_label": {
+        "ru": "Выбрать", "en": "Select", "ja": "選択",
+    },
+    "album_selected_only": {
+        "ru": "Только выбранные ({n})", "en": "Selected only ({n})",
+        "ja": "選択したものだけ（{n}）",
+    },
+    # Stands beside the button whenever the scope is OFF — which is both "nothing is
+    # ticked yet" and "the scope was switched off by hand", and the sentence has to be
+    # true of both: it states what the button will gather, not why.
+    "album_selection_hint": {
+        "ru": "В папку пойдёт весь срез.",
+        "en": "The whole slice goes into the folder.",
+        "ja": "スライス全体がフォルダに入ります。",
+    },
+    "album_error_empty_selection": {
+        "ru": "Не выбрано ни одного кадра: отметьте кадры или снимите «только выбранные».",
+        "en": "No frames are selected: tick some frames or clear «selected only».",
+        "ja": "フレームが選択されていません: フレームを選ぶか「選択したものだけ」を外してください。",
+    },
+    # Why a slice cannot be gathered, one sentence per reason the server sends. A refusal
+    # is a sentence and never a missing button: a control the page does not draw forbids
+    # nothing and explains nothing.
+    "album_blocked_documents": {
+        "ru": "Документы в папку не собираются: паспорта, медицинские и банковские "
+              "бланки не складываются в один каталог одним нажатием. "
+              "Каждый файл по-прежнему можно вернуть в фотографии.",
+        "en": "Documents are not gathered into a folder: passports, medical and bank "
+              "forms are not assembled into one directory in a single click. "
+              "Each file can still be returned to the photos.",
+        "ja": "書類はフォルダにまとめられません: パスポートや医療・銀行の書類を"
+              "ワンクリックで一つのディレクトリに集めることはしません。"
+              "各ファイルを写真に戻すことは引き続き可能です。",
+    },
+    "album_blocked_sensitive": {
+        "ru": "Класс указан в vlm.exclude_classes — он не показывается модели "
+              "и не собирается в папку.",
+        "en": "The class is listed in vlm.exclude_classes — it is not shown to the model "
+              "and is not gathered into a folder.",
+        "ja": "このクラスは vlm.exclude_classes に含まれています — モデルに渡されず、"
+              "フォルダにもまとめられません。",
+    },
+    "album_blocked_no_kind": {
+        "ru": "Для этого среза альбом ещё не заведён.",
+        "en": "This slice has no album kind yet.",
+        "ja": "このスライスにはまだアルバムの種類がありません。",
+    },
+    "album_blocked_all_buckets": {
+        "ru": "Выберите один класс: «всё, что не фотографии» — не срез, "
+              "и в такой папке смешались бы разные классы.",
+        "en": "Pick one class: «everything that is not a photograph» is not a "
+              "slice, and such a folder would mix different classes together.",
+        "ja": "クラスを一つ選んでください:「写真でないものすべて」はスライスではなく、"
+              "そのフォルダには異なるクラスが混ざってしまいます。",
+    },
     "no_events": {
         "ru": "События не найдены.", "en": "No events found.", "ja": "イベントが見つかりません。",
     },

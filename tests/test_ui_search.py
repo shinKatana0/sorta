@@ -363,10 +363,15 @@ class TestSearchAlbum(SearchUiTestBase):
         self.assertEqual(body["reason"], "empty")
 
     def test_the_button_sends_the_kind_and_the_query_as_the_selector(self):
+        # F193: through the row every slice shares — the kind and the selector are what
+        # the search line hands it, and the row is the same one the memes bucket draws.
         self.start_server()
         _status, body, _ctype = self.get("/")
-        self.assertIn('gatherAlbum("query", query, modeSelect.value',
-                      body.decode("utf-8"))
+        html = body.decode("utf-8")
+        row = html.split("function renderSearchAlbum", 1)[1][:400]
+        self.assertIn('box: "search-album"', row)
+        self.assertIn('kind: query ? (person ? "person" : "query") : null', row)
+        self.assertIn("selector: person || query", row)
 
 
 class TestSearchMarkup(SearchUiTestBase):

@@ -324,6 +324,13 @@ label { cursor: pointer; }
 .album-controls input[type="text"] { flex: 1; min-width: 90px; font-size: 0.8rem; padding: 6px 7px; }
 .album-status { font-size: 0.8rem; color: var(--good); margin-left: 2px; }
 .album-hint { font-size: 0.8rem; color: var(--muted); margin-top: var(--space-sm); font-style: italic; }
+/* F193: the scope of the album ("only the ticked ones"), the sentence beside it and the
+   sentence that stands where a refused slice would have had a button. */
+.album-selection { font-size: 0.8rem; display: flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
+.album-scope-hint, .album-blocked { font-size: 0.8rem; }
+.album-blocked { flex: 1; min-width: 120px; }
+/* the tick on a card of any slice grid — one gesture, one look */
+.slice-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--muted); }
 .event-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 var(--space-sm) 0; }
 .event-thumbs { display: flex; flex-wrap: wrap; gap: 3px; margin: 0 0 var(--space-sm) 0; }
 /* единый вид кликабельной миниатюры-превью (Города/Дубли/Перемещения/События) */
