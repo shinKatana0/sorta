@@ -2676,8 +2676,8 @@
   }
 
   function renderStages(data) {
-    lastProcessStatus = data || {};
-    data = lastProcessStatus;
+    data = data || {};
+    lastProcessStatus = data;
     var box = document.getElementById("process-stages");
     var visible = !!(data.running || data.finished);
     box.style.display = visible ? "" : "none";
