@@ -336,7 +336,8 @@ label { cursor: pointer; }
    why the next slice would have shipped broken again — a slice added tomorrow wears
    this class and gets the layout by existing.
    The pair below is the whole of it: `.slice-grid` on the container, `.slice-card` on
-   the tile, and every panel of the tab uses both. */
+   the tile, worn by every panel that draws frames — the slices of this tab and the
+   «Просмотр» workspace, whose flat slices are the same tiles read for a decision. */
 .slice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
       gap: var(--space-md); }
 /* "Loading", "nothing was found", "it failed" are sentences about the WHOLE slice, so
@@ -351,6 +352,7 @@ label { cursor: pointer; }
       padding: var(--space-sm); background: var(--card); display: flex;
       flex-direction: column; gap: var(--space-xs); }
 .slice-card img { width: 100%; height: 110px; margin: 0; object-fit: cover; }
+
 .event-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 var(--space-sm) 0; }
 .event-thumbs { display: flex; flex-wrap: wrap; gap: 3px; margin: 0 0 var(--space-sm) 0; }
 /* единый вид кликабельной миниатюры-превью (Города/Дубли/Перемещения/События) */
