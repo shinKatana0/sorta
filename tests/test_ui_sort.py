@@ -198,9 +198,13 @@ class TestSortStatusShape(SortTestBase):
         final = _poll_until(self.sort_status, lambda d: d["finished"])
         self.assertEqual(
             set(final["result"].keys()),
+            # F192: `by` — the criterion the run laid the collection out by. A result
+            # that says only "move" no longer says what was done, now that the tab can
+            # ask for people or events as well as cities.
             {"moved", "failed", "skipped_in_place", "skipped_already_copied",
-             "cancelled", "total", "dirs", "dest", "in_place", "mode"},
+             "cancelled", "total", "dirs", "dest", "in_place", "mode", "by"},
         )
+        self.assertEqual(final["result"]["by"], "city")
         self.assertFalse(final["result"]["cancelled"])
         self.assertEqual(final["result"]["mode"], "copy")
         self.assertFalse(final["result"]["in_place"])

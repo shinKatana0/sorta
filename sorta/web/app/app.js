@@ -262,7 +262,7 @@
       postJson("/api/config/language", { language: next }).then(function (resp) {
         select.disabled = false;
         if (resp && resp.ok) {
-          renderPlanTab("city", "tree-city");
+          refreshPlan();
           settingsStatus(I18N.folder_lang_saved);
         } else {
           settingsStatus((resp && resp.error === "already running")
@@ -904,7 +904,7 @@
     btn.addEventListener("click", function () {
       var statusEl = placeStatusEl();
       var vals = { dir: item.src_dir || item.src_path };
-      var done = function () { renderPlanTab("city", "tree-city"); };
+      var done = refreshPlan;
       if (manual) {
         clearPlace("source_dir", item.src_path, "place_folder_clear_confirm",
                    vals, statusEl, done);
@@ -1059,13 +1059,25 @@
     return details;
   }
 
-  // F43: счётчики последнего city-плана.
+  // F43: счётчики последнего плана.
   // F104: the numbers of the confirmation itself now come from /api/sort/summary (it
   // also knows the volume and what is already in the destination); what stays here is
   // the one question the START button needs answered — is there anything to lay out at
-  // all. `cityPlanLoaded` keeps "nothing to lay out" apart from "not counted yet".
-  var cityPlanCount = 0;
-  var cityPlanLoaded = false;
+  // all. `planLoaded` keeps "nothing to lay out" apart from "not counted yet".
+  // F192: both are about the CHOSEN criterion, not about the city one — the tab lays
+  // out by whatever `#layout-by` says, so "is there anything to lay out" is a question
+  // about that plan and has to be re-answered every time the criterion changes.
+  var planCount = 0;
+  var planLoaded = false;
+
+  // F192: the criterion the whole tab is about — `sorter.MODES`, the same values
+  // `/api/plan?mode=` and `sorta sort --by` take. Read from the field rather than kept
+  // in a variable of its own: the field IS the state, and a second copy of it is how
+  // the tree and the apply start laying out by different things.
+  function layoutBy() {
+    var select = document.getElementById("layout-by");
+    return select ? select.value : "city";
+  }
 
   // renderPlanTab: дерево папок плана режима (city/person/event) из агрегата —
   // общий код, переиспользуемый всеми план-вкладками (U2).
@@ -1075,14 +1087,12 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         var categories = data.categories || [];
-        if (mode === "city") {
-          // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
-          // в подтверждении раскладки их считать нельзя.
-          cityPlanCount = (data.total || 0) - (data.excluded || 0);
-          cityPlanLoaded = true;
-          updateBusyControlsDisabled();
-          fillOverrideTargets(categories);
-        }
+        // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
+        // в подтверждении раскладки их считать нельзя.
+        planCount = (data.total || 0) - (data.excluded || 0);
+        planLoaded = true;
+        updateBusyControlsDisabled();
+        fillOverrideTargets(categories);
         container.textContent = "";
         if (!categories.length) {
           container.appendChild(stateEl("empty", I18N.plan_empty));
@@ -1099,11 +1109,53 @@
       });
   }
 
+  // The one call every "the plan may have changed" site makes — an apply that finished,
+  // a correction, a place assignment, a folder-language change, a switch of criterion.
+  // None of them may pass a criterion of its own: they all mean "redraw what the tab is
+  // showing now".
+  function refreshPlan() {
+    renderPlanTab(layoutBy(), "tree-city");
+  }
+
   cityPlacePicker = renderPlacePicker(document.getElementById("city-place-picker"));
-  renderPlanTab("city", "tree-city");
+  refreshPlan();
   wireBulkDelete("tree-city", "city-delete-selected-btn", "city-delete-selected-count",
                  "city-selection-controls");
   wireOverrideControls("tree-city");
+
+  // Switching the criterion re-asks the server for the whole plan, so until the answer
+  // arrives there is no count — the start button goes dead rather than staying live with
+  // the number of the previous criterion behind it.
+  document.getElementById("layout-by").addEventListener("change", function () {
+    planCount = 0;
+    planLoaded = false;
+    updateBusyControlsDisabled();
+    document.getElementById("layout-by-hint").textContent =
+        I18N["layout_by_hint_" + this.value] || "";
+    // The tree of the previous criterion must not stay on screen while the new plan is
+    // being built: on a large collection that is seconds of a person reading folders
+    // that no longer answer the question they just asked.
+    var tree = document.getElementById("tree-city");
+    tree.textContent = "";
+    tree.appendChild(stateEl("loading", I18N.loading));
+    refreshPlan();
+  });
+
+  // F192: everything that is not one of the two questions sits behind the gear —
+  // opened in place, above the tree it is used against, and closed again by the button
+  // that opened it.
+  function toggleLayoutOptions(open) {
+    document.getElementById("layout-options").hidden = !open;
+    document.getElementById("layout-options-btn")
+        .setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  document.getElementById("layout-options-btn").addEventListener("click", function () {
+    toggleLayoutOptions(document.getElementById("layout-options").hidden);
+  });
+  document.getElementById("layout-options-close").addEventListener("click", function () {
+    toggleLayoutOptions(false);
+  });
 
   document.querySelectorAll(".expand-all-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -2821,7 +2873,7 @@
     junkLoaded = false;  // F103: прогон junk-яруса меняет состав корзин
     animalsLoaded = false;  // F123: the same run recomputes the animal verdicts
     faceLoaded = false;     // F152: a faces run is what turns the reason into numbers
-    renderPlanTab("city", "tree-city");
+    refreshPlan();
     applyTabVisibility();
     loadCacheSizes();  // F94: a run is what makes the preview cache grow
     // F138: a run is also what makes the estimate knowable — the deep tier's candidate
@@ -3592,10 +3644,10 @@
     // dialog full of zeroes. Until the plan has arrived the button is dead too, but
     // silently — "nothing to lay out" and "not counted yet" are different statements.
     var applyBtn = document.getElementById("sort-apply-btn");
-    if (applyBtn) { applyBtn.disabled = busy || cityPlanCount === 0; }
+    if (applyBtn) { applyBtn.disabled = busy || planCount === 0; }
     var emptyHint = document.getElementById("sort-empty-hint");
     if (emptyHint) {
-      emptyHint.style.display = (cityPlanLoaded && cityPlanCount === 0) ? "" : "none";
+      emptyHint.style.display = (planLoaded && planCount === 0) ? "" : "none";
     }
   }
 
@@ -3648,7 +3700,7 @@
         : (r.cancelled ? I18N.sort_undo_hint : "");
     movesLoaded = false;
     refreshUndoAvailability();
-    renderPlanTab("city", "tree-city");
+    refreshPlan();
   }
 
   function pollSortStatus() {
@@ -3670,27 +3722,34 @@
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
     var mode = checked ? checked.value : "move";
-    postJson("/api/sort", { dest: dest || null, mode: mode }).then(function (resp) {
-      if (resp && resp.error) {
-        document.getElementById("sort-status").textContent =
-            I18N.sort_start_error_prefix + resp.error;
-        return;
-      }
-      if (sortPollTimer) clearTimeout(sortPollTimer);
-      pollSortStatus();
-    });
+    // F192: `by` is the criterion, `mode` is move-or-copy — two different questions
+    // that the server has kept apart since F43 and the field names keep apart here.
+    postJson("/api/sort", { dest: dest || null, mode: mode, by: layoutBy() })
+      .then(function (resp) {
+        if (resp && resp.error) {
+          document.getElementById("sort-status").textContent =
+              I18N.sort_start_error_prefix + resp.error;
+          return;
+        }
+        if (sortPollTimer) clearTimeout(sortPollTimer);
+        pollSortStatus();
+      });
   }
 
   document.getElementById("sort-apply-btn").addEventListener("click", function () {
     // An empty plan never gets here (the button is dead, see updateBusyControlsDisabled)
     // — a dialog full of zeroes is not an explanation.
-    if (!cityPlanCount) return;
+    if (!planCount) return;
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
     var mode = checked ? checked.value : "move";
     var statusEl = document.getElementById("sort-status");
     statusEl.textContent = "";
-    fetch("/api/sort/summary?dest=" + encodeURIComponent(dest))
+    // The dialog states the numbers of the plan the tab is showing, so it asks about
+    // the same criterion — a summary of the city plan under a tree of people would be
+    // a number nobody has to honour.
+    fetch("/api/sort/summary?dest=" + encodeURIComponent(dest) +
+          "&by=" + encodeURIComponent(layoutBy()))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || data.error) {
@@ -3907,7 +3966,7 @@
     strayEl.textContent = (r.stray && r.stray.length)
         ? I18N.undo_stray_title + " " + r.stray.join(", ") : "";
     refreshUndoAvailability();
-    renderPlanTab("city", "tree-city");
+    refreshPlan();
   }
 
   function pollUndoStatus() {

@@ -5,6 +5,12 @@ person puts on top of it, the place assigned to a whole group at once, the album
 built beside the canon, the people clusters they can be built from, and the settings
 column that governs the run. `PlanCache` is here because the plan is what this tab
 is: the other tabs read it, none of them build it.
+
+F192: the tab asks two questions — where the collection goes and by what it is
+grouped — and the second one is the CRITERION (`sorter.MODES`: city, person, event),
+which `PlanCache` has always keyed its modes by and which `_run_sort` used to
+hard-code to "city". Everything else the tab can do moved behind a gear on the screen;
+nothing moved in this module, because none of it was ever about placement.
 """
 from __future__ import annotations
 
@@ -949,23 +955,37 @@ class _SortState:
             }
 
 
-def _validate_sort_payload(payload: object) -> tuple[str | None, str] | None:
-    """Parse the body `POST /api/sort`: `{"dest": str|null|"", "mode": "move"|"copy"}`.
+def _validate_sort_payload(payload: object) -> tuple[str | None, str, str] | None:
+    """Parse the body `POST /api/sort`:
+    `{"dest": str|null|"", "mode": "move"|"copy", "by": "city"|"person"|"event"?}`.
 
-    None -> invalid (400): not dict / `mode` not in {move, copy} / `dest` not a string
-    and not null. `dest` an empty/whitespace string or null -> None (in-place — layout
-    inside the source folder, see `plan_and_sort` F28).
+    None -> invalid (400): not dict / `mode` not in {move, copy} / `by` outside
+    `_SUPPORTED_MODES` / `dest` not a string and not null. `dest` an empty/whitespace
+    string or null -> None (in-place — layout inside the source folder, see
+    `plan_and_sort` F28).
+
+    F192: `by` is the criterion the layout screen now asks for — the same three values
+    `sorta sort --by` and `GET /api/plan?mode=` have taken since F5. It is optional and
+    falls back to "city": that was the only criterion the web app could apply before, so
+    a client that does not send the field keeps meaning exactly what it used to.
+
+    `mode` and `by` are deliberately two fields and not one: move-or-copy is HOW the
+    files travel, the criterion is WHERE they land, and a single key covering both is
+    how a copy by person becomes a move by city.
     """
     if not isinstance(payload, dict):
         return None
     mode = payload.get("mode")
     if mode not in ("move", "copy"):
         return None
+    by = payload.get("by", "city")
+    if by not in _SUPPORTED_MODES:
+        return None
     dest = payload.get("dest")
     if dest is not None and not isinstance(dest, str):
         return None
     dest = dest.strip() if isinstance(dest, str) else None
-    return (dest or None), mode
+    return (dest or None), mode, by
 
 
 def _validate_language_payload(payload: object) -> str | None:
@@ -1176,7 +1196,7 @@ def _summary_dest(cfg: Config, dest: str | None) -> Path | None:
 
 
 def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
-             state: _SortState, cache: PlanCache) -> None:
+             state: _SortState, cache: PlanCache, by: str = "city") -> None:
     """The body of the `POST /api/sort` background thread: its own sqlite connection
     (not transferable between threads, like `_run_pipeline`). Calls the ready
     `sorter.plan_and_sort(..., apply=True)` — the moves/move_batches journal, blake3
@@ -1190,6 +1210,10 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
     F97: `should_cancel` is the state's own flag, so `POST /api/sort/cancel` stops the
     copying between files. A cancelled run is NOT an error — it returns a result like
     any other, with `cancelled` set and `moved` telling how far it got.
+
+    F192: `by` is the criterion of the layout — the argument `plan_and_sort` has always
+    taken and this function used to hard-code to "city". Nothing else changes with it:
+    the same engine, the same journal, the same undo.
     """
     conn = _connect(db_path)
     error: str | None = None
@@ -1197,7 +1221,7 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
     try:
         dest_path = Path(dest) if dest else None
         try:
-            report = plan_and_sort(cfg, conn, "city", dest_path, apply=True,
+            report = plan_and_sort(cfg, conn, by, dest_path, apply=True,
                                    copy=(mode == "copy"), progress=state.set_progress,
                                    should_cancel=state.cancel_requested)
         except ValueError as exc:
@@ -1214,6 +1238,7 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
                 "dest": str(report.dest),
                 "in_place": report.in_place,
                 "mode": mode,
+                "by": by,
             }
             # F45: rebuild is only an update of the cities-tree preview cache, the
             # apply already happened (files laid out, the moves journal written) —

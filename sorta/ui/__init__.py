@@ -64,11 +64,13 @@ answers survive the reset, with it they go too — the same pair as the CLI
 only the DB contents. PlanCache is invalidated right after the reset, so the next plan
 request rebuilds it (an empty DB -> an empty plan, see PlanCache).
 
-(9) `POST /api/sort` (F43, the "Cities" tab, the "Sort" button) — the real layout of
-the collection: calls `sorter.plan_and_sort(cfg, conn, "city", dest, apply=True,
+(9) `POST /api/sort` (F43, the "Layout" tab, the "Apply" button) — the real layout of
+the collection: calls `sorter.plan_and_sort(cfg, conn, by, dest, apply=True,
 copy=..., progress=...)` on a background thread with its own sqlite connection (the
 `_ProcessState`/`_run_pipeline` pattern, but its own `_SortState` — no stages, one
-operation). The body `{"dest": str|null|"", "mode": "move"|"copy"}`: `dest` empty/null
+operation). The body `{"dest": str|null|"", "mode": "move"|"copy", "by": mode?}`, where
+`by` is the criterion (`sorter.MODES`, F192 — absent means "city", the only one this
+route could apply before): `dest` empty/null
 -> in-place (restructuring the source tree, `dest=None` in `plan_and_sort`, F28);
 `mode` outside {move, copy} -> 400. The `moves`/`move_batches` journal, blake3
 verification and name-conflict resolution — entirely in `plan_and_sort`, ui.py does
@@ -232,11 +234,12 @@ knob is read at the start of a run, so applying one invalidates nothing (the rea
 per knob is above `_SETTINGS_SPEC`); the folder language, which DOES invalidate the plan
 cache, keeps its own route (`POST /api/config/language`, F65).
 
-(18) `GET /api/sort/summary?dest=` (F104) — the numbers the pre-apply dialog states:
+(18) `GET /api/sort/summary?dest=&by=` (F104) — the numbers the pre-apply dialog states:
 files, folders, volume, how much goes into the two review folders, and how much is
 already lying in that destination (with how much of it will be skipped as an identical
 copy — the F97 rule, asked of the same functions the apply uses). All of it is read off
-the SAME built plan the "Cities" tree draws, so the dialog and the tab cannot disagree.
+the SAME built plan the "Layout" tree draws, so the dialog and the tab cannot disagree —
+which is why `by` (F192) is part of the question and not assumed to be "city".
 
 (19) `GET /api/overview` (F108, the "Overview" tab, the first one) — a snapshot of the
 whole collection in four groups: what is in the index, how each frame got its place (and
@@ -1597,8 +1600,11 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # comes from the form field, so the "already in the destination" numbers
             # are about the folder the user is actually about to write into.
             dest = (query.get("dest") or [""])[0].strip()
-            payload = cache.summary("city", _summary_dest(cfg, dest or None))
-            if payload is None:  # only an unsupported mode, which "city" is not
+            # F192: `by` is the criterion the tab is showing (`sorter.MODES`); absent —
+            # "city", the only one this route could summarize before.
+            by = (query.get("by") or ["city"])[0].strip() or "city"
+            payload = cache.summary(by, _summary_dest(cfg, dest or None))
+            if payload is None:  # an unsupported criterion
                 self._send_json({"error": "no plan"}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json(payload)
@@ -1608,7 +1614,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            dest, mode = parsed
+            dest, mode, by = parsed
             # F45: see the comment in _handle_process_start — the same shared
             # busy_lock, the same "other running -> own try_start" order.
             with busy_lock:
@@ -1622,7 +1628,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                     self._send_json({"error": "already running"}, status=HTTPStatus.CONFLICT)
                     return
             thread = threading.Thread(
-                target=_run_sort, args=(db_path, cfg, dest, mode, sort_state, cache),
+                target=_run_sort,
+                args=(db_path, cfg, dest, mode, sort_state, cache, by),
                 daemon=True,
             )
             thread.start()

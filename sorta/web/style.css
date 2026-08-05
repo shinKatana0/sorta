@@ -649,20 +649,40 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .place-row-btn { margin-left: var(--space-sm); }
 .place-manual { margin-left: var(--space-sm); }
 
-.sort-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; margin: var(--space-md) 0; }
-.sort-controls input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
 .sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
 .sort-mode-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
 
-/* --- F104 (layout A): the settings move into a right-hand column so the action row
-   can go back to being a row about STARTING a layout. What made the old row dangerous
-   was not the number of buttons but their neighbourhood: "Apply" transfers hundreds of
-   gigabytes, "Delete selected" erases files and "Expand all" does nothing at all — one
-   slip of the mouse costs wildly different amounts. The column drops below the tree on
-   a narrow screen (see the media query): the plan itself matters more. --- */
-.city-layout { display: grid; grid-template-columns: minmax(0, 1fr);
-      gap: var(--space-lg); align-items: start; }
-.city-main { min-width: 0; }
+/* --- F192: the desk. Two questions side by side — where to lay it out, and by what —
+   and nothing else above the fold. The rest of what the tab could do is not gone: it is
+   one click away behind the gear, in a block that opens IN PLACE rather than as a drawer
+   over the page, because the corrections and the place picker inside it are used while
+   looking at the plan tree below them. --- */
+.layout-desk { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: var(--space-md); margin: var(--space-md) 0; }
+.layout-field { display: flex; flex-direction: column; gap: var(--space-sm);
+      padding: var(--space-md); border: 1px solid var(--line);
+      border-radius: var(--radius-md); background: var(--card); }
+.layout-field-title { font-weight: 600; font-size: 0.9rem; }
+.layout-field-row { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; }
+.layout-field-row input[type="text"] { flex: 1; min-width: 200px; padding: 8px 10px; }
+.layout-by-select { flex: 1; min-width: 200px; padding: 8px 10px; }
+.layout-run { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; }
+.layout-options { display: flex; flex-direction: column; gap: var(--space-md);
+      margin: 0 0 var(--space-md) 0; padding: var(--space-md);
+      border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--card); }
+.layout-options[hidden] { display: none; }
+.layout-options-head { display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-sm); }
+.layout-option-block { display: flex; flex-direction: column; gap: var(--space-sm); }
+.layout-option-block .override-controls, .layout-option-block .place-controls,
+.layout-option-block .tree-controls { margin: 0; }
+
+/* F192: `.city-layout`/`.city-main` are gone with the markup. They were the grid F104
+   put the tab in so a right-hand settings column could stand beside the tree; F133 moved
+   those settings behind the gear in the header, and what was left was a one-column grid
+   wrapping one child — two nesting levels between the tab and its content that no rule
+   used any more. */
 /* --- F133: the settings are configuration, not a working surface. Thirteen keys people
    come back to about once a month used to hold a third of the screen at all times; they
    now live behind the gear in the header, in a drawer over the page. Nothing about their

@@ -184,19 +184,46 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 </section>
 
 <section id="tab-layout" class="tab-panel">
-<div class="city-layout">
-<div class="city-main">
 <div id="layout-review-warning" class="layout-warning" style="display:none">
 <span id="layout-review-warning-text"></span>
 <button type="button" id="layout-review-goto-btn" class="btn btn-ghost btn-sm">{{layout_review_goto}}</button>
 </div>
-<div class="sort-controls">
-<input type="text" id="sort-dest" placeholder="{{sort_dest_placeholder}}">
+<div class="layout-desk" id="layout-desk">
+<div class="layout-field" id="layout-field-where">
+<span class="layout-field-title" id="layout-where-title">{{layout_where_title}}</span>
+<div class="layout-field-row">
+<input type="text" id="sort-dest" aria-labelledby="layout-where-title"
+       placeholder="{{sort_dest_placeholder}}">
 <button type="button" id="sort-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
-<label class="sort-mode-label"><input type="radio" name="sort-mode" value="move" checked> {{sort_mode_move}}</label>
-<label class="sort-mode-label"><input type="radio" name="sort-mode" value="copy"> {{sort_mode_copy}}</label>
-<button type="button" id="sort-apply-btn" class="btn btn-primary" disabled>{{sort_apply_button}}</button>
+</div>
 <span class="sort-dest-hint">{{sort_dest_hint}}</span>
+</div>
+<div class="layout-field" id="layout-field-by">
+<span class="layout-field-title" id="layout-by-title">{{layout_by_title}}</span>
+<div class="layout-field-row">
+<select id="layout-by" class="layout-by-select" aria-labelledby="layout-by-title">
+<option value="city">{{layout_by_city}}</option>
+<option value="person">{{layout_by_person}}</option>
+<option value="event">{{layout_by_event}}</option>
+</select>
+</div>
+<span class="sort-dest-hint" id="layout-by-hint">{{layout_by_hint_city}}</span>
+</div>
+</div>
+<div class="layout-run">
+<button type="button" id="sort-apply-btn" class="btn btn-primary" disabled>{{sort_apply_button}}</button>
+<button type="button" id="layout-options-btn" class="btn btn-ghost" aria-expanded="false"
+        aria-controls="layout-options">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/>
+<path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34
+1.7 1.7 0 0 0-1 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.5 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06
+a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1H2a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 3.7 8.5a1.7 1.7 0 0 0-.34-1.87l-.06-.06
+a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8 4.14 1.7 1.7 0 0 0 9 2.58V2a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.56
+1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H22a2 2 0 1 1 0 4h-.09
+a1.7 1.7 0 0 0-1.56 1z"/></svg>
+{{layout_options_button}}</button>
+<span class="sort-dest-hint">{{layout_moves_hint}}</span>
 <span class="sort-dest-hint" id="sort-empty-hint" style="display:none">{{sort_summary_empty}}</span>
 <span class="sort-dest-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
@@ -206,10 +233,21 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 </div>
 <div id="sort-status" class="process-status"></div>
 <div id="sort-warning" class="process-status"></div>
-<div class="tree-controls">
-<button type="button" class="btn btn-ghost expand-all-btn">{{expand_all}}</button>
-<button type="button" class="btn btn-ghost collapse-all-btn">{{collapse_all}}</button>
+<div id="layout-options" class="layout-options" hidden>
+<div class="layout-options-head">
+<span class="settings-head">{{layout_options_title}}</span>
+<button type="button" id="layout-options-close" class="btn btn-ghost btn-sm">{{settings_close_button}}</button>
 </div>
+<div class="layout-option-block">
+<span class="step-title">{{layout_transfer_title}}</span>
+<div class="layout-field-row">
+<label class="sort-mode-label"><input type="radio" name="sort-mode" value="move" checked> {{sort_mode_move}}</label>
+<label class="sort-mode-label"><input type="radio" name="sort-mode" value="copy"> {{sort_mode_copy}}</label>
+</div>
+<p class="override-hint">{{layout_transfer_hint}}</p>
+</div>
+<div class="layout-option-block">
+<span class="step-title">{{layout_corrections_title}}</span>
 <div class="override-controls">
 <button type="button" id="city-override-exclude-btn" class="btn btn-danger" disabled>{{override_exclude_button}}<span id="city-override-count"></span></button>
 <select id="city-override-target"><option value="">{{override_target_placeholder}}</option></select>
@@ -219,10 +257,22 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 <p class="override-hint">{{override_hint}}</p>
 </div>
+</div>
+<div class="layout-option-block">
+<span class="step-title">{{layout_places_title}}</span>
 <div class="place-controls" id="city-place-controls">
 <span id="city-place-picker" class="place-picker"></span>
 <span id="place-status" class="override-status"></span>
 <p class="override-hint">{{place_hint}}</p>
+</div>
+</div>
+<div class="layout-option-block">
+<span class="step-title">{{layout_tree_title}}</span>
+<div class="tree-controls">
+<button type="button" class="btn btn-ghost expand-all-btn">{{expand_all}}</button>
+<button type="button" class="btn btn-ghost collapse-all-btn">{{collapse_all}}</button>
+</div>
+</div>
 </div>
 <div class="selection-controls" id="city-selection-controls" style="display:none">
 <button type="button" id="city-delete-selected-btn" class="btn btn-danger" disabled>{{delete_selected}}<span id="city-delete-selected-count"></span></button>
@@ -230,8 +280,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="override-hint busy-hint" style="display:none">{{actions_busy}}</span>
 </div>
 <div id="tree-city"><div class="state-msg state-loading">{{loading}}</div></div>
-</div>
-</div>
 </section>
 
 <div id="settings-panel" class="settings-panel" hidden>
