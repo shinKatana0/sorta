@@ -666,6 +666,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       margin: 0 0 var(--space-md) 0; }
 .override-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); margin: 0; }
 .override-status { font-size: 0.8rem; color: var(--danger); }
+.override-target { min-width: 220px; }
 
 /* F85c: assigning a place to a group — the same panel as the manual corrections */
 .place-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;

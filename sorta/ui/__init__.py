@@ -121,8 +121,8 @@ the user has not entered anything yet.
 (12) `POST /api/overrides` (F77, the "Cities" tab) — the user's manual corrections to
 the layout: `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear"|"photo",
 "target": str?}`. `exclude` — "leave alone": the file is not moved anywhere by the next
-`sort --apply`; `reassign` — lay it out into `target` (a folder of the current plan,
-relative to the sort root) instead of wherever the automatic rules put it; `photo`
+`sort --apply`; `reassign` — lay it out into `target` (a folder relative to the sort
+root) instead of wherever the automatic rules put it; `photo`
 (F103) — "the classifier is wrong, this IS a photo": the junk/document/product verdict
 stops deciding the route and the file goes back to the automatic city layout; `clear` —
 drop the correction. One row per file in `manual_overrides` (PRIMARY KEY file_id), a
@@ -131,6 +131,16 @@ ints and (for reassign) a target string — no paths from the client to a file: 
 target is a folder INSIDE the layout, and `sorter._manual_target_parts` validates it
 against the sort root before any destination is built from it. This endpoint moves
 nothing on disk — the physical move happens in the shared `sort --apply`.
+F203: that target need NOT be a folder of the current plan. The plan's folders stay in
+the suggestion list, but the field is typed into, so `Россия/` on its own — the country
+root, which the layout has had a branch for since F86 and no way to ASK for — and a
+folder nobody has created yet are both legitimate answers. The name is checked as a NAME
+and not as a path (`_reassign_target_refusal` -> `sorter.manual_target_parts`, the very
+function the layout cleans its folder names with): a separator, a `..`, an absolute path,
+a colon or a control character comes back 400 with a `reason` the page turns into a
+sentence, instead of being stored and silently dropped at apply time. Nothing appears on
+disk here either — an unknown folder is created by the apply, and a name conflict inside
+it gets the usual `_1` suffix rather than overwriting anything.
 The mark is served back LIVE (`_overrides_map`, read per request in `PlanCache`) rather
 than baked into the built plan: a correction has to show up in the UI the moment it is
 saved, while invalidating a mode's plan would make the next tab interaction pay for a
@@ -578,7 +588,8 @@ from .layout import (
     _dest_occupancy, _events_payload,
     _geo_resolver, _geo_resolver_cache, _overrides_map, _place_target_ids,
     _places_search, _places_search_payload, _region_candidates, _region_option,
-    _plan_category, _plan_item_to_json, _run_sort, _settings_payload, _suggested_sort_dest,
+    _plan_category, _plan_item_to_json, _reassign_target_refusal, _run_sort,
+    _settings_payload, _suggested_sort_dest,
     _summary_dest, _validate_album_payload, _validate_cluster_label_payload,
     _validate_cluster_merge_payload, _validate_language_payload, _validate_overrides_payload,
     _validate_place_payload, _validate_settings_payload, _validate_sort_payload,
@@ -1176,7 +1187,18 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # shared sort --apply). The plan cache is deliberately NOT invalidated: the
             # mark is served live by PlanCache, and a rebuild per click would cost the
             # whole mode (F70).
-            parsed = _validate_overrides_payload(self._read_json_body())
+            body = self._read_json_body()
+            # F203: the target is TYPED now — a folder the plan does not contain is a
+            # legitimate answer — so a bad one comes back with a REASON instead of being
+            # stored and dropped hours later by the sorter's own check. Asked of the raw
+            # body, before its shape is validated, so `../../evil` earns the sentence
+            # about leaving the sort root and not the flat "invalid body".
+            refusal = _reassign_target_refusal(body)
+            if refusal is not None:
+                self._send_json({"error": "invalid target", "reason": refusal},
+                                status=HTTPStatus.BAD_REQUEST)
+                return
+            parsed = _validate_overrides_payload(body)
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return

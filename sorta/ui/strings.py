@@ -1493,8 +1493,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "override_move_button": {
         "ru": "Перенести в…", "en": "Move to…", "ja": "移動先…",
     },
+    # F203: the field is typed into now, and the placeholder is the only place that says
+    # so. «Папка раскладки» read as "pick one of these", which is exactly the limit the
+    # feature removes — the folders of the plan are a suggestion, not the whole answer.
     "override_target_placeholder": {
-        "ru": "папка раскладки…", "en": "layout folder…", "ja": "振り分け先フォルダ…",
+        "ru": "папка раскладки или новая…", "en": "layout folder, or a new one…",
+        "ja": "振り分け先フォルダ（新規も可）…",
     },
     "override_exclude_folder_button": {
         "ru": "Не трогать папку", "en": "Leave folder alone", "ja": "フォルダをそのままに",
@@ -1522,8 +1526,50 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "ファイルは移動せず、移動先を指定したものは振り分け時にそのフォルダへ入ります。",
     },
     "override_alert_choose_target": {
-        "ru": "Выберите папку для переноса.", "en": "Choose a destination folder.",
-        "ja": "移動先のフォルダを選択してください。",
+        "ru": "Укажите папку для переноса.", "en": "Name a destination folder.",
+        "ja": "移動先のフォルダを入力してください。",
+    },
+    # F203: the field takes a folder that is not in the plan, and the hint is what tells
+    # the user so — otherwise the list of suggestions still reads as the whole choice.
+    "override_target_hint": {
+        "ru": "Можно вписать свою папку, а не только выбрать из плана: «Россия» — "
+              "корень страны, «Россия/Карелия/2019» — новый каталог. Он появится "
+              "при раскладке.",
+        "en": "You can type your own folder instead of picking one from the plan: "
+              "«Россия» is the country root, «Россия/Карелия/2019» a new directory. "
+              "It is created when you apply the layout.",
+        "ja": "計画にあるフォルダを選ぶだけでなく、自分で入力できます:"
+              "「Россия」は国のルート、「Россия/Карелия/2019」は新しいディレクトリです。"
+              "実際の作成は振り分けの実行時です。",
+    },
+    # Why a typed folder is not a folder name, one sentence per reason the server sends.
+    # Four reasons and not one because the remedies differ — fill the field in, drop the
+    # separator, stay inside the destination, retype the name by hand.
+    "override_target_bad_empty": {
+        "ru": "Пустое имя папки: впишите, куда перенести.",
+        "en": "The folder name is empty: type where the files should go.",
+        "ja": "フォルダ名が空です: 移動先を入力してください。",
+    },
+    "override_target_bad_not_relative": {
+        "ru": "Это путь на диске, а не имя папки внутри раскладки. Уберите «\\», «:» "
+              "и «/» в начале — например «Россия/Карелия».",
+        "en": "That is a path on disk, not a folder inside the layout. Drop the «\\», "
+              "the «:» and the leading «/» — «Россия/Карелия», for instance.",
+        "ja": "これは振り分け内のフォルダ名ではなくディスク上のパスです。"
+              "「\\」「:」と先頭の「/」を外してください（例:「Россия/Карелия」)。",
+    },
+    "override_target_bad_parent": {
+        "ru": "«..» выводит за папку назначения — файлы раскладываются только внутри неё.",
+        "en": "«..» leads out of the destination folder — the layout only ever writes "
+              "inside it.",
+        "ja": "「..」は出力先フォルダの外を指します — 振り分けはその中にのみ書き込みます。",
+    },
+    "override_target_bad_control": {
+        "ru": "В имени есть непечатаемые символы — похоже, оно вставлено из буфера. "
+              "Наберите его вручную.",
+        "en": "The name holds unprintable characters — it looks pasted. Type it by hand.",
+        "ja": "名前に印字できない文字が含まれています — 貼り付けのようです。"
+              "手入力してください。",
     },
     "override_error_prefix": {
         "ru": "Не удалось сохранить правку: ", "en": "Could not save the correction: ",

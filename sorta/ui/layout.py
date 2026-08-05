@@ -35,6 +35,9 @@ from ..sorter import (
 # `_fs`: the long-path form a filesystem call needs on Windows; `_is_the_same_file`:
 # "the file already lying at the target is byte-for-byte the one we would put there".
 from ..sorter import _fs, _is_the_same_file
+# F203: a reassign target is now typed rather than picked from the plan, so the route has
+# to refuse a bad one — with the layout's own naming rule, not a second copy of it.
+from ..sorter import manual_target_parts
 from .common import (
     _CLUSTER_SAMPLE_LIMIT, _DEFAULT_ALBUM_DIRNAME, _EVENT_SAMPLE_LIMIT, _SUPPORTED_MODES,
     _UI_LANGS, _connect, _is_under, _log, _validate_file_ids_payload,
@@ -342,6 +345,30 @@ class PlanCache:
 _OVERRIDE_ACTIONS = ("exclude", "reassign", "clear", "photo")
 
 
+def _reassign_target_refusal(payload: object) -> str | None:
+    """F203: why this body's reassign target is no folder name, or None when it is one.
+
+    The target is TYPED now, not picked from the plan's folders, so the answer to a bad
+    one has to be a refusal with a reason — before F203 the route stored anything and the
+    sorter dropped it hours later, at apply time, into a log nobody reads. The rule
+    itself is `sorter.manual_target_parts`, the same function the layout cleans its own
+    folder names with: two rules for one name is how the folder shown here and the folder
+    written there start disagreeing.
+
+    Asked of the RAW body, before its shape is validated (the `class_album_refusal`
+    arrangement of F193): that is what lets `../../evil` come back saying it leaves the
+    sort root instead of the flat "invalid body" every other malformed field earns.
+    Anything that is not a reassign is None and travels on to the ordinary validation.
+    """
+    if not isinstance(payload, dict) or payload.get("action") != "reassign":
+        return None
+    target = payload.get("target")
+    if not isinstance(target, str):
+        return None  # a missing or non-string target is a malformed body, not a bad name
+    _parts, refusal = manual_target_parts(target)
+    return refusal
+
+
 def _validate_overrides_payload(payload: object) -> tuple[list[int], str, str | None] | None:
     """Parse the body `POST /api/overrides` (F77):
     `{"file_ids": [int,...], "action": "exclude"|"reassign"|"clear"|"photo",
@@ -350,8 +377,9 @@ def _validate_overrides_payload(payload: object) -> tuple[list[int], str, str | 
     None -> invalid (400): not an object, an unknown/absent action, file_ids that is not
     a non-empty list of ints (bool excluded, like everywhere else), or `reassign`
     without a non-empty target. The target is NOT resolved into a path here — it is a
-    folder of the layout, and sorter._manual_target_parts validates it against the sort
-    root before a destination is built from it.
+    folder of the layout, checked as a NAME by `_reassign_target_refusal` (F203) and
+    stored as the user typed it; sorter._manual_target_parts asks the same question again
+    before a destination is built from it.
 
     F103: `photo` ("the classifier is wrong, this IS a personal photo") carries no
     target — the whole point is that the file goes back to the AUTOMATIC city layout,

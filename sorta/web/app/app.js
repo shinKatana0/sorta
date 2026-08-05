@@ -663,15 +663,28 @@
     return document.getElementById("override-status");
   }
 
+  // F203: a refused target is a sentence in the interface language — the server sends
+  // one word (empty, not_relative, parent, control) and the catalog holds the three
+  // sentences, the `albumBlockedText` arrangement of F193. The typed name is the one
+  // field of this panel a person can get wrong, so "invalid body" is not an answer.
+  function overrideErrorText(resp) {
+    var reason = resp && resp.reason;
+    if (reason && I18N["override_target_bad_" + reason]) {
+      return I18N["override_target_bad_" + reason];
+    }
+    return (resp && resp.error) || "";
+  }
+
   function applyOverride(action, fileIds, target, onSuccess) {
     var body = { file_ids: fileIds, action: action };
     if (target) body.target = target;
     return postJson("/api/overrides", body).then(function (resp) {
       if (resp && resp.ok) {
+        overrideStatusEl().textContent = "";
         onSuccess(resp.file_ids || fileIds);
       } else {
         overrideStatusEl().textContent = I18N.override_error_prefix +
-            ((resp && resp.error) || "");
+            overrideErrorText(resp);
       }
     }).catch(function (err) {
       overrideStatusEl().textContent = I18N.override_error_prefix + err;
@@ -718,7 +731,7 @@
     var excludeBtn = document.getElementById("city-override-exclude-btn");
     var moveBtn = document.getElementById("city-override-move-btn");
     var clearBtn = document.getElementById("city-override-clear-btn");
-    var select = document.getElementById("city-override-target");
+    var targetInput = document.getElementById("city-override-target");
     var countEl = document.getElementById("city-override-count");
 
     function selectedIds() {
@@ -739,7 +752,10 @@
       if (!ids.length) return;
       var target = null;
       if (action === "reassign") {
-        target = select.value;
+        // F203: whatever was TYPED, not whatever was picked. The suggestions are the
+        // folders of the plan, and a folder that is not among them is the point of the
+        // field: the country root, or a directory that does not exist yet.
+        target = targetInput.value.trim();
         if (!target) { window.alert(I18N.override_alert_choose_target); return; }
       }
       applyOverride(action, ids, target, function (applied) {
@@ -755,27 +771,24 @@
     refresh();
   }
 
-  // The list of move targets = the folders of the current plan, taken from the aggregate
-  // that is already loaded (no endpoint of its own is needed). Dragging a tile onto a
-  // node of the tree is deliberately not implemented: the tree is lazy, and the node of
-  // a folder that was never expanded — and is therefore not in the DOM — cannot be a
-  // drop target. The list reaches EVERY folder of the layout, which is what the feature
-  // asks for.
+  // The SUGGESTED move targets = the folders of the current plan, taken from the
+  // aggregate that is already loaded (no endpoint of its own is needed). Dragging a tile
+  // onto a node of the tree is deliberately not implemented: the tree is lazy, and the
+  // node of a folder that was never expanded — and is therefore not in the DOM — cannot
+  // be a drop target. The list reaches EVERY folder of the layout, which is what the
+  // feature asks for.
+  // F203: a datalist rather than a select, so the same list keeps suggesting what the
+  // plan already has while the field itself accepts a folder the plan lacks. Most
+  // corrections still name an existing folder; the ones that cannot were the whole
+  // complaint.
   function fillOverrideTargets(categories) {
-    var select = document.getElementById("city-override-target");
-    var previous = select.value;
-    select.textContent = "";
-    var empty = document.createElement("option");
-    empty.value = "";
-    empty.textContent = I18N.override_target_placeholder;
-    select.appendChild(empty);
+    var list = document.getElementById("city-override-target-options");
+    list.textContent = "";
     categories.forEach(function (row) {
       var opt = document.createElement("option");
       opt.value = row.category;
-      opt.textContent = row.category;
-      select.appendChild(opt);
+      list.appendChild(opt);
     });
-    select.value = previous;
   }
 
   // --- F85c: a place a person assigns, to a whole group at once ---------
