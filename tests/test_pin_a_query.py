@@ -476,13 +476,18 @@ class TestTheActionsOfAPinnedSlice(PinTestBase):
         html = body.decode("utf-8")
         album = html[html.index("function renderQuerySliceAlbum"):
                      html.index("function renderQuerySliceActions")]
-        self.assertIn("albumModeSelect()", album)          # link / copy / move
+        # F193: a pin is an ordinary slice, so its row is the shared one — the modes, the
+        # destination and the folder name come from there rather than from a copy here.
+        self.assertIn('box: "query-album"', album)
         # F189: a pinned NAME gathers the person's album instead — same row, same modes,
         # and the kind follows what the slice actually answered.
-        self.assertIn('gatherAlbum(data.person ? "person" : "query", data.person || one',
-                      album)
-        self.assertIn("appendAlbumDestControls(box)", album)
+        self.assertIn('kind: data.person ? "person" : "query"', album)
+        self.assertIn("selector: data.person || one", album)
         self.assertIn('id="query-album"', html)
+        row = html.split("function renderAlbumRow", 1)[1].split(
+            "function renderSliceAlbumControls", 1)[0]
+        self.assertIn("albumModeSelect()", row)          # link / copy / move
+        self.assertIn("appendAlbumDestControls(box)", row)
 
     def test_a_slice_of_several_phrases_says_why_it_has_no_album(self):
         # The album gathers a single wording and this ranking is an average of three, so

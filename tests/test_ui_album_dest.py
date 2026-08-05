@@ -92,7 +92,7 @@ class TestAlbumDestMarkup(AlbumsTestBase):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn("function gatherAlbum(kind, selector, mode, where, name, dest, statusEl)", html)
+        self.assertIn("function gatherAlbum(kind, selector, mode, where, name, dest, statusEl, fileIds)", html)
         self.assertIn("if (dest) body.dest = dest;", html)
         self.assertIn("destInput.value.trim() || null", html)
 

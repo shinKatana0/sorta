@@ -353,8 +353,11 @@ happens to the files:
 2. **Review** tab → one workspace for everything that has to be looked at by eye and
    partly deleted: **Duplicates**, **Blurred**, **Closed eyes**, **Low resolution** —
    four slices of a single tab, described in §22.
-3. **Layout** tab → the canon: the proposed structure (`Country/City/Year/District`),
-   where to lay it out, move or copy, and the button that starts it. Always visible.
+3. **Layout** tab → the canon. Two questions are in the open: **where to lay it out**
+   and **by what** — by city (`Country/City/Year/District`), by person or by event.
+   The rest — move or copy, the manual corrections to the plan, the place for a group
+   of frames, expanding the tree — sits behind the **Layout settings** gear next to
+   the button that starts it. Always visible.
 4. **Slices** tab → everything built **on top of** the canon: **With people**, **Group
    photos**, **Portraits**, **People** (the named face clusters), **Events**,
    **Animals** and the classifier's buckets — **Products**, **Documents**,
@@ -916,7 +919,12 @@ sorta album portrait --dest /path/to/albums --apply
   that bucket is passports, medical forms and bank papers. It keeps its counter and gets
   neither a preview nor a folder — assembling one in a single click is exactly what the
   key exists to prevent. Move a class *into* `vlm.exclude_classes` and its album goes
-  with its preview.
+  with its preview. Emptying `vlm.exclude_classes` does **not** hand out a document
+  album: that key decides what is shown, never that a folder of somebody's passports may
+  be assembled in one click. The refusal comes **from the route** and is put into words —
+  in the UI that bucket keeps its album row, the button is out of reach and the reason
+  stands beside it: a hidden button would forbid nothing, and a request sent past the
+  interface would gather the folder all the same.
 - **`blurred` gathers the first page, not the whole tail.** It gathers what the Review
   workspace lists — the frames the ranking opens with, down to `features.blur_review_max`
   — and never everything below it: the point of that slice is that the decision is taken
@@ -927,12 +935,13 @@ sorta album portrait --dest /path/to/albums --apply
 - **`--copy`** makes independent copies; **`--move`** *removes the files from the
   general pool* (prints a warning). A photo with **2+ named people** cannot be moved
   into one album (ambiguous) — those are blocked; use link/copy.
-- In the UI, use **Collect into folder** — on the People/Events cards, on the
-  **Animals** slice, on a classifier bucket (Products, Screenshots, Memes) and on the
-  quality slices of **Review** (Blurred, Closed eyes, Low resolution). It is the same row
-  everywhere: mode, an optional folder name, a destination. The marking buttons
-  ("Return to photos", "To trash") stay in their own block — one movement never both
-  gathers and deletes.
+- In the UI, use **Collect into folder** — and **every** slice has it: the word search, a
+  pinned query, the face slices (With people, Group, Portraits), Animals, the
+  People/Events cards, the classifier buckets and the quality slices of **Review**. It is
+  the same row everywhere: mode, a **folder name**, a destination, **"Selected only (N)"**
+  and the button. Tick the frames on the cards and exactly those go into the folder; tick
+  nothing and the whole slice does. The marking buttons ("Return to photos", "To trash")
+  stay in their own block — one movement never both gathers and deletes.
 
 Real output — collecting the Paris event from §12 into an album, as copies:
 

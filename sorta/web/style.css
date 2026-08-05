@@ -324,6 +324,13 @@ label { cursor: pointer; }
 .album-controls input[type="text"] { flex: 1; min-width: 90px; font-size: 0.8rem; padding: 6px 7px; }
 .album-status { font-size: 0.8rem; color: var(--good); margin-left: 2px; }
 .album-hint { font-size: 0.8rem; color: var(--muted); margin-top: var(--space-sm); font-style: italic; }
+/* F193: the scope of the album ("only the ticked ones"), the sentence beside it and the
+   sentence that stands where a refused slice would have had a button. */
+.album-selection { font-size: 0.8rem; display: flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
+.album-scope-hint, .album-blocked { font-size: 0.8rem; }
+.album-blocked { flex: 1; min-width: 120px; }
+/* the tick on a card of any slice grid — one gesture, one look */
+.slice-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--muted); }
 .event-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 var(--space-sm) 0; }
 .event-thumbs { display: flex; flex-wrap: wrap; gap: 3px; margin: 0 0 var(--space-sm) 0; }
 /* единый вид кликабельной миниатюры-превью (Города/Дубли/Перемещения/События) */
@@ -469,6 +476,24 @@ label { cursor: pointer; }
 /* Строки-значения (путь назначения, дата) переносятся, в отличие от чисел. */
 .overview-text { white-space: normal; word-break: break-word; font-weight: 500;
       text-align: right; }
+/* --- F190: the loading skeleton ----------------------------------------- */
+/* The same grid, drawn before the answer arrives, so that nothing below the tab moves
+   when it does. The indicator floats OVER the reserved area (position: absolute — out
+   of flow, no track of its own in the grid, no height of its own), which is why it can
+   disappear without taking a line with it. */
+.overview-skeleton { position: relative; }
+.overview-skeleton > .state-msg { position: absolute; top: 0; left: 50%; z-index: 1;
+      transform: translateX(-50%); border: 1px solid var(--line); }
+/* An empty cell keeps the line box of the text it waits for: the ::before non-breaking
+   space inherits the font-size and line-height of the very element it stands in, which
+   a hand-written min-height would only approximate — and approximating is what makes
+   the page jump. */
+.overview-blank { display: inline-block; min-width: 3.5em; border-radius: 3px;
+      background: var(--chip); }
+.overview-blank::before { content: "\00a0"; }
+.overview-label.overview-blank { min-width: 7em; }
+/* A note is a block: it would otherwise be a grey bar the full width of the card. */
+.overview-note.overview-blank { width: 60%; }
 .process-intro { max-width: 46rem; color: var(--muted); }
 /* F51: вертикальные группы (путь / каждый тумблер+hint / кнопки), а не один
    плоский flex — там .process-toggle-hint с flex-basis:100% уезжал в конец
@@ -575,12 +600,33 @@ label { cursor: pointer; }
 .env-warning { margin-top: var(--space-md); padding: 10px 13px; font-size: 0.85rem;
       border-radius: var(--radius-md); color: var(--ink); line-height: 1.45;
       background: rgba(214, 158, 46, 0.13); border: 1px solid rgba(214, 158, 46, 0.42); }
+/* F191: the stage row is ONE line whatever the pipeline holds — the caption of the
+   stage that is going, "N of M", and a single bar. Everything here is sized by the
+   block (42rem, the same cap as .process-controls above) rather than by how many
+   stages there are, so the row cannot grow past the cards the way nine chips did.
+   The chips are still exactly what they were; they now live behind the disclosure. */
+.stage-summary { max-width: 42rem; margin: var(--space-sm) 0; }
+.stage-summary-head { display: flex; align-items: center; gap: var(--space-sm); width: 100%;
+      padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-md);
+      background: var(--surface); color: var(--ink); font: inherit; font-size: 0.85rem;
+      text-align: left; cursor: pointer; }
+.stage-summary-head:hover { background: var(--chip); }
+/* The name is the one part that may be long (and it is translated), so it is the one
+   part that gives way — the counter, the bar and the caret keep their size. */
+.stage-summary-current { flex: 1 1 auto; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.stage-summary-count { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stage-summary-bar { flex: 0 0 8rem; width: 8rem; height: 6px; }
+.stage-summary-caret { flex: 0 0 auto; color: var(--muted); }
+.stage-summary.failed .stage-summary-head { border-color: var(--danger); }
+.stage-summary.failed .stage-summary-current { color: var(--danger); }
 .stage-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: var(--space-sm) 0; }
 .stage-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: var(--radius-pill);
       font-size: 0.78rem; font-weight: 500; background: var(--chip); color: var(--muted); border: 1px solid var(--line); }
 .stage-chip svg { width: 11px; height: 11px; }
 .stage-chip.done { background: var(--good-soft); color: var(--good); border-color: transparent; }
 .stage-chip.now { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+.stage-chip.failed { background: var(--danger-soft); color: var(--danger); border-color: transparent; font-weight: 600; }
 
 /* --- F77: ручные правки раскладки ------------------------------------- */
 /* Два РАЗНЫХ состояния строки, которые нельзя путать: «не трогать» — красная
@@ -610,20 +656,40 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .place-row-btn { margin-left: var(--space-sm); }
 .place-manual { margin-left: var(--space-sm); }
 
-.sort-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; margin: var(--space-md) 0; }
-.sort-controls input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
 .sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
 .sort-mode-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
 
-/* --- F104 (layout A): the settings move into a right-hand column so the action row
-   can go back to being a row about STARTING a layout. What made the old row dangerous
-   was not the number of buttons but their neighbourhood: "Apply" transfers hundreds of
-   gigabytes, "Delete selected" erases files and "Expand all" does nothing at all — one
-   slip of the mouse costs wildly different amounts. The column drops below the tree on
-   a narrow screen (see the media query): the plan itself matters more. --- */
-.city-layout { display: grid; grid-template-columns: minmax(0, 1fr);
-      gap: var(--space-lg); align-items: start; }
-.city-main { min-width: 0; }
+/* --- F192: the desk. Two questions side by side — where to lay it out, and by what —
+   and nothing else above the fold. The rest of what the tab could do is not gone: it is
+   one click away behind the gear, in a block that opens IN PLACE rather than as a drawer
+   over the page, because the corrections and the place picker inside it are used while
+   looking at the plan tree below them. --- */
+.layout-desk { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: var(--space-md); margin: var(--space-md) 0; }
+.layout-field { display: flex; flex-direction: column; gap: var(--space-sm);
+      padding: var(--space-md); border: 1px solid var(--line);
+      border-radius: var(--radius-md); background: var(--card); }
+.layout-field-title { font-weight: 600; font-size: 0.9rem; }
+.layout-field-row { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; }
+.layout-field-row input[type="text"] { flex: 1; min-width: 200px; padding: 8px 10px; }
+.layout-by-select { flex: 1; min-width: 200px; padding: 8px 10px; }
+.layout-run { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; }
+.layout-options { display: flex; flex-direction: column; gap: var(--space-md);
+      margin: 0 0 var(--space-md) 0; padding: var(--space-md);
+      border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--card); }
+.layout-options[hidden] { display: none; }
+.layout-options-head { display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-sm); }
+.layout-option-block { display: flex; flex-direction: column; gap: var(--space-sm); }
+.layout-option-block .override-controls, .layout-option-block .place-controls,
+.layout-option-block .tree-controls { margin: 0; }
+
+/* F192: `.city-layout`/`.city-main` are gone with the markup. They were the grid F104
+   put the tab in so a right-hand settings column could stand beside the tree; F133 moved
+   those settings behind the gear in the header, and what was left was a one-column grid
+   wrapping one child — two nesting levels between the tab and its content that no rule
+   used any more. */
 /* --- F133: the settings are configuration, not a working surface. Thirteen keys people
    come back to about once a month used to hold a third of the screen at all times; they
    now live behind the gear in the header, in a drawer over the page. Nothing about their

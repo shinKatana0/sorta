@@ -262,7 +262,7 @@
       postJson("/api/config/language", { language: next }).then(function (resp) {
         select.disabled = false;
         if (resp && resp.ok) {
-          renderPlanTab("city", "tree-city");
+          refreshPlan();
           settingsStatus(I18N.folder_lang_saved);
         } else {
           settingsStatus((resp && resp.error === "already running")
@@ -904,7 +904,7 @@
     btn.addEventListener("click", function () {
       var statusEl = placeStatusEl();
       var vals = { dir: item.src_dir || item.src_path };
-      var done = function () { renderPlanTab("city", "tree-city"); };
+      var done = refreshPlan;
       if (manual) {
         clearPlace("source_dir", item.src_path, "place_folder_clear_confirm",
                    vals, statusEl, done);
@@ -1059,13 +1059,25 @@
     return details;
   }
 
-  // F43: счётчики последнего city-плана.
+  // F43: счётчики последнего плана.
   // F104: the numbers of the confirmation itself now come from /api/sort/summary (it
   // also knows the volume and what is already in the destination); what stays here is
   // the one question the START button needs answered — is there anything to lay out at
-  // all. `cityPlanLoaded` keeps "nothing to lay out" apart from "not counted yet".
-  var cityPlanCount = 0;
-  var cityPlanLoaded = false;
+  // all. `planLoaded` keeps "nothing to lay out" apart from "not counted yet".
+  // F192: both are about the CHOSEN criterion, not about the city one — the tab lays
+  // out by whatever `#layout-by` says, so "is there anything to lay out" is a question
+  // about that plan and has to be re-answered every time the criterion changes.
+  var planCount = 0;
+  var planLoaded = false;
+
+  // F192: the criterion the whole tab is about — `sorter.MODES`, the same values
+  // `/api/plan?mode=` and `sorta sort --by` take. Read from the field rather than kept
+  // in a variable of its own: the field IS the state, and a second copy of it is how
+  // the tree and the apply start laying out by different things.
+  function layoutBy() {
+    var select = document.getElementById("layout-by");
+    return select ? select.value : "city";
+  }
 
   // renderPlanTab: дерево папок плана режима (city/person/event) из агрегата —
   // общий код, переиспользуемый всеми план-вкладками (U2).
@@ -1075,14 +1087,12 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         var categories = data.categories || [];
-        if (mode === "city") {
-          // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
-          // в подтверждении раскладки их считать нельзя.
-          cityPlanCount = (data.total || 0) - (data.excluded || 0);
-          cityPlanLoaded = true;
-          updateBusyControlsDisabled();
-          fillOverrideTargets(categories);
-        }
+        // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
+        // в подтверждении раскладки их считать нельзя.
+        planCount = (data.total || 0) - (data.excluded || 0);
+        planLoaded = true;
+        updateBusyControlsDisabled();
+        fillOverrideTargets(categories);
         container.textContent = "";
         if (!categories.length) {
           container.appendChild(stateEl("empty", I18N.plan_empty));
@@ -1099,11 +1109,53 @@
       });
   }
 
+  // The one call every "the plan may have changed" site makes — an apply that finished,
+  // a correction, a place assignment, a folder-language change, a switch of criterion.
+  // None of them may pass a criterion of its own: they all mean "redraw what the tab is
+  // showing now".
+  function refreshPlan() {
+    renderPlanTab(layoutBy(), "tree-city");
+  }
+
   cityPlacePicker = renderPlacePicker(document.getElementById("city-place-picker"));
-  renderPlanTab("city", "tree-city");
+  refreshPlan();
   wireBulkDelete("tree-city", "city-delete-selected-btn", "city-delete-selected-count",
                  "city-selection-controls");
   wireOverrideControls("tree-city");
+
+  // Switching the criterion re-asks the server for the whole plan, so until the answer
+  // arrives there is no count — the start button goes dead rather than staying live with
+  // the number of the previous criterion behind it.
+  document.getElementById("layout-by").addEventListener("change", function () {
+    planCount = 0;
+    planLoaded = false;
+    updateBusyControlsDisabled();
+    document.getElementById("layout-by-hint").textContent =
+        I18N["layout_by_hint_" + this.value] || "";
+    // The tree of the previous criterion must not stay on screen while the new plan is
+    // being built: on a large collection that is seconds of a person reading folders
+    // that no longer answer the question they just asked.
+    var tree = document.getElementById("tree-city");
+    tree.textContent = "";
+    tree.appendChild(stateEl("loading", I18N.loading));
+    refreshPlan();
+  });
+
+  // F192: everything that is not one of the two questions sits behind the gear —
+  // opened in place, above the tree it is used against, and closed again by the button
+  // that opened it.
+  function toggleLayoutOptions(open) {
+    document.getElementById("layout-options").hidden = !open;
+    document.getElementById("layout-options-btn")
+        .setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  document.getElementById("layout-options-btn").addEventListener("click", function () {
+    toggleLayoutOptions(document.getElementById("layout-options").hidden);
+  });
+  document.getElementById("layout-options-close").addEventListener("click", function () {
+    toggleLayoutOptions(false);
+  });
 
   document.querySelectorAll(".expand-all-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -1458,7 +1510,10 @@
     document.getElementById("slice-empty").style.display = "none";
   }
 
-  function renderSearchCard(item) {
+  // F193: `selection` is the slice this card belongs to — the SAME renderer draws the
+  // search results and a pinned slice, and a card that reached for one global map would
+  // put the ticks of one list into the album of the other.
+  function renderSearchCard(item, selection) {
     var card = document.createElement("div");
     card.className = "search-card";
     if (item.thumb_url) {
@@ -1493,6 +1548,7 @@
                               { score: Number(item.score).toFixed(3) });
       card.appendChild(score);
     }
+    if (selection) card.appendChild(selection.tick(item.file_id));
     return card;
   }
 
@@ -1504,30 +1560,15 @@
   // name — the very selection the frames above came out of. Gathering `kind='query'`
   // there would ask CLIP for a word and hand back a folder that does not match the list
   // it was gathered from, under that person's name.
-  function renderSearchAlbumControls(query, person) {
-    var box = document.getElementById("search-album");
-    box.textContent = "";
-    if (!query) return;
-    var modeSelect = albumModeSelect();
-    box.appendChild(modeSelect);
-    var destInput = appendAlbumDestControls(box);
-    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
-                           "btn-sm album-gather-btn");
-    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
-    var albumStatus = document.createElement("span");
-    albumStatus.className = "album-status";
-    albumBtn.addEventListener("click", function () {
-      if (person) {
-        gatherAlbum("person", person, modeSelect.value, null, null,
-            destInput.value.trim() || null, albumStatus);
-      } else {
-        gatherAlbum("query", query, modeSelect.value, null, null,
-            destInput.value.trim() || null, albumStatus);
-      }
+  // F193: through the shared row, so the search line gained the folder-name field the
+  // memes bucket already had, and the ticks below it decide what goes into the folder.
+  function renderSearchAlbum(query, person) {
+    renderAlbumRow({
+      box: "search-album",
+      kind: query ? (person ? "person" : "query") : null,
+      selector: person || query,
+      selection: searchSelection,
     });
-    box.appendChild(albumBtn);
-    box.appendChild(albumStatus);
-    appendAlbumBusyHint(box);
   }
 
   // F189: the other answer, never gone. A string can be both a name and a word, and the
@@ -1554,6 +1595,9 @@
   // fetch the continuation of a ranking nobody is looking at as soon as somebody starts
   // typing the next query — the button continues the list on screen, not the field.
   var searchQuery = "";
+
+  // F193: the frames ticked in the results, shared with the album row above them.
+  var searchSelection = makeSelection("search-grid");
 
   // F189: whether the reader has asked for the RANKING of a string that is also somebody's
   // name. It belongs next to `searchQuery` and for the same reason — a "show more" has to
@@ -1582,7 +1626,7 @@
       return "/api/search?q=" + encodeURIComponent(searchQuery) + "&offset=" + offset +
              (searchWords ? "&words=1" : "");
     },
-    card: renderSearchCard,
+    card: function (item) { return renderSearchCard(item, searchSelection); },
     // Never "nothing was found": a usable index ranks everything it holds, so an empty
     // list is a fact about the index and the answer says which one. F189: an exact answer
     // has its own empty state — the person exists and none of their frames can be shown,
@@ -1616,8 +1660,8 @@
       // rebuilding it on every "show more" would wipe the destination somebody typed.
       if (!append) {
         var some = (data.items || []).length;
-        renderSearchAlbumControls(some ? data.query : "",
-                                  searchExact ? data.person : null);
+        renderSearchAlbum(some ? data.query : "",
+                          searchExact ? data.person : null);
         // F156: and the same condition offers to PIN it. A query with nothing under it is
         // not a slice yet, and the button that saves one appears when there is something
         // to save. A name is pinned the same way — that is the whole reason this feature
@@ -1643,7 +1687,9 @@
     searchPerson = null;
     showSearchPanel();
     document.getElementById("search-shown").textContent = "";
-    renderSearchAlbumControls("", null);
+    // A new string is a new list: the ticks of the previous answer are not about it.
+    searchSelection.clear();
+    renderSearchAlbum("", null);
     showPinButton("");
     document.getElementById("search-other").textContent = "";
     return searchPager.load();
@@ -1671,6 +1717,9 @@
   // screen.
 
   var savedSlices = [];     // [{slice, queries}] — the config's own order, the pin order
+  // F193: a pin is an ordinary slice and falls under the same uniformity, not under an
+  // exception — so it has ticks of its own like every other grid of this tab.
+  var querySelection = makeSelection("query-grid");
   var querySlice = null;
   var queryLoaded = false;
   // F156: `features.max_pinned_slices`, straight off the route. Kept rather than hard-coded
@@ -1700,7 +1749,7 @@
       return "/api/saved-slices?slice=" + encodeURIComponent(querySlice) +
              "&offset=" + offset;
     },
-    card: renderSearchCard,
+    card: function (item) { return renderSearchCard(item, querySelection); },
     // Never "there are no children in your archive": an index that cannot rank says which
     // of its states it is in, exactly as the typed query does (F134).
     emptyText: function (data) {
@@ -1747,6 +1796,8 @@
   var querySlicePerson = null;
 
   function loadSavedSlice() {
+    // Another pin is another list — the ticks of the previous one are not about it.
+    querySelection.clear();
     return queryPager.load();
   }
 
@@ -1826,40 +1877,25 @@
   // gathers a single wording, so a button there would gather a different list under the
   // slice's name — the panel says so instead.
   function renderQuerySliceAlbum(data) {
-    var box = document.getElementById("query-album");
     var queries = data.queries || [];
     var one = (queries.length === 1 && (data.items || []).length) ? queries[0] : "";
-    box.textContent = "";
     if (!one) {
+      var box = document.getElementById("query-album");
+      box.textContent = "";
       if (queries.length > 1) box.appendChild(stateEl("empty", I18N.pin_album_one_query));
       return;
     }
-    var modeSelect = albumModeSelect();
-    box.appendChild(modeSelect);
-    var nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.className = "album-name-input";
-    nameInput.placeholder = I18N.album_name_placeholder;
-    // Pre-filled with the name of the pin: the folder a person expects is the one they
-    // named, not the phrase the ranking happens to use.
-    nameInput.value = data.slice || "";
-    box.appendChild(nameInput);
-    var destInput = appendAlbumDestControls(box);
-    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
-                           "btn-sm album-gather-btn");
-    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
-    var albumStatus = document.createElement("span");
-    albumStatus.className = "album-status";
-    albumBtn.addEventListener("click", function () {
+    renderAlbumRow({
+      box: "query-album",
       // F189: a pinned name gathers the PERSON album, for the reason the search line
       // does — the folder has to hold the list the button was pressed under.
-      gatherAlbum(data.person ? "person" : "query", data.person || one, modeSelect.value,
-          null, nameInput.value.trim() || null, destInput.value.trim() || null,
-          albumStatus);
+      kind: data.person ? "person" : "query",
+      selector: data.person || one,
+      // The name of the pin: the folder a person expects is the one they named, not the
+      // phrase the ranking happens to use.
+      name: data.slice || "",
+      selection: querySelection,
     });
-    box.appendChild(albumBtn);
-    box.appendChild(albumStatus);
-    appendAlbumBusyHint(box);
   }
 
   // Where this slice sits in the row, or -1 while no pinned slice is open. The arrows are
@@ -2039,6 +2075,71 @@
   // the list doubles as a statement of what a run will produce.
   var overviewEmpty = false;
 
+  // --- F190: the area takes its final size BEFORE the data arrives ------------
+  //
+  // F145 fixed the same jump for the empty index; the request itself still had it. The
+  // tab painted a one-line "loading" message and replaced it with four cards, which is a
+  // block of an entirely different height: everything below — the run options among them
+  // — moved down the page under the cursor of somebody who was already aiming at them.
+  //
+  // So the loading state is the SAME markup: the same cards, the same rows, built by the
+  // same builders from a constant stand-in payload, with the value column blank and the
+  // indicator INSIDE the reserved area rather than in place of it. The indicator stays —
+  // an empty grid on its own reads as "there is nothing here".
+  //
+  // Nothing is invented in a blank cell. A plausible number that a second later turns
+  // into a different one is worse than a dash: it gets read.
+  var overviewLoading = false;
+
+  // The rows a card draws one per data row are the only part of the grid whose length is
+  // not fixed, and the skeleton has to choose a length before it knows one. These are the
+  // counts of a collection that has been through a full run — the state this tab is
+  // opened in — and they are what the height parity between "loading" and "loaded" rests
+  // on. The fixed-length parts (the thirteen rows of the collection card, which is the
+  // tallest of the four and therefore the one that sets the height of the whole area on a
+  // screen wide enough for a row of cards) match exactly, whatever arrives.
+  var OVERVIEW_SKELETON_ROWS = { place: 4, verdicts: 5, sources: 2, tiers: 2 };
+
+  function overviewSkeletonRows(n) {
+    var out = [];
+    for (var i = 0; i < n; i++) out.push({ key: "", count: 0 });
+    return out;
+  }
+
+  // The stand-in payload. Its VALUES are never displayed — every cell is blanked while
+  // `overviewLoading` — they are here only to choose the same branches the real payload
+  // of a laid-out collection chooses, i.e. the shape.
+  function overviewSkeletonData() {
+    return {
+      empty: false,
+      collection: {
+        files: 0, photos: 0, videos: 0, duplicates: 0, errors: 0, events: 0, animals: 0,
+        with_people: 0, group_photos: 0, portraits: 0, faces_reason: null,
+        blurred: 0, eyes_closed: 0, low_resolution: 0
+      },
+      place: { total: 0, no_place: 0, no_place_percent: 0,
+               confidence: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.place) },
+      classes: {
+        total: 1,
+        verdicts: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.verdicts),
+        sources: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.sources),
+        tiers: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.tiers),
+        vlm_ran: false, updated_at: "…"
+      },
+      layout: {
+        batches: 1, unfinished: 0,
+        last: { mode: "", operation: "", dest_root: "", started_at: "",
+                finished_at: "", unfinished: false, files: 0, done: 0 }
+      }
+    };
+  }
+
+  // F190: text the DATA dictates — the name of a place group, of a class, a date, a
+  // destination. The skeleton keeps the row it will stand in and leaves the text out.
+  function overviewDataText(text) {
+    return overviewLoading ? "" : text;
+  }
+
   // Числа читают глазами: 7 619 против 7619. toLocaleString берёт разделитель
   // разрядов из локали браузера.
   function overviewNum(n) {
@@ -2053,10 +2154,13 @@
     return overviewNum(n);
   }
 
+  // F190: one place blanks every value of the tab. A cell of the skeleton keeps its
+  // class — and with it its size — and says nothing.
   function overviewValue(text, extraClass) {
     var el = document.createElement("span");
-    el.className = "overview-value" + (extraClass ? " " + extraClass : "");
-    el.textContent = text;
+    el.className = "overview-value" + (extraClass ? " " + extraClass : "")
+        + (overviewLoading ? " overview-blank" : "");
+    el.textContent = overviewLoading ? "" : text;
     return el;
   }
 
@@ -2067,6 +2171,9 @@
   // F133: the same is now true of "Slices", where people, events, animals and the
   // classifier's classes live side by side.
   function overviewCount(count, tab, slice) {
+    // F190: while loading there is no number, and a link that promises a slice nobody
+    // has counted yet is a dead one — the row keeps its cell and waits.
+    if (overviewLoading) return overviewValue("");
     if (!tab || !count) return overviewValue(overviewStat(count));
     var btn = document.createElement("button");
     btn.type = "button";
@@ -2088,6 +2195,7 @@
   // cannot answer this one — it dashes on an empty INDEX, and here the index is full
   // while this particular question has not been asked of it.
   function overviewFaceCount(count, slice) {
+    if (overviewLoading) return overviewValue("");
     if (count === null || count === undefined) return overviewValue("\u2014");
     return overviewCount(count, "slices", slice);
   }
@@ -2096,7 +2204,11 @@
     var row = document.createElement("div");
     row.className = "overview-row" + (main ? " overview-row-main" : "");
     var name = document.createElement("span");
-    name.className = "overview-label";
+    // F190: a label the skeleton could not know (it came out of `overviewDataText`
+    // empty) holds its size the way a value cell does. The labels this tab writes
+    // itself — "Photos", "Started" — are printed while loading: they are the structure,
+    // not a claim about this collection.
+    name.className = "overview-label" + (overviewLoading && !label ? " overview-blank" : "");
     name.textContent = label;
     row.appendChild(name);
     row.appendChild(valueEl);
@@ -2121,7 +2233,8 @@
 
   function overviewNote(text, warn) {
     var el = document.createElement("p");
-    el.className = "overview-note" + (warn ? " overview-note-warn" : "");
+    el.className = "overview-note" + (warn ? " overview-note-warn" : "")
+        + (overviewLoading && !text ? " overview-blank" : "");
     el.textContent = text;
     return el;
   }
@@ -2192,7 +2305,7 @@
       // «unknown» — ровно те кадры, что уже названы строкой выше (правилом
       // раскладки); второй раз их не повторяем.
       if (row.key === "unknown") return;
-      card.appendChild(overviewRow(overviewPlaceLabel(row.key),
+      card.appendChild(overviewRow(overviewDataText(overviewPlaceLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
     card.appendChild(overviewNote(I18N.overview_no_place_hint));
@@ -2212,25 +2325,28 @@
       // F133: everything that is not a personal photograph is a pinned slice of its own
       // class — the number leads straight into it rather than into the whole list.
       card.appendChild(overviewRow(
-          overviewVerdictLabel(row.key),
+          overviewDataText(overviewVerdictLabel(row.key)),
           overviewCount(row.count, row.key === "photo" ? null : "slices",
                         "junk:" + row.key)));
     });
     card.appendChild(overviewSubtitle(I18N.overview_by_source));
     cl.sources.forEach(function (row) {
-      card.appendChild(overviewRow(overviewSourceLabel(row.key),
+      card.appendChild(overviewRow(overviewDataText(overviewSourceLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
     card.appendChild(overviewSubtitle(I18N.overview_by_tier));
     cl.tiers.forEach(function (row) {
-      card.appendChild(overviewRow(overviewTierLabel(row.key),
+      card.appendChild(overviewRow(overviewDataText(overviewTierLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
     // Прогонялся ли глубокий ярус — вопрос, который раньше решался запросом в БД.
-    card.appendChild(overviewNote(
-        cl.vlm_ran ? I18N.overview_vlm_ran : I18N.overview_vlm_not_ran));
+    // F190: which is a fact about THIS collection, so the skeleton keeps the line and
+    // leaves it unwritten rather than saying either of the two answers.
+    card.appendChild(overviewNote(overviewDataText(
+        cl.vlm_ran ? I18N.overview_vlm_ran : I18N.overview_vlm_not_ran)));
     if (cl.updated_at) {
-      card.appendChild(overviewNote(fmt(I18N.overview_updated_at, { at: cl.updated_at })));
+      card.appendChild(overviewNote(
+          overviewDataText(fmt(I18N.overview_updated_at, { at: cl.updated_at }))));
     }
     return card;
   }
@@ -2270,6 +2386,37 @@
     return card;
   }
 
+  // F190: the four cards, and the ONE place they are built. Both states of the tab go
+  // through it — that is what makes "the same containers" a property of the code rather
+  // than of two lists kept in step by hand.
+  function overviewGroups(data) {
+    var groups = document.createElement("div");
+    groups.className = "overview-groups";
+    groups.appendChild(overviewCollectionCard(data));
+    groups.appendChild(overviewPlaceCard(data));
+    groups.appendChild(overviewClassesCard(data));
+    groups.appendChild(overviewLayoutCard(data));
+    return groups;
+  }
+
+  // F190: the loading state. It takes no argument — the skeleton is the same size
+  // whether the answer turns out to hold three files or three hundred thousand.
+  function renderOverviewSkeleton() {
+    var body = document.getElementById("overview-body");
+    body.textContent = "";
+    overviewLoading = true;
+    overviewEmpty = false;
+    var groups = overviewGroups(overviewSkeletonData());
+    groups.className += " overview-skeleton";
+    groups.setAttribute("aria-busy", "true");
+    // The word "loading" goes INSIDE the reserved area, not in place of it: the
+    // indicator floats over the grid and takes no height of its own, so the area it
+    // stands in is exactly the area the cards will occupy.
+    groups.appendChild(stateEl("loading", I18N.overview_loading));
+    body.appendChild(groups);
+    overviewLoading = false;
+  }
+
   function renderOverview(data) {
     var body = document.getElementById("overview-body");
     body.textContent = "";
@@ -2288,19 +2435,12 @@
       var picker = document.getElementById("process-source-dir");
       if (picker && !picker.value) picker.focus();
     }
-    var groups = document.createElement("div");
-    groups.className = "overview-groups";
-    groups.appendChild(overviewCollectionCard(data));
-    groups.appendChild(overviewPlaceCard(data));
-    groups.appendChild(overviewClassesCard(data));
-    groups.appendChild(overviewLayoutCard(data));
-    body.appendChild(groups);
+    body.appendChild(overviewGroups(data));
   }
 
   function loadOverview() {
     var body = document.getElementById("overview-body");
-    body.textContent = "";
-    body.appendChild(stateEl("loading", I18N.loading));
+    renderOverviewSkeleton();
     return fetch("/api/overview")
       .then(function (r) { return r.json(); })
       .then(function (data) { renderOverview(data); })
@@ -2597,23 +2737,99 @@
     updateVlmSubordinatesDisabled();
   }
 
-  function renderStageChips(data) {
-    var container = document.getElementById("process-stages");
-    container.textContent = "";
-    if (!data.running && !data.finished) return;
+  // F191: the stage row is one line, not one chip per stage. Nine chips ran wider than
+  // the cards above them, and lengthening the cards would only postpone it: the number
+  // of stages is not a constant (F186 took two away in a day), so a width fitted to
+  // today's list comes apart at the next edit of the pipeline. What is always on screen
+  // is three SCALARS out of the status — the stage that is going, its number, how many
+  // there are — drawn into nodes the page already holds. The full list is a click away.
+  //
+  // The state of that click is remembered for the run: somebody who opened the list
+  // wants to watch it, not to re-open it after every 1.5-second status tick.
+  var stagesExpanded = false;
+  // The last status the row was drawn from — the toggle redraws the list between polls.
+  var lastProcessStatus = {};
+
+  function stageStateLabel(data) {
+    // An error is the one thing the disclosure may not hide, so it is what the row
+    // says instead of the stage that was going when it happened.
+    if (data.error) {
+      return fmt(I18N.process_stage_failed,
+                 { stage: processStageLabel(data.error_stage || data.stage) });
+    }
+    if (data.running) {
+      return fmt(I18N.process_stage_current, { stage: processStageLabel(data.stage) });
+    }
+    return data.cancel_requested ? I18N.process_stages_stopped : I18N.process_stages_done;
+  }
+
+  // The bar fills to the end only for a run that reached it: a cancelled one stopped
+  // where it stopped, and a failed one stopped BEFORE the stage it names — drawing that
+  // stage as done would contradict the caption right next to it.
+  function stageBarValue(data, index, total) {
+    if (data.running || data.cancel_requested) return index;
+    if (data.error) return Math.max(index - 1, 0);
+    return total;
+  }
+
+  // Writes into nodes page.html already carries and creates none of its own — that is
+  // what keeps the collapsed row the same shape for three stages and for nine.
+  function renderStageSummary(data) {
+    var box = document.getElementById("process-stages");
+    var bar = document.getElementById("process-stages-bar");
+    var total = data.stage_total || currentProcessStages.length;
+    var index = data.stage_index || 0;
+    document.getElementById("process-stages-current").textContent = stageStateLabel(data);
+    document.getElementById("process-stages-count").textContent =
+        fmt(I18N.process_stage_counter, { index: index, total: total });
+    bar.max = total || 1;
+    bar.value = stageBarValue(data, index, total);
+    if (data.error) box.classList.add("failed");
+    else box.classList.remove("failed");
+  }
+
+  // The list behind the disclosure — the chips exactly as they were, plus the failed
+  // one, which the row above names as well.
+  function renderStageList(data) {
+    var list = document.getElementById("process-stages-list");
+    list.textContent = "";
+    list.style.display = stagesExpanded ? "" : "none";
+    document.getElementById("process-stages-toggle")
+        .setAttribute("aria-expanded", stagesExpanded ? "true" : "false");
+    document.getElementById("process-stages-caret").textContent =
+        stagesExpanded ? "▴" : "▾";
+    if (!stagesExpanded) return;
     var success = !data.running && data.finished && !data.error;
+    var failed = data.error ? (data.error_stage || data.stage) : null;
     currentProcessStages.forEach(function (name, idx) {
       var stepIndex = idx + 1;
       var cls = "pending";
-      if (success || stepIndex < data.stage_index) cls = "done";
+      if (name === failed) cls = "failed";
+      else if (success || stepIndex < data.stage_index) cls = "done";
       else if (data.running && stepIndex === data.stage_index) cls = "now";
       var chip = document.createElement("span");
       chip.className = "stage-chip " + cls;
       if (cls === "done") chip.appendChild(icon("check"));
       chip.appendChild(document.createTextNode(processStageLabel(name)));
-      container.appendChild(chip);
+      list.appendChild(chip);
     });
   }
+
+  function renderStages(data) {
+    data = data || {};
+    lastProcessStatus = data;
+    var box = document.getElementById("process-stages");
+    var visible = !!(data.running || data.finished);
+    box.style.display = visible ? "" : "none";
+    if (!visible) return;
+    renderStageSummary(data);
+    renderStageList(data);
+  }
+
+  document.getElementById("process-stages-toggle").addEventListener("click", function () {
+    stagesExpanded = !stagesExpanded;
+    renderStageList(lastProcessStatus);
+  });
 
   // F84: a stage can name the phase it is in (clustering inside "faces"); an empty
   // phase means the stage reports none — then nothing is drawn and the screen looks
@@ -2641,7 +2857,7 @@
     junkLoaded = false;  // F103: прогон junk-яруса меняет состав корзин
     animalsLoaded = false;  // F123: the same run recomputes the animal verdicts
     faceLoaded = false;     // F152: a faces run is what turns the reason into numbers
-    renderPlanTab("city", "tree-city");
+    refreshPlan();
     applyTabVisibility();
     loadCacheSizes();  // F94: a run is what makes the preview cache grow
     // F138: a run is also what makes the estimate knowable — the deep tier's candidate
@@ -2718,7 +2934,7 @@
     cancelBtn.disabled = !!data.cancel_requested;
     bar.style.display = data.running ? "" : "none";
     if (!data.running) bar.classList.remove("indeterminate");
-    renderStageChips(data);
+    renderStages(data);
     renderProcessPhase(data);
     renderProcessSummary(data);
     if (data.running) {
@@ -3201,6 +3417,7 @@
       statusEl.textContent = clearGeo ? I18N.process_reset_done_geo : I18N.process_reset_done;
       // F135: the summary of the last run counted files of an index that is gone now.
       renderProcessSummary({});
+      renderStages({});  // F191: and the same is true of the row of stages above it
       refreshTabsAfterProcess();
     });
   });
@@ -3411,10 +3628,10 @@
     // dialog full of zeroes. Until the plan has arrived the button is dead too, but
     // silently — "nothing to lay out" and "not counted yet" are different statements.
     var applyBtn = document.getElementById("sort-apply-btn");
-    if (applyBtn) { applyBtn.disabled = busy || cityPlanCount === 0; }
+    if (applyBtn) { applyBtn.disabled = busy || planCount === 0; }
     var emptyHint = document.getElementById("sort-empty-hint");
     if (emptyHint) {
-      emptyHint.style.display = (cityPlanLoaded && cityPlanCount === 0) ? "" : "none";
+      emptyHint.style.display = (planLoaded && planCount === 0) ? "" : "none";
     }
   }
 
@@ -3467,7 +3684,7 @@
         : (r.cancelled ? I18N.sort_undo_hint : "");
     movesLoaded = false;
     refreshUndoAvailability();
-    renderPlanTab("city", "tree-city");
+    refreshPlan();
   }
 
   function pollSortStatus() {
@@ -3489,27 +3706,34 @@
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
     var mode = checked ? checked.value : "move";
-    postJson("/api/sort", { dest: dest || null, mode: mode }).then(function (resp) {
-      if (resp && resp.error) {
-        document.getElementById("sort-status").textContent =
-            I18N.sort_start_error_prefix + resp.error;
-        return;
-      }
-      if (sortPollTimer) clearTimeout(sortPollTimer);
-      pollSortStatus();
-    });
+    // F192: `by` is the criterion, `mode` is move-or-copy — two different questions
+    // that the server has kept apart since F43 and the field names keep apart here.
+    postJson("/api/sort", { dest: dest || null, mode: mode, by: layoutBy() })
+      .then(function (resp) {
+        if (resp && resp.error) {
+          document.getElementById("sort-status").textContent =
+              I18N.sort_start_error_prefix + resp.error;
+          return;
+        }
+        if (sortPollTimer) clearTimeout(sortPollTimer);
+        pollSortStatus();
+      });
   }
 
   document.getElementById("sort-apply-btn").addEventListener("click", function () {
     // An empty plan never gets here (the button is dead, see updateBusyControlsDisabled)
     // — a dialog full of zeroes is not an explanation.
-    if (!cityPlanCount) return;
+    if (!planCount) return;
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
     var mode = checked ? checked.value : "move";
     var statusEl = document.getElementById("sort-status");
     statusEl.textContent = "";
-    fetch("/api/sort/summary?dest=" + encodeURIComponent(dest))
+    // The dialog states the numbers of the plan the tab is showing, so it asks about
+    // the same criterion — a summary of the city plan under a tree of people would be
+    // a number nobody has to honour.
+    fetch("/api/sort/summary?dest=" + encodeURIComponent(dest) +
+          "&by=" + encodeURIComponent(layoutBy()))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || data.error) {
@@ -3726,7 +3950,7 @@
     strayEl.textContent = (r.stray && r.stray.length)
         ? I18N.undo_stray_title + " " + r.stray.join(", ") : "";
     refreshUndoAvailability();
-    renderPlanTab("city", "tree-city");
+    refreshPlan();
   }
 
   function pollUndoStatus() {
@@ -3822,25 +4046,47 @@
     return txt;
   }
 
+  // A refusal is a sentence in the interface language: the server sends one word and the
+  // catalog holds the three sentences (the `pinErrorText` arrangement of F156). F193: the
+  // words are the album's own — a class that is never gathered, a class the config calls
+  // private, a bucket with no album kind, a selection that holds nothing.
+  function albumBlockedText(reason) {
+    return I18N["album_blocked_" + reason] || I18N.album_blocked_no_kind;
+  }
+
+  function albumErrorText(resp) {
+    if (resp.reason === "empty_selection") return I18N.album_error_empty_selection;
+    if (resp.reason && I18N["album_blocked_" + resp.reason]) {
+      return albumBlockedText(resp.reason);
+    }
+    return resp.error || "";
+  }
+
   // Превью (apply=false) -> подтверждение (текст зависит от режима, move явно
   // предупреждает об изъятии из пула) -> apply=true. statusEl получает
   // прогресс/результат; при успешном apply сбрасывается кэш вкладки
   // «Перемещения», чтобы следующий заход её перезагрузил (F35 п.4).
-  function gatherAlbum(kind, selector, mode, where, name, dest, statusEl) {
+  //
+  // F193: `fileIds` — the frames the person ticked, or null for the whole slice. The list
+  // is read ONCE, at the click, and both requests carry the same one: a preview and an
+  // apply that disagreed about which frames they were about would make the confirmation
+  // meaningless.
+  function gatherAlbum(kind, selector, mode, where, name, dest, statusEl, fileIds) {
     var body = { kind: kind, selector: selector, mode: mode, apply: false };
     if (where) body.where = [where];
     if (name) body.name = name;
     if (dest) body.dest = dest;
+    if (fileIds) body.file_ids = fileIds;
     statusEl.textContent = I18N.album_in_progress;
     postJson("/api/album", body).then(function (resp) {
-      if (resp.error) { statusEl.textContent = resp.error; return; }
+      if (resp.error) { statusEl.textContent = albumErrorText(resp); return; }
       var confirmMsg = albumPreviewText(resp) + "\n" +
           (mode === "move" ? I18N.album_confirm_move : I18N.album_confirm_generic);
       if (!window.confirm(confirmMsg)) { statusEl.textContent = ""; return; }
       body.apply = true;
       statusEl.textContent = I18N.album_in_progress;
       postJson("/api/album", body).then(function (resp2) {
-        if (resp2.error) { statusEl.textContent = resp2.error; return; }
+        if (resp2.error) { statusEl.textContent = albumErrorText(resp2); return; }
         statusEl.textContent = fmt(I18N.album_result_text,
             { n: resp2.transferred, f: resp2.failed });
         movesLoaded = false;
@@ -3848,42 +4094,189 @@
     });
   }
 
-  // F139: the gather row of a slice that has no subject to choose inside it — a class
-  // bucket ("Products") or a quality slice ("Blurred"). The same three controls every
-  // other album has (mode, an optional folder name, a destination) and the same
-  // dry-run-then-confirm path; the only thing that varies is the `kind` the server was
-  // asked to gather, and `kind` = null takes the row away entirely, which is what a
-  // sensitive class and the duplicates look like.
+  // --- F193: one selection and one album row, for every slice ------------------------
+  // Three complaints of 2026-08-04 were one defect: the slices answered "what can I do
+  // with you" differently — the folder could be named in memes and screenshots and
+  // nowhere else, nothing could be picked anywhere, and the documents bucket said
+  // nothing at all. Fixed one at a time that question would have been answered three
+  // times, differently, and a fourth divergence would arrive with the next slice.
   //
-  // Rebuilt only when the kind CHANGES: the row is drawn from inside the paging render,
-  // and re-creating it per page would ask the server for a default destination again and
-  // wipe a path somebody had typed.
-  function renderSliceAlbumControls(boxId, kind) {
-    var box = document.getElementById(boxId);
-    if (box.getAttribute("data-kind") === (kind || "")) return;
-    box.setAttribute("data-kind", kind || "");
+  // So the answer is written HERE and nowhere else, the `makePager` arrangement of F173:
+  // a slice hands over its grid and the kind it gathers as, and it gets the tick on its
+  // cards, the folder name, the destination, the "only the ticked ones" scope and the
+  // button. A slice that does not call these two functions has no album row at all,
+  // which is the only thing that keeps them from drifting apart again.
+
+  // Which frames of one grid are ticked. Deliberately NOT per card and not per page: the
+  // reader pages down, ticks four frames across three pages and gathers them, and a
+  // selection that lived in the DOM would lose the first three.
+  function makeSelection(gridId) {
+    var picked = {};
+    var listeners = {};
+
+    function changed() {
+      Object.keys(listeners).forEach(function (key) { listeners[key](); });
+    }
+
+    function set(fileId, on) {
+      if (on) picked[fileId] = true;
+      else delete picked[fileId];
+    }
+
+    return {
+      // The tick itself, so the gesture is the same wherever the reader is. `labelText`
+      // is the one thing a slice may change: in the junk grid the same tick also feeds
+      // "back to photos", and there it is named after that movement (F175).
+      tick: function (fileId, labelText, labelClass) {
+        var label = document.createElement("label");
+        label.className = labelClass || "slice-card-select";
+        var box = document.createElement("input");
+        box.type = "checkbox";
+        box.className = "slice-select";
+        box.value = String(fileId);
+        box.checked = !!picked[fileId];
+        box.addEventListener("change", function () {
+          set(fileId, box.checked);
+          changed();
+        });
+        label.appendChild(box);
+        label.appendChild(document.createTextNode(labelText || I18N.album_select_label));
+        return label;
+      },
+      ids: function () { return Object.keys(picked).map(Number); },
+      count: function () { return Object.keys(picked).length; },
+      selectShown: function () {
+        document.querySelectorAll("#" + gridId + " .slice-select").forEach(function (b) {
+          b.checked = true;
+          set(parseInt(b.value, 10), true);
+        });
+        changed();
+      },
+      clear: function () {
+        document.querySelectorAll("#" + gridId + " .slice-select").forEach(function (b) {
+          b.checked = false;
+        });
+        picked = {};
+        changed();
+      },
+      // Keyed by the caller, because an album row is REBUILT (the kind changed, the pin
+      // changed) and a listener appended per rebuild would repaint elements that are no
+      // longer on the page.
+      onChange: function (key, cb) { listeners[key] = cb; },
+    };
+  }
+
+  // The row itself. `kind` = null with no `blocked` takes it away entirely — that is what
+  // "there is nothing here to gather yet" looks like (an empty search, the duplicates).
+  function renderAlbumRow(opts) {
+    var box = document.getElementById(opts.box);
+    if (!box) return;
     box.textContent = "";
-    if (!kind) return;
+    if (opts.blocked) {
+      // A hidden control is not a rule (F133): it forbids nothing, a request past the
+      // interface gathers the folder all the same, and the reader is left guessing. So
+      // the row stays where it is, the button is visibly out of reach, and the sentence
+      // beside it says why — the same reason the route answers the same request with.
+      // NOT `album-gather-btn`: that class is swept by `registerBusyRefresh`, which
+      // re-enables every album button the moment a run ends — and this one is not dead
+      // because something is running, it is dead because the slice has no album.
+      var refused = makeBtn("primary", "folder", I18N.album_button,
+                            "btn-sm album-refused-btn");
+      refused.disabled = true;
+      box.appendChild(refused);
+      var why = document.createElement("span");
+      why.className = "override-hint album-blocked";
+      why.textContent = albumBlockedText(opts.blocked);
+      box.appendChild(why);
+      return;
+    }
+    if (!opts.kind) return;
     var modeSelect = albumModeSelect();
     box.appendChild(modeSelect);
     var nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "album-name-input";
     nameInput.placeholder = I18N.album_name_placeholder;
+    // Pre-filled where the slice has a name of its own (a pin): the folder a person
+    // expects is the one they named, not the phrase the ranking happens to use.
+    nameInput.value = opts.name || "";
     box.appendChild(nameInput);
     var destInput = appendAlbumDestControls(box);
+    var whereInput = null;
+    if (opts.where) {
+      whereInput = document.createElement("input");
+      whereInput.type = "text";
+      whereInput.className = "album-where-input";
+      whereInput.placeholder = I18N.album_where_placeholder;
+      box.appendChild(whereInput);
+    }
+    var selection = opts.selection || null;
+    var onlyBox = null;
+    if (selection) {
+      var onlyLabel = document.createElement("label");
+      onlyLabel.className = "album-selection";
+      onlyBox = document.createElement("input");
+      onlyBox.type = "checkbox";
+      onlyBox.className = "album-selected-only";
+      onlyBox.disabled = true;
+      onlyLabel.appendChild(onlyBox);
+      var onlyText = document.createElement("span");
+      onlyLabel.appendChild(onlyText);
+      box.appendChild(onlyLabel);
+      var scopeHint = document.createElement("span");
+      scopeHint.className = "override-hint album-scope-hint";
+      scopeHint.textContent = I18N.album_selection_hint;
+      box.appendChild(scopeHint);
+      var repaint = function () {
+        var n = selection.count();
+        onlyText.textContent = " " + fmt(I18N.album_selected_only, { n: n });
+        // The first tick turns the scope on by itself — somebody who has just picked
+        // three frames means those three — and the last untick turns it back off, so the
+        // button never quietly sends a selection that holds nothing. `disabled` doubles
+        // as "the selection was empty a moment ago", which is what makes both edges
+        // happen exactly once and leaves a hand-set scope alone in between.
+        if (!n) {
+          onlyBox.checked = false;
+          onlyBox.disabled = true;
+        } else if (onlyBox.disabled) {
+          onlyBox.disabled = false;
+          onlyBox.checked = true;
+        }
+        scopeHint.style.display = onlyBox.checked ? "none" : "";
+      };
+      onlyBox.addEventListener("change", repaint);
+      selection.onChange(opts.box, repaint);
+      repaint();
+    }
     var albumBtn = makeBtn("primary", "folder", I18N.album_button,
                            "btn-sm album-gather-btn");
     albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
     var albumStatus = document.createElement("span");
     albumStatus.className = "album-status";
     albumBtn.addEventListener("click", function () {
-      gatherAlbum(kind, "", modeSelect.value, null, nameInput.value.trim() || null,
-          destInput.value.trim() || null, albumStatus);
+      gatherAlbum(opts.kind, opts.selector || "", modeSelect.value,
+          whereInput ? (whereInput.value.trim() || null) : null,
+          nameInput.value.trim() || null, destInput.value.trim() || null,
+          albumStatus, (onlyBox && onlyBox.checked) ? selection.ids() : null);
     });
     box.appendChild(albumBtn);
     box.appendChild(albumStatus);
     appendAlbumBusyHint(box);
+  }
+
+  // F139: the gather row of a slice that has no subject to choose inside it — a class
+  // bucket ("Products"), a quality slice ("Blurred"). Rebuilt only when the OFFER
+  // changes: the row is drawn from inside the paging render, and re-creating it per page
+  // would ask the server for a default destination again and wipe a path somebody typed.
+  //
+  // F193: the offer is the pair (kind, refusal) and not the kind alone — a bucket that
+  // may not be gathered draws the reason where the button was, instead of nothing.
+  function renderSliceAlbumControls(opts) {
+    var box = document.getElementById(opts.box);
+    var state = (opts.kind || "") + "|" + (opts.blocked || "");
+    if (box.getAttribute("data-album") === state) return;
+    box.setAttribute("data-album", state);
+    renderAlbumRow(opts);
   }
 
   // --- лайтбокс (F42): один переиспользуемый оверлей поверх /photo/<id> ---
@@ -4431,7 +4824,11 @@
   var JUNK_PAGE_SIZE = 200;
   var junkBucket = null;   // null — «Все»
   var junkOffset = 0;
-  var junkSelected = {};
+  // F193: the shared selection (`makeSelection`), so the tick on a junk card feeds the
+  // album row over the grid as well as "back to photos" below it. The two ACTIONS stay in
+  // their own blocks — one movement must never be able to both gather and delete — but
+  // "these frames" is one notion and there is one of it.
+  var junkSelection = makeSelection("junk-grid");
   // F174: the cards currently on screen, by file_id — the selection is made of them, so
   // the destinations the server sent with the page are what the bulk caption counts.
   // Nothing is fetched again for it: the answer is already here.
@@ -4460,7 +4857,7 @@
   }
 
   function junkSelectedIds() {
-    return Object.keys(junkSelected).map(Number);
+    return junkSelection.ids();
   }
 
   function junkSelectedItems() {
@@ -4479,6 +4876,7 @@
   }
 
   registerBusyRefresh(refreshJunkControls);
+  junkSelection.onChange("junk-controls", refreshJunkControls);
 
   // F133: корзины классификатора — это и есть закреплённые срезы «товары / скриншоты /
   // документы»; отдельного ряда чипов больше нет, счётчики уезжают в ряд срезов.
@@ -4534,21 +4932,11 @@
       card.appendChild(undoBtn);
       return card;
     }
-    var label = document.createElement("label");
-    label.className = "junk-card-select";
-    var box = document.createElement("input");
-    box.type = "checkbox";
-    box.className = "junk-select";
-    box.value = String(item.file_id);
-    box.checked = !!junkSelected[item.file_id];
-    box.addEventListener("change", function () {
-      if (box.checked) junkSelected[item.file_id] = true;
-      else delete junkSelected[item.file_id];
-      refreshJunkControls();
-    });
-    label.appendChild(box);
-    label.appendChild(document.createTextNode(I18N.slice_return_button));
-    card.appendChild(label);
+    // F175/F193: the shared tick, named after the movement it also feeds here — the
+    // one place a slice may word it for itself, because in this grid the same frames are
+    // what "back to photos" acts on.
+    card.appendChild(junkSelection.tick(item.file_id, I18N.slice_return_button,
+                                        "junk-card-select"));
     // F174: this bucket is an EXTRACTION from the canon — the frame is not lying in a
     // city right now, and returning it is a real transfer on the next apply. So the
     // card says which folder, and why, before anything is ticked.
@@ -4562,7 +4950,9 @@
     // and the server says which (a sensitive class keeps its counter and gets neither a
     // preview nor an album). The "back to photos" row above is untouched: one movement
     // must not be able to both gather and delete.
-    renderSliceAlbumControls("junk-album", data.album_kind);
+    renderSliceAlbumControls({ box: "junk-album", kind: data.album_kind,
+                               blocked: data.album_blocked,
+                               selection: junkSelection });
     // F175: which bucket is open decides which measurement is true here, so the line is
     // rewritten with every page — including the empty one, where "not measured" is still
     // the honest answer about the bucket a person is looking at.
@@ -4611,8 +5001,7 @@
   }
 
   function loadJunk() {
-    junkSelected = {};
-    refreshJunkControls();
+    junkSelection.clear();
     document.getElementById("junk-status").textContent = "";
     return fetchJunk(0, false);
   }
@@ -4623,8 +5012,7 @@
     return postJson("/api/overrides", { file_ids: ids, action: action })
       .then(function (resp) {
         if (resp && resp.ok) {
-          junkSelected = {};
-          refreshJunkControls();
+          junkSelection.clear();
           fetchJunk(0, false);
         } else {
           status.textContent = I18N.junk_error_prefix + ((resp && resp.error) || "");
@@ -4644,18 +5032,10 @@
     applyJunkAction(ids, "photo");
   });
   document.getElementById("junk-select-all-btn").addEventListener("click", function () {
-    document.querySelectorAll("#junk-grid .junk-select").forEach(function (box) {
-      box.checked = true;
-      junkSelected[parseInt(box.value, 10)] = true;
-    });
-    refreshJunkControls();
+    junkSelection.selectShown();
   });
   document.getElementById("junk-select-none-btn").addEventListener("click", function () {
-    document.querySelectorAll("#junk-grid .junk-select").forEach(function (box) {
-      box.checked = false;
-    });
-    junkSelected = {};
-    refreshJunkControls();
+    junkSelection.clear();
   });
   document.getElementById("junk-more-btn").addEventListener("click", function () {
     fetchJunk(junkOffset, true);
@@ -4670,6 +5050,7 @@
   // is to read down a list that is sorted by exactly that number.
 
   var ANIMALS_PAGE_SIZE = 200;
+  var animalsSelection = makeSelection("animals-grid");
   // The length of the LIST, kept so a card redrawn after a mark can restate "showing
   // N of M" without asking the server for a page it already has.
   var animalsTotal = 0;
@@ -4735,6 +5116,9 @@
       actions.appendChild(back);
     }
     card.appendChild(actions);
+    // F193: and the tick, last, like every other grid of this tab — the album row above
+    // gathers exactly what is ticked here.
+    card.appendChild(animalsSelection.tick(item.file_id));
     return card;
   }
 
@@ -4809,31 +5193,14 @@
       .catch(function (err) { status.textContent = I18N.animals_error_prefix + err; });
   }
 
-  // The album controls of the People/Events cards, one per tab instead of one per
-  // card: the slice is single, so there is nothing to pick a subject from. The
-  // selector goes out empty and the server ignores it (kind='animal'), and the album
-  // name is left to the server too — it is a folder name, and it follows `language:`.
-  function renderAnimalsAlbumControls() {
-    var box = document.getElementById("animals-album");
-    if (box.childNodes.length) return;
-    var modeSelect = albumModeSelect();
-    box.appendChild(modeSelect);
-    var destInput = appendAlbumDestControls(box);
-    var albumBtn = makeBtn("primary", "folder", I18N.album_button, "btn-sm album-gather-btn");
-    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
-    var albumStatus = document.createElement("span");
-    albumStatus.className = "album-status";
-    albumBtn.addEventListener("click", function () {
-      gatherAlbum("animal", "", modeSelect.value, null, null,
-          destInput.value.trim() || null, albumStatus);
-    });
-    box.appendChild(albumBtn);
-    box.appendChild(albumStatus);
-    appendAlbumBusyHint(box);
-  }
-
+  // One album row per tab instead of one per card: the slice is single, so there is
+  // nothing to pick a SUBJECT from — the selector goes out empty and the server ignores
+  // it (kind='animal'). F193: which is not the same as having nothing to pick, and the
+  // shared row is what says so — the folder can be named here like everywhere else, and
+  // the ticks on the cards below decide what goes into it.
   function loadAnimals() {
-    renderAnimalsAlbumControls();
+    renderSliceAlbumControls({ box: "animals-album", kind: "animal",
+                               selection: animalsSelection });
     return animalsPager.load();
   }
 
@@ -4852,6 +5219,7 @@
   var FACE_SLICES = ["people", "group", "portrait"];
   var FACE_PAGE_SIZE = 200;
   var faceSlice = "people";
+  var faceSelection = makeSelection("face-grid");
   var faceLoaded = false;
   var faceReason = null;
 
@@ -4900,6 +5268,7 @@
     meta.textContent = [item.date || "", fmt(I18N.face_count_label, { n: item.faces })]
         .filter(Boolean).join(" \u00b7 ");
     card.appendChild(meta);
+    card.appendChild(faceSelection.tick(item.file_id));
     return card;
   }
 
@@ -4933,31 +5302,26 @@
 
   // One album per slice, the animal arrangement: the selector goes out empty and the
   // server ignores it (the collection holds a single slice of each kind), and the album
-  // name is left to the server — it is a folder name and follows `language:`. Rebuilt on
-  // every open because the KIND changes with the pin.
+  // name is left to the person — F193 put the field here, where until now the three face
+  // slices were the ones without it. The KIND changes with the pin, and the shared row is
+  // rebuilt exactly then.
+  //
+  // With no faces run there is nothing to gather and no ticks to gather it from, so the
+  // row goes away entirely: that emptiness is a sentence the panel already prints
+  // (`no_faces_run`), not a refusal to be explained beside a dead button.
   function renderFaceAlbumControls() {
-    var box = document.getElementById("face-album");
-    box.textContent = "";
-    if (faceReason === "no_faces_run") return;   // nothing to gather, and no button for it
-    var modeSelect = albumModeSelect();
-    box.appendChild(modeSelect);
-    var destInput = appendAlbumDestControls(box);
-    var albumBtn = makeBtn("primary", "folder", I18N.album_button,
-                           "btn-sm album-gather-btn");
-    albumBtn.disabled = uiBusy();   // F145: gathering an album moves files on disk
-    var albumStatus = document.createElement("span");
-    albumStatus.className = "album-status";
-    var kind = faceSlice;
-    albumBtn.addEventListener("click", function () {
-      gatherAlbum(kind, "", modeSelect.value, null, null,
-          destInput.value.trim() || null, albumStatus);
+    renderSliceAlbumControls({
+      box: "face-album",
+      kind: faceReason === "no_faces_run" ? null : faceSlice,
+      selection: faceSelection,
     });
-    box.appendChild(albumBtn);
-    box.appendChild(albumStatus);
-    appendAlbumBusyHint(box);
   }
 
   function loadFaceSlice() {
+    // The ticks belong to the slice that was open, not to the pin next to it: switching
+    // pins is switching lists, and a selection that survived the switch would gather
+    // frames the reader can no longer see.
+    faceSelection.clear();
     return facePager.load().then(function () { renderFaceAlbumControls(); });
   }
 
@@ -4981,10 +5345,12 @@
   // window, it is the depth of the first page of a ranking, and the button below says so.
   var reviewBeyond = false;
   var reviewWindowTotal = 0;
-  var reviewSelected = {};
+  // F193: the shared selection, so the album row of this workspace gathers what was
+  // ticked here — the same offer the slices of the other tab make.
+  var reviewSelection = makeSelection("review-grid");
 
   function reviewSelectedIds() {
-    return Object.keys(reviewSelected).map(Number);
+    return reviewSelection.ids();
   }
 
   // F149: true while the model is working on a frame. It is about a second per frame and
@@ -5084,21 +5450,8 @@
                         reviewResolutionLabel(item), actionLabel(item.action)]
         .filter(Boolean).join(" \u00b7 ");
     card.appendChild(meta);
-    var label = document.createElement("label");
-    label.className = "review-card-select";
-    var box = document.createElement("input");
-    box.type = "checkbox";
-    box.className = "review-select";
-    box.value = String(item.file_id);
-    box.checked = !!reviewSelected[item.file_id];
-    box.addEventListener("change", function () {
-      if (box.checked) reviewSelected[item.file_id] = true;
-      else delete reviewSelected[item.file_id];
-      refreshReviewControls();
-    });
-    label.appendChild(box);
-    label.appendChild(document.createTextNode(" " + I18N.review_select_label));
-    card.appendChild(label);
+    card.appendChild(reviewSelection.tick(item.file_id, " " + I18N.review_select_label,
+                                          "review-card-select"));
     return card;
   }
 
@@ -5167,7 +5520,9 @@
         // F139: the flat slices are gathered into a folder like people and events are;
         // the duplicates are not (`album_kind` is null there), and the marking row above
         // stays exactly where it was — gathering and deleting are two movements.
-        renderSliceAlbumControls("review-album", data.album_kind);
+        renderSliceAlbumControls({ box: "review-album", kind: data.album_kind,
+                                   blocked: data.album_blocked,
+                                   selection: reviewSelection });
         if (!flat) return;
         document.getElementById("review-hint").textContent = reviewHintText(data);
         renderReviewPage(data, append);
@@ -5183,9 +5538,8 @@
     if (REVIEW_SLICES.indexOf(slice) < 0) return;
     reviewSlice = slice;
     reviewBeyond = false;
-    reviewSelected = {};
+    reviewSelection.clear();
     reviewRestoredItems = [];   // F149: the comparison belongs to the slice it was made in
-    refreshReviewControls();
     document.getElementById("review-status").textContent = "";
     REVIEW_SLICES.forEach(function (name) {
       document.getElementById("review-slice-" + name)
@@ -5217,8 +5571,7 @@
               item.action = action === "clear" ? null : action;
             }
           });
-          reviewSelected = {};
-          refreshReviewControls();
+          reviewSelection.clear();
           fetchReview(0, false);
         } else {
           status.textContent = I18N.review_error_prefix + ((resp && resp.error) || "");
@@ -5327,19 +5680,12 @@
     applyReviewMark("clear");
   });
   document.getElementById("review-select-all-btn").addEventListener("click", function () {
-    document.querySelectorAll("#review-grid .review-select").forEach(function (box) {
-      box.checked = true;
-      reviewSelected[parseInt(box.value, 10)] = true;
-    });
-    refreshReviewControls();
+    reviewSelection.selectShown();
   });
   document.getElementById("review-select-none-btn").addEventListener("click", function () {
-    document.querySelectorAll("#review-grid .review-select").forEach(function (box) {
-      box.checked = false;
-    });
-    reviewSelected = {};
-    refreshReviewControls();
+    reviewSelection.clear();
   });
+  reviewSelection.onChange("review-controls", refreshReviewControls);
   refreshReviewControls();
 
   // --- the duplicates slice (U3/F32), unchanged inside the new workspace ---

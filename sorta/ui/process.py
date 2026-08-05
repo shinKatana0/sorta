@@ -218,6 +218,11 @@ class _ProcessState:
         self.done = 0
         self.total = 0
         self.error: str | None = None
+        # F191: WHICH stage the error belongs to. `stage` cannot answer that on its
+        # own — a run that dies while rebuilding the plan cache is still standing on
+        # the last stage that succeeded — and the collapsed stage row has to name the
+        # failure without being opened.
+        self.error_stage: str | None = None
         self.finished = False
         self.source_dir: str | None = None
         self.phase: str | None = None
@@ -293,11 +298,12 @@ class _ProcessState:
         with self._lock:
             return self._cancel_requested
 
-    def finish(self, error: str | None) -> None:
+    def finish(self, error: str | None, error_stage: str | None = None) -> None:
         with self._lock:
             self.running = False
             self.finished = True
             self.error = error
+            self.error_stage = error_stage
             self.phase = None  # a finished run is not in any phase (F84)
             self._phase_started = 0.0
 
@@ -311,6 +317,9 @@ class _ProcessState:
                 "done": self.done,
                 "total": self.total,
                 "error": self.error,
+                # F191: the stage the error came from, so the collapsed stage row can
+                # say which one fell over. None when the run failed outside a stage.
+                "error_stage": self.error_stage,
                 "finished": self.finished,
                 "cancel_requested": self._cancel_requested,
                 # F135: also what puts the source of the last run back into an empty
@@ -1058,6 +1067,7 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     opts = options or _RunOptions()
     conn = _connect(db_path)
     error: str | None = None
+    error_stage: str | None = None
     try:
         run_cfg = _run_cfg(cfg, source_dir, opts)
         enabled_optional = {"faces": opts.faces, "events": opts.events}
@@ -1093,6 +1103,7 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                 break
             except Exception as exc:  # noqa: BLE001 — report via status, do not crash the thread
                 error = str(exc)
+                error_stage = name  # F191: named in the collapsed row, not behind a click
                 _log.exception("sorta ui: этап пайплайна %r упал", name)
                 completed = False
                 break
@@ -1103,4 +1114,4 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                 error = f"план не обновлён: {exc}"
     finally:
         conn.close()
-        state.finish(error)
+        state.finish(error, error_stage)

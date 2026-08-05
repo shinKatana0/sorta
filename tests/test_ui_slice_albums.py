@@ -204,10 +204,12 @@ class TestSensitiveClassesAreRefusedByTheServer(SliceAlbumTestBase):
         self.assertIsNone(self.junk("?bucket=document")["album_kind"])
 
     def test_the_document_kind_is_refused_by_the_route(self):
+        # F193: 403 with a reason rather than the 400 "invalid body" a name outside
+        # `ALBUM_KINDS` used to earn — the refusal is about documents and now says so.
         self.add_classified("passport.jpg", "document")
         self.start_server()
         status, body = self.album("document")
-        self.assertEqual(status, 400)
+        self.assertEqual(status, 403)
         self.assertIn("error", body)
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) FROM move_batches").fetchone()[0], 0)
@@ -228,13 +230,16 @@ class TestSensitiveClassesAreRefusedByTheServer(SliceAlbumTestBase):
         """Emptying `vlm.exclude_classes` lifts the preview rule (F133) — it does not
         make documents gatherable. `document` is not an album kind at all: the class is
         passports, medical forms and bank papers, and the config decides what is SHOWN,
-        never that a folder of them may be assembled in one click."""
+        never that a folder of them may be assembled in one click.
+
+        F193 kept that decision and made it audible — the bucket now carries the reason
+        (`album_blocked`) instead of a silence, and the route answers 403 with it."""
         self.add_classified("passport.jpg", "document")
         self.cfg.vlm = dataclasses.replace(self.cfg.vlm, exclude_classes=())
         self.start_server()
         self.assertIsNone(self.junk("?bucket=document")["album_kind"])
         status, _body = self.album("document")
-        self.assertEqual(status, 400)
+        self.assertEqual(status, 403)
 
     def test_a_class_that_left_the_key_gets_its_album_back(self):
         self.add_classified("chair.jpg", "product")
@@ -285,19 +290,23 @@ class TestSliceAlbumMarkup(SliceAlbumTestBase):
         self.assertIn('id="review-album" class="album-controls"', self.html)
 
     def test_the_rows_are_drawn_from_the_kind_the_server_sent(self):
-        self.assertIn('renderSliceAlbumControls("junk-album", data.album_kind)',
-                      self.html)
-        self.assertIn('renderSliceAlbumControls("review-album", data.album_kind)',
-                      self.html)
+        # F193: and from the REASON there is no kind — the pair is the offer, and a
+        # bucket with no album draws the sentence where the button was.
+        self.assertIn('box: "junk-album", kind: data.album_kind', self.html)
+        self.assertIn('blocked: data.album_blocked', self.html)
+        self.assertIn('box: "review-album", kind: data.album_kind', self.html)
 
     def test_the_gather_row_carries_the_same_controls_as_the_others(self):
-        row = self.html.split("function renderSliceAlbumControls", 1)[1][:1600]
+        # F193: the row itself moved into `renderAlbumRow`, which every slice of the app
+        # now builds through — `renderSliceAlbumControls` is the memoizing wrapper.
+        row = self.html.split("function renderAlbumRow", 1)[1].split(
+            "function renderSliceAlbumControls", 1)[0]
         self.assertIn("albumModeSelect()", row)          # link / copy / move
         self.assertIn("appendAlbumDestControls(box)", row)
         self.assertIn("I18N.album_name_placeholder", row)  # name the folder
         self.assertIn("album-gather-btn", row)
         self.assertIn("appendAlbumBusyHint(box)", row)
-        self.assertIn("gatherAlbum(kind", row)
+        self.assertIn("gatherAlbum(opts.kind", row)
 
     def test_gathering_stays_out_of_the_destructive_rows(self):
         # Requirement 4: "to trash" and "back to photos" keep their own block, and the

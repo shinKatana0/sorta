@@ -220,10 +220,12 @@ class TestEmptyPlan(SummaryTestBase):
         html = body.decode("utf-8")
         self.assertRegex(html, r'<button[^>]*id="sort-apply-btn"[^>]*disabled')
         self.assertIn('id="sort-empty-hint"', html)
-        self.assertIn("cityPlanLoaded && cityPlanCount === 0", html)
-        self.assertIn("applyBtn.disabled = busy || cityPlanCount === 0", html)
+        # F192: the two variables lost their `city` prefix when the tab stopped being
+        # about cities alone — the claim is the same one, about the plan on screen.
+        self.assertIn("planLoaded && planCount === 0", html)
+        self.assertIn("applyBtn.disabled = busy || planCount === 0", html)
         # and the click never opens the dialog for an empty plan
-        self.assertIn("if (!cityPlanCount) return;", html)
+        self.assertIn("if (!planCount) return;", html)
 
 
 class TestTheActionRowIsAboutStarting(SummaryTestBase):
@@ -231,15 +233,24 @@ class TestTheActionRowIsAboutStarting(SummaryTestBase):
         super().setUp()
         self.html = ui._render_index_html("en")
 
-    def _sort_controls(self) -> str:
-        return self.html.split('class="sort-controls"', 1)[1].split("</div>", 1)[0]
+    def _desk(self) -> str:
+        """F192: the row of F104 became the desk — the two fields above the fold."""
+        return self.html.split('id="layout-desk"', 1)[1].split('class="layout-run"', 1)[0]
 
-    def test_the_row_keeps_only_destination_mode_and_start(self):
-        row = self._sort_controls()
-        for control in ("sort-dest", "sort-browse-btn", "sort-mode", "sort-apply-btn"):
-            self.assertIn(control, row)
-        for gone in ("folder-lang-select", "sort-undo-btn", "city-delete-selected-btn"):
-            self.assertNotIn(gone, row)
+    def test_the_desk_keeps_the_destination_and_the_criterion(self):
+        desk = self._desk()
+        for control in ("sort-dest", "sort-browse-btn", "layout-by"):
+            self.assertIn(control, desk)
+        # F192: move-or-copy left the desk for the gear — it is answered once and then
+        # not touched again, which is the whole rule this feature applies.
+        for gone in ("sort-mode", "folder-lang-select", "sort-undo-btn",
+                     "city-delete-selected-btn"):
+            self.assertNotIn(gone, desk)
+
+    def test_starting_a_layout_is_next_to_the_desk_and_not_on_it(self):
+        run = self.html.split('class="layout-run"', 1)[1].split('id="sort-progress"', 1)[0]
+        self.assertIn("sort-apply-btn", run)
+        self.assertIn("layout-options-btn", run)
 
     def test_roll_back_is_not_on_this_tab_at_all(self):
         """It lives on "Moves", next to the manifest that says WHAT is rolled back.

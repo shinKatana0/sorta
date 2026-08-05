@@ -177,7 +177,9 @@ class TestAnimalsTabHtml(AnimalsTestBase):
         self.assertIn('id="animals-more-btn"', html)
         self.assertIn('id="animals-album"', html)
         self.assertIn('"/api/animals?offset="', html)
-        self.assertIn('gatherAlbum("animal", ""', html)
+        # F193: the album row is the shared one — the tab hands it the kind and its own
+        # selection, and the row provides the mode, the folder name and the button.
+        self.assertIn('box: "animals-album", kind: "animal"', html)
         self.assertNotIn("http://", html)
         self.assertNotIn("https://", html)
         self.assertNotIn("<link", html)

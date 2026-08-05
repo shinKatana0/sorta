@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Every slice behaves the same: pick some frames, name the folder, gather it** (F193).
+  Three complaints of 2026-08-04 were one defect — the slices answered "what can I do with
+  you" differently. An album was **all of a slice or nothing**; the folder could be **named**
+  in memes and screenshots and nowhere else, so "With people", "Group" and "Portraits" were
+  the odd ones out; and the **documents** bucket answered by saying nothing at all — no
+  button, no sentence, no refusal. Fixed one at a time that question would have been
+  answered three times, differently, and the fourth divergence would have arrived with the
+  next slice. So there is now **one album row and one selection**, built in one place and
+  used by every slice of the tab — the search line, a pinned query, the three face slices,
+  the animals, every class bucket and the «Просмотр» workspace — the way `makePager`
+  already gives them all the "show more" button. A slice added tomorrow gets the tick, the
+  folder-name field, the destination and the button by calling it, and a slice that does
+  not call it has no row at all. The tick on the cards feeds the album row above them:
+  ticking the first frame turns the scope to **"only the selected"** by itself and
+  unticking the last turns it back off, so the button never quietly gathers a selection
+  that holds nothing. The ids **narrow** the slice and never widen it — they are ANDed onto
+  the membership rule the slice is built from (`sorter.plan_album`) — so a request made
+  past the interface cannot pull a frame out of a slice it is not in, and no guard a slice
+  carries is something a selection can walk around. An **empty** selection is refused with
+  a reason instead of gathering a folder of zero files, which would read as "this slice is
+  empty" — a statement about somebody's archive that is not true. **Documents** keep the
+  decision they were given: they are not gathered into a folder, and `vlm.exclude_classes`
+  does not change that — the key decides what is SHOWN, never that a folder of somebody's
+  passports, medical forms and bank papers may be assembled in one click. What changed is
+  that the program now **says so**: the bucket carries the album row like every other slice
+  and the refusal comes out of the route with a reason the interface puts into a sentence,
+  because a hidden button forbade nothing and explained nothing. Every bucket now answers
+  one of the two — the kind it gathers as, or the word for why it does not — including a
+  class shipped without an album kind, which used to fall out of the interface in silence.
 - **"Try to improve" on the frame you have opened, in every slice** (F168). The action
   shipped behind one door — the «Размытые» slice — and the measurement of 2026-08-03 found
   that door nearly shut: at its threshold the sharpness filter holds **8%** of the frames a
@@ -52,6 +81,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
+- **The "Layout" tab asks two questions instead of showing thirteen controls** (F192).
+  The tab opened onto a destination field, a move/copy pair, the apply button, expand and
+  collapse, four buttons of manual corrections with a folder list, a place picker, a
+  delete button and the plan tree — a control panel where two things are needed **every
+  single time** and the other eleven are answered once. That is exactly the split F133
+  made on the run screen, and the same remedy applies: the tab now opens onto a desk of
+  two fields — **where** the collection goes, and **by what** it is grouped — with
+  everything else one click away behind a gear that opens in place, above the tree it is
+  used against. **Not one control was removed**: move-or-copy, the corrections, the place
+  picker and the tree buttons are all still there, in a block with headings of their own,
+  and a test pins the inventory as a set so a future tidy-up cannot quietly drop half of
+  it. The second field is new only on the screen: the criterion is `sorter.MODES` — the
+  same **city / person / event** `sorta sort --by` has laid a collection out by since F5,
+  of which the web app could reach only the city one. `POST /api/sort` and
+  `GET /api/sort/summary` now carry `by`; absent, it still means "city", which is what
+  they meant before. **Layout and albums are not mixed here** — every album is gathered
+  from "Review" or "Slices" and none of those boxes is on this tab — but the difference is
+  now written where the choice is made, because "by person" can mean either: a layout
+  moves the originals, an album is links beside them and moves nothing.
 - **The web app is a package cut by tab, not one 14 427-line file** (F182). Nothing a
   person can see changed — this is the entry for a move, and the move is the point. On
   2026-08-03/04 **ten features queued for `ui.py` in a single day**, because two workers

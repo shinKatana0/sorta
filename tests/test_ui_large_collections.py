@@ -428,7 +428,7 @@ class TestPlanTabFrontend(UiServerTestBase):
         # counts the same plan server-side, together with the volume and what already
         # lies in the destination). What the tab still takes from the aggregate is the
         # one number the start button needs — whether there is anything to lay out.
-        self.assertIn("cityPlanCount = (data.total || 0) - (data.excluded || 0)", html)
+        self.assertIn("planCount = (data.total || 0) - (data.excluded || 0)", html)
         # the plan tab no longer feeds a full item list into the generic tree
         # builder (which stays for the Moves tab — one bounded batch).
         self.assertIn("buildTree(data.moves)", html)

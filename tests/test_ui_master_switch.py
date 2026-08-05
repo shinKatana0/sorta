@@ -190,10 +190,17 @@ class TestEverythingThatWritesIsFrozenDuringARun(MarkupCase):
         # gather is chosen by a parameter rather than by which panel is open) — and the
         # gather row of a PINNED query, which is a slice like any other and so offers the
         # same album as the rest of them.
-        self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 7)
+        # Counting one assignment per button broke the moment F193 unified them, and the
+        # thing it guarded got STRONGER: every album button now carries
+        # `album-gather-btn` and is swept by class, so a button added tomorrow is
+        # frozen without anybody remembering to add a line. Assert the sweep and the
+        # class, not how many times a string occurs.
+        self.assertIn('document.querySelectorAll(".album-gather-btn")', self.html)
+        self.assertIn("btn.disabled = busy;", self.html)
+        self.assertGreater(self.html.count("album-gather-btn"), 1)
 
     def test_applying_the_layout_is_dead(self):
-        self.assertIn("applyBtn.disabled = busy || cityPlanCount === 0",
+        self.assertIn("applyBtn.disabled = busy || planCount === 0",
                       self.body("updateBusyControlsDisabled"))
 
     def test_each_group_says_why(self):
@@ -223,12 +230,23 @@ class TestTheOverviewBlockHoldsItsHeight(MarkupCase):
         self.assertIn('if (overviewEmpty) return "\\u2014";', self.body("overviewStat"))
 
     def test_the_four_cards_are_built_either_way(self):
-        """No early return before them any more — that early return WAS the jump."""
+        """No early return before them any more — that early return WAS the jump.
+
+        The four calls used to sit in `renderOverview` and F190 moved them into
+        `overviewGroups`, which is why this asserts through it rather than at it. That
+        is the STRONGER claim, not a weaker one: the skeleton and the loaded state both
+        go through that one builder, so they cannot drift apart by editing one of them.
+        """
         body = self.body("renderOverview")
+        self.assertIn("overviewGroups(data)", body)
+        self.assertNotIn("return;", body)
+        groups = self.body("overviewGroups")
         for card in ("overviewCollectionCard", "overviewPlaceCard",
                      "overviewClassesCard", "overviewLayoutCard"):
-            self.assertIn(card + "(data)", body)
-        self.assertNotIn("return;", body)
+            self.assertIn(card + "(data)", groups)
+        # The loading state builds its cards with the same function and no other.
+        self.assertIn("overviewGroups(overviewSkeletonData())",
+                      self.body("renderOverviewSkeleton"))
 
     def test_the_stub_and_its_button_are_gone(self):
         self.assertNotIn("overview-start-btn", self.html)

@@ -419,6 +419,33 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Stage {stage} ({index}/{total}): {done} processed",
         "ja": "ステージ {stage}（{index}/{total}）: {done} 件処理済み",
     },
+    # F191: the collapsed stage row. Nine chips in a line ran wider than the cards
+    # above them, and the number of stages is not a constant — so what is always on
+    # screen is these captions and a counter, and the per-stage list is behind a
+    # disclosure. None of them may name a stage: `{stage}` is filled from the
+    # `process_stage_*` entries below, whatever the pipeline currently holds.
+    "process_stage_current": {
+        "ru": "идёт: {stage}", "en": "running: {stage}", "ja": "実行中: {stage}",
+    },
+    "process_stage_counter": {
+        "ru": "{index} из {total}", "en": "{index} of {total}",
+        "ja": "{index} / {total}",
+    },
+    # An error is the one thing the disclosure may not hide, so it has a caption of the
+    # same row rather than a chip inside the list.
+    "process_stage_failed": {
+        "ru": "этап не прошёл: {stage}", "en": "stage failed: {stage}",
+        "ja": "ステージ失敗: {stage}",
+    },
+    "process_stages_done": {
+        "ru": "все этапы пройдены", "en": "all stages complete", "ja": "全ステージ完了",
+    },
+    "process_stages_stopped": {
+        "ru": "этапы остановлены", "en": "stages stopped", "ja": "ステージ停止",
+    },
+    "process_stages_toggle": {
+        "ru": "Показать все этапы", "en": "Show all stages", "ja": "全ステージを表示",
+    },
     "process_done": {
         "ru": "Обработка завершена.", "en": "Processing complete.",
         "ja": "処理が完了しました。",
@@ -879,6 +906,65 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "album_in_progress": {
         "ru": "Идёт сбор альбома...", "en": "Gathering album...", "ja": "アルバムを収集中...",
+    },
+    # --- F193: one offer for every slice — pick some frames, name the folder, gather ---
+    # The tick on a card and the line beside the button. "Only the selected" is a state a
+    # person can be in by accident (tick three, untick three), so the count is always on
+    # screen and the refusal below is reachable rather than theoretical.
+    "album_select_label": {
+        "ru": "Выбрать", "en": "Select", "ja": "選択",
+    },
+    "album_selected_only": {
+        "ru": "Только выбранные ({n})", "en": "Selected only ({n})",
+        "ja": "選択したものだけ（{n}）",
+    },
+    # Stands beside the button whenever the scope is OFF — which is both "nothing is
+    # ticked yet" and "the scope was switched off by hand", and the sentence has to be
+    # true of both: it states what the button will gather, not why.
+    "album_selection_hint": {
+        "ru": "В папку пойдёт весь срез.",
+        "en": "The whole slice goes into the folder.",
+        "ja": "スライス全体がフォルダに入ります。",
+    },
+    "album_error_empty_selection": {
+        "ru": "Не выбрано ни одного кадра: отметьте кадры или снимите «только выбранные».",
+        "en": "No frames are selected: tick some frames or clear «selected only».",
+        "ja": "フレームが選択されていません: フレームを選ぶか「選択したものだけ」を外してください。",
+    },
+    # Why a slice cannot be gathered, one sentence per reason the server sends. A refusal
+    # is a sentence and never a missing button: a control the page does not draw forbids
+    # nothing and explains nothing.
+    "album_blocked_documents": {
+        "ru": "Документы в папку не собираются: паспорта, медицинские и банковские "
+              "бланки не складываются в один каталог одним нажатием. "
+              "Каждый файл по-прежнему можно вернуть в фотографии.",
+        "en": "Documents are not gathered into a folder: passports, medical and bank "
+              "forms are not assembled into one directory in a single click. "
+              "Each file can still be returned to the photos.",
+        "ja": "書類はフォルダにまとめられません: パスポートや医療・銀行の書類を"
+              "ワンクリックで一つのディレクトリに集めることはしません。"
+              "各ファイルを写真に戻すことは引き続き可能です。",
+    },
+    "album_blocked_sensitive": {
+        "ru": "Класс указан в vlm.exclude_classes — он не показывается модели "
+              "и не собирается в папку.",
+        "en": "The class is listed in vlm.exclude_classes — it is not shown to the model "
+              "and is not gathered into a folder.",
+        "ja": "このクラスは vlm.exclude_classes に含まれています — モデルに渡されず、"
+              "フォルダにもまとめられません。",
+    },
+    "album_blocked_no_kind": {
+        "ru": "Для этого среза альбом ещё не заведён.",
+        "en": "This slice has no album kind yet.",
+        "ja": "このスライスにはまだアルバムの種類がありません。",
+    },
+    "album_blocked_all_buckets": {
+        "ru": "Выберите один класс: «всё, что не фотографии» — не срез, "
+              "и в такой папке смешались бы разные классы.",
+        "en": "Pick one class: «everything that is not a photograph» is not a "
+              "slice, and such a folder would mix different classes together.",
+        "ja": "クラスを一つ選んでください:「写真でないものすべて」はスライスではなく、"
+              "そのフォルダには異なるクラスが混ざってしまいます。",
     },
     "no_events": {
         "ru": "События не найдены.", "en": "No events found.", "ja": "イベントが見つかりません。",
@@ -2044,6 +2130,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "まだデータがありません。以下は処理後に表示される項目です。"
               "写真フォルダを指定して「処理する」を押してください。",
     },
+    # F190: the caption of the indicator that stands INSIDE the reserved area while the
+    # numbers are on their way. Its own string rather than the shared `loading`: it is
+    # read over a full grid of empty cells, and it has to say that the cells are the ones
+    # being filled — not that the tab is still deciding what to draw.
+    "overview_loading": {
+        "ru": "Загрузка обзора…", "en": "Loading the overview…", "ja": "概要を読み込み中…",
+    },
     "overview_group_collection": {"ru": "Коллекция", "en": "Collection", "ja": "コレクション"},
     "overview_group_place": {"ru": "Место", "en": "Place", "ja": "場所"},
     "overview_group_classes": {"ru": "Разбор", "en": "Classification", "ja": "分類"},
@@ -2589,6 +2682,76 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "layout_review_goto": {
         "ru": "К «Разбору»", "en": "Go to Review", "ja": "「仕分け」へ",
+    },
+    # --- F192: the layout screen is a workplace, not a control panel -------------------
+    # Thirteen controls held the top of the tab and two of them were needed every time.
+    # These are the two, and they are named as questions rather than as fields, because
+    # that is how a person arrives at this tab: where do I put it, and by what.
+    "layout_where_title": {
+        "ru": "Куда раскладывать", "en": "Where to lay it out", "ja": "どこへ振り分けるか",
+    },
+    "layout_by_title": {
+        "ru": "По какому признаку", "en": "By what", "ja": "何を基準に",
+    },
+    # The three values are `sorter.MODES` — the same criteria `sorta sort --by` has laid
+    # a collection out by since F5. Only the city one was reachable from the web app.
+    "layout_by_city": {"ru": "По городам", "en": "By city", "ja": "都市ごと"},
+    "layout_by_person": {"ru": "По людям", "en": "By person", "ja": "人物ごと"},
+    "layout_by_event": {"ru": "По событиям", "en": "By event", "ja": "イベントごと"},
+    "layout_by_hint_city": {
+        "ru": "Страна / город / год — канон коллекции.",
+        "en": "Country / city / year — the canon of the collection.",
+        "ja": "国 / 都市 / 年 — コレクションの正本です。",
+    },
+    "layout_by_hint_person": {
+        "ru": "Имя человека / год; кадры с несколькими лицами — в «общие».",
+        "en": "Person's name / year; frames with several faces go to «shared».",
+        "ja": "人物名 / 年。複数の顔が写るコマは「共有」に入ります。",
+    },
+    "layout_by_hint_event": {
+        "ru": "Год / событие; кадры вне событий — по дате.",
+        "en": "Year / event; frames outside any event go by date.",
+        "ja": "年 / イベント。イベントに属さないコマは日付順になります。",
+    },
+    # The one sentence that keeps the two relationships to the file system apart. The
+    # layout MOVES the originals; an album is a set of links built beside them and is
+    # gathered on another tab. Both can be asked for "by person", which is exactly why
+    # the difference has to be written down where the choice is made.
+    "layout_moves_hint": {
+        "ru": "Раскладка перемещает сами файлы. Альбом — ссылки рядом с каноном, он "
+              "собирается на вкладке «Срезы» и ничего не перемещает.",
+        "en": "A layout moves the files themselves. An album is a set of links beside "
+              "the canon — it is gathered on the Slices tab and moves nothing.",
+        "ja": "振り分けはファイルそのものを移動します。アルバムは正本の隣に作られる"
+              "リンクで、「スライス」タブで作成され、何も移動しません。",
+    },
+    "layout_options_button": {
+        "ru": "Настройки раскладки", "en": "Layout settings", "ja": "振り分けの設定",
+    },
+    "layout_options_title": {
+        "ru": "Настройки раскладки", "en": "Layout settings", "ja": "振り分けの設定",
+    },
+    "layout_transfer_title": {
+        "ru": "Способ переноса", "en": "Transfer mode", "ja": "転送方法",
+    },
+    "layout_transfer_hint": {
+        "ru": "«Переместить» освобождает место и откатывается по журналу; "
+              "«Копировать» оставляет исходное дерево нетронутым.",
+        "en": "«Move» frees the space and is rolled back from the journal; «Copy» "
+              "leaves the source tree untouched.",
+        "ja": "「移動」は容量を空け、履歴から元に戻せます。「コピー」は元のツリーを"
+              "そのまま残します。",
+    },
+    "layout_corrections_title": {
+        "ru": "Ручные правки плана", "en": "Manual corrections to the plan",
+        "ja": "プランの手動修正",
+    },
+    "layout_places_title": {
+        "ru": "Место для группы кадров", "en": "Place for a group of frames",
+        "ja": "コマのグループの場所",
+    },
+    "layout_tree_title": {
+        "ru": "Дерево плана", "en": "The plan tree", "ja": "プランのツリー",
     },
     "settings_open_button": {
         "ru": "Настройки", "en": "Settings", "ja": "設定",

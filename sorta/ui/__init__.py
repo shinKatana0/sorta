@@ -64,11 +64,13 @@ answers survive the reset, with it they go too — the same pair as the CLI
 only the DB contents. PlanCache is invalidated right after the reset, so the next plan
 request rebuilds it (an empty DB -> an empty plan, see PlanCache).
 
-(9) `POST /api/sort` (F43, the "Cities" tab, the "Sort" button) — the real layout of
-the collection: calls `sorter.plan_and_sort(cfg, conn, "city", dest, apply=True,
+(9) `POST /api/sort` (F43, the "Layout" tab, the "Apply" button) — the real layout of
+the collection: calls `sorter.plan_and_sort(cfg, conn, by, dest, apply=True,
 copy=..., progress=...)` on a background thread with its own sqlite connection (the
 `_ProcessState`/`_run_pipeline` pattern, but its own `_SortState` — no stages, one
-operation). The body `{"dest": str|null|"", "mode": "move"|"copy"}`: `dest` empty/null
+operation). The body `{"dest": str|null|"", "mode": "move"|"copy", "by": mode?}`, where
+`by` is the criterion (`sorter.MODES`, F192 — absent means "city", the only one this
+route could apply before): `dest` empty/null
 -> in-place (restructuring the source tree, `dest=None` in `plan_and_sort`, F28);
 `mode` outside {move, copy} -> 400. The `moves`/`move_batches` journal, blake3
 verification and name-conflict resolution — entirely in `plan_and_sort`, ui.py does
@@ -232,11 +234,12 @@ knob is read at the start of a run, so applying one invalidates nothing (the rea
 per knob is above `_SETTINGS_SPEC`); the folder language, which DOES invalidate the plan
 cache, keeps its own route (`POST /api/config/language`, F65).
 
-(18) `GET /api/sort/summary?dest=` (F104) — the numbers the pre-apply dialog states:
+(18) `GET /api/sort/summary?dest=&by=` (F104) — the numbers the pre-apply dialog states:
 files, folders, volume, how much goes into the two review folders, and how much is
 already lying in that destination (with how much of it will be skipped as an identical
 copy — the F97 rule, asked of the same functions the apply uses). All of it is read off
-the SAME built plan the "Cities" tree draws, so the dialog and the tab cannot disagree.
+the SAME built plan the "Layout" tree draws, so the dialog and the tab cannot disagree —
+which is why `by` (F192) is part of the question and not assumed to be "city".
 
 (19) `GET /api/overview` (F108, the "Overview" tab, the first one) — a snapshot of the
 whole collection in four groups: what is in the index, how each frame got its place (and
@@ -577,18 +580,22 @@ from .layout import (
     _validate_place_payload, _validate_settings_payload, _validate_sort_payload,
 )
 from .slices import (
-    _ANIMALS_JOIN, _ANIMAL_MARK_ACTIONS, _FACE_COUNT_SQL, _FACE_FROM, _FACE_LIVE, _JUNK_NO_PREVIEW,
-    _JUNK_ORDER, _LazyTextEncoder, _PIN_DUPLICATE, _PIN_EMPTY, _PIN_LIMIT,
+    _ALBUM_BLOCKED_ALL_BUCKETS, _ALBUM_BLOCKED_DOCUMENTS, _ALBUM_BLOCKED_NO_KIND,
+    _ALBUM_BLOCKED_SENSITIVE, _ALBUM_NO_SELECTION, _ANIMALS_JOIN, _ANIMAL_MARK_ACTIONS,
+    _FACE_COUNT_SQL, _FACE_FROM, _FACE_LIVE, _JUNK_NO_PREVIEW,
+    _JUNK_ORDER, _LazyTextEncoder, _NEVER_ALBUM_CLASSES, _PIN_DUPLICATE, _PIN_EMPTY, _PIN_LIMIT,
     _SEARCH_AVAILABLE_STATES, _SEARCH_COVERED_SQL, _SEARCH_NAMES_SQL, _SEARCH_PARTIAL,
     _SEARCH_PHOTOS_SQL, _SEARCH_READY, _SEARCH_ROWS_SQL, _SLICE_NONE_FOUND, _SLICE_NOT_RUN,
-    _animal_item_to_json, _animals_count_sql, _animals_payload, _animals_population,
-    _animals_select, _apply_animal_mark, _apply_saved_slices, _face_item_to_json,
+    _album_refusal, _animal_item_to_json, _animals_count_sql, _animals_payload,
+    _animals_population, _animals_select, _apply_animal_mark, _apply_saved_slices,
+    _bucket_album, _face_item_to_json,
     _face_slice_count, _face_slice_where, _face_slices_payload, _junk_item_to_json, _junk_payload,
     _parse_face_slice_query, _parse_junk_query, _parse_saved_slice_query, _parse_search_query,
     _person_payload, _pinned_moved, _pinned_with, _pinned_without, _saved_slice_by_name,
     _saved_slices_payload, _search_index_state, _search_item_to_json, _search_items,
     _search_payload, _tabs_visibility_payload, _validate_animal_mark_payload,
     _validate_move_payload, _validate_pin_payload, _validate_slice_name_payload,
+    album_selection, class_album_refusal,
 )
 from .review import (
     RESTORE_ERROR_SENSITIVE, RESTORE_ERROR_VIDEO, _BLURRED_ORDER_WITH_FACE, _DUPES_CACHE_MAX_ITEMS,
@@ -1227,20 +1234,35 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             self._send_json({"ok": True, "cluster_id": root})
 
         def _handle_album(self) -> None:
-            parsed = _validate_album_payload(self._read_json_body())
+            body = self._read_json_body()
+            # F139/F133/F193: a class with no album is refused here rather than in the
+            # markup — a button the page does not draw is not a rule, and a request sent
+            # past the interface would gather the folder all the same. `plan_album`
+            # refuses a sensitive class a second time, for the terminal; this end answers
+            # with a status and a REASON the interface can put into a sentence.
+            #
+            # Asked of the raw body, before the shape of it is validated at all: that is
+            # what lets `document` come back with "documents are never gathered" instead
+            # of the "invalid body" a name outside `ALBUM_KINDS` would otherwise earn —
+            # the whole complaint about that bucket was that the program said nothing.
+            refusal = class_album_refusal(cfg, body.get("kind")
+                                          if isinstance(body, dict) else None)
+            if refusal is not None:
+                self._send_json({"error": "album refused", "reason": refusal},
+                                status=HTTPStatus.FORBIDDEN)
+                return
+            parsed = _validate_album_payload(body)
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
             kind, selector, mode, where, name, apply_, dest_str = parsed
-            # F139/F133: a sensitive class has no album, and the refusal lives here
-            # rather than in the markup — a button the page does not draw is not a rule,
-            # and a request sent past the interface would gather the folder all the same.
-            # `plan_album` refuses it a second time, for the terminal; this end answers
-            # with a status instead of a traceback. The settings panel can change
-            # `vlm.exclude_classes` without a restart, so the key is read per request.
-            if kind in CLASS_ALBUM_KINDS and kind in frozenset(cfg.vlm.exclude_classes):
-                self._send_json({"error": "sensitive class"},
-                                status=HTTPStatus.FORBIDDEN)
+            # F193: the frames a person ticked, for every kind alike. An empty selection
+            # is a refusal with a reason, never an album of nothing — see `album_selection`.
+            file_ids, selection_error = album_selection(body)
+            if selection_error is not None:
+                self._send_json({"error": "invalid selection",
+                                 "reason": selection_error},
+                                status=HTTPStatus.BAD_REQUEST)
                 return
             dest = Path(dest_str) if dest_str else _album_dest(cfg, db_path)
             conn = _connect(db_path)
@@ -1250,7 +1272,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 # CLIP for an album the search line has already ranked.
                 report = plan_album(cfg, conn, kind, selector, dest, mode=mode,
                                     where=where, apply=apply_, album_name=name,
-                                    encoder=query_encoder)
+                                    encoder=query_encoder, file_ids=file_ids)
             except EmbeddingsMissing as exc:
                 # The button is only offered while the index is searchable, so this is a
                 # race (a run emptied the table in between) — and it answers with the
@@ -1597,8 +1619,11 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # comes from the form field, so the "already in the destination" numbers
             # are about the folder the user is actually about to write into.
             dest = (query.get("dest") or [""])[0].strip()
-            payload = cache.summary("city", _summary_dest(cfg, dest or None))
-            if payload is None:  # only an unsupported mode, which "city" is not
+            # F192: `by` is the criterion the tab is showing (`sorter.MODES`); absent —
+            # "city", the only one this route could summarize before.
+            by = (query.get("by") or ["city"])[0].strip() or "city"
+            payload = cache.summary(by, _summary_dest(cfg, dest or None))
+            if payload is None:  # an unsupported criterion
                 self._send_json({"error": "no plan"}, status=HTTPStatus.BAD_REQUEST)
                 return
             self._send_json(payload)
@@ -1608,7 +1633,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             if parsed is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            dest, mode = parsed
+            dest, mode, by = parsed
             # F45: see the comment in _handle_process_start — the same shared
             # busy_lock, the same "other running -> own try_start" order.
             with busy_lock:
@@ -1622,7 +1647,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                     self._send_json({"error": "already running"}, status=HTTPStatus.CONFLICT)
                     return
             thread = threading.Thread(
-                target=_run_sort, args=(db_path, cfg, dest, mode, sort_state, cache),
+                target=_run_sort,
+                args=(db_path, cfg, dest, mode, sort_state, cache, by),
                 daemon=True,
             )
             thread.start()
