@@ -144,6 +144,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
+- **The three passes that ask the model are counted apart** (F205). The run of
+  2026‑08‑05 put three different questions to the model and filed all three under one
+  phase name, `junk_vlm`: the deep tier over **7 951** frames at **1.4 frames/s**
+  (pipelined), the animal check over **2 997** at **0.42**, the screen‑capture rescue over
+  **1 284** at **0.41–0.49**. One name over prices that differ **threefold** — and a phase
+  name is the unit a timing is filed under, so the run screen could price at most one of
+  the three off its own seconds and charged the other two whatever that one cost. The two
+  questions of the back half now report under **`junk_pets_vlm`** and
+  **`junk_rescue_vlm`**, each with its own caption on the progress bar and in the terminal
+  in all three languages, and the estimate reads a rate per pass instead of telling them
+  apart by the stage they happen to run in. **The deep tier keeps `junk_vlm`**: it
+  dominated the shared bucket, so a log written before this split still prices it
+  correctly — and a log that knows nothing of the two new names simply leaves those lines
+  on the shipped default, which the screen has always said out loud. Nothing about the
+  passes themselves moved: same order, same conditions, same questions, same schema. The
+  second and third pass are still asked one frame at a time; putting them on the pipeline
+  is a separate piece of work, and now it has a number to be judged against.
 - **The layout screen copies by default instead of moving** (F200). Everything else about
   a layout is built so a careless first click costs nothing — the plan is a dry run, the
   journal is written before the first file travels, `undo` puts them back, blake3 says the
