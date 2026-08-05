@@ -102,6 +102,11 @@ GENERATE_SECONDS = 0.002
 MAX_PHASE_RATIO = 2.0
 
 
+def frame_names(count: int) -> list[str]:
+    """The names an `AskerRun` of that size holds — known without building one."""
+    return [f"cat_{i}.jpg" for i in range(count)]
+
+
 class SplitAsker:
     """One question over one frame with observable halves — what `_frame_question` returns.
 
@@ -197,7 +202,7 @@ class AskerRun:
         # F145: the master switch the stage actually reads (`vlm_allowed`).
         object.__setattr__(self.cfg.naming, "vlm_enabled", True)
         self.conn = connect(self.cfg.database)
-        self.names = [f"cat_{i}.jpg" for i in range(frames)]
+        self.names = frame_names(frames)
         for name in self.names:
             self.conn.execute(
                 """INSERT INTO files (path, size, mtime, ext, media_type, width, height,
@@ -300,10 +305,8 @@ class TestTheVerdictsDoNotMove(unittest.TestCase):
             ("animal", PET_VLM_REAL))
 
     def test_a_racing_preparation_writes_the_same_rows_as_a_serial_one(self):
-        run = AskerRun(1)
-        self.addCleanup(run.close)
         serial, _stats = self.rows_for(1)
-        parallel, _stats = self.rows_for(WORKERS, reversing_delays(run.names))
+        parallel, _stats = self.rows_for(WORKERS, reversing_delays(frame_names(12)))
         self.assertEqual(serial, parallel)
 
     def test_every_answer_lands_on_its_own_file(self):
