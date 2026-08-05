@@ -43,9 +43,15 @@ _FRONTEND = ("app/app.js", "style.css")
 # tests/test_ui_frontend_files.py, and for a good reason) this one does not move when a
 # caption changes: it is a digest of the code alone, so what it pins is exactly the
 # promise this feature makes and nothing else.
+#
+# It is an anchor, not a freeze: a feature that changes the frontend on purpose moves it
+# and says so here, and the next translation is then measured against the new anchor.
+# Moved by F201 — the place picker asks the server whether it SEARCHED and shows a hint
+# instead of an error while the name is unfinished (`renderPlacePicker`/`assignPlace` in
+# app.js, the `.place-hint` rule in style.css).
 _CODE_BEFORE_TRANSLATION = {
-    "app/app.js": "a2fd2e67155f730dab76335c498856c51bca11213f317a6d31c3662722a6e3f5",
-    "style.css": "cf1e7fb5d55070a1a46adac20a6c767ab415ed0fd443f8f5fdc6c165842692a5",
+    "app/app.js": "9a4d76599b4f49fc3e98cfde03248cf75adbccb228e77e06f481d15d3c128b59",
+    "style.css": "76219c21ddac4dba524db90af0cb4e71347d9717526056521a5da39d50cebcf2",
 }
 
 # A `/` opens a regular expression only where a value cannot already have ended; after an
