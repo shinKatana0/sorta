@@ -1495,10 +1495,19 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Место для исходной папки", "en": "Place for the source folder",
         "ja": "元フォルダの場所",
     },
+    # F201: the picker answers while the name is typed, so an empty list has two
+    # meanings and they must not share one message. "Nothing starts with this" is only
+    # said once the search actually ran; until then the field asks for more letters
+    # instead of blaming the spelling of a word that is simply not finished.
     "place_not_found": {
-        "ru": "Такого места нет в базе — проверьте написание.",
-        "en": "No such place in the bundled data — check the spelling.",
-        "ja": "その場所は同梱データにありません。綴りを確認してください。",
+        "ru": "В базе нет места с таким началом названия.",
+        "en": "The bundled data has no place whose name starts with this.",
+        "ja": "同梱データにこの文字で始まる場所はありません。",
+    },
+    "place_keep_typing": {
+        "ru": "Продолжайте вводить название…",
+        "en": "Keep typing the name…",
+        "ja": "名前を入力し続けてください…",
     },
     "place_alert_choose": {
         "ru": "Сначала выберите место из списка.",

@@ -794,9 +794,9 @@
     return document.documentElement.getAttribute("lang") || "en";
   }
 
-  // The place picker. The server answers with EXACT matches from the local base (the
-  // same city_ids_by_name/country_cc_by_name pair `--where` uses), so the list is short
-  // and unambiguous: cities that share a name are told apart by their region.
+  // The place picker. The server answers from the local base only, and it answers a
+  // PREFIX (F201): the list narrows while the name is typed instead of staying empty
+  // until the last letter. Cities that share a name are told apart by their region.
   function renderPlacePicker(container) {
     var input = document.createElement("input");
     input.type = "text";
@@ -805,11 +805,17 @@
     var select = document.createElement("select");
     select.className = "place-options";
     select.disabled = true;
+    var hintEl = document.createElement("span");
+    hintEl.className = "place-hint";
     var results = [];
     var timer = null;
 
-    function fill(list) {
-      results = list || [];
+    // An empty list is not a mistake by itself, so the answer says whether the server
+    // SEARCHED at all: it did and found nothing — the name is wrong; it did not — the
+    // name is just not long enough yet, and telling the user to check the spelling of
+    // half a word is how the old message lied.
+    function fill(data) {
+      results = (data && data.results) || [];
       select.textContent = "";
       results.forEach(function (r, i) {
         var opt = document.createElement("option");
@@ -818,16 +824,21 @@
         select.appendChild(opt);
       });
       select.disabled = results.length === 0;
+      if (results.length || !input.value.trim()) hintEl.textContent = "";
+      else if (data && data.searched) hintEl.textContent = I18N.place_not_found;
+      else hintEl.textContent = I18N.place_keep_typing;
     }
 
     function search() {
       var q = input.value.trim();
-      if (!q) { fill([]); return; }
+      if (!q) { fill(null); return; }
+      // Short queries are sent too: the threshold belongs to the server, which is what
+      // makes `searched` above worth trusting.
       fetch("/api/places/search?lang=" + encodeURIComponent(uiLang()) +
             "&q=" + encodeURIComponent(q))
         .then(function (r) { return r.json(); })
-        .then(function (data) { fill(data && data.results); })
-        .catch(function () { fill([]); });
+        .then(function (data) { fill(data); })
+        .catch(function () { fill(null); });
     }
 
     input.addEventListener("input", function () {
@@ -836,12 +847,14 @@
     });
     container.appendChild(input);
     container.appendChild(select);
+    container.appendChild(hintEl);
     return {
       chosen: function () {
         if (!results.length) return null;
         return results[parseInt(select.value, 10)] || null;
       },
-      typed: function () { return input.value.trim(); }
+      typed: function () { return input.value.trim(); },
+      hint: function () { return hintEl.textContent; }
     };
   }
 
@@ -879,7 +892,8 @@
   function assignPlace(picker, kind, selector, confirmKey, confirmVals, statusEl, onDone) {
     var chosen = picker.chosen();
     if (!chosen) {
-      statusEl.textContent = picker.typed() ? I18N.place_not_found : "";
+      // Whatever the field is already saying — "no such place" only if the search ran.
+      statusEl.textContent = picker.hint();
       window.alert(I18N.place_alert_choose);
       return;
     }

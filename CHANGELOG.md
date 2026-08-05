@@ -475,6 +475,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **The place picker answers while the name is typed** (F201). The owner, assigning a place
+  to an event on 2026-08-05: «при вводе места комбобокс ничего не открывает, не
+  показывает». The field looked up a FULL name — right for `--where city=`, where the name
+  is typed whole, and wrong for a combobox: «Моск» found 0, «Москв» found 0, «Москва» found
+  1, and on the way «Мо» found a town in Norway, so for a whole word the only thing on
+  screen was «такого места нет в базе — проверьте написание», sending the person to correct
+  a word that was never misspelled. The search now matches the **beginning of a word** —
+  the start of the name or any word inside a composite one, so «Новг» finds Нижний
+  Новгород and a query may cross the space or hyphen it was split on («Нижний Новг»,
+  «Ростов-на-До»). A start, not a substring: matching anywhere would answer «Рим» with
+  every «Дурим» in a base of 150 000 settlements. The answer is **ordered** — the exact
+  name first, then by population, then alphabetically — and **cut to twelve lines**, with
+  the country still on top (a wrong country is visible in the plan at a glance, a wrong
+  city is not) and never more than four of them, so the countries cannot crowd the cities
+  out. Two letters is the floor for searching at all: one letter is not a request, and a
+  name can be «Мо» or «東京». The empty list finally says **which** empty it is — the
+  server reports whether it searched, so the field asks for more letters while the name is
+  unfinished and only says "no such place" about something it actually looked for. Cost,
+  measured on the bundled base (63 034 cities): a linear pass over all three languages was
+  10–36 ms per keystroke, so the words are indexed once per language and bisected — a
+  whole answer is 0.2–2.5 ms for six letters and 0.3–10 ms for three. No new dependency, no
+  network, and nothing written: the picker reads the bundled base and only the bundled base.
 - **"Try to improve" on a big frame refuses instead of working for nothing** (F198). The
   owner pressed it on a **4320 px** frame on 2026-08-05: the copy was made, and *then* the
   warning arrived — "the frame is larger than the limit (1024 px, this one is 4320), the
