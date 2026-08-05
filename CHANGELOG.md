@@ -124,6 +124,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
+- **The layout screen copies by default instead of moving** (F200). Everything else about
+  a layout is built so a careless first click costs nothing — the plan is a dry run, the
+  journal is written before the first file travels, `undo` puts them back, blake3 says the
+  copy is the original and nothing is ever overwritten. "Move" preselected was the one
+  place left where the first click is irreversible in substance: `undo` returns the files,
+  but only while the journal is intact and nobody has tidied the tree by hand. A collection
+  laid out by copying can always have its originals deleted afterwards; one laid out by
+  moving has to be reconstructed from a log. **`move` is not removed** — it is one click
+  away, in the same pair, under the same heading. A body of `POST /api/sort` that omits
+  `mode` now means "copy" instead of being a 400: the screen and the parser answer one
+  question, and two defaults in two places would be free to drift apart. **The terminal is
+  untouched** — `sorta sort` still moves by default and still writes nothing without
+  `--apply`; that is a separate entry point with a decision of its own.
 - **The "Layout" tab asks two questions instead of showing thirteen controls** (F192).
   The tab opened onto a destination field, a move/copy pair, the apply button, expand and
   collapse, four buttons of manual corrections with a folder list, a place picker, a
