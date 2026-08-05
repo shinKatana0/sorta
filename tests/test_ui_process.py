@@ -49,7 +49,10 @@ class ProcessTestBase(UiServerTestBase):
         self.calls: list[str] = []
 
     def _patch(self, name: str, func) -> None:
-        patcher = mock.patch.object(ui, name, func)
+        # F182: the stages are called from `sorta.ui.process`, so that is where a stub
+        # has to be put — patching the re-export on `sorta.ui` would leave the pipeline
+        # calling the real one.
+        patcher = mock.patch.object(ui.process, name, func)
         patcher.start()
         self.addCleanup(patcher.stop)
 

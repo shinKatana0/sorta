@@ -226,7 +226,7 @@ class SortBlockingTestBase(SortTestBase):
                 in_place=dest is None,
             )
 
-        patcher = mock.patch.object(ui, "plan_and_sort", fake_plan_and_sort)
+        patcher = mock.patch.object(ui.layout, "plan_and_sort", fake_plan_and_sort)
         patcher.start()
         self.addCleanup(patcher.stop)
         return calls
@@ -322,7 +322,7 @@ class TestSortBlockedDuringProcess(SortTestBase):
             ("classify_junk", fake_noop),
             ("compute_phashes", fake_phash),
         ):
-            patcher = mock.patch.object(ui, name, fn)
+            patcher = mock.patch.object(ui.process, name, fn)
             patcher.start()
             self.addCleanup(patcher.stop)
 

@@ -19,6 +19,7 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+
 from .. import imaging
 from ..config import Config
 from ..dedup import assign_duplicates, compute_phashes

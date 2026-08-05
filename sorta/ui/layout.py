@@ -16,12 +16,18 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
 from .. import i18n, imaging
 from ..config import Config
 from ..geodata import GeoDataMissing, GeoResolver
 from ..sorter import (
     ALBUM_KINDS, ALBUM_MODES, SELECTORLESS_ALBUM_KINDS, AlbumReport, PlanItem, plan_and_sort,
 )
+# F104: the pre-apply summary has to say what the apply will DO, so it asks the two
+# functions the apply itself uses rather than re-deriving the rule here — the moment
+# the two answers can differ, the dialog is quoting numbers nobody has to honour.
+# `_fs`: the long-path form a filesystem call needs on Windows; `_is_the_same_file`:
+# "the file already lying at the target is byte-for-byte the one we would put there".
 from ..sorter import _fs, _is_the_same_file
 from .common import (
     _CLUSTER_SAMPLE_LIMIT, _DEFAULT_ALBUM_DIRNAME, _EVENT_SAMPLE_LIMIT, _SUPPORTED_MODES,

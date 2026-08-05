@@ -18,7 +18,7 @@ class TestApiPhotoTrash(DupesTestBase):
         )
         self.conn.commit()
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as mock_trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post("/api/photo/trash", {"file_id": fid})
         self.assertEqual(status, 200)
         mock_trash.assert_called_once_with(path)
@@ -32,7 +32,7 @@ class TestApiPhotoTrash(DupesTestBase):
 
     def test_unknown_file_id_returns_empty_trashed_without_error(self):
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as mock_trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post("/api/photo/trash", {"file_id": 999999})
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"trashed": []})
@@ -60,7 +60,7 @@ class TestApiPhotoTrash(DupesTestBase):
         # path-security: the client cannot slip a path in place of file_id — a body
         # without a valid file_id is always 400, send2trash is never called.
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as mock_trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post(
                 "/api/photo/trash", {"path": "../../../etc/passwd"})
         self.assertEqual(status, 400)
@@ -81,7 +81,7 @@ class TestApiPhotosTrash(DupesTestBase):
         a = self.add_dupe("a.jpg", phash="0" * 16, width=100, height=100, size=1000)
         b = self.add_dupe("b.jpg", phash="1" * 16, width=100, height=100, size=1000)
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as mock_trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post("/api/photos/trash", {"file_ids": [a, b]})
         self.assertEqual(status, 200)
         self.assertEqual(mock_trash.call_count, 2)
@@ -92,7 +92,7 @@ class TestApiPhotosTrash(DupesTestBase):
     def test_bulk_ignores_unknown_ids(self):
         a = self.add_dupe("a.jpg", phash="0" * 16, width=100, height=100, size=1000)
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash"):
+        with mock.patch("sorta.ui.common.send_to_trash"):
             status, payload = self.post("/api/photos/trash", {"file_ids": [a, 999999]})
         self.assertEqual(status, 200)
         self.assertEqual([t["file_id"] for t in payload["trashed"]], [a])
@@ -110,7 +110,7 @@ class TestApiPhotosTrash(DupesTestBase):
 
     def test_non_int_member_returns_400(self):
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as mock_trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, _payload = self.post("/api/photos/trash", {"file_ids": [1, "2"]})
         self.assertEqual(status, 400)
         mock_trash.assert_not_called()

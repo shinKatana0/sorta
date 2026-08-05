@@ -394,7 +394,7 @@ class TestACaptionNeverBreaksThePage(DestinationTestBase):
         than a grid without the folder name."""
         file_id, _p, _c = self.add_photo_file("a.jpg", country="ru", city="Moscow")
         rows = self.conn.execute("SELECT id FROM files").fetchall()
-        with mock.patch.object(ui, "destinations",
+        with mock.patch.object(ui.common, "destinations",
                                side_effect=ValueError("no geo base")):
             self.assertEqual(ui._destinations_for(self.cfg, self.conn, rows), {})
         self.assertEqual(

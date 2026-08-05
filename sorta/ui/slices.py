@@ -13,6 +13,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
+
 from .. import imaging
 from ..config import Config, SavedSlice
 from ..detect import detector_settings

@@ -196,7 +196,7 @@ class TestApiDupesTrash(DupesTestBase):
         path2 = self.conn.execute(
             "SELECT path FROM files WHERE id = ?", (fid2,)).fetchone()["path"]
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as mock_trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post(
                 "/api/dupes/trash", {"group": [fid1, fid2], "keep_file_id": fid1})
         self.assertEqual(status, 200)
@@ -214,7 +214,7 @@ class TestApiDupesTrash(DupesTestBase):
         fid2 = self.add_dupe("b.jpg", phash="0" * 16, width=100, height=100, size=1000)
         self.start_server()
         self.post("/api/dupes/choice", {"group": [fid1, fid2], "keep_file_id": fid1})
-        with mock.patch("sorta.ui.send_to_trash"):
+        with mock.patch("sorta.ui.common.send_to_trash"):
             self.post("/api/dupes/trash", {"group": [fid1, fid2], "keep_file_id": fid1})
         rows = {r["file_id"]: r["action"] for r in
                 self.conn.execute("SELECT file_id, action FROM dedup_choice").fetchall()}
@@ -224,7 +224,7 @@ class TestApiDupesTrash(DupesTestBase):
         fid1 = self.add_dupe("a.jpg", phash="0" * 16, width=4000, height=3000, size=2_000_000)
         fid2 = self.add_dupe("b.jpg", phash="0" * 16, width=100, height=100, size=1000)
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as mock_trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             self.post("/api/dupes/trash", {"group": [fid1, fid2], "keep_file_id": fid1})
         mock_trash.assert_called_once()
         row = self.conn.execute("SELECT id FROM files WHERE id = ?", (fid1,)).fetchone()

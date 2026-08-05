@@ -24,7 +24,7 @@ class TestBrowseDialogGuard(unittest.TestCase):
             time.sleep(0.3)  # the window is being built — this is the vulnerable gap
             return "C:/chosen"
 
-        with unittest.mock.patch.object(ui, "_run_browse_dialog", slow_dialog):
+        with unittest.mock.patch.object(ui.process, "_run_browse_dialog", slow_dialog):
             results: list[str] = []
             first = threading.Thread(target=lambda: results.append(ui._browse_for_folder()))
             first.start()
@@ -38,7 +38,7 @@ class TestBrowseDialogGuard(unittest.TestCase):
         self.assertIn("", results)  # the refused call answers like a cancel
 
     def test_lock_is_released_for_the_next_click(self):
-        with unittest.mock.patch.object(ui, "_run_browse_dialog", lambda: "C:/a"):
+        with unittest.mock.patch.object(ui.process, "_run_browse_dialog", lambda: "C:/a"):
             self.assertEqual(ui._browse_for_folder(), "C:/a")
             self.assertEqual(ui._browse_for_folder(), "C:/a")
 
@@ -46,11 +46,11 @@ class TestBrowseDialogGuard(unittest.TestCase):
         def boom():
             raise RuntimeError("no display")
 
-        with unittest.mock.patch.object(ui, "_run_browse_dialog", boom):
+        with unittest.mock.patch.object(ui.process, "_run_browse_dialog", boom):
             with self.assertRaises(RuntimeError):
                 ui._browse_for_folder()
         # a failure must not wedge the button forever
-        with unittest.mock.patch.object(ui, "_run_browse_dialog", lambda: "C:/b"):
+        with unittest.mock.patch.object(ui.process, "_run_browse_dialog", lambda: "C:/b"):
             self.assertEqual(ui._browse_for_folder(), "C:/b")
 
 

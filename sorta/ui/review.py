@@ -12,9 +12,13 @@ import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+
 from .. import imaging, restore
 from ..config import FeaturesConfig
 from ..dedup import KEEPER_SOURCE_SHARPNESS, group_key, near_duplicate_groups, read_group_keepers
+# `_has_column`: "does this database have that column yet". The indexer reads its own
+# optional columns through it, and the blur list (F157) reads F155's `face_sharpness`
+# through the same one — the two features were merged in either order on purpose.
 from ..indexer import _has_column
 from ..junk import faces_stage_ran
 from ..sorter import quality_slice_from, quality_slice_where

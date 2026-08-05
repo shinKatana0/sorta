@@ -398,6 +398,41 @@ neither the server start nor a `rebuild` blocks for the ~13 s a mode costs on a 
 collection. `GET /api/plan?mode=` answers with a per-target-folder AGGREGATE
 (folder -> count/size, kilobytes); the files of one folder come as an explicit page
 (`&category=&offset=&limit=`), never as the whole 26k-element plan.
+
+F182: where the code lives
+--------------------------
+This was one 14 427-line file, and on 2026-08-03/04 ten features queued for it in a
+single day — two workers inside it is a guaranteed conflict (F152 came back with 18
+divergences across 10 files; F160 with an import that vanished and that neither gate
+caught alone). No other module in the project ever had that problem.
+
+The cut is BY TAB, not by layer. A feature normally lives in one tab — F150 in
+"Review", F156 in "Slices", F159 on the run screen — so two features in two tabs stop
+meeting at all; a cut into routes/queries/markup/script would have left every feature
+touching all four. F133 already rebuilt the interface along this axis and the file was
+already marked with fifteen `# --- F126: the "Review" workspace` seams; this made them
+real.
+
+    common.py    what more than one tab needs — the connection, the paging window,
+                 the image caches, the destination of a frame
+    layout.py    "Layout": the plan, the canon, the places, the albums, the settings
+    slices.py    "Slices": the queries, the pins, the built-in slices, the search line
+    review.py    "Review": duplicates, blur, closed eyes, restoring
+    overview.py  "Overview": the state of the collection in one screen
+    moves.py     "Moves": the manifest of a batch, and the undo
+    process.py   the run screen: the pipeline, the source tree, what a run costs
+    page.py      the template and the `{{key}}` substitution
+    strings.py   the chrome catalog every caption feature edits
+    __init__.py  this docstring, the busy-route table, `_make_handler`, `serve` — and
+                 the re-export of every name above, which is what keeps `sorta.ui` the
+                 one module fifty test files import
+
+    sorta/web/   page.html · style.css · app/app.js — the 42% of the old file that was
+                 markup, styles and browser script inside triple quotes
+
+The dependency direction is a DAG with `common` at the bottom and `__init__` at the
+top; `tests/test_ui_package.py` fails on a cycle, on a tab that `sorta.ui` stops
+re-exporting, and on `common` reaching back into a tab.
 """
 from __future__ import annotations
 

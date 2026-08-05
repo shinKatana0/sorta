@@ -20,7 +20,9 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Callable
+
 from send2trash import send2trash as send_to_trash
+
 from .. import imaging
 from ..config import Config
 from ..sorter import Destination, destinations

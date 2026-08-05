@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+
 from ..config import Config
 from ..junk import faces_stage_ran
 from ..sorter import FACE_SLICES
