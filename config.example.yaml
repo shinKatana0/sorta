@@ -73,17 +73,20 @@ dedup:
   # F186 retired `keeper_vlm` — the comparative question about which frame of a
   # near-duplicate group to keep. Over 111 groups labelled blind the model agreed with the
   # person on 32% of them against 30.4% for picking one at random, so there was nothing to
-  # buy. The Duplicates tab recommends by sharpness, exactly as it did with the key off.
+  # buy. F194 retired the ROLE those answers were being put to: on similar frames the
+  # Duplicates tab now recommends nothing at all, because the same labelling puts every
+  # signal we have at the level of a coin — sharpness (27%) below it. The `group_keeper`
+  # row is still filled by sharpness and still read, as the ORDER the frames are shown in.
   #
   # The two sizes below describe the POPULATION of near-duplicate groups — which of them
-  # get a recommendation at all — and outlived the question they were chosen for.
+  # get a stored row at all — and outlived the question they were chosen for.
   #
   # How many frames of a group are compared (the best N by sharpness); the rest of the
-  # group is not looked at, and the recommendation applies to the whole group.
+  # group is not looked at, and the row applies to the whole group.
   keeper_max_frames: 5
-  # The smallest group worth a recommendation of its own. 2 = every group. 3 leaves pairs
-  # alone: on a PAIR of the same scene sharpness already compares the two frames honestly,
-  # and pairs are the overwhelming majority of groups.
+  # The smallest group worth a row of its own. 2 = every group. 3 leaves pairs alone: on a
+  # PAIR of the same scene sharpness already orders the two frames honestly, and pairs are
+  # the overwhelming majority of groups.
   keeper_min_group_size: 3
 
 geo:

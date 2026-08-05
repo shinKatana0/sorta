@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Three tiers of sameness on the duplicates screen** (F194). One word, "duplicate", was
+  covering three populations whose cost of a mistake differs by orders of magnitude — and
+  the screen applied the same apparatus of "choose the one to keep" to all three. Counted
+  on the live collection 2026‑08‑04: **12 350 byte‑identical files over 7 631 originals**
+  (half the archive), **299 groups** of the same picture stored in different files, and
+  **791 groups** of merely similar frames. Each now has its own default. **Byte copies are
+  collapsed into a line with a number** — the bytes are the same bytes, so "which of these
+  twelve thousand do you want" is a question about nothing; collapsed means off the screen,
+  and **nothing is deleted**, the files stay on disk. **The same picture in several files
+  suggests its largest copy** (★), because resolution and weight are checkable facts rather
+  than taste — the one place a free rule works, and the one place the old screen never
+  applied it. **Similar frames suggest nothing at all**: labelled blind over 111 groups by
+  the owner, no signal we have is distinguishable from choosing at random (sharpness 27%,
+  arithmetic 28%, cascade 28%, the model 32% — random itself 30.4%), and the interface was
+  highlighting *sharpness*, the one that scores below a coin. A highlighted frame reads as
+  an answer, so a person trusting it chose worse than by pointing blindly and never found
+  out. The frames are still **sorted** by sharpness — that is what a ranking honestly is,
+  and the caption now says "sorted by sharpness" instead of naming a best frame.
+- **Keeping several frames of a burst** (F194). A series of five can hold three worth
+  keeping — a portrait with the eyes open, another expression, a wide shot — and "the best
+  one" threw two of them away. The keeper controls are **checkboxes now, not a radio**, and
+  a group nobody ticked in **keeps every frame**, which is the third tier's default said in
+  the only way that cannot go wrong: it writes nothing. `POST /api/dupes/choices` takes
+  `keep_file_ids: [...]` (the single `keep_file_id` still works); an **empty** keep list is
+  refused, because "delete the whole group" is the one sentence that route must not be able
+  to say. `group_keeper` keeps being filled and keeps being read — as the **order** of a
+  group, never as its answer.
 - **Every slice behaves the same: pick some frames, name the folder, gather it** (F193).
   Three complaints of 2026-08-04 were one defect — the slices answered "what can I do with
   you" differently. An album was **all of a slice or nothing**; the folder could be **named**
