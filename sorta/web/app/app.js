@@ -2597,23 +2597,92 @@
     updateVlmSubordinatesDisabled();
   }
 
-  function renderStageChips(data) {
-    var container = document.getElementById("process-stages");
-    container.textContent = "";
-    if (!data.running && !data.finished) return;
+  // F191: the stage row is one line, not one chip per stage. Nine chips ran wider than
+  // the cards above them, and lengthening the cards would only postpone it: the number
+  // of stages is not a constant (F186 took two away in a day), so a width fitted to
+  // today's list comes apart at the next edit of the pipeline. What is always on screen
+  // is three SCALARS out of the status — the stage that is going, its number, how many
+  // there are — drawn into nodes the page already holds. The full list is a click away.
+  //
+  // The state of that click is remembered for the run: somebody who opened the list
+  // wants to watch it, not to re-open it after every 1.5-second status tick.
+  var stagesExpanded = false;
+  // The last status the row was drawn from — the toggle redraws the list between polls.
+  var lastProcessStatus = {};
+
+  function stageStateLabel(data) {
+    // An error is the one thing the disclosure may not hide, so it is what the row
+    // says instead of the stage that was going when it happened.
+    if (data.error) {
+      return fmt(I18N.process_stage_failed,
+                 { stage: processStageLabel(data.error_stage || data.stage) });
+    }
+    if (data.running) {
+      return fmt(I18N.process_stage_current, { stage: processStageLabel(data.stage) });
+    }
+    return data.cancel_requested ? I18N.process_stages_stopped : I18N.process_stages_done;
+  }
+
+  // Writes into nodes page.html already carries and creates none of its own — that is
+  // what keeps the collapsed row the same shape for three stages and for nine.
+  function renderStageSummary(data) {
+    var box = document.getElementById("process-stages");
+    var bar = document.getElementById("process-stages-bar");
+    var total = data.stage_total || currentProcessStages.length;
+    var index = data.stage_index || 0;
+    document.getElementById("process-stages-current").textContent = stageStateLabel(data);
+    document.getElementById("process-stages-count").textContent =
+        fmt(I18N.process_stage_counter, { index: index, total: total });
+    bar.max = total || 1;
+    // A finished run has filled the bar; a failed one stopped BEFORE the stage it names,
+    // and drawing that stage as done would contradict the caption right next to it.
+    bar.value = data.running ? index : (data.error ? Math.max(index - 1, 0) : total);
+    if (data.error) box.classList.add("failed");
+    else box.classList.remove("failed");
+  }
+
+  // The list behind the disclosure — the chips exactly as they were, plus the failed
+  // one, which the row above names as well.
+  function renderStageList(data) {
+    var list = document.getElementById("process-stages-list");
+    list.textContent = "";
+    list.style.display = stagesExpanded ? "" : "none";
+    document.getElementById("process-stages-toggle")
+        .setAttribute("aria-expanded", stagesExpanded ? "true" : "false");
+    document.getElementById("process-stages-caret").textContent =
+        stagesExpanded ? "▴" : "▾";
+    if (!stagesExpanded) return;
     var success = !data.running && data.finished && !data.error;
+    var failed = data.error ? (data.error_stage || data.stage) : null;
     currentProcessStages.forEach(function (name, idx) {
       var stepIndex = idx + 1;
       var cls = "pending";
-      if (success || stepIndex < data.stage_index) cls = "done";
+      if (name === failed) cls = "failed";
+      else if (success || stepIndex < data.stage_index) cls = "done";
       else if (data.running && stepIndex === data.stage_index) cls = "now";
       var chip = document.createElement("span");
       chip.className = "stage-chip " + cls;
       if (cls === "done") chip.appendChild(icon("check"));
       chip.appendChild(document.createTextNode(processStageLabel(name)));
-      container.appendChild(chip);
+      list.appendChild(chip);
     });
   }
+
+  function renderStages(data) {
+    lastProcessStatus = data || {};
+    data = lastProcessStatus;
+    var box = document.getElementById("process-stages");
+    var visible = !!(data.running || data.finished);
+    box.style.display = visible ? "" : "none";
+    if (!visible) return;
+    renderStageSummary(data);
+    renderStageList(data);
+  }
+
+  document.getElementById("process-stages-toggle").addEventListener("click", function () {
+    stagesExpanded = !stagesExpanded;
+    renderStageList(lastProcessStatus);
+  });
 
   // F84: a stage can name the phase it is in (clustering inside "faces"); an empty
   // phase means the stage reports none — then nothing is drawn and the screen looks
@@ -2718,7 +2787,7 @@
     cancelBtn.disabled = !!data.cancel_requested;
     bar.style.display = data.running ? "" : "none";
     if (!data.running) bar.classList.remove("indeterminate");
-    renderStageChips(data);
+    renderStages(data);
     renderProcessPhase(data);
     renderProcessSummary(data);
     if (data.running) {
@@ -3201,6 +3270,7 @@
       statusEl.textContent = clearGeo ? I18N.process_reset_done_geo : I18N.process_reset_done;
       // F135: the summary of the last run counted files of an index that is gone now.
       renderProcessSummary({});
+      renderStages({});  // F191: and the same is true of the row of stages above it
       refreshTabsAfterProcess();
     });
   });

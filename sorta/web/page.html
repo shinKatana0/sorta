@@ -156,7 +156,15 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 </div>
 <progress id="process-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
 <div id="process-phase" class="process-phase" style="display:none"></div>
-<div id="process-stages" class="stage-chips"></div>
+<div id="process-stages" class="stage-summary" style="display:none">
+<button type="button" id="process-stages-toggle" class="stage-summary-head" aria-expanded="false" aria-controls="process-stages-list" title="{{process_stages_toggle}}">
+<span id="process-stages-current" class="stage-summary-current"></span>
+<span id="process-stages-count" class="stage-summary-count"></span>
+<progress id="process-stages-bar" class="stage-summary-bar" max="1" value="0"></progress>
+<span id="process-stages-caret" class="stage-summary-caret" aria-hidden="true">▾</span>
+</button>
+<div id="process-stages-list" class="stage-chips" style="display:none"></div>
+</div>
 <div id="process-status" class="process-status"></div>
 <div id="process-summary" class="process-summary"></div>
 <div id="env-cpu-warning" class="env-warning" style="display:none">⚠ {{env_cpu_warning}}</div>

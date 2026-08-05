@@ -419,6 +419,33 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Stage {stage} ({index}/{total}): {done} processed",
         "ja": "ステージ {stage}（{index}/{total}）: {done} 件処理済み",
     },
+    # F191: the collapsed stage row. Nine chips in a line ran wider than the cards
+    # above them, and the number of stages is not a constant — so what is always on
+    # screen is these captions and a counter, and the per-stage list is behind a
+    # disclosure. None of them may name a stage: `{stage}` is filled from the
+    # `process_stage_*` entries below, whatever the pipeline currently holds.
+    "process_stage_current": {
+        "ru": "идёт: {stage}", "en": "running: {stage}", "ja": "実行中: {stage}",
+    },
+    "process_stage_counter": {
+        "ru": "{index} из {total}", "en": "{index} of {total}",
+        "ja": "{index} / {total}",
+    },
+    # An error is the one thing the disclosure may not hide, so it has a caption of the
+    # same row rather than a chip inside the list.
+    "process_stage_failed": {
+        "ru": "этап не прошёл: {stage}", "en": "stage failed: {stage}",
+        "ja": "ステージ失敗: {stage}",
+    },
+    "process_stages_done": {
+        "ru": "все этапы пройдены", "en": "all stages complete", "ja": "全ステージ完了",
+    },
+    "process_stages_stopped": {
+        "ru": "этапы остановлены", "en": "stages stopped", "ja": "ステージ停止",
+    },
+    "process_stages_toggle": {
+        "ru": "Показать все этапы", "en": "Show all stages", "ja": "全ステージを表示",
+    },
     "process_done": {
         "ru": "Обработка завершена.", "en": "Processing complete.",
         "ja": "処理が完了しました。",
