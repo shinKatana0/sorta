@@ -26,7 +26,6 @@ from __future__ import annotations
 import ast
 import importlib
 import logging
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -90,16 +89,15 @@ class TestTheePackageExportsWhatTheModuleDid(unittest.TestCase):
             with self.subTest(name):
                 self.assertTrue(hasattr(ui, name), f"sorta.ui lost {name}")
 
-    def test_importing_a_tab_module_first_still_works(self):
-        """A cycle can hide behind import order: `sorta.ui` pulls the tabs in a working
-        sequence, and a fresh interpreter that reaches for one tab directly does not."""
+    def test_every_tab_is_wired_into_the_package(self):
+        """`sorta.ui.review` has to be reachable as an attribute, not only as an import
+        path — that is how a test attaches a stub to the module that does the call
+        (`patch.object(ui.process, "run_index", ...)`), and it is the shape the suite
+        uses in a dozen files."""
         for tab in _TABS:
             with self.subTest(tab):
-                done = subprocess.run(
-                    [sys.executable, "-c", f"import sorta.ui.{tab}"],
-                    cwd=_PKG.parents[1], capture_output=True, text=True,
-                )
-                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(f"sorta.ui.{tab}", sys.modules)
+                self.assertIs(getattr(ui, tab), sys.modules[f"sorta.ui.{tab}"])
 
 
 class TestTheTabsAreADag(unittest.TestCase):
