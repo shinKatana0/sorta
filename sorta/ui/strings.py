@@ -2689,10 +2689,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "スライス「{name}」を外しますか？外れるのは固定だけで、ファイルはそのまま"
               "残ります。",
     },
-    # Закреплённые срезы стоят вкладками В СТРОКУ, поэтому направление —
-    # горизонтальное. Подписи говорили «выше/ниже» с самого F156, хотя код рядом
-    # знал правду («where this slice sits in the row»): назвали по тому, как
-    # список устроен в памяти, а не по тому, что видит человек.
+    # Pinned slices sit as tabs in a ROW, so the direction is horizontal. The captions
+    # said "up" and "down" from F156 on, while the code beside them knew better ("where
+    # this slice sits in the row"): they were named after how the list is held in memory,
+    # where an index does go up and down, rather than after what a person is looking at.
     "pin_move_left": {"ru": "Левее", "en": "Move left", "ja": "左へ"},
     "pin_move_right": {"ru": "Правее", "en": "Move right", "ja": "右へ"},
     # The album gathers what a single query ranks (`sorta album query`), and a slice asking
