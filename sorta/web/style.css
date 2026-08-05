@@ -469,6 +469,24 @@ label { cursor: pointer; }
 /* Строки-значения (путь назначения, дата) переносятся, в отличие от чисел. */
 .overview-text { white-space: normal; word-break: break-word; font-weight: 500;
       text-align: right; }
+/* --- F190: the loading skeleton ----------------------------------------- */
+/* The same grid, drawn before the answer arrives, so that nothing below the tab moves
+   when it does. The indicator floats OVER the reserved area (position: absolute — out
+   of flow, no track of its own in the grid, no height of its own), which is why it can
+   disappear without taking a line with it. */
+.overview-skeleton { position: relative; }
+.overview-skeleton > .state-msg { position: absolute; top: 0; left: 50%; z-index: 1;
+      transform: translateX(-50%); border: 1px solid var(--line); }
+/* An empty cell keeps the line box of the text it waits for: the ::before non-breaking
+   space inherits the font-size and line-height of the very element it stands in, which
+   a hand-written min-height would only approximate — and approximating is what makes
+   the page jump. */
+.overview-blank { display: inline-block; min-width: 3.5em; border-radius: 3px;
+      background: var(--chip); }
+.overview-blank::before { content: "\00a0"; }
+.overview-label.overview-blank { min-width: 7em; }
+/* A note is a block: it would otherwise be a grey bar the full width of the card. */
+.overview-note.overview-blank { width: 60%; }
 .process-intro { max-width: 46rem; color: var(--muted); }
 /* F51: вертикальные группы (путь / каждый тумблер+hint / кнопки), а не один
    плоский flex — там .process-toggle-hint с flex-basis:100% уезжал в конец

@@ -16,6 +16,7 @@ the population (duplicates, unreadable files) shows up here rather than in a scr
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from unittest import mock
 
@@ -553,9 +554,157 @@ class TestOverviewMarkup(OverviewTestBase):
         self.assertNotIn("<link", self.html)
 
 
+def _js_function(html: str, name: str) -> str:
+    """The source of one JS function of the page, up to its closing brace.
+
+    The view lives in `sorta/web/app/app.js` and is served inside the page; asserting on
+    the rendered source is how the other UI tests reach it.
+    """
+    start = html.index("function " + name + "(")
+    depth = 0
+    for j in range(html.index("{", start), len(html)):
+        if html[j] == "{":
+            depth += 1
+        elif html[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:j + 1]
+    raise AssertionError(f"the body of {name} does not close")
+
+
+class TestOverviewSkeleton(OverviewTestBase):
+    """F190: the area takes its final size BEFORE the data arrives.
+
+    F145 stopped the tab from changing height between an empty index and a full one; the
+    request itself still changed it. Opening the tab painted a one-line "loading" message
+    and replaced it with four cards — a block of an entirely different height — so
+    everything below, the run options among them, moved down the page under the cursor of
+    somebody who was already aiming at them.
+
+    The fix is structural rather than cosmetic, and so are the tests: the loading state is
+    built by the SAME function from a constant stand-in, which is what makes "the same
+    containers" a property of the code instead of two lists kept in step by hand.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.start_server()
+        _status, body, _ctype = self.get("/")
+        self.html = body.decode("utf-8")
+
+    def test_both_states_are_built_by_the_same_builder(self):
+        """Test 1: the loading markup holds the same containers as the loaded one.
+
+        Not by comparing pictures — by the fact that one function builds both. Neither
+        renderer may assemble a card of its own, or the two would drift apart the day
+        somebody adds a fifth group.
+        """
+        groups = _js_function(self.html, "overviewGroups")
+        for card in ("overviewCollectionCard", "overviewPlaceCard", "overviewClassesCard",
+                     "overviewLayoutCard"):
+            with self.subTest(card=card):
+                self.assertIn(card + "(data)", groups)
+        for renderer in ("renderOverview", "renderOverviewSkeleton"):
+            with self.subTest(renderer=renderer):
+                body = _js_function(self.html, renderer)
+                self.assertIn("overviewGroups(", body)
+                self.assertNotIn("overviewCard(", body)
+                for card in ("overviewCollectionCard", "overviewPlaceCard",
+                             "overviewClassesCard", "overviewLayoutCard"):
+                    self.assertNotIn(card, body)
+
+    def test_the_skeleton_is_the_same_size_whatever_arrives(self):
+        """Test 2: the number of elements does not depend on how much data comes.
+
+        The renderer takes no argument at all, which is the strongest form of that: there
+        is nothing for a count to depend on. The row counts of the lists are constants.
+        """
+        body = _js_function(self.html, "renderOverviewSkeleton")
+        self.assertIn("function renderOverviewSkeleton()", body)
+        self.assertNotIn("data", body.split("{", 1)[1])
+        self.assertIn("overviewSkeletonData()", body)
+        rows = _js_function(self.html, "overviewSkeletonData")
+        for group in ("place", "verdicts", "sources", "tiers"):
+            with self.subTest(group=group):
+                self.assertIn("OVERVIEW_SKELETON_ROWS." + group, rows)
+
+    def test_every_field_a_card_reads_is_in_the_stand_in(self):
+        """The stand-in has to choose the same branches the real payload chooses.
+
+        A field it forgets arrives as `undefined` — a face count would dash, a layout
+        card would collapse to a single line — and the height stops matching. The check
+        is mechanical so that a row added tomorrow cannot quietly skip it.
+        """
+        stand_in = _js_function(self.html, "overviewSkeletonData")
+        for card, var in (("overviewCollectionCard", "c"), ("overviewPlaceCard", "p"),
+                          ("overviewClassesCard", "cl"), ("overviewLayoutCard", "lay")):
+            body = _js_function(self.html, card)
+            for field in sorted(set(re.findall(rf"\b{var}\.([a-z_]+)", body))):
+                with self.subTest(card=card, field=field):
+                    self.assertIn(field + ":", stand_in)
+        # `lay.last` is an object of its own, and the rows are read off it.
+        for field in sorted(set(re.findall(r"\blast\.([a-z_]+)",
+                                           _js_function(self.html, "overviewLayoutCard")))):
+            with self.subTest(field=field):
+                self.assertIn(field + ":", stand_in)
+
+    def test_the_word_loading_stands_inside_the_reserved_area(self):
+        """Test 3: inside the area, not instead of it.
+
+        The indicator is appended to the grid the cards are in — and it is positioned out
+        of flow, so that it can go without taking a line with it. Before, it was the only
+        thing in the tab body while the request was in the air.
+        """
+        body = _js_function(self.html, "renderOverviewSkeleton")
+        self.assertIn('groups.appendChild(stateEl("loading", I18N.overview_loading))', body)
+        self.assertNotIn("body.appendChild(stateEl", body)
+        self.assertIn('groups.setAttribute("aria-busy", "true")', body)
+        load = _js_function(self.html, "loadOverview")
+        self.assertIn("renderOverviewSkeleton()", load)
+        self.assertNotIn('stateEl("loading"', load)
+        self.assertIn(".overview-skeleton > .state-msg { position: absolute;", self.html)
+
+    def test_the_skeleton_invents_nothing(self):
+        """An empty card is an empty card. A plausible number that changes a second later
+        is worse than a dash — it gets read."""
+        self.assertIn('el.textContent = overviewLoading ? "" : text;',
+                      _js_function(self.html, "overviewValue"))
+        for builder in ("overviewCount", "overviewFaceCount"):
+            with self.subTest(builder=builder):
+                self.assertIn('if (overviewLoading) return overviewValue("");',
+                              _js_function(self.html, builder))
+        # The labels the DATA names — a place group, a class, a source, a tier — are
+        # unknown until it arrives, and a tier row would otherwise read "Tier not
+        # recorded" about a collection nobody has looked at yet.
+        for label in ("overviewPlaceLabel(row.key)", "overviewVerdictLabel(row.key)",
+                      "overviewSourceLabel(row.key)", "overviewTierLabel(row.key)"):
+            with self.subTest(label=label):
+                self.assertIn("overviewDataText(" + label + ")", self.html)
+        self.assertIn('return overviewLoading ? "" : text;',
+                      _js_function(self.html, "overviewDataText"))
+
+    def test_a_blank_cell_keeps_the_line_it_is_waiting_for(self):
+        """The reserved size is the size of the text, not a guess at it: the blank takes
+        its line box from a `::before` non-breaking space in its own font."""
+        self.assertIn(".overview-blank {", self.html)
+        self.assertIn('.overview-blank::before { content: "\\00a0"; }', self.html)
+        self.assertIn('" overview-blank"', _js_function(self.html, "overviewValue"))
+        self.assertIn('" overview-blank"', _js_function(self.html, "overviewRow"))
+        self.assertIn('" overview-blank"', _js_function(self.html, "overviewNote"))
+
+    def test_the_indicator_is_not_removed(self):
+        """It is needed: a grid of empty cells with nothing said over it reads as
+        "there is nothing here"."""
+        for lang, expected in (("ru", "Загрузка обзора…"), ("en", "Loading the overview…"),
+                               ("ja", "概要を読み込み中…")):
+            with self.subTest(lang=lang):
+                _status, body, _ctype = self.get(f"/?lang={lang}")
+                self.assertIn(expected, body.decode("utf-8"))
+
+
 class TestOverviewStringsAreTranslated(unittest.TestCase):
     KEYS = (
-        "tab_overview", "overview_empty",
+        "tab_overview", "overview_empty", "overview_loading",
         "overview_group_collection", "overview_group_place", "overview_group_classes",
         "overview_group_layout", "overview_files", "overview_photos", "overview_videos",
         "overview_duplicates", "overview_errors", "overview_events",
