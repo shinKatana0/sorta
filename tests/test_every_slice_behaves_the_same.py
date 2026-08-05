@@ -425,6 +425,11 @@ class TestOneAlbumRowForEverySlicePanel(SliceUniformityTestBase):
             "function renderSliceAlbumControls", 1)[0]
         self.assertIn("albumBlockedText", row)
         self.assertIn("I18N.album_blocked_", self.html)
+        # The refused button is dead for a reason that has nothing to do with a run, so
+        # it stays out of the class the busy sweep re-enables when one ends.
+        self.assertIn("album-refused-btn", row)
+        self.assertIn('document.querySelectorAll(".album-gather-btn")', self.html)
+        self.assertNotIn('querySelectorAll(".album-refused-btn")', self.html)
 
     def test_the_selection_is_one_mechanism_too(self):
         self.assertEqual(self.html.count("function makeSelection("), 1)

@@ -3937,8 +3937,11 @@
       // interface gathers the folder all the same, and the reader is left guessing. So
       // the row stays where it is, the button is visibly out of reach, and the sentence
       // beside it says why — the same reason the route answers the same request with.
+      // NOT `album-gather-btn`: that class is swept by `registerBusyRefresh`, which
+      // re-enables every album button the moment a run ends — and this one is not dead
+      // because something is running, it is dead because the slice has no album.
       var refused = makeBtn("primary", "folder", I18N.album_button,
-                            "btn-sm album-gather-btn");
+                            "btn-sm album-refused-btn");
       refused.disabled = true;
       box.appendChild(refused);
       var why = document.createElement("span");
