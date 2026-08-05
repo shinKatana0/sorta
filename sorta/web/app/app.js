@@ -2507,6 +2507,12 @@
         // config exactly as deep/pets do — the file is where it lives, this screen is
         // where one run overrides it. (F186 retired the other three of that set.)
         document.getElementById("process-pets-verify-checkbox").checked = !!data.pets_verify;
+        // F204: the same rule for the two that had no control at all — the file says what
+        // they are today, the screen decides this one run. Both default to false, so on
+        // an untouched config they open cleared, which is what that config describes.
+        document.getElementById("process-junk-rescue-checkbox").checked = !!data.junk_rescue;
+        document.getElementById("process-landmarks-verify-checkbox").checked =
+            !!data.landmarks_verify;
         vlmAvailable = !!data.vlm_available;
         updateVlmMissingWarning();
         renderCosts();
@@ -2548,7 +2554,12 @@
     { key: "pets_verify", id: "process-pets-verify-checkbox",
       parent: "process-pets-checkbox", vlm: true },
     { key: "deep", id: "process-deep-checkbox", master: true },
-    { key: "products", id: "process-products-checkbox", vlm: true }
+    { key: "products", id: "process-products-checkbox", vlm: true },
+    // F204: two more lines under the same master. Each is one model question per frame
+    // of a band the server counts out of this index, so they are priced exactly like the
+    // rest — a dash where the index has never run them, never a zero.
+    { key: "junk_rescue", id: "process-junk-rescue-checkbox", vlm: true },
+    { key: "landmarks_verify", id: "process-landmarks-verify-checkbox", vlm: true }
   ];
 
   // --- F145: "Deep analysis (VLM)" is the master switch ----------------------
@@ -2569,8 +2580,15 @@
   // F161: the deep junk tier joined that list. It used to BE the master switch's own
   // effect, which is why it was not here — a line nobody could see could not be marked
   // as subordinate to anything.
+  //
+  // F204: and the last two questions the model is asked anywhere in the pipeline joined
+  // it — the screenshot rescue and the landmark check. They were subordinate to this
+  // switch on the server the whole time (`vlm_allowed`), with nothing on screen saying
+  // so, or saying they existed at all.
   var VLM_SUBORDINATE_IDS = ["process-products-checkbox",
-                             "process-pets-verify-checkbox"];
+                             "process-pets-verify-checkbox",
+                             "process-junk-rescue-checkbox",
+                             "process-landmarks-verify-checkbox"];
 
   function vlmMasterOn() {
     return document.getElementById("process-deep-checkbox").checked;
@@ -2695,7 +2713,8 @@
       .addEventListener("change", updateVlmMissingWarning);
   ["process-faces-checkbox", "process-events-checkbox", "process-pets-checkbox",
    "process-pets-verify-checkbox", "process-deep-checkbox",
-   "process-products-checkbox"].forEach(function (id) {
+   "process-products-checkbox", "process-junk-rescue-checkbox",
+   "process-landmarks-verify-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", renderCosts);
   });
   // Draw once before either answer arrives: dashes and the right nested rows, rather
@@ -3049,6 +3068,12 @@
       // F161: sent explicitly like the four above — an unticked box has to force the
       // deep tier OFF for this run, which is the whole point of giving it a line.
       products: document.getElementById("process-products-checkbox").checked,
+      // F204: and the same for the two the file used to decide alone. Both directions
+      // travel: a box cleared here turns off what config.yaml switched on, for this run
+      // and no longer, and the file is not touched either way.
+      junk_rescue: document.getElementById("process-junk-rescue-checkbox").checked,
+      landmarks_verify:
+          document.getElementById("process-landmarks-verify-checkbox").checked,
     }).then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
@@ -3128,7 +3153,9 @@
      ["process-faces-checkbox", I18N.process_faces_label],
      ["process-events-checkbox", I18N.process_events_label],
      ["process-pets-checkbox", I18N.process_pets_label],
-     ["process-pets-verify-checkbox", I18N.process_pets_verify_label]
+     ["process-pets-verify-checkbox", I18N.process_pets_verify_label],
+     ["process-junk-rescue-checkbox", I18N.process_junk_rescue_label],
+     ["process-landmarks-verify-checkbox", I18N.process_landmarks_verify_label]
     ].forEach(function (pair) {
       if (document.getElementById(pair[0]).checked) on.push(pair[1]);
     });
@@ -3392,7 +3419,8 @@
   ["process-deep-checkbox", "process-products-checkbox",
    "process-geo-online-checkbox", "process-faces-checkbox",
    "process-events-checkbox", "process-pets-checkbox",
-   "process-pets-verify-checkbox"].forEach(function (id) {
+   "process-pets-verify-checkbox", "process-junk-rescue-checkbox",
+   "process-landmarks-verify-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", updateStepLayout);
   });
 

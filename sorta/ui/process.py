@@ -29,6 +29,7 @@ from ..geo import geo_cache_size, resolve_places
 from ..indexer import excludes_path, index as run_index, load_excludes
 from ..junk import classify as classify_junk
 from ..junk import CLASSIFY_PHASE_VLM, CLASSIFY_STAGE, VERDICTS_STAGE
+from ..landmarks import _SCAN_KEY as _LANDMARK_SCAN_KEY
 from ..landmarks import Classifier, clip_classifier, detect_landmarks
 from ..naming import name_events, naming_settings
 from ..runlog import (
@@ -591,6 +592,12 @@ def _process_defaults_payload(cfg: Config) -> dict:
     F161: `products` joins them from `vlm.products`, and its default is the reason the
     key exists — a file that never heard of it answers True here, so the screen opens
     showing the run that file has always described.
+
+    F204: and the last two questions the model is asked from anywhere in the pipeline —
+    `features.junk_rescue` and `features.landmarks_verify`. They were on no screen at
+    all: the file decided them, the run spent the hours, and the estimate below was
+    already pricing one of them. An option nobody can see is not a default, it is a
+    thing that happens.
     """
     return {
         "deep": bool(cfg.naming.vlm_enabled),
@@ -598,6 +605,8 @@ def _process_defaults_payload(cfg: Config) -> dict:
         "geo_online": cfg.geo.provider == "online",
         "pets": bool(cfg.features.pets),
         "pets_verify": bool(cfg.features.pets_verify),
+        "junk_rescue": bool(cfg.features.junk_rescue),
+        "landmarks_verify": bool(cfg.features.landmarks_verify),
         "vlm_available": importlib.util.find_spec("transformers") is not None,
     }
 
@@ -794,13 +803,28 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         # WILL happen, so the population follows the config rather than averaging the
         # two. A collection nobody has scored yet says nothing: no `junk_score` at all
         # is a dash, the same answer the pet check gives before its own pass has run.
+        #
+        # F204: the band is counted whether or not the config asks for the rescue, because
+        # it is now a line of the screen and a line has to state its price BEFORE it is
+        # ticked. A collection nobody has scored yet says nothing either way — the score
+        # is written by the rescue itself, so before the first run with it on this index
+        # genuinely cannot tell, and a dash says exactly that.
+        scored = int(conn.execute(
+            "SELECT COUNT(*) FROM frame_quality"
+            " WHERE junk_score IS NOT NULL").fetchone()[0])
+        junk_rescue = None if not scored else int(conn.execute(
+            "SELECT COUNT(*) FROM frame_quality WHERE junk_score >= ?",
+            (float(cfg.features.junk_rescue_threshold),)).fetchone()[0])
         if cfg.features.junk_rescue:
-            scored = int(conn.execute(
-                "SELECT COUNT(*) FROM frame_quality"
-                " WHERE junk_score IS NOT NULL").fetchone()[0])
-            products = None if not scored else int(conn.execute(
-                "SELECT COUNT(*) FROM frame_quality WHERE junk_score >= ?",
-                (float(cfg.features.junk_rescue_threshold),)).fetchone()[0])
+            products = junk_rescue
+        # F204: the landmark check, priced the way `products` is — off what it asked
+        # about last time. `landmark_checks` holds one row per proposal shown to the
+        # model, next to the stage's own scan rows (F136), which are keyed by a reserved
+        # name and are not questions. Nothing asked yet -> a dash: the candidate band of
+        # a run that has never widened its gate is not in this index to be counted.
+        landmarks_verify = _positive_or_none(int(conn.execute(
+            "SELECT COUNT(*) FROM landmark_checks WHERE landmark != ?",
+            (_LANDMARK_SCAN_KEY,)).fetchone()[0]))
         # The pet check is shown the frames CLIP scored above the candidate threshold —
         # a number that exists only once the CLIP pet group has run at all.
         pet_scored = int(conn.execute(
@@ -824,6 +848,10 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         # what this one used to is `products`.
         "deep": _positive_or_none(photos),
         "products": products,
+        # F204: the two questions that had no line. Both are one model call per frame of
+        # a band this index can count, and both are a dash until it can — see above.
+        "junk_rescue": junk_rescue,
+        "landmarks_verify": landmarks_verify,
     }
     per_line: dict[str, _Rate] = {
         "base": rates["base"],
@@ -838,6 +866,11 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         # F165 moved the deep tier ahead of faces, into a stage of its own — so this is
         # the one model line whose rate comes from `classify` rather than from `junk`.
         "products": rates["vlm_verdict"],
+        # F204: one question per candidate, the same shape and the same rate as the
+        # animal check — the rescue asks in the back half of the junk stage, the landmark
+        # check in `landmarks`, and neither is a pass over the collection.
+        "junk_rescue": rates["vlm_frame"],
+        "landmarks_verify": rates["vlm_frame"],
     }
     seconds: dict[str, float | None] = {}
     for name, rate in per_line.items():
@@ -932,6 +965,12 @@ class _RunOptions:
     carries the compatibility promise: `/api/process/rerun-optional` sends `deep` and no
     `products`, so re-running the junk stage with the model does what it did before this
     key existed.
+
+    F204 adds the last two of that shape — `features.junk_rescue` and
+    `features.landmarks_verify`, both settings of a stage rather than stages. Same
+    convention again, and for the rescue the "config decides" half matters as much as the
+    override: a run started from outside the browser must keep the selection the file
+    asks for, because that is what the estimate above has been pricing all along.
     """
     deep: bool = False
     products: bool | None = None
@@ -940,18 +979,22 @@ class _RunOptions:
     events: bool = False
     pets: bool = False
     pets_verify: bool | None = None
+    junk_rescue: bool | None = None
+    landmarks_verify: bool | None = None
 
 
 def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None:
     """Parse `{"source_dir": str, "deep": bool=False, "geo_online": bool=False,
     "faces": bool=False, "events": bool=False, "pets": bool=False,
-    "products": bool?, "pets_verify": bool?}`
+    "products": bool?, "pets_verify": bool?, "junk_rescue": bool?,
+    "landmarks_verify": bool?}`
     (F50/#34: opt-in VLM tier / online geo for THIS run, without editing config.yaml;
     F53/#39: opt-in steps faces/events, the same principle — default False; F123:
     `pets` is an opt-in of the THIRD shape — neither a tier nor a step, but a config
     override on the junk stage, `features.pets`; F138: the same third shape for
     `features.pets_verify`. F186 retired the other three of that set — `vlm.quality`,
-    the scope select and `dedup.keeper_vlm` — with the questions behind them.)
+    the scope select and `dedup.keeper_vlm` — with the questions behind them. F204:
+    `junk_rescue` and `landmarks_verify`, the same shape over `features`.)
     None -> invalid: not dict / `source_dir` not a string or empty after strip / a flag
     given but not bool."""
     if not isinstance(payload, dict):
@@ -965,7 +1008,7 @@ def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None
         if not isinstance(value, bool):
             return None
         flags[key] = value
-    for key in ("products", "pets_verify"):
+    for key in ("products", "pets_verify", "junk_rescue", "landmarks_verify"):
         value = payload.get(key)
         if value is not None and not isinstance(value, bool):
             return None
@@ -1009,6 +1052,14 @@ def _run_cfg(cfg: Config, source_dir: str | None, opts: _RunOptions) -> Config:
     features = dataclasses.replace(cfg.features, pets=opts.pets)
     if opts.pets_verify is not None:
         features = dataclasses.replace(features, pets_verify=opts.pets_verify)
+    # F204: the two that had no interface. Applied here and nowhere else — the thresholds
+    # they select by stay in the file, where they were measured (F140/F131), because what
+    # was missing was the choice to run them at all, not a way to retune them.
+    if opts.junk_rescue is not None:
+        features = dataclasses.replace(features, junk_rescue=opts.junk_rescue)
+    if opts.landmarks_verify is not None:
+        features = dataclasses.replace(features,
+                                       landmarks_verify=opts.landmarks_verify)
     vlm_changed: dict[str, Any] = {}
     if opts.products is not None:
         vlm_changed["products"] = opts.products
@@ -1053,6 +1104,13 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     `vlm.quality`, `vlm.quality_scope`, `dedup.keeper_vlm`), so the list of stages is
     again untouched and only what one of them computes changes. They are what the run
     screen prices: between a quarter of an hour and four hours each.
+
+    `junk_rescue`/`landmarks_verify` (F204) — two more of that third shape, on
+    `features.junk_rescue` and `features.landmarks_verify`. Neither adds a stage: the
+    rescue is a question the back half of `junk` asks about the frames its own score
+    selected, the check is a question `landmarks` asks about a proposal CLIP made. Both
+    are under `deep` like every other model question (F145): a subordinate flag raises
+    no weights by itself, so ticking one with the master clear changes nothing.
 
     `products` (F161) — the fifth of that shape, on `vlm.products`, and the one that took
     an effect away from `deep`: with it off the classify half runs its cheap tiers and
