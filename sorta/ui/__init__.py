@@ -573,7 +573,8 @@ from .layout import (
     _PLACE_KINDS, _PLACE_SEARCH_LIMIT, _SETTINGS_SPEC, _SETTING_SECTIONS, _SettingSpec, _SortState,
     _album_dest, _album_report_to_json, _apply_bulk_place, _apply_overrides, _apply_settings,
     _city_candidates, _clusters_payload, _country_label, _dest_occupancy, _events_payload,
-    _geo_resolver, _geo_resolver_cache, _overrides_map, _place_target_ids, _places_search,
+    _geo_resolver, _geo_resolver_cache, _overrides_map, _place_target_ids,
+    _places_search, _places_search_payload,
     _plan_category, _plan_item_to_json, _run_sort, _settings_payload, _suggested_sort_dest,
     _summary_dest, _validate_album_payload, _validate_cluster_label_payload,
     _validate_cluster_merge_payload, _validate_language_payload, _validate_overrides_payload,
@@ -1045,8 +1046,7 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             # looked up by the name the user knows it under.
             lang = _resolve_query_lang(query.get("lang"))
             raw = (query.get("q") or [""])[0]
-            self._send_json({"query": raw.strip(),
-                             "results": _places_search(raw, lang)})
+            self._send_json(_places_search_payload(raw, lang))
 
         def _read_json_body(self) -> object | None:
             try:

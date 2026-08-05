@@ -666,6 +666,9 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       margin: 0 0 var(--space-md) 0; }
 .place-input { min-width: 200px; }
 .place-options { max-width: 320px; }
+/* F201: what the empty list means — a prompt for more letters, not an error, so it is
+   muted like the other hints rather than red like a failure. */
+.place-hint { font-size: 0.8rem; color: var(--muted); }
 .place-row-btn { margin-left: var(--space-sm); }
 .place-manual { margin-left: var(--space-sm); }
 

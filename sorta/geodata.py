@@ -18,8 +18,10 @@ result — they are reported with a one-off warning instead.
 """
 from __future__ import annotations
 
+import bisect
 import csv
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +87,27 @@ class _Place:
     cc: str
     admin1: str
     name_en: str
+    # F201: the 9th column of places.tsv, kept because a prefix search has to RANK its
+    # answer — «Моск» finds Москва and a dozen hamlets, and only the population tells
+    # them apart. 0 means "the base does not say", not "empty".
+    population: int = 0
+
+
+# F201: a name is split into words on everything that is not a letter or a digit —
+# spaces, hyphens, apostrophes, parentheses and the combining marks the bundled base
+# carries.
+_WORD_SPLIT_RE = re.compile(r"[^\w]+", re.UNICODE)
+
+
+def _name_words(name: str) -> list[str]:
+    """The words a name can be found by: «Нижний Новгород» -> [нижний, новгород].
+
+    Word starts, not substrings: a substring match would answer «Рим» with every
+    «Дурим» in the base and drown the list, while a word inside a composite name is
+    exactly what a person types («Новг» for Нижний Новгород). Casefolded, like the
+    rest of the reverse indexes.
+    """
+    return [w for w in _WORD_SPLIT_RE.split(name.casefold()) if w]
 
 
 def _to_xyz(lat_deg: np.ndarray | float, lon_deg: np.ndarray | float) -> np.ndarray:
@@ -130,6 +153,9 @@ class GeoResolver:
         # casefold keys, without changing the _names/_places format.
         self._country_name_idx: dict[str, dict[str, str]] = {}
         self._city_name_idx: dict[str, dict[str, list[int]]] = {}
+        # F201: (word, geonameid) sorted by word — the prefix index behind the place
+        # picker, lazily built per lang like the two above.
+        self._city_prefix_idx: dict[str, list[tuple[str, int]]] = {}
 
     @property
     def data_dir(self) -> Path:
@@ -179,9 +205,15 @@ class GeoResolver:
                     lon = float(lon_s)
                 except ValueError:
                     continue
+                try:
+                    population = int(row[8])
+                except ValueError:
+                    # A blank or broken population is not worth losing the place over:
+                    # it only costs this one its rank in a prefix search.
+                    population = 0
                 self._places[gid] = _Place(
                     geonameid=gid, lat=lat, lon=lon, fcode=fcode, cc=cc,
-                    admin1=admin1, name_en=name_en or str(gid),
+                    admin1=admin1, name_en=name_en or str(gid), population=population,
                 )
 
     def _load_admin1(self) -> None:
@@ -349,6 +381,16 @@ class GeoResolver:
         place = self._places.get(geonameid)
         return place.cc if place is not None and place.cc else None
 
+    def population_of(self, geonameid: int) -> int:
+        """Population of a city/place by geonameid; 0 — unknown or not in the data.
+
+        Only a RANKING signal (F201: which of the places a typed prefix found is the
+        one meant), never a fact the layout depends on.
+        """
+        self._ensure_loaded()
+        place = self._places.get(geonameid)
+        return place.population if place is not None else 0
+
     def region_key_of(self, geonameid: int) -> tuple[str, str] | None:
         """(cc, admin1) of the city — the region key for grouping/trip name.
 
@@ -435,3 +477,73 @@ class GeoResolver:
         (different countries/regions).
         """
         return list(self._city_name_index(lang).get(name.strip().casefold(), []))
+
+    # --- F201: prefix lookups (for a picker that answers while the name is typed) ---
+    # The full-name lookups above are right for `--where city=`, where the name is typed
+    # whole, and wrong for a combobox: until the last letter is there the answer is
+    # empty, and on the way it can hit a different city by accident. Measured on the
+    # bundled base (63 034 cities, 59 000 index keys per language): a linear pass over
+    # the keys of all three languages costs 10–36 ms per keystroke, so the words are
+    # indexed once (~240 ms per language, on the first search of the process) and looked
+    # up with `bisect` — 0.03–3 ms per query, no new dependency.
+
+    def _city_prefix_index(self, lang: Lang) -> list[tuple[str, int]]:
+        """(word, geonameid) pairs for every word of every city name in `lang`, sorted.
+
+        One entry per word, so a composite name appears under each of its words; a
+        same-named city pair appears under the same word twice. Built once per lang and
+        cached, on the same index (and the same "city" feature codes) `city_ids_by_name`
+        answers from.
+        """
+        lang_key = str(lang).strip().lower()
+        pairs = self._city_prefix_idx.get(lang_key)
+        if pairs is None:
+            pairs = [(word, gid)
+                     for name, gids in self._city_name_index(lang).items()
+                     for word in _name_words(name)
+                     for gid in gids]
+            pairs.sort()
+            self._city_prefix_idx[lang_key] = pairs
+        return pairs
+
+    def city_ids_by_prefix(self, prefix: str, lang: Lang) -> list[int]:
+        """geonameids of cities that have a WORD starting with `prefix`, in `lang`.
+
+        Case and surrounding whitespace are irrelevant, as in `city_ids_by_name`. An
+        empty prefix is not a query and gives an empty list — "everything in the base"
+        is never a useful answer here. The order (alphabetical by the matched word)
+        carries no meaning: ranking the answer is the caller's business, because only
+        the caller knows what the user typed it into.
+        """
+        key = prefix.strip().casefold()
+        if not key:
+            return []
+        pairs = self._city_prefix_index(lang)
+        out: list[int] = []
+        seen: set[int] = set()
+        for word, gid in pairs[bisect.bisect_left(pairs, (key, 0)):]:
+            if not word.startswith(key):
+                break
+            if gid not in seen:
+                seen.add(gid)
+                out.append(gid)
+        return out
+
+    def country_ccs_by_prefix(self, prefix: str, lang: Lang) -> list[str]:
+        """ISO ccs of countries with a name word starting with `prefix`, in `lang`.
+
+        Scanned linearly on purpose: there are some 250 country names per language, and
+        an index over them would cost more to build than every scan it saves.
+        """
+        key = prefix.strip().casefold()
+        if not key:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for name, cc in self._country_name_index(lang).items():
+            if cc in seen:
+                continue
+            if any(word.startswith(key) for word in _name_words(name)):
+                seen.add(cc)
+                out.append(cc)
+        return out

@@ -417,6 +417,16 @@ def _apply_overrides(db_path: Path, file_ids: list[int], action: str,
 _PLACE_KINDS = ("event", "source_dir")
 _PLACE_ACTIONS = ("assign", "clear")
 _PLACE_SEARCH_LIMIT = 12
+# F201: the country half of the answer never crowds the cities out of a list this
+# short — a two-letter prefix matches a dozen country names on its own ("ma": Macao,
+# Madagascar, Malawi, Malaysia, Maldives, Mali, Malta, Marshall Islands...).
+_PLACE_COUNTRY_LIMIT = 4
+# Below this many characters the picker does not search at all. One letter is not a
+# request: it matches thousands of settlements, so the answer would be noise, and an
+# empty answer to it must not be read as "no such place" either (see
+# `_places_search_payload`). Two rather than three because a name can be that short —
+# «東京» is the whole of Tokyo, and «Мо» is a town in Norway.
+_PLACE_SEARCH_MIN_QUERY = 2
 
 _geo_resolver_cache: GeoResolver | None = None
 
@@ -453,40 +463,87 @@ def _country_label(cc: str, lang: i18n.Lang) -> str:
         return cc
 
 
-def _city_candidates(query: str, lang: i18n.Lang) -> list[dict]:
-    """Cities of the bundled base whose name in ANY of the three languages is `query`.
+def _city_option(gid: int, cc: str, lang: i18n.Lang) -> dict:
+    """One city of the answer: the geonameid the DB stores, told apart in the label.
 
-    `city_ids_by_name` (F46) matches a FULL name, not a prefix, which is what makes this
-    safe to offer: the same reverse index the `--where city=` filter is built on, and
-    the same geonameids that land in `places.city_geonameid`. Same-named cities come
-    back as several candidates, told apart by region and country — picking for the user
-    would be guessing.
+    Same-named cities are separated by region and country rather than picked between —
+    picking for the user would be guessing.
     """
     resolver = _geo_resolver()
-    out: list[dict] = []
-    seen: set[int] = set()
+    region = resolver.region_key_of(gid)
+    region_name = resolver.region_name(cc, region[1], lang) if region else None
+    city_name = resolver.name(gid, lang)
+    details = ", ".join(p for p in (region_name, _country_label(cc, lang)) if p)
+    return {
+        "kind": "city", "country": cc, "city_geonameid": gid,
+        "city": resolver.name(gid, "en"),
+        "label": f"{city_name} ({details})" if details else city_name,
+    }
+
+
+def _city_candidates(query: str, lang: i18n.Lang, limit: int = _PLACE_SEARCH_LIMIT,
+                     ) -> list[dict]:
+    """Cities of the bundled base whose name in ANY of the three languages STARTS with
+    `query` — the whole name, or any word inside a composite one («Новг» -> Нижний
+    Новгород). The geonameids are the ones `city_ids_by_name` (F46) answers with and the
+    ones that land in `places.city_geonameid`; only the way they are LOOKED UP is wider.
+
+    The order is part of the answer (F201), and it is:
+
+    1. an exact full-name match first — if the user finished typing a name, that name is
+       what they meant, whatever else begins with it («Мо» is a town in Norway before it
+       is the start of Москва);
+    2. then by population, descending — the base holds 150 000 settlements, so every
+       prefix finds hamlets, and «Моск» has to answer Москва before Москаленки;
+    3. then by the shown name, alphabetically — a predictable tail for the places the
+       base gives no population for.
+
+    Labels are built only for the `limit` that survive the cut: a two-letter prefix
+    matches thousands of cities, and every label costs a region and a country lookup.
+    """
+    resolver = _geo_resolver()
+    exact: set[int] = set()
+    found: set[int] = set()
     for search_lang in _UI_LANGS:
-        for gid in resolver.city_ids_by_name(query, search_lang):  # type: ignore[arg-type]
-            if gid in seen:
-                continue
-            seen.add(gid)
-            cc = resolver.country_of(gid)
-            if not cc:
-                # Without a country the place cannot be laid out (the layout starts at
-                # the country folder), so such a city is not offered at all.
-                continue
-            region = resolver.region_key_of(gid)
-            region_name = resolver.region_name(cc, region[1], lang) if region else None
-            city_name = resolver.name(gid, lang)
-            details = ", ".join(p for p in (region_name, _country_label(cc, lang)) if p)
-            out.append({
-                "kind": "city", "country": cc, "city_geonameid": gid,
-                "city": resolver.name(gid, "en"),
-                "label": f"{city_name} ({details})" if details else city_name,
-            })
-            if len(out) >= _PLACE_SEARCH_LIMIT:
-                return out
-    return out
+        exact.update(resolver.city_ids_by_name(query, search_lang))  # type: ignore[arg-type]
+        found.update(resolver.city_ids_by_prefix(query, search_lang))  # type: ignore[arg-type]
+    found |= exact
+    # Without a country the place cannot be laid out (the layout starts at the country
+    # folder), so such a city is not offered at all.
+    with_country = [(gid, cc) for gid in found if (cc := resolver.country_of(gid))]
+    with_country.sort(key=lambda pair: (pair[0] not in exact,
+                                        -resolver.population_of(pair[0]),
+                                        resolver.name(pair[0], lang)))
+    return [_city_option(gid, cc, lang) for gid, cc in with_country[:limit]]
+
+
+def _country_candidates(query: str, lang: i18n.Lang,
+                        limit: int = _PLACE_COUNTRY_LIMIT) -> list[dict]:
+    """Countries whose name starts with the typed text, the exact match first.
+
+    The curated dictionary (`i18n.country_cc_by_name`) is asked for a full name first:
+    it is hand-checked and its spellings are the ones the layout writes. The bundled
+    base then adds what it knows — by full name, then by prefix, alphabetically by the
+    label the user will read.
+    """
+    resolver = _geo_resolver()
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(cc: str | None) -> None:
+        if cc and cc.upper() not in seen:
+            seen.add(cc.upper())
+            ordered.append(cc.upper())
+
+    add(i18n.country_cc_by_name(query))
+    for search_lang in _UI_LANGS:
+        add(resolver.country_cc_by_name(query, search_lang))  # type: ignore[arg-type]
+    by_prefix = {cc for search_lang in _UI_LANGS
+                 for cc in resolver.country_ccs_by_prefix(query, search_lang)}  # type: ignore[arg-type]
+    for cc in sorted(by_prefix, key=lambda c: _country_label(c, lang)):
+        add(cc)
+    return [{"kind": "country", "country": cc, "city_geonameid": None, "city": None,
+             "label": _country_label(cc, lang)} for cc in ordered[:limit]]
 
 
 def _places_search(query: str, lang: i18n.Lang) -> list[dict]:
@@ -496,28 +553,40 @@ def _places_search(query: str, lang: i18n.Lang) -> list[dict]:
     can see in one glance at the plan, and the country level is where a file with no
     other signal belongs anyway. Both halves read ONLY the bundled base — no network, no
     model, and nothing is written until the user picks one and confirms.
+
+    The text is treated as a PREFIX, because that is what a combobox promises: the field
+    is typed into letter by letter, and an answer that arrives only on the finished name
+    arrives too late to help. Below `_PLACE_SEARCH_MIN_QUERY` characters nothing is
+    searched at all — see `_places_search_payload` for the difference that makes.
     """
     text = query.strip()
-    if not text:
+    if len(text) < _PLACE_SEARCH_MIN_QUERY:
         return []
-    results: list[dict] = []
     try:
-        cc = i18n.country_cc_by_name(text)
-        for search_lang in _UI_LANGS:
-            if cc:
-                break
-            cc = _geo_resolver().country_cc_by_name(text, search_lang)  # type: ignore[arg-type]
-        if cc:
-            results.append({"kind": "country", "country": cc.upper(),
-                            "city_geonameid": None, "city": None,
-                            "label": _country_label(cc, lang)})
-        results.extend(_city_candidates(text, lang))
+        results = _country_candidates(text, lang)
+        results.extend(_city_candidates(text, lang,
+                                        limit=_PLACE_SEARCH_LIMIT - len(results)))
     except GeoDataMissing:
         # The bundled base is the only source here; without it the picker offers
         # nothing rather than pretending an empty answer means "no such place".
         _log.warning("ui: гео-данные недоступны — поиск места вернёт пустой список")
         return []
     return results
+
+
+def _places_search_payload(query: str, lang: i18n.Lang) -> dict:
+    """The body of `GET /api/places/search`: the results, and whether we SEARCHED.
+
+    "Nothing found" and "not asked yet" are different answers, and telling them apart is
+    the whole point of F201: the first says the name is wrong, the second says the name
+    is not finished. An empty list looks the same from the client, so the server says
+    which one it is — and the threshold stays in one place, here, instead of being
+    copied into the page.
+    """
+    text = query.strip()
+    return {"query": text,
+            "searched": len(text) >= _PLACE_SEARCH_MIN_QUERY,
+            "results": _places_search(text, lang)}
 
 
 def _validate_place_payload(
