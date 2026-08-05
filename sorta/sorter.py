@@ -2315,7 +2315,8 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
                dest: Path, mode: str = "link",
                where: Sequence[str] | None = None, apply: bool = False,
                album_name: str | None = None,
-               encoder: TextEncoder | None = None) -> AlbumReport:
+               encoder: TextEncoder | None = None,
+               file_ids: Sequence[int] | None = None) -> AlbumReport:
     """Build an album export plan; with apply=True materialize it (link/copy/move).
 
     kind='person': selector — a person's name; the slice = canonical files (dup_of IS
@@ -2359,6 +2360,17 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     person's/event's photos), but files.error IS NOT NULL is always excluded, as are
     duplicates (dup_of).
 
+    F193: `file_ids` (opt.) is the frames a person TICKED, and it is the same offer for
+    every kind — until now an album was all of a slice or none of it. It NARROWS: the ids
+    are ANDed onto the membership condition above and never substituted for it, so a
+    request sent past the interface cannot gather a file the slice does not hold, and no
+    guard a slice carries (the sensitive classes above, the window of a quality list) is
+    something a selection can walk around. `None` is the whole slice, exactly as before.
+    An EMPTY list is refused rather than gathered: "nobody ticked anything" and "this
+    slice holds nothing" are different sentences, only one of them is about the
+    collection, and a folder of zero files silently states the second (the F125 rule
+    about an unmeasured zero, applied to a selection).
+
     dry-run (apply=False, default) only prints the plan, writes nothing to the DB/FS.
     apply=True journals into move_batches/moves BEFORE each operation
     (move_batches.mode='album_<kind>', operation=mode) and calls _transfer.
@@ -2378,6 +2390,11 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         raise ValueError(f"неизвестный тип альбома {kind!r}; допустимы: {', '.join(ALBUM_KINDS)}")
     if mode not in ALBUM_MODES:
         raise ValueError(f"неизвестный режим альбома {mode!r}; допустимы: {', '.join(ALBUM_MODES)}")
+    # F193: refused here as well as in the web route, the arrangement the sensitive-class
+    # guard below already uses — this end answers the terminal, that end answers with a
+    # status code the interface can caption.
+    if file_ids is not None and not file_ids:
+        raise ValueError("пустой выбор кадров: не выбрано ни одного кадра для альбома")
     # F118: this function printed Russian whatever `language:` said — plan_and_sort read
     # the language and plan_album never did.
     lang = i18n.normalize_lang(cfg.raw.get("language"))
@@ -2449,6 +2466,13 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     where_cond, where_params = parse_where(where or [])
     full_cond = f"({subject_cond}) AND ({where_cond})"
     full_params: list[object] = [*subject_params, *where_params]
+    if file_ids is not None:
+        # Interpolated rather than bound, for the reason the `query` kind above
+        # interpolates its ranking: a selection is as long as the person made it and
+        # SQLite has a ceiling on bound parameters. They come straight out of `files.id`,
+        # so int() is the whole sanitization there is to do.
+        picked = ",".join(str(int(fid)) for fid in file_ids)
+        full_cond += f" AND f.id IN ({picked})"
 
     rows = conn.execute(
         _CTE + f"""SELECT f.id, f.path, f.hash, f.hash_algo FROM files f

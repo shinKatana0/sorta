@@ -58,6 +58,117 @@ from .layout import _overrides_map
 _JUNK_NO_PREVIEW = ("document",)
 
 
+# --- F193: one answer to "may this slice be gathered into a folder" -------------------
+# Three complaints of 2026-08-04 were one defect: the slices answered "what can I do with
+# you" differently, and the documents bucket answered by SAYING NOTHING — no album button,
+# no sentence, no refusal. A hidden control forbids nothing (the F133 lesson): a request
+# sent past the interface would have gathered the folder all the same, so the absence
+# taught the reader something false and protected nobody.
+#
+# So every bucket now carries an album row, and a bucket that may not be gathered carries
+# the REASON instead of a button. One function decides it, read by both ends — the payload
+# the page draws the row from and the route that refuses the request — because two
+# spellings of "this class is private" is exactly how a guard grows a hole.
+#
+# The decision on documents itself is F139's, unchanged: `document` is not an album kind
+# and emptying `vlm.exclude_classes` does not make one. That key decides what is SHOWN (the
+# owner has already emptied it for previews, "it is all local, there is no risk"), never
+# that a folder of somebody's passports, medical forms and bank papers may be assembled in
+# one click. What F193 changes is that the program now SAYS so. If the owner decides the
+# other way, this tuple is the whole of the change.
+_NEVER_ALBUM_CLASSES = ("document",)
+
+# The refusals, as codes rather than sentences: the reason has to be read in the interface
+# language, so the server sends the word and the catalog holds the three sentences (the
+# `_PIN_*` arrangement of F156). They are four and not one because the remedies differ —
+# one is an edit of a config key, one is a decision nobody has taken, and two are not
+# remedies at all.
+_ALBUM_BLOCKED_DOCUMENTS = "documents"      # never gathered, whatever the key says
+_ALBUM_BLOCKED_SENSITIVE = "sensitive"      # the class sits in `vlm.exclude_classes`
+_ALBUM_BLOCKED_NO_KIND = "no_kind"          # a bucket the album engine has no kind for
+_ALBUM_BLOCKED_ALL_BUCKETS = "all_buckets"  # the "everything non-photo" view, not a slice
+
+
+def _album_refusal(kind: object, sensitive: frozenset[str]) -> str | None:
+    """Why this media class has no album, or None when it has one.
+
+    `kind` is whatever the client named — a class, an album kind of some other slice, or
+    nonsense — and only a CLASS can be refused here: everything else is None and travels
+    on to the ordinary validation. That is what lets the route ask this question of a raw
+    request body before it knows the body is well-formed at all, which is the whole point:
+    `document` has to come back with "documents are never gathered" and not with the
+    "invalid body" a name outside `ALBUM_KINDS` would otherwise earn.
+    """
+    if not isinstance(kind, str):
+        return None
+    if kind in _NEVER_ALBUM_CLASSES:
+        return _ALBUM_BLOCKED_DOCUMENTS
+    if kind in sensitive:
+        return _ALBUM_BLOCKED_SENSITIVE
+    return None
+
+
+def class_album_refusal(cfg: Config, kind: object) -> str | None:
+    """`_album_refusal` against the LIVE `vlm.exclude_classes` — what the route asks.
+
+    The key is read per request for the reason the album route already read it that way:
+    the settings panel can change it without a restart, and a guard reading a value from
+    startup would be a guard about a configuration nobody is running.
+    """
+    return _album_refusal(kind, frozenset(cfg.vlm.exclude_classes))
+
+
+def _bucket_album(bucket: str | None,
+                  sensitive: frozenset[str]) -> tuple[str | None, str | None]:
+    """(the album kind of this junk bucket, the reason there is none) — never both None.
+
+    A bucket the engine has a kind for and no reason to refuse gets the kind; every other
+    bucket gets a word saying why. `_ALBUM_BLOCKED_NO_KIND` is the one that matters for
+    tomorrow: a class added to the classifier without an album kind would otherwise fall
+    silently out of the interface again, which is the defect this feature exists to close.
+    """
+    if bucket is None:
+        return None, _ALBUM_BLOCKED_ALL_BUCKETS
+    refusal = _album_refusal(bucket, sensitive)
+    if refusal is not None:
+        return None, refusal
+    if bucket not in CLASS_ALBUM_KINDS:
+        return None, _ALBUM_BLOCKED_NO_KIND
+    return bucket, None
+
+
+# F193: the frames a person ticked. `POST /api/album` takes them next to the kind, and the
+# rule is the same for every slice — the list narrows the slice (`sorter.plan_album`) and
+# an empty one is a refusal rather than an album of nothing.
+_ALBUM_NO_SELECTION = "empty_selection"
+
+
+def album_selection(payload: object) -> tuple[list[int] | None, str | None]:
+    """(the ticked ids or None, the refusal code or None) for `POST /api/album`.
+
+    An ABSENT `file_ids` is not a refusal and never will be: it is how the whole slice is
+    gathered, which is what every album did before this feature and what the button still
+    does when nobody has ticked anything.
+
+    An empty list is `_ALBUM_NO_SELECTION` — a client that has a selection and it holds
+    nothing. Answering it with a folder of zero files would read as "this slice is empty",
+    a statement about somebody's archive that is not true.
+
+    Anything else malformed is a plain 400 (`"invalid"`), through the same
+    `_validate_file_ids_payload` every other write route parses ids with — ints only,
+    never a path.
+    """
+    if not isinstance(payload, dict) or payload.get("file_ids") is None:
+        return None, None
+    raw = payload.get("file_ids")
+    if isinstance(raw, list) and not raw:
+        return None, _ALBUM_NO_SELECTION
+    ids = _validate_file_ids_payload(payload)
+    if ids is None:
+        return None, "invalid"
+    return ids, None
+
+
 def _junk_item_to_json(row: sqlite3.Row, restored: bool,
                        no_preview: frozenset[str] = frozenset(_JUNK_NO_PREVIEW),
                        dest: Destination | None = None) -> dict:
@@ -139,6 +250,10 @@ def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
     asked for) and for a class in `vlm.exclude_classes`, which keeps its counter and gets
     neither a preview nor an album.
 
+    F193: and `album_blocked` is the WORD for that None. Exactly one of the two is set,
+    always, so the row over the grid is drawn either way — the documents bucket used to be
+    a slice with no button and no sentence, which forbade nothing and explained nothing.
+
     F171: a bucket is a LIST IN ORDER — `_JUNK_ORDER`, the model's own estimate first —
     and `ordered_by_score` says whether it really was one, so the caption promises a
     ranking exactly where there is one to promise.
@@ -180,12 +295,12 @@ def _junk_payload(db_path: Path, cfg: Config, bucket: str | None,
     marks = _overrides_map(db_path) if rows else {}
     buckets = [{"verdict": r["verdict"], "count": int(r["n"])} for r in counts]
     buckets.sort(key=lambda b: (-b["count"], b["verdict"]))
+    album_kind, album_blocked = _bucket_album(bucket, sensitive)
     return {
         "bucket": bucket,
         "buckets": buckets,
-        "album_kind": (
-            bucket if (bucket in CLASS_ALBUM_KINDS and bucket not in sensitive)
-            else None),
+        "album_kind": album_kind,
+        "album_blocked": album_blocked,
         # Said out loud rather than inferred from a missing field: a card without
         # `thumb_url` is a class the server refuses to render, not a preview that failed
         # to build, and the two need different words on the screen.
