@@ -31,7 +31,7 @@ Switching the sort mode does not require re-running the pipelines.
 | naming | `naming.py`, `landmarks.py`, `junk.py` | `files`, `places`, `events` | `places` (unknown only), `media_class`, `events.name` (name_is_manual=0 only) |
 | restore | `restore.py` | `files` | `restored_files`, the copy's own `files` row, FS |
 | sorter | `sorter.py` | all | `move_batches`, `moves`, FS |
-| ui/cli | `cli.py`, `ui.py` | everything (read) | `manual_overrides`, `manual_places`, `manual_pet`, `dedup_choice` — the user's OWN decisions; otherwise orchestrate module calls |
+| ui/cli | `cli.py`, `ui/` (F182: a package cut by TAB — `common`, `layout`, `slices`, `review`, `overview`, `moves`, `process`, `page`, `strings`, and the server in `__init__.py`; the markup/styles/script live in `web/`) | everything (read) | `manual_overrides`, `manual_places`, `manual_pet`, `dedup_choice` — the user's OWN decisions; otherwise orchestrate module calls |
 
 **Architectural boundary invariants:**
 1. Modules do NOT import each other (except `core`). Data exchange happens only

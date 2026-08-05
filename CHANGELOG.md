@@ -52,6 +52,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
+- **The web app is a package cut by tab, not one 14 427-line file** (F182). Nothing a
+  person can see changed — this is the entry for a move, and the move is the point. On
+  2026-08-03/04 **ten features queued for `ui.py` in a single day**, because two workers
+  inside it is a guaranteed conflict: F152 came back with 18 divergences across 10 files,
+  F160 with an import that vanished and that neither gate caught on its own. No other
+  module ever had that problem — `junk.py`, `geo.py`, `search.py` and `scripts/` took
+  features in pairs and threes without a collision. The cut is **by tab, not by layer**: a
+  feature normally lives in one tab (F150 in «Разбор», F156 in «Срезы», F159 on the run
+  screen), so two features in two tabs now stop meeting at all, whereas a cut into
+  routes/queries/markup/script would have left every feature touching all four. F133 had
+  already rebuilt the interface along that axis and the file was already marked with
+  fifteen `# --- F126: рабочее место «Разбор»` seams; this made them real —
+  `sorta/ui/{common,layout,slices,review,overview,moves,process,page,strings}.py` with the
+  server and the route table in `__init__.py`. The other 42% of the file was never Python:
+  the markup, the styles and the browser script now live in `sorta/web/` as `page.html`,
+  `style.css` and `app/app.js`, so an editor highlights them, ruff and mypy stop reading
+  the text of a page, and a conflict in one word of markup is no longer a conflict in
+  `ui.py`. **Byte for byte the same page** — the rendering of all three languages was
+  captured before the move and compared after it — and `sorta.ui` still answers to every
+  name it answered to, which is what let the ~3 700 existing tests stay untouched apart
+  from where a stub is attached. The frontend files are named among the wheel artifacts:
+  F65 shipped a release whose data never made it into the package, and a page without its
+  script would fail the same way, louder.
 - **The screenshot slice says it is an opinion** (F171). On 350 hand-labelled frames the
   `screenshot` verdict is right about **59%** of what it points at (83% recall): every
   third frame in that bucket is an ordinary photograph. The live run of 2026-08-04
