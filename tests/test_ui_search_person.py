@@ -411,8 +411,10 @@ class TestTheScriptWiresTheAnswerUp(unittest.TestCase):
         self.assertIn("I18N.search_words_person_link", ui._INDEX_HTML_TEMPLATE)
 
     def test_the_album_of_a_person_gathers_the_person(self):
-        self.assertIn('gatherAlbum("person", person', ui._INDEX_HTML_TEMPLATE)
-        self.assertIn('gatherAlbum(data.person ? "person" : "query"', ui._INDEX_HTML_TEMPLATE)
+        self.assertIn('gatherAlbum("person", c.label', ui._INDEX_HTML_TEMPLATE)
+        # F193 pulled album building into one constructor for every slice, so the choice
+        # moved from the call into its options — same claim, one place further in.
+        self.assertIn('kind: data.person ? "person" : "query"', ui._INDEX_HTML_TEMPLATE)
 
     def test_a_card_without_a_score_draws_none(self):
         self.assertIn("item.score !== undefined && item.score !== null", ui._INDEX_HTML_TEMPLATE)

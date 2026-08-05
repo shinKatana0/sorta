@@ -190,7 +190,14 @@ class TestEverythingThatWritesIsFrozenDuringARun(MarkupCase):
         # gather is chosen by a parameter rather than by which panel is open) — and the
         # gather row of a PINNED query, which is a slice like any other and so offers the
         # same album as the rest of them.
-        self.assertEqual(self.html.count("albumBtn.disabled = uiBusy();"), 7)
+        # Counting one assignment per button broke the moment F193 unified them, and the
+        # thing it guarded got STRONGER: every album button now carries
+        # `album-gather-btn` and is swept by class, so a button added tomorrow is
+        # frozen without anybody remembering to add a line. Assert the sweep and the
+        # class, not how many times a string occurs.
+        self.assertIn('document.querySelectorAll(".album-gather-btn")', self.html)
+        self.assertIn("btn.disabled = busy;", self.html)
+        self.assertGreater(self.html.count("album-gather-btn"), 1)
 
     def test_applying_the_layout_is_dead(self):
         self.assertIn("applyBtn.disabled = busy || planCount === 0",
