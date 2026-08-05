@@ -118,6 +118,24 @@ reproducible is scriptable; nothing that needs an opinion pretends to be.
 | Speed | Works; **never measured end to end** on a large collection | Measured 2026‑08‑05, 38 485 files from cold: index 5.3 min · geo 3 s offline · landmarks 4.9 · classify 32.4 · faces 14.2 · events 2 s · junk 19.3 · phash 45 s — **77.5 min** in all, and ~10 minutes less with the preview cache warm |
 | Best for | City sorting + duplicates on any machine; smaller collections with faces/events on | Large collections (300 GB+) with faces/events routinely on |
 
+### Running on a smaller card
+
+The 20.5 GB peak is the deep tier at its default input size. There are knobs, and here is
+what each one is actually known to buy:
+
+| knob | what it does | measured |
+|---|---|---|
+| `vlm.enabled: false` | the deep tier does not load at all | the rest of the pipeline needs ~3 GB — this is the real answer for a small card |
+| `vlm.max_edge` | the frame size the model sees; tokens grow with area | 896 → 672 is **×1.48 faster**, and **7.5% of documents become "photo"** (300 frames, F102). The default stays 896 because that trade was judged bad; the knob is there for whoever judges otherwise |
+| `vlm.workers` | threads preparing frames for the GPU | changes CPU-side preparation, not VRAM |
+| `imaging.preview_cache_max_gb` | ceiling on the thumbnail cache | disk, not memory |
+
+**Be plain about the shape of it**: nothing here turns 20.5 GB into 8. Lowering
+`vlm.max_edge` reduces the peak because the token count falls with the area, but by how
+much has not been measured — the resolution study priced speed and verdicts, not memory.
+The honest advice for a card under 24 GB is to leave the deep tier off: it produces one
+class (`product`) and nothing else in the product depends on it.
+
 Common to both: Python **3.11–3.14**, [`uv`](https://docs.astral.sh/uv/), and
 **`exiftool` on PATH** (required for HEIC/RAW/video metadata — without it Sorta falls
 back to Pillow, which only reads JPEG/PNG/TIFF/WEBP and no video). Disk space for the
