@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **"Try to improve" on the frame you have opened, in every slice** (F168). The action
+  shipped behind one door — the «Размытые» slice — and the measurement of 2026-08-03 found
+  that door nearly shut: at its threshold the sharpness filter holds **8%** of the frames a
+  person calls soft (it answers "how much detail is in the frame", not "is it in focus"),
+  so a useful operation sat behind a detector we had measured to be almost blind. The
+  second measurement (F169, 80 blind pairs against plain bicubic enlargement) says where it
+  really belongs, and it is **not blur but SIZE**: 66% wins under 640 px, 58% at 640–1024,
+  and by 1280 px a coin toss. So the entrance is now the **expanded frame**, which every
+  slice already opens — cities, people, animals, events, search, pinned queries — and the
+  offer stands while the frame is below `features.restore_max_edge`. Above the ceiling the
+  button is **withdrawn and the reason is said**: the copy there would be rebuilt from a
+  reduced version of itself and the measurement found no gain, which is a sentence beside
+  the picture rather than a silence. Nothing about the operation changed: the same route,
+  the same one frame per press, the same copy beside the original with the original
+  untouched, and a second press still returns the copy that already exists instead of
+  making another. Two refusals are enforced **in the route** and not by a missing button —
+  a frame classed as a personal document (`vlm.exclude_classes`) is never decoded and drawn
+  four times larger, and a clip is not an image the model has an answer for — so a request
+  made past the interface collects the same refusal. The copy is a canonical file that lies
+  in the city folder beside its source, so wherever it is opened it now names the frame it
+  was processed from instead of reading as a second similar photograph from nowhere.
 - **A name in the search line finds the person** (F189). Naming a face cluster and merging
   another into it made that person reachable by `sorta album person <name>` and by
   `sort --by person` — and by no query anybody could type: the search line knew only CLIP
