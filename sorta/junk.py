@@ -3804,6 +3804,65 @@ class _DetectorPass:
             " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
 
 
+# --- F210: the preview of a sensitive frame does not stay on disk ---------------------
+#
+# Refusing to SHOW a document (slices.py withholds `thumb_url` for it) protects the
+# screen and not the disk: the preview is written by the very stage that decides what the
+# frame is — `decode_rgb_preview` decodes everything it is handed, deliberately, and by
+# the time a verdict exists the JPEG is already in the cache. So the run that names a
+# frame is the run that has to take its derivative away, exactly as it already drops the
+# frame's quality row, its vector and its boxes (`_QualityPass`/`_EmbeddingPass`/
+# `_DetectorPass.purge`).
+#
+# Which classes are sensitive is decided by the LIVE `vlm.exclude_classes` and by nothing
+# else. There is no list written down here: `_JUNK_NO_PREVIEW` in the UI is the default of
+# a parameter for direct calls, not a source of truth, and an EMPTY setting is an
+# instruction rather than an oversight — somebody whose config says `exclude_classes: []`
+# has said that no class is private, and for them this sweep must remove nothing at all.
+
+
+def sweep_previews(conn: sqlite3.Connection, classes: frozenset[str]) -> int:
+    """Remove the disk previews of every frame whose verdict is one of `classes`.
+
+    Returns the number of preview files removed — a number for the caller's log, not a
+    promise: a preview a reader holds open stays, and the next sweep gets it.
+
+    An empty `classes` returns 0 without touching the database. That is the whole of
+    requirement 4 of the brief: absence and emptiness are different wishes here as much as
+    they are in `config._as_exclude_classes`, and the empty list is the one that says "no
+    class of mine is private".
+    """
+    if not classes:
+        return 0
+    names = sorted(classes)
+    rows = conn.execute(
+        "SELECT f.path, f.mtime, f.size FROM files f"
+        " JOIN media_class mc ON mc.file_id = f.id"
+        f" WHERE mc.verdict IN ({','.join('?' * len(names))})", names).fetchall()
+    removed = 0
+    for r in rows:
+        removed += imaging.preview_delete(r["path"], r["mtime"], r["size"])
+    if removed:
+        _log.info("junk: удалено превью чувствительных классов: %d (классы: %s)",
+                  removed, ", ".join(names))
+    return removed
+
+
+def sweep_previews_for_new_classes(conn: sqlite3.Connection,
+                                   before: Sequence[str], after: Sequence[str]) -> int:
+    """The sweep a CHANGED `vlm.exclude_classes` calls for — over the ADDED classes only.
+
+    The list is edited while the tool runs, and that is the moment the cleanup matters
+    most: switching the protection on has to reach the previews ALREADY on disk, or the
+    whole archive of documents survives it and the feature covers nothing but frames
+    classified from now on.
+
+    A class that LEFT the list sweeps nothing. Its previews are an ordinary cache entry
+    again and are rebuilt on demand — there is nothing to remove and nothing lost.
+    """
+    return sweep_previews(conn, frozenset(after) - frozenset(before))
+
+
 def classify(
     cfg: Config, conn: sqlite3.Connection,
     classifier: Classifier | None = None,
@@ -4231,6 +4290,9 @@ def classify(
                 stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
         report.step(len(work))
         report.count(CLASSIFY_PHASE_WRITE, len(work))
+        # F210: the heuristics-only tier writes verdicts like any other, so it owes the
+        # same cleanup — see the call at the end of the stage for what it is and why.
+        sweep_previews(conn, q.exclude_classes)
         report.log_timings()
         return stats
 
@@ -4516,6 +4578,13 @@ def classify(
         # F154: and the boxes, under the same rule and in the same transaction — a frame
         # this run decided is a document must not keep a description of what is on it.
         detect_pass.purge()
+    # F210: and the derivative that is not in the database — the preview JPEG the stage
+    # itself wrote before it knew what the frame was. Here for the same reason the three
+    # purges above are here and not earlier: the deep tier reclassifies frames, so a sweep
+    # any sooner would judge a passport by the fast tier's answer. In BOTH halves, again
+    # for the F165 reason — `sorta classify` is what can rename a frame into a document,
+    # so it is what must take the picture of it away.
+    sweep_previews(conn, q.exclude_classes)
     # F141: and last of all, the second CLIP pass — every verdict of this run is
     # written and the purges above have run, so a frame the deep tier has just called a
     # screenshot is not encoded. Ten minutes is too much to spend on rows that would be

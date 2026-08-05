@@ -515,6 +515,7 @@ from ..junk import (
     faces_stage_ran,
     search_index_model,
     search_index_settings,
+    sweep_previews_for_new_classes,
 )
 from ..landmarks import Classifier, clip_classifier, detect_landmarks
 from ..landmarks import batched
@@ -1579,6 +1580,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                     self._send_json({"error": "already running"},
                                     status=HTTPStatus.CONFLICT)
                     return
+                # F210: what `vlm.exclude_classes` held BEFORE the save, so a class that
+                # has just entered the list can be swept. Read here rather than after,
+                # because _apply_settings replaces the whole dataclass.
+                before = tuple(cfg.vlm.exclude_classes)
                 _apply_settings(cfg, values)
                 if config_path is not None:
                     try:
@@ -1588,6 +1593,17 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                         self._send_json({"error": f"could not save config: {exc}"},
                                         status=HTTPStatus.INTERNAL_SERVER_ERROR)
                         return
+                # F210: turning the protection on has to reach the previews already on
+                # disk — otherwise it covers only frames classified from now on and the
+                # whole archive of documents stays in the cache. Inside busy_lock: no
+                # stage is running (checked above), so nothing is writing previews back
+                # while they are being removed. The rule itself lives in junk.py.
+                conn = _connect(db_path)
+                try:
+                    sweep_previews_for_new_classes(
+                        conn, before, cfg.vlm.exclude_classes)
+                finally:
+                    conn.close()
             self._send_json({"ok": True, "settings": _settings_payload(cfg)})
 
         # --- F156: the pinned queries a person makes for themselves ------------------
