@@ -751,6 +751,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout, and the empty state doubles as a statement of what a run will produce.
 
 ### Security
+- **A preview does not outlive the frame it was made from** (F210). Deleting a photograph
+  from the web app sent the original to the bin and left its **1536 px preview** in the
+  cache: the key is a hash of `path|mtime|size`, so once the file is gone that key can
+  never be recomputed, the JPEG is simply never read again — and eviction only runs on a
+  ceiling measured in **gigabytes**. Untidy for a holiday snapshot, and exactly what is
+  forbidden for a passport, which the second half of this makes worse: `slices.py`
+  correctly refuses to hand out a `thumb_url` for a `document`, but that refusal protects
+  the **screen and not the disk**, because the stage that decides what a frame is decodes
+  it through the preview cache — the picture of the passport is written **before** anything
+  knows it is one. So the preview is now removed **with** the original (`_trash_files`
+  reads `path`, `mtime` and `size` off the `files` row, the only place all three still
+  exist after `send2trash`), and the run that names a frame takes the derivative of a
+  **sensitive** class away, exactly as it already drops that frame's quality row, vector
+  and boxes. **Every frame** of a clip goes, not the first: a filmstrip (F80) is one JPEG
+  per frame under the same key plus an index. Which classes are sensitive is decided by the
+  **live `vlm.exclude_classes`** and by nothing else — no list is written down a second
+  time — and an **empty** list removes **nothing**: emptiness is an instruction ("no class
+  of mine is private"), the same distinction the config already draws between a key that is
+  absent and one that is empty. Switching the protection on sweeps the previews **already
+  on disk**, since covering only frames classified from then on would leave the whole
+  archive of documents in the cache; taking a class back out removes nothing, because those
+  previews are an ordinary cache entry again. A preview that will not go — missing, locked,
+  in an unwritable directory — is a normal outcome and never the reason the original stays.
+  Sorting and `undo` still leave previews alone: a move changes the path and the key goes
+  stale, which is the ordinary life of a cache and not a leak. On POSIX the cache directory
+  is now created with mode **0700**; with the umask default it was 0755, i.e. readable by
+  every other local account on the machine.
 - **Only a page of this server may write into it** (F208). `sorta ui` binds to
   `127.0.0.1`, which keeps the network out — and keeps nothing out of the browser, which is
   precisely the program that visits somebody else's page and this port in the same session.

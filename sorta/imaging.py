@@ -398,6 +398,85 @@ def _preview_path(key: str) -> Path:
     return preview_dir() / key[:2] / f"{key}.jpg"
 
 
+# F210: the cache is a user-level directory of decoded photographs, and one of them may
+# be a passport. Created with the umask default it is 0755 on a normal Linux box, i.e.
+# readable by every other local account. Windows ignores the mode and needs nothing —
+# %LOCALAPPDATA% inherits the ACL of the user who owns it.
+_PREVIEW_DIR_MODE = 0o700
+
+
+def _make_preview_dir(directory: Path) -> None:
+    """Create a preview directory (and the cache root above it) private to this user.
+
+    The root is created separately because `Path.mkdir(parents=True)` gives the PARENTS
+    the default mode: a 0700 shard inside a 0755 root would protect nothing, since it is
+    the root that holds every shard. Directories that already exist are left exactly as
+    they are — repairing the permissions of somebody else's directory is not the business
+    of an indexer, and a cache written before this rule is still the same person's.
+    """
+    root = preview_dir()
+    root.mkdir(parents=True, exist_ok=True, mode=_PREVIEW_DIR_MODE)
+    if directory != root:
+        directory.mkdir(parents=True, exist_ok=True, mode=_PREVIEW_DIR_MODE)
+
+
+# The frames of one file are written from 0 up and contiguously (video_filmstrip), so a
+# hole normally means the end of the strip. Normally, not always: eviction removes single
+# files by their last use, so frame 2 can be gone while frame 3 is still there, and a walk
+# that stopped at the first hole would leave the tail of a reel on disk. So the walk
+# checks the whole configured strip before it is allowed to stop, and goes on past that
+# for as long as frames keep being found. The cap is a safety belt — cleaning up after one
+# file may not turn into an unbounded loop of stats.
+_PREVIEW_DELETE_MAX_FRAMES = 1024
+
+
+def _unlink_preview(dest: Path) -> bool:
+    """Remove one preview file; True when this call is what removed it.
+
+    Never raises: a file a reader holds open (Windows), a directory with no write
+    permission, an entry evicted between the stat and the unlink — all of them are a
+    normal outcome for a cache, and none of them may reach the caller.
+    """
+    try:
+        dest.unlink()
+        return True
+    except OSError as exc:
+        _log.debug("imaging: превью %s не удалено: %s", dest, exc)
+        return False
+
+
+def preview_delete(path: str | Path, mtime: float, size: int) -> int:
+    """Delete every cached preview of one file. Returns how many were removed.
+
+    F210 — the derivative does not outlive the original. The key is a hash of
+    (path, mtime, size) and nothing else, so once the file is gone none of the three can
+    be read off the disk any more: the caller has to ask for this while the values are
+    still known (the `files` row still stands), and that ordering is the whole of the
+    problem this function is half of.
+
+    Every FRAME, not frame 0. A clip's filmstrip (F80) is one JPEG per frame under the
+    same key plus an index, and deleting the first of six would leave the reel behind.
+    A photo has exactly one — nothing writes a frame above 0 for one.
+
+    Never raises, and a preview that is not there is not an error: the cleanup of a
+    derivative may not become the reason the original is not deleted.
+    """
+    # At least the DEFAULT number of frames even when fewer are configured now: a strip
+    # written before somebody lowered SORTA_VIDEO_FRAMES must still be removed whole.
+    floor = max(video_frames(), VIDEO_FRAMES) if is_video_path(path) else 1
+    removed = 0
+    index = 0
+    while index < _PREVIEW_DELETE_MAX_FRAMES:
+        dest = _preview_path(preview_key(path, mtime, size, index))
+        found = dest.exists()
+        if found and _unlink_preview(dest):
+            removed += 1
+        index += 1
+        if not found and index >= floor:
+            break
+    return removed
+
+
 def _peek(path: str | Path) -> tuple[tuple[int, int], int] | None:
     """(size, exif orientation) from the header alone, without decoding pixels."""
     _ensure_heif_registered()
@@ -470,7 +549,7 @@ def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
         return
     tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        _make_preview_dir(dest.parent)
         params: dict[str, Image.Exif] = {}
         if orientation != 1:
             # The preview is stored UNROTATED (consumers do not apply orientation),
