@@ -78,6 +78,34 @@ _SESSION_ARGS = _QUERY_ARGS + (
 )
 
 
+class UnsafeExifPath(ValueError):
+    """A path that must not be handed to exiftool (F208) — see `_require_absolute`.
+
+    A ValueError so an ordinary caller need not know the name; its own type so the
+    fallback below can tell a refusal apart from a session that died (that one is
+    retried one-shot, this one must not be retried at all).
+    """
+
+
+def _require_absolute(paths: list[Path]) -> None:
+    """Refuse a relative path before it can become an exiftool argument (F208).
+
+    exiftool reads any argument starting with `-` as an OPTION, and the paths are passed
+    to it with no `--` separator in front of them (it has none). One of those options is
+    `-config`, which loads a Perl file — so a file NAMED like an option would be executed
+    instead of read.
+
+    Today nothing can reach here with such a name: the indexer resolves its root
+    (`Path(src).expanduser().resolve()`), so every path is absolute and cannot begin with
+    a dash. But that is an invariant held somewhere else and checked nowhere, and a single
+    future caller passing a relative path would open the hole with nothing to notice it.
+    Hence the check at the boundary, on both ways into exiftool.
+    """
+    for path in paths:
+        if not Path(path).is_absolute():
+            raise UnsafeExifPath(f"exiftool: path must be absolute, got {str(path)!r}")
+
+
 def _close_pipes(proc: subprocess.Popen) -> None:
     """A dead exiftool still owns its pipes — flushing them later raises EINVAL."""
     for pipe in (proc.stdin, proc.stdout):
@@ -119,6 +147,7 @@ class ExifToolSession:
     def read(self, paths: list[Path]) -> dict[str, ExifData]:
         if not paths:
             return {}
+        _require_absolute(paths)
         with self._lock:
             proc = self._ensure()
             assert proc.stdin is not None and proc.stdout is not None
@@ -200,6 +229,8 @@ def _read_slice(session: ExifToolSession, paths: list[Path]) -> dict[str, ExifDa
     """One slice through its own session; a broken session only costs its own slice."""
     try:
         return session.read(paths)
+    except UnsafeExifPath:
+        raise  # F208: a refused path is not a broken session — do not restart, do not retry
     except Exception:
         session.close()  # _ensure() starts a fresh process on the next call
         return read_batch_exiftool(paths)
@@ -249,6 +280,7 @@ atexit.register(_pool.close)  # leftover `exiftool -stay_open` processes would h
 
 def read_batch_exiftool(paths: list[Path], chunk: int = 200) -> dict[str, ExifData]:
     """One-shot batch exiftool call (fallback if the -stay_open session broke)."""
+    _require_absolute(paths)
     out: dict[str, ExifData] = {}
     for i in range(0, len(paths), chunk):
         batch = [str(p) for p in paths[i:i + chunk]]

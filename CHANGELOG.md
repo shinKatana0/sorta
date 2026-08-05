@@ -772,6 +772,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with dashes from the first paint, so arriving numbers change the text and not the
   layout, and the empty state doubles as a statement of what a run will produce.
 
+### Security
+- **Only a page of this server may write into it** (F208). `sorta ui` binds to
+  `127.0.0.1`, which keeps the network out — and keeps nothing out of the browser, which is
+  precisely the program that visits somebody else's page and this port in the same session.
+  A page open in another tab could POST here: the server read the body and never looked at
+  `Content-Type`, so a request sent as `text/plain` was a **"simple" one** by the CORS
+  rules, went **without the browser asking permission first**, and was carried out. The
+  answer stayed unreadable to that page, but the action had happened — `/api/sort` moves
+  files, `/api/photos/trash` empties them into the bin, `/api/overrides` changes where the
+  layout will put them, `/api/settings` rewrites `config.yaml`. Everything this product is
+  built on — dry-run by default, the journal written before the operation, `undo`, the
+  blake3 check, never overwriting — protects against a **human mistake** and protected
+  against this not at all. Every POST now requires `Content-Type: application/json`, which
+  closes the whole class rather than one route: that type is not "simple", so the browser
+  **must** ask first with an `OPTIONS` preflight, this server grants no such permission
+  (it has no `OPTIONS` handler and sends no cross-origin header anywhere), and the real
+  request is never sent. `Origin`, **when the request carries one**, must be this server —
+  the second line and not the first, since the header is not always there. A refusal is a
+  **403 with a code and a sentence** (`content_type` / `origin`), because somebody whose
+  browser extension stops working has to be able to read why. No token and no session were
+  added: this is a local single-user server, and a secret is state that would have to be
+  stored, rotated and handed to the page. Reading is untouched — thumbnails and previews
+  are ordinary browser requests and carry no content type at all.
+- **exiftool is only ever given an absolute path** (F208). Paths reached exiftool with no
+  `--` separator in front of them (it has none), so a file named `-config` would have been
+  read as an **option** — and `-config` loads a Perl file, i.e. runs code. Nothing could be
+  named that today, because the indexer resolves its root and every path is absolute; but
+  that was an invariant held in another module, checked at no boundary and covered by no
+  test, so one future edit passing a relative path would have opened it with nothing to
+  notice. Both ways into exiftool — the long-lived `-stay_open` session and the one-shot
+  fallback — now **refuse** a relative path instead, and a refusal is not retried as a
+  broken session.
+
 ### Added
 - **Pin a query of your own as a slice** (F156). The measurement cancelled ten features
   before it added one. On a random sample of 200 frames, **65 — a third — fall into no
