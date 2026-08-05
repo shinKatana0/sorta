@@ -151,6 +151,13 @@ torchvision = [
 line-length = 100
 target-version = "py311"
 
+# F182: `sorta/ui/__init__.py` re-exports the tab modules on purpose. Fifty test files
+# and `sorta.cli` reach for names that used to be defined in `sorta/ui.py`; the package
+# answers to all of them, which is what makes the split a move rather than an edit of
+# fifty files. To ruff those imports look dead, and every one of them is load-bearing.
+[tool.ruff.lint.per-file-ignores]
+"sorta/ui/__init__.py" = ["F401"]
+
 [tool.mypy]
 ignore_missing_imports = true
 
