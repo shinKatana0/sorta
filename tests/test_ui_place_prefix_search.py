@@ -129,6 +129,23 @@ class TestPrefixFindsTheCity(PrefixSearchTestBase):
     def test_a_word_inside_a_composite_name_is_a_beginning_too(self):
         self.assertIn(_NIZHNY, self.city_ids("Новг"))
 
+    def test_typing_does_not_stop_at_the_space(self):
+        # A composite name is typed straight through, so the query outgrows a single
+        # word: «Нижний Новг» is no word of anything and still means one city.
+        for typed in ("Нижний", "Нижний ", "Нижний Нов", "Нижний Новгород"):
+            with self.subTest(typed=typed):
+                self.assertIn(_NIZHNY, self.city_ids(typed))
+
+    def test_a_hyphen_is_a_word_break_the_query_may_cross(self):
+        for typed in ("Ростов", "Ростов-", "Ростов-на-До", "Дону"):
+            with self.subTest(typed=typed):
+                self.assertIn(_ROSTOV, self.city_ids(typed))
+
+    def test_a_two_word_query_still_has_to_start_a_word(self):
+        # The second step verifies the WHOLE query, not just its first word: «Нижний
+        # Мос» narrows to nothing rather than answering with either half.
+        self.assertEqual(self.city_ids("Нижний Мос"), [])
+
     def test_a_substring_that_starts_nowhere_is_not_a_match(self):
         # «Рим» sits inside «Дурим», and a substring search would drag it in — along
         # with every other name that merely contains the letters.
@@ -266,6 +283,9 @@ class TestTheResolverIndex(unittest.TestCase):
 
     def test_a_country_is_found_by_the_start_of_its_name(self):
         self.assertEqual(self.resolver.country_ccs_by_prefix("Норв", "ru"), ["NO"])
+
+    def test_a_prefix_of_separators_only_is_not_a_query(self):
+        self.assertEqual(self.resolver.city_ids_by_prefix(" - , ", "ru"), [])
 
     def test_population_ranks_but_never_crashes(self):
         self.assertEqual(self.resolver.population_of(_MOSCOW), 10381222)

@@ -110,6 +110,22 @@ def _name_words(name: str) -> list[str]:
     return [w for w in _WORD_SPLIT_RE.split(name.casefold()) if w]
 
 
+def _starts_a_word(text: str, key: str) -> bool:
+    """True if `key` begins `text` at its start or right after a separator.
+
+    The same rule `_name_words` states, applied to a query that has grown past one
+    word: typing does not stop at a space, so «Нижний Новг» has to keep finding Нижний
+    Новгород and «Sankt-Pet» has to survive the hyphen the words were split on. Both
+    arguments are expected casefolded.
+    """
+    pos = text.find(key)
+    while pos != -1:
+        if pos == 0 or _WORD_SPLIT_RE.match(text[pos - 1]):
+            return True
+        pos = text.find(key, pos + 1)
+    return False
+
+
 def _to_xyz(lat_deg: np.ndarray | float, lon_deg: np.ndarray | float) -> np.ndarray:
     """Geodetic coordinates (deg.) -> point(s) on the unit sphere (x,y,z).
 
@@ -507,30 +523,38 @@ class GeoResolver:
         return pairs
 
     def city_ids_by_prefix(self, prefix: str, lang: Lang) -> list[int]:
-        """geonameids of cities that have a WORD starting with `prefix`, in `lang`.
+        """geonameids of cities whose name in `lang` has `prefix` at a word start.
 
         Case and surrounding whitespace are irrelevant, as in `city_ids_by_name`. An
         empty prefix is not a query and gives an empty list — "everything in the base"
         is never a useful answer here. The order (alphabetical by the matched word)
         carries no meaning: ranking the answer is the caller's business, because only
         the caller knows what the user typed it into.
+
+        A query that spans a separator («Нижний Новг») cannot be found in an index of
+        single words, so it is answered in two steps: the index narrows the base down
+        by the FIRST word, and the whole query is then checked against those names.
         """
         key = prefix.strip().casefold()
-        if not key:
+        words = _name_words(key)
+        if not key or not words:
             return []
         pairs = self._city_prefix_index(lang)
-        out: list[int] = []
+        found: list[int] = []
         seen: set[int] = set()
-        for word, gid in pairs[bisect.bisect_left(pairs, (key, 0)):]:
-            if not word.startswith(key):
+        for word, gid in pairs[bisect.bisect_left(pairs, (words[0], 0)):]:
+            if not word.startswith(words[0]):
                 break
             if gid not in seen:
                 seen.add(gid)
-                out.append(gid)
-        return out
+                found.append(gid)
+        if key == words[0]:
+            return found
+        return [gid for gid in found if _starts_a_word(self.name(gid, lang).casefold(),
+                                                       key)]
 
     def country_ccs_by_prefix(self, prefix: str, lang: Lang) -> list[str]:
-        """ISO ccs of countries with a name word starting with `prefix`, in `lang`.
+        """ISO ccs of countries whose name in `lang` has `prefix` at a word start.
 
         Scanned linearly on purpose: there are some 250 country names per language, and
         an index over them would cost more to build than every scan it saves.
@@ -541,9 +565,7 @@ class GeoResolver:
         out: list[str] = []
         seen: set[str] = set()
         for name, cc in self._country_name_index(lang).items():
-            if cc in seen:
-                continue
-            if any(word.startswith(key) for word in _name_words(name)):
+            if cc not in seen and _starts_a_word(name, key):
                 seen.add(cc)
                 out.append(cc)
         return out
