@@ -446,6 +446,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **"Try to improve" on a big frame refuses instead of working for nothing** (F198). The
+  owner pressed it on a **4320 px** frame on 2026-08-05: the copy was made, and *then* the
+  warning arrived — "the frame is larger than the limit (1024 px, this one is 4320), the
+  copy was rebuilt from a reduced frame… this is not an improved original". The result was
+  the original again, which is exactly what the measurement predicted: **35/35/30 on blind
+  pairs above the ceiling — nothing**. Two entrances had drifted apart. The offer on the
+  expanded frame **withdrew** the button above `features.restore_max_edge` (F168), and the
+  route **did the work anyway** and said so afterwards (F169) — deliberately, because F169
+  was written *before* the measurement and left the question to it. The verdict arrived on
+  2026-08-04 and never came back to the code; the owner found it a day later. So the cost
+  was not an impression but a **file**: a model run spent, a near-duplicate lying beside
+  the original, a row in the index — for a warning that could only be read once all three
+  existed. Above the ceiling the route now **refuses**, with the same reason code every
+  other refusal travels as (`too_large`) and the wording the warning already had: the
+  limit, the size of *this* frame, and `features.restore_max_edge`, so a person who
+  disagrees with the threshold can see that the threshold is theirs. Both entrances read
+  **one answer** now — the offer shows what the route enforces, so they cannot disagree
+  again. **Below the ceiling nothing is narrowed** (62% against 10% for plain bicubic on
+  small frames), the ceiling itself does not move, and the copies already made are **left
+  alone**: deleting them is a decision a person makes, not a side effect of a fix.
 - **A slice shows its frames as a grid — every slice, by one rule** (F195). The owner,
   reading «Животные · по запросу» on 2026-08-04: «все фотки растянуты — то есть одно фото
   на весь ряд». The panel of the pinned queries was the one grid nobody had written an
