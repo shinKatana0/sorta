@@ -39,7 +39,7 @@ class PlaceTestBase(UiServerTestBase):
         super().setUp()
         write_geo_fixture(self.root / "geo")
         self.resolver = GeoResolver(data_dir=self.root / "geo")
-        patcher = patch("sorta.ui._geo_resolver", return_value=self.resolver)
+        patcher = patch("sorta.ui.layout._geo_resolver", return_value=self.resolver)
         patcher.start()
         self.addCleanup(patcher.stop)
 

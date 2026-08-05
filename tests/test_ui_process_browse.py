@@ -106,7 +106,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(resp, {"path": "C:\\Users\\me\\Photos"})
 
     def test_cancelled_dialog_returns_empty_path_not_500(self):
-        with mock.patch.object(ui, "subprocess") as fake_subprocess:
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.run.return_value = mock.Mock(
                 returncode=0, stdout="", stderr="")
             self.start_server()
@@ -115,7 +115,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(resp, {"path": ""})
 
     def test_subprocess_exception_returns_empty_path_not_500(self):
-        with mock.patch.object(ui, "subprocess") as fake_subprocess:
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.run.side_effect = RuntimeError("no display")
             self.start_server()
             status, resp = self.post_browse()
@@ -123,7 +123,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(resp, {"path": ""})
 
     def test_subprocess_timeout_returns_empty_path_not_500(self):
-        with mock.patch.object(ui, "subprocess") as fake_subprocess:
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.TimeoutExpired = subprocess.TimeoutExpired
             fake_subprocess.run.side_effect = subprocess.TimeoutExpired(
                 cmd="python", timeout=120)
@@ -133,7 +133,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(resp, {"path": ""})
 
     def test_nonzero_returncode_returns_empty_path_not_500(self):
-        with mock.patch.object(ui, "subprocess") as fake_subprocess:
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.run.return_value = mock.Mock(
                 returncode=1, stdout="", stderr="traceback")
             self.start_server()
@@ -142,7 +142,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(resp, {"path": ""})
 
     def test_strips_whitespace_from_selected_path(self):
-        with mock.patch.object(ui, "subprocess") as fake_subprocess:
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.run.return_value = mock.Mock(
                 returncode=0, stdout=" C:\\Photos \n", stderr="")
             self.start_server()
@@ -154,7 +154,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         # tkinter is not thread-safe, and the POST handler is not on the main thread —
         # the dialog must go through subprocess.run, not a direct import of tkinter
         # in the request handler.
-        with mock.patch.object(ui, "subprocess") as fake_subprocess:
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.run.return_value = mock.Mock(
                 returncode=0, stdout="C:\\X", stderr="")
             self.start_server()

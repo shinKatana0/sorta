@@ -78,7 +78,7 @@ class PlanCacheTestBase(unittest.TestCase):
         return SimpleNamespace(plan=list(self.plans.get(mode, [])))
 
     def patched_cache(self) -> tuple[ui.PlanCache, mock._patch]:
-        patcher = mock.patch.object(ui, "plan_and_sort", self.fake_plan_and_sort)
+        patcher = mock.patch.object(ui.layout, "plan_and_sort", self.fake_plan_and_sort)
         patcher.start()
         self.addCleanup(patcher.stop)
         return ui.PlanCache(self.cfg, self.conn, self.dest), patcher
@@ -345,7 +345,7 @@ class TestServerStartBuildsNothing(UiServerTestBase):
             calls.append(mode)
             return SimpleNamespace(plan=[])
 
-        with mock.patch.object(ui, "plan_and_sort", counting):
+        with mock.patch.object(ui.layout, "plan_and_sort", counting):
             self.start_server()
             status, _body, _ctype = self.get("/")
             self.assertEqual(status, 200)
@@ -373,7 +373,7 @@ class TestNoReportSideFiles(PlanCacheTestBase):
             seen.append(kwargs.get("write_reports"))
             return SimpleNamespace(plan=[])
 
-        with mock.patch.object(ui, "plan_and_sort", spy):
+        with mock.patch.object(ui.layout, "plan_and_sort", spy):
             ui.PlanCache(self.cfg, self.conn, self.dest).get("city")
         self.assertEqual(seen, [False])
 

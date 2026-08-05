@@ -499,7 +499,7 @@ class TestOneDecisionPerFrame(ReviewTestBase):
     def test_marking_writes_dedup_choice_and_nothing_else(self):
         fid = self.add_reviewable("a.jpg", sharpness=10.0)
         self.start_server()
-        with mock.patch("sorta.ui.send_to_trash") as trash:
+        with mock.patch("sorta.ui.common.send_to_trash") as trash:
             status, body = self.post(
                 "/api/review/mark", {"file_ids": [fid], "action": "to_delete"})
         self.assertEqual(status, 200)

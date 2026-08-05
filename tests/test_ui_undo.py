@@ -152,7 +152,7 @@ class UndoBlockingTestBase(UndoTestBase):
             return UndoStats(batch_id=batch_id or 0, undone=1,
                              cancelled=bool(should_cancel and should_cancel()))
 
-        patcher = mock.patch.object(ui, "undo", fake_undo)
+        patcher = mock.patch.object(ui.moves, "undo", fake_undo)
         patcher.start()
         self.addCleanup(patcher.stop)
         return calls
@@ -173,7 +173,7 @@ class UndoBlockingTestBase(UndoTestBase):
                 cancelled=bool(should_cancel and should_cancel()),
             )
 
-        patcher = mock.patch.object(ui, "plan_and_sort", fake_plan_and_sort)
+        patcher = mock.patch.object(ui.layout, "plan_and_sort", fake_plan_and_sort)
         patcher.start()
         self.addCleanup(patcher.stop)
         return calls
@@ -337,7 +337,7 @@ class TestSortCancel(UndoBlockingTestBase):
             kwargs["should_cancel"] = cancel_after_the_first_file
             return real_plan_and_sort(*args, **kwargs)
 
-        with mock.patch.object(ui, "plan_and_sort", cancelling):
+        with mock.patch.object(ui.layout, "plan_and_sort", cancelling):
             first = self.sort_and_wait(dest, "copy")
         self.assertTrue(first["cancelled"])
         self.assertEqual(first["moved"], 1)

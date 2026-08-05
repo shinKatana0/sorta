@@ -168,7 +168,14 @@ class EntryPointCase(unittest.TestCase):
             self.builds.append(1)
             return caching_classifier(self.encoded)
 
-        with mock.patch.object(module, "clip_classifier", factory):
+        # Patch where the name is USED, not where it is re-exported. After F182 the web
+        # app is a package: `sorta.ui` still exposes `clip_classifier`, but the call lives
+        # in `sorta.ui.process`, which bound its own reference at import. Patching the
+        # re-export leaves that reference alone — the run then goes through the REAL
+        # weights, the vectors still land in the table, and only `builds` staying empty
+        # says that the seam this test exists to hold was not held at all.
+        target = getattr(module, "process", module)
+        with mock.patch.object(target, "clip_classifier", factory):
             steps = dict(module._pipeline_steps())
             steps["junk"](self.cfg, self.conn, lambda done, total: None)
 

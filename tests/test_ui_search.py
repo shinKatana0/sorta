@@ -47,7 +47,7 @@ class SearchUiTestBase(UiServerTestBase):
                 return np.stack([self.vectors.get(t, unit(1.0)) * 3.0 for t in texts])
             return encode
 
-        patcher = patch.object(ui, "text_encoder", fake_tower)
+        patcher = patch.object(ui.slices, "text_encoder", fake_tower)
         patcher.start()
         self.addCleanup(patcher.stop)
 

@@ -1,0 +1,719 @@
+:root {
+  color-scheme: light;
+  --bg: #F7F8FB;
+  --surface: #FFFFFF;
+  --head-bg: #FBFCFE;
+  --card: #FFFFFF;
+  --chip: #F3F5F9;
+  --field: #FFFFFF;
+  --track: #E7EBF2;
+  --ink: #1A2230;
+  --muted: #5B6675;
+  --line: #E3E7EE;
+  --accent: #2F5BD0;
+  --accent-soft: #B9C8EF;
+  --on-accent: #FFFFFF;
+  --tab-active-ink: #1A2230;
+  --tab-active-bg: #FFFFFF;
+  --tab-active-line: #DBE1EA;
+  --good: #1E9E6A;
+  --good-soft: #BFE7D5;
+  --danger: #D14343;
+  --danger-soft: #EAB6B6;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(20,30,50,.06);
+  --shadow-lg: 0 8px 24px rgba(20,30,50,.05);
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #141A22;
+    --surface: #181F29;
+    --head-bg: #171E27;
+    --card: #181F29;
+    --chip: #1E2731;
+    --field: #121821;
+    --track: #232D39;
+    --ink: #E6EAF0;
+    --muted: #8A96A6;
+    --line: #28323F;
+    --accent: #6E9BFF;
+    --accent-soft: #31456E;
+    --on-accent: #0B1220;
+    --tab-active-ink: #E6EAF0;
+    --tab-active-bg: #212B37;
+    --tab-active-line: #334053;
+    --good: #3ECB95;
+    --good-soft: #204A3A;
+    --danger: #F0736F;
+    --danger-soft: #5A2C2C;
+    --shadow-sm: none;
+    --shadow-lg: none;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #141A22;
+  --surface: #181F29;
+  --head-bg: #171E27;
+  --card: #181F29;
+  --chip: #1E2731;
+  --field: #121821;
+  --track: #232D39;
+  --ink: #E6EAF0;
+  --muted: #8A96A6;
+  --line: #28323F;
+  --accent: #6E9BFF;
+  --accent-soft: #31456E;
+  --on-accent: #0B1220;
+  --tab-active-ink: #E6EAF0;
+  --tab-active-bg: #212B37;
+  --tab-active-line: #334053;
+  --good: #3ECB95;
+  --good-soft: #204A3A;
+  --danger: #F0736F;
+  --danger-soft: #5A2C2C;
+  --shadow-sm: none;
+  --shadow-lg: none;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F7F8FB;
+  --surface: #FFFFFF;
+  --head-bg: #FBFCFE;
+  --card: #FFFFFF;
+  --chip: #F3F5F9;
+  --field: #FFFFFF;
+  --track: #E7EBF2;
+  --ink: #1A2230;
+  --muted: #5B6675;
+  --line: #E3E7EE;
+  --accent: #2F5BD0;
+  --accent-soft: #B9C8EF;
+  --on-accent: #FFFFFF;
+  --tab-active-ink: #1A2230;
+  --tab-active-bg: #FFFFFF;
+  --tab-active-line: #DBE1EA;
+  --good: #1E9E6A;
+  --good-soft: #BFE7D5;
+  --danger: #D14343;
+  --danger-soft: #EAB6B6;
+  --shadow-sm: 0 1px 2px rgba(20,30,50,.06);
+  --shadow-lg: 0 8px 24px rgba(20,30,50,.05);
+}
+* { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
+body {
+  font-family: var(--font-sans);
+  margin: 0;
+  padding: var(--space-lg) var(--space-xl) var(--space-xl);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+h1, h2, h3 { font-weight: 600; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+@media (prefers-reduced-motion: no-preference) {
+  .btn, .tab-btn, .top-btn, details > summary, .stage-chip, .thumb-skel img { transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease, transform .12s ease; }
+}
+
+/* --- таблицы -------------------------------------------------------- */
+.table-wrap { width: 100%; max-width: 100%; overflow-x: auto; border-radius: var(--radius-md); border: 1px solid var(--line); }
+table { border-collapse: collapse; width: 100%; background: var(--surface); font-variant-numeric: tabular-nums; }
+td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even), table tr:nth-child(even) { background: var(--chip); }
+table tr:hover { background: var(--accent-soft); }
+img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--line);
+      vertical-align: middle; margin-right: var(--space-sm); background: var(--chip); }
+details { margin-left: var(--space-md); }
+summary { cursor: pointer; font-weight: 600; margin: var(--space-sm) 0; overflow-wrap: anywhere; list-style-position: outside; }
+details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% - 1rem); }
+/* F70: «показано N из M» под страницей файлов раскрытой папки. */
+.plan-page-status { margin: 0 0 0.4rem var(--space-md); font-size: 0.8rem; color: var(--muted); }
+
+/* --- кнопки ----------------------------------------------------------- */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-sans); font-size: 13px; font-weight: 500; line-height: 1;
+  padding: 7px 12px; margin: 0; cursor: pointer;
+  background: var(--chip); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+}
+.btn:hover { border-color: var(--accent); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn:disabled:hover { border-color: var(--line); }
+.btn svg { width: 14px; height: 14px; flex: none; }
+.btn-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.btn-primary:hover { filter: brightness(1.06); border-color: var(--accent); }
+.btn-ghost { background: transparent; }
+.btn-danger { background: transparent; color: var(--danger); border-color: var(--danger-soft); }
+.btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+/* Plan-row buttons (delete / keep / folder place) sat in the cell with no layout:
+   labels of different widths drifted vertically and the three buttons read as
+   three different levels. One line, one gap. */
+.plan-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* --- шапка / вордмарк --------------------------------------------------- */
+.header-bar { display: flex; align-items: center; justify-content: space-between;
+      margin: 0 0 var(--space-lg) 0; gap: var(--space-md); flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-mark { width: 26px; height: 26px; color: var(--accent); flex: none; }
+.brand-name { font-size: 1.15rem; font-weight: 700; letter-spacing: 0.01em; }
+.header-controls { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+.lang-field { display: inline-flex; align-items: center; gap: 5px; background: var(--chip);
+      border: 1px solid var(--line); border-radius: var(--radius-md); padding: 0 4px 0 8px; }
+.lang-field svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.lang-select { padding: 6px 4px; cursor: pointer; border: none; background: transparent; color: var(--ink);
+      font-family: var(--font-sans); font-size: 13px; }
+/* нативный option-попап в тёмной теме иначе белый со светлым текстом (плохой
+   контраст) — явные цвета по токенам темы + color-scheme выше делают его читаемым */
+.lang-select option { background: var(--surface); color: var(--ink); }
+.theme-toggle-btn svg { width: 15px; height: 15px; }
+
+/* --- вкладки ------------------------------------------------------------ */
+.tabs { display: flex; gap: 4px; margin-bottom: var(--space-lg); border-bottom: 1px solid var(--line);
+      overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.tab-btn {
+  flex: none; padding: 8px 16px; cursor: pointer; font-family: var(--font-sans); font-size: 13.5px;
+  font-weight: 500; color: var(--muted); background: transparent;
+  border: 1px solid transparent; border-bottom: none; border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+.tab-btn:hover { color: var(--ink); background: var(--chip); }
+.tab-btn.active { background: var(--tab-active-bg); color: var(--tab-active-ink);
+      border-color: var(--tab-active-line); font-weight: 600; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+/* --- F133: a slice is a panel INSIDE the "Slices" tab, switched by a pin rather than by
+   a tab of its own. The pins are drawn from data (see SLICE_PINS in the script), because
+   F129 turns the list into a query and a fixed row of buttons would have to be redrawn a
+   feature later. --- */
+.slice-panel { display: none; }
+.slice-panel.active { display: block; }
+.slice-search { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--space-md); }
+.slice-query-field { display: flex; align-items: center; gap: var(--space-sm);
+      padding: 6px var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md);
+      background: var(--card); color: var(--muted); }
+.slice-query-field svg { width: 15px; height: 15px; flex: none; }
+.slice-query-field input { flex: 1; min-width: 0; border: 0; background: transparent;
+      color: inherit; padding: 2px 0; }
+/* --- F134: the line is a control now, and the two things beside it are the feature:
+   the reason it cannot be used, and the way to fix it. A disabled field with nothing
+   next to it is how a person concludes their archive is empty. --- */
+.slice-query-row { display: flex; align-items: center; gap: var(--space-sm); }
+.slice-query-row .slice-query-field { flex: 1; }
+.slice-query-field input:disabled { cursor: not-allowed; }
+#search-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.search-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.search-card img { width: 100%; height: 110px; margin: 0; }
+.search-card-name { font-size: 0.8rem; word-break: break-all; }
+.search-card-meta { font-size: 0.75rem; color: var(--muted); }
+/* The score is not decoration: it is the only thing that explains the order, and the
+   reader stops where it stops being convincing. */
+.search-card-score { font-size: 0.75rem; color: var(--muted);
+      font-variant-numeric: tabular-nums; }
+/* --- F133: the order warning. Loud enough to be read, and a hint and nothing more: the
+   collection is alive, "gather" happens again and again, and a person coming back for one
+   album must not be walked through steps. --- */
+.layout-warning { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap;
+      margin-bottom: var(--space-md); padding: var(--space-sm) var(--space-md);
+      border: 1px solid var(--danger-soft); border-left: 4px solid var(--danger);
+      border-radius: var(--radius-md);
+      background: var(--card); font-size: 0.9rem; }
+
+/* --- F138: the run budget. A price is a HINT, not a heading — it is set as secondary
+   text and pushed to the right edge of its line, so the list still reads as a list of
+   what to compute and the numbers come second. The total is the one thing here set
+   like a heading: it is what the eye meets on its way to the run button. --- */
+.cost-block { display: flex; flex-direction: column; gap: var(--space-sm); }
+.cost-head { font-weight: 600; font-size: 0.9rem; }
+.cost-row { display: grid; grid-template-columns: 1fr auto auto; align-items: baseline;
+      column-gap: var(--space-sm); }
+.cost-name { font-size: 0.85rem; }
+.cost-always { font-size: 0.8rem; color: var(--muted); }
+.cost-price { font-size: 0.8rem; color: var(--muted); text-align: right;
+      font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cost-row .cost-hint, .cost-row .process-toggle-warn { grid-column: 1 / -1; }
+.cost-child { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto;
+      align-items: baseline; column-gap: var(--space-sm); margin-left: 20px; }
+.cost-child .cost-hint { grid-column: 1 / -1; }
+.cost-child select { font-size: 0.8rem; padding: 4px 6px; margin-left: 6px; }
+.cost-total { display: flex; align-items: baseline; gap: var(--space-sm);
+      padding-top: var(--space-sm); border-top: 1px solid var(--line); }
+.cost-total-label { font-size: 0.85rem; color: var(--muted); }
+.cost-total-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* --- общие карточки ------------------------------------------------------ */
+.card { border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--space-md) var(--space-lg);
+      margin-bottom: var(--space-md); background: var(--card); box-shadow: var(--shadow-sm); }
+.card.named { border-color: var(--accent-soft); border-width: 1.5px; }
+.card h3 { margin: 0 0 var(--space-sm) 0; font-size: 0.95rem; }
+
+/* --- бейджи / чипы -------------------------------------------------------- */
+.badge { display: inline-flex; align-items: center; gap: 3px; color: var(--good); font-weight: 600;
+      margin-left: 6px; font-size: 0.85em; }
+.badge svg { width: 12px; height: 12px; }
+.chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-pill);
+      font-size: 0.78rem; font-weight: 500; background: var(--chip); color: var(--muted); }
+.chip-good { background: var(--good-soft); color: var(--good); }
+.chip-accent { background: var(--accent-soft); color: var(--accent); }
+.chip-danger { background: var(--danger-soft); color: var(--danger); }
+
+/* --- инпуты/селекты --------------------------------------------------- */
+input[type="text"], select {
+  font-family: var(--font-sans); font-size: 13px; color: var(--ink); background: var(--field);
+  border: 1px solid var(--line); border-radius: var(--radius-md); padding: 7px 9px;
+}
+input[type="text"]:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+label { cursor: pointer; }
+
+/* --- состояния: пусто/загрузка/ошибка ---------------------------------- */
+.state-msg { display: flex; align-items: center; gap: 8px; padding: var(--space-md) var(--space-lg);
+      border-radius: var(--radius-md); color: var(--muted); background: var(--chip); }
+.state-error { color: var(--danger); background: var(--danger-soft); }
+.state-msg svg { width: 15px; height: 15px; flex: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .state-loading svg { animation: sorta-spin 0.9s linear infinite; }
+}
+@keyframes sorta-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.tree-controls { margin: 0 0 var(--space-md) 0; display: flex; gap: var(--space-sm); }
+.top-btn { position: fixed; right: 1.2rem; bottom: 1.2rem; padding: 9px 14px;
+      cursor: pointer; border-radius: var(--radius-pill); opacity: 0.9; z-index: 1000;
+      background: var(--surface); box-shadow: var(--shadow-lg); }
+.top-btn:hover { opacity: 1; }
+.dupes-controls { margin: 0 0 var(--space-md) 0; display: flex; align-items: center; gap: var(--space-sm); }
+.dupes-controls #dupes-save-status { color: var(--good); font-size: 0.85rem; }
+.dupe-group .table-wrap { margin-bottom: var(--space-sm); }
+.skip-label { display: inline-flex; align-items: center; gap: 5px; font-size: 0.85rem; color: var(--muted);
+      margin-right: var(--space-md); }
+.cluster-controls { margin: 0 0 var(--space-md) 0; }
+#clusters-grid, #events-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: var(--space-md); }
+.cluster-thumbs { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: var(--space-sm); }
+.thumb-skel { width: 44px; height: 44px; border-radius: var(--radius-sm); background: var(--track);
+      overflow: hidden; }
+.thumb-skel img { width: 100%; height: 100%; margin: 0; object-fit: cover; cursor: zoom-in;
+      display: block; opacity: 0; }
+.thumb-skel.loaded { background: transparent; }
+.thumb-skel.loaded img { opacity: 1; }
+.thumb-skel img:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cluster-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 var(--space-sm) 0; }
+.cluster-name-form { display: flex; gap: 5px; margin-bottom: var(--space-sm); }
+.cluster-name-form input { flex: 1; min-width: 0; }
+.cluster-merge-select { font-size: 0.8rem; display: flex; align-items: center; gap: 5px; color: var(--muted); }
+.album-controls { display: flex; align-items: center; gap: 5px; margin-top: var(--space-sm); flex-wrap: wrap; }
+.album-controls select { font-size: 0.8rem; padding: 6px 7px; }
+.album-controls input[type="text"] { flex: 1; min-width: 90px; font-size: 0.8rem; padding: 6px 7px; }
+.album-status { font-size: 0.8rem; color: var(--good); margin-left: 2px; }
+.album-hint { font-size: 0.8rem; color: var(--muted); margin-top: var(--space-sm); font-style: italic; }
+.event-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 var(--space-sm) 0; }
+.event-thumbs { display: flex; flex-wrap: wrap; gap: 3px; margin: 0 0 var(--space-sm) 0; }
+/* единый вид кликабельной миниатюры-превью (Города/Дубли/Перемещения/События) */
+/* фон-плейсхолдер виден, пока lazy-<img> не загрузился — отклик вместо «пусто» */
+.clickable-thumb { cursor: zoom-in; background: var(--track); }
+.clickable-thumb:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* F80: в сетке видео и фото были неотличимы. Значок «плёнки» поверх угла плитки —
+   обёртка появляется ТОЛЬКО у видео, у фото плитка остаётся голым <img>. */
+.thumb-video { position: relative; display: inline-block; line-height: 0; }
+.thumb-video-badge { position: absolute; left: 3px; bottom: 3px; display: inline-flex;
+      align-items: center; gap: 3px; padding: 1px 4px; border-radius: var(--radius-sm);
+      background: rgba(10,14,22,.72); color: #fff; font-size: 0.7rem; line-height: 1.4;
+      pointer-events: none; }
+.thumb-video-badge svg { width: 11px; height: 11px; display: block; }
+.thumb-name { display: block; font-size: 0.8rem; color: var(--muted); word-break: break-all; margin-top: 2px; }
+.event-name-input { width: 100%; margin-bottom: var(--space-sm); box-sizing: border-box; }
+
+/* --- F103: the buckets of «Служебные кадры» ---------------------------- */
+/* A grid of tiles rather than a table: the decision here is made by looking — «это
+   правда товар?» — from the picture and not from the columns. */
+#junk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.junk-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.junk-card.restored { outline: 2px solid var(--good); outline-offset: -2px;
+      background: var(--good-soft); }
+.junk-card img { width: 100%; height: 110px; margin: 0; }
+/* Документ вместо превью получает нейтральную заглушку того же размера: сетка не
+   ломается, а содержимое паспорта не декодируется вообще. */
+.junk-doc-box { height: 110px; display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm); border: 1px dashed var(--line); background: var(--chip);
+      color: var(--muted); font-size: 0.8rem; }
+.junk-card-name { font-size: 0.8rem; word-break: break-all; }
+.junk-card-meta { font-size: 0.75rem; color: var(--muted); }
+.junk-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
+/* F175: the one bucket in this slice that must not be deleted is told apart from the
+   other three BEFORE anything is selected — a border of its own and a mark on the card,
+   not merely a stub where a thumbnail would have been. Accent and not danger red: red
+   on this grid would read as "these are the ones to throw away", which is the exact
+   opposite of what the mark means. */
+.junk-card.sensitive { border-color: var(--accent); border-left-width: 3px; }
+.junk-card .chip { align-self: flex-start; }
+
+/* --- F123: the "Animals" tab -------------------------------------------- */
+/* The same tile grid as the junk buckets: the decision is made by looking. The one
+   difference is the confidence score on the card — the list is sorted by it, and the
+   reader is looking for the place where the quality runs out. */
+#animals-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.animal-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.animal-card img { width: 100%; height: 110px; margin: 0; }
+.animal-card-name { font-size: 0.8rem; word-break: break-all; }
+.animal-card-meta { font-size: 0.75rem; color: var(--muted); }
+.animal-card-score { font-size: 0.75rem; color: var(--muted);
+      font-variant-numeric: tabular-nums; }
+/* F124: a frame the user has taken the mark off stays on the page, dimmed, with its
+   verdict named and its way back one click away. Making it disappear would move the
+   counter for no visible reason and hide the undo inside the vanished card. */
+.animal-card.not-animal { opacity: 0.55; }
+.animal-card.not-animal img { filter: grayscale(1); }
+.animal-card-manual { font-size: 0.75rem; color: var(--muted); }
+.animal-card-actions { display: flex; gap: var(--space-xs); flex-wrap: wrap;
+      align-items: center; }
+
+/* --- F174: the destination the action names ------------------------------
+   Under the button, never instead of it: the line answers "and where does the frame
+   end up", which is a different question from "what does this button do". */
+.dest-line { font-size: 0.75rem; color: var(--muted); word-break: break-all; }
+.dest-summary { font-size: 0.8rem; color: var(--muted); }
+
+/* --- F152: the face slices -------------------------------------------------
+   The same tile as the animal grid; no score line, because these slices have no
+   confidence to print — a frame is in one because a face was detected on it. */
+#face-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.face-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.face-card img { width: 100%; height: 110px; margin: 0; }
+.face-card-name { font-size: 0.8rem; word-break: break-all; }
+.face-card-meta { font-size: 0.75rem; color: var(--muted); }
+
+/* --- F126: the "Review" workspace ---------------------------------------- */
+/* The switcher looks like the junk bucket chips, for the same reason: a row of
+   named counters is how a person picks which pile to go through next. Every slice
+   stays in the row at zero — a slice that disappears when it empties turns an answer
+   into a question about the interface. The flat slices reuse the tile grid; only
+   duplicates keep their table, because only there is a keeper chosen. */
+.review-slices { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; }
+.review-slice-btn.active { background: var(--accent); color: var(--on-accent);
+      border-color: var(--accent); font-weight: 600; }
+.review-slice-count { margin-left: 6px; font-variant-numeric: tabular-nums; }
+#review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+.review-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+/* The decision is visible on the card itself: a frame already decided is not asked
+   about again, in this slice or in any other it shows up in. */
+.review-card.marked-delete { outline: 2px solid var(--danger); outline-offset: -2px;
+      background: var(--danger-soft); }
+.review-card.marked-keep { outline: 2px solid var(--good); outline-offset: -2px;
+      background: var(--good-soft); }
+.review-card img { width: 100%; height: 110px; margin: 0; }
+.review-card-name { font-size: 0.8rem; word-break: break-all; }
+.review-card-meta { font-size: 0.75rem; color: var(--muted);
+      font-variant-numeric: tabular-nums; }
+.review-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; }
+/* F149: the processed copy stands next to the original and must never be mistaken for
+   it. A dashed border rather than another coloured outline: the two outlines above mean
+   a DECISION, and "this one was drawn over" is not one. */
+.review-card.processed { border-style: dashed; border-color: var(--accent); }
+.review-card-processed { font-size: 0.75rem; color: var(--accent); cursor: help; }
+
+/* --- F108: вкладка «Обзор» ---------------------------------------------- */
+/* Четыре группы рядом, а не одна длинная простыня: вопрос «что с архивом»
+   распадается ровно на них, и ответ должен читаться без прокрутки. */
+.overview-groups { display: grid; gap: var(--space-md);
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.overview-row { display: flex; align-items: baseline; justify-content: space-between;
+      gap: var(--space-sm); padding: 5px 0; border-top: 1px solid var(--line); }
+.overview-row:first-of-type { border-top: none; }
+.overview-label { color: var(--muted); font-size: 0.85rem; }
+.overview-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Главное число группы (без места, файлов в индексе) — крупнее остальных строк. */
+.overview-row-main .overview-value { font-size: 1.15rem; }
+.overview-row-main .overview-label { color: var(--ink); font-weight: 500; }
+/* Число, у которого есть своя вкладка, само является переходом на неё: обзор без
+   переходов — отчёт, а нужен пульт. */
+.overview-value-link { font-family: var(--font-sans); font-size: inherit; font-weight: 600;
+      font-variant-numeric: tabular-nums; color: var(--accent); background: none;
+      border: none; padding: 0; cursor: pointer; text-decoration: underline;
+      text-underline-offset: 2px; }
+.overview-value-link:hover { color: var(--ink); }
+.overview-subtitle { margin: var(--space-md) 0 var(--space-xs) 0; color: var(--muted);
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.overview-note { margin: var(--space-sm) 0 0 0; color: var(--muted); font-size: 0.8rem; }
+.overview-note-warn { color: var(--danger); }
+/* Строки-значения (путь назначения, дата) переносятся, в отличие от чисел. */
+.overview-text { white-space: normal; word-break: break-word; font-weight: 500;
+      text-align: right; }
+.process-intro { max-width: 46rem; color: var(--muted); }
+/* F51: вертикальные группы (путь / каждый тумблер+hint / кнопки), а не один
+   плоский flex — там .process-toggle-hint с flex-basis:100% уезжал в конец
+   контейнера, после всех кнопок, оторвано от своего чекбокса. */
+.process-controls { display: flex; flex-direction: column; gap: var(--space-sm);
+      margin: var(--space-md) 0; max-width: 42rem; }
+.process-path-row { display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap; }
+.process-path-row input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
+.process-option { display: flex; flex-direction: column; gap: 2px; }
+/* F81: три блока первой вкладки. Настроенный блок схлопывается в одну строку,
+   ненастроенный остаётся раскрытым; следующие блоки приглушены пояснением, но НЕ
+   заблокированы — экран открывают многократно, и визард наказывает каждый
+   следующий заход. */
+.step { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface);
+      padding: var(--space-md); display: flex; flex-direction: column; gap: var(--space-sm); }
+.step-head { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+.step-title { font-weight: 600; font-size: 0.9rem; }
+.step-summary { display: none; color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.step.collapsed .step-summary { display: inline; }
+.step.collapsed .step-body { display: none; }
+.step-edit-btn { display: none; padding: 3px 8px; font-size: 0.78rem; }
+/* Кнопка видна всегда, когда шаг МОЖНО свернуть (источник задан): в свёрнутом
+   виде она «изменить», в раскрытом — «свернуть». Раньше её показывал только
+   .collapsed, поэтому раскрытый шаг обратно не складывался. */
+.step.can-collapse .step-edit-btn { display: inline-flex; }
+.step-body { display: flex; flex-direction: column; gap: var(--space-sm); }
+.step-hint { display: none; font-size: 0.8rem; color: var(--muted); }
+.step.step-dimmed { opacity: 0.65; }
+.step.step-dimmed .step-hint { display: block; }
+.excludes-panel { display: flex; flex-direction: column; gap: var(--space-sm);
+      border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-md);
+      background: var(--chip); }
+.excludes-tree { max-height: 22rem; overflow: auto; background: var(--surface);
+      border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm); }
+.excludes-tree ul { list-style: none; margin: 0; padding-left: var(--space-md); }
+.excludes-tree > ul { padding-left: 0; }
+.excludes-tree li { margin: 2px 0; }
+.excludes-row { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
+.excludes-meta { color: var(--muted); font-size: 0.78rem; }
+/* F82: три состояния узла. Значок + подпись прямо в кнопке — состояние должно
+   читаться взглядом по дереву, без наведения и без легенды под рукой; цвет —
+   вторая, а не единственная опора (те же две роли, что у строк плана в F77). */
+.tri-state { font: inherit; font-size: 0.85rem; line-height: 1.2; cursor: pointer;
+      padding: 1px 7px; border-radius: var(--radius-pill); border: 1px solid var(--line);
+      background: var(--surface); color: var(--muted); white-space: nowrap; }
+.tri-state[data-state="layout"] { border-color: var(--accent); background: var(--accent-soft);
+      color: var(--accent); font-weight: 500; }
+.tri-state[data-state="scan"] { border-color: var(--danger); background: var(--danger-soft);
+      color: var(--danger); font-weight: 500; }
+.tri-state:disabled { cursor: default; opacity: 0.55; }
+.excludes-legend { list-style: none; margin: 0; padding: 0; font-size: 0.8rem;
+      color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+.excludes-legend .tri-mark { font-weight: 600; color: var(--ink); }
+.process-toggle-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
+.process-toggle-hint { font-size: 0.8rem; color: var(--muted); margin-left: 20px; }
+.process-toggle-warn { color: var(--danger); }
+.process-actions { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; }
+.process-progress { width: 100%; max-width: 40rem; display: block; margin: var(--space-sm) 0; height: 8px;
+      appearance: none; border: none; border-radius: var(--radius-pill); overflow: hidden; background: var(--track); }
+.process-progress::-webkit-progress-bar { background: var(--track); border-radius: var(--radius-pill); }
+.process-progress::-webkit-progress-value { background: var(--accent); border-radius: var(--radius-pill); }
+.process-progress::-moz-progress-bar { background: var(--accent); border-radius: var(--radius-pill); }
+/* #37: total ещё неизвестен (индексация сканирует дерево) — вместо «0 из 0»
+   бегущая полоса «идёт работа». Определённый прогресс (total>0) заполняется как
+   обычно (::progress-value выше). */
+.process-progress.indeterminate { background-image: linear-gradient(90deg,
+      var(--track) 0%, var(--accent-soft) 40%, var(--accent) 50%, var(--accent-soft) 60%, var(--track) 100%);
+      background-size: 240% 100%; background-repeat: no-repeat; }
+.process-progress.indeterminate::-webkit-progress-bar { background: transparent; }
+.process-progress.indeterminate::-webkit-progress-value { background: transparent; }
+.process-progress.indeterminate::-moz-progress-bar { background: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  .process-progress.indeterminate { animation: process-indeterminate 1.2s linear infinite; }
+}
+@keyframes process-indeterminate { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.process-status { margin: var(--space-sm) 0; color: var(--muted); }
+/* F135: what the finished run actually did — one line per stage that can tell
+   "processed" from "skipped as already done". Without it a run that skipped
+   everything is indistinguishable from a run that did nothing. */
+.process-summary { margin: var(--space-sm) 0; font-size: 0.85rem; color: var(--muted); }
+.process-summary-title { display: block; }
+.process-summary-line { display: block; margin-left: var(--space-sm); }
+/* F84: caption of the current sub-phase, right under the bar — on a phase without a
+   percent (clustering) it is the only thing that says the run is alive. */
+.process-phase { margin: calc(-1 * var(--space-sm)) 0 var(--space-sm); font-size: 0.85rem;
+      color: var(--muted); }
+/* F64: инфо-баннер о CPU-профиле (амбер, читается в обеих темах через --ink) */
+/* F94: the caches — a quiet block at the bottom of the tab. It is housekeeping, not a
+   step of the run, so it looks like a card but is not numbered among the steps. */
+/* Width matches the three blocks above (.process-controls, capped at 42rem): this
+   one sits OUTSIDE that container and stretched across the full page, which made
+   the tab look assembled from two different layouts. */
+.cache-block { margin-top: var(--space-md); max-width: 42rem; border: 1px solid var(--line);
+      border-radius: var(--radius-md); background: var(--surface); padding: var(--space-md);
+      display: flex; flex-direction: column; gap: var(--space-sm); }
+/* F119: a sub-heading inside the settings block. The frame-quality knobs are answered
+   by three different instruments (CLIP, nothing at all, the VLM) and grouping them
+   under one heading said they were all the VLM's — which is what a reader concluded. */
+.settings-subhead { margin-top: var(--space-sm); font-size: 0.82rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.cache-head { display: flex; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; }
+.cache-sizes { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.cache-status { font-size: 0.8rem; color: var(--muted); }
+.env-warning { margin-top: var(--space-md); padding: 10px 13px; font-size: 0.85rem;
+      border-radius: var(--radius-md); color: var(--ink); line-height: 1.45;
+      background: rgba(214, 158, 46, 0.13); border: 1px solid rgba(214, 158, 46, 0.42); }
+.stage-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: var(--space-sm) 0; }
+.stage-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: var(--radius-pill);
+      font-size: 0.78rem; font-weight: 500; background: var(--chip); color: var(--muted); border: 1px solid var(--line); }
+.stage-chip svg { width: 11px; height: 11px; }
+.stage-chip.done { background: var(--good-soft); color: var(--good); border-color: transparent; }
+.stage-chip.now { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+
+/* --- F77: ручные правки раскладки ------------------------------------- */
+/* Два РАЗНЫХ состояния строки, которые нельзя путать: «не трогать» — красная
+   рамка (предложение пользователя), «перенесено» — синяя пунктирная. Рамка на
+   строке, а не на превью: список плана — таблица, и обводка целой строки заметнее
+   при взгляде по сетке. */
+tr.override-exclude, tr.override-exclude:hover { outline: 2px solid var(--danger);
+      outline-offset: -2px; background: var(--danger-soft); }
+tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--accent);
+      outline-offset: -2px; background: var(--accent-soft); }
+/* F103: «возвращено в фото» — третье состояние, и оно не отрицательное: кадр
+   возвращается в обычную раскладку, поэтому зелёная рамка, а не красная. */
+tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
+      outline-offset: -2px; background: var(--good-soft); }
+.override-mark { margin-left: var(--space-sm); }
+.override-folder-btn { margin-left: var(--space-sm); font-weight: 500; }
+.override-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: 0 0 var(--space-md) 0; }
+.override-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); margin: 0; }
+.override-status { font-size: 0.8rem; color: var(--danger); }
+
+/* F85c: назначение места группе — та же панель, что и у ручных правок */
+.place-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: 0 0 var(--space-md) 0; }
+.place-input { min-width: 200px; }
+.place-options { max-width: 320px; }
+.place-row-btn { margin-left: var(--space-sm); }
+.place-manual { margin-left: var(--space-sm); }
+
+.sort-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; margin: var(--space-md) 0; }
+.sort-controls input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
+.sort-dest-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); }
+.sort-mode-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
+
+/* --- F104 (layout A): the settings move into a right-hand column so the action row
+   can go back to being a row about STARTING a layout. What made the old row dangerous
+   was not the number of buttons but their neighbourhood: "Apply" transfers hundreds of
+   gigabytes, "Delete selected" erases files and "Expand all" does nothing at all — one
+   slip of the mouse costs wildly different amounts. The column drops below the tree on
+   a narrow screen (see the media query): the plan itself matters more. --- */
+.city-layout { display: grid; grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-lg); align-items: start; }
+.city-main { min-width: 0; }
+/* --- F133: the settings are configuration, not a working surface. Thirteen keys people
+   come back to about once a month used to hold a third of the screen at all times; they
+   now live behind the gear in the header, in a drawer over the page. Nothing about their
+   behaviour moves: the same GET/POST /api/settings, applied without a restart and
+   refused while a run is in flight. --- */
+.settings-panel { position: fixed; inset: 0; z-index: 2100; display: flex;
+      justify-content: flex-end; background: rgba(10,14,22,.5); }
+.settings-panel[hidden] { display: none; }
+.settings-panel-box { width: min(380px, 100%); height: 100%; overflow-y: auto;
+      padding: var(--space-lg); background: var(--bg); border-left: 1px solid var(--line);
+      display: flex; flex-direction: column; gap: var(--space-md); }
+.settings-panel-head { display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-sm); }
+.settings-side { display: flex; flex-direction: column; gap: var(--space-md); }
+.settings-block { display: flex; flex-direction: column; gap: var(--space-sm);
+      padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md);
+      background: var(--card); }
+.settings-head { font-weight: 600; }
+.settings-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
+.settings-field input, .settings-field select { padding: 6px 8px; }
+/* Deleting lives in the context of a selection: the row appears only once frames are
+   ticked, and never stands next to the button that starts a layout. */
+.selection-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
+      margin: var(--space-md) 0; padding: var(--space-sm); border-radius: var(--radius-md);
+      border: 1px solid var(--line); background: var(--card); }
+.sort-dialog-list { margin: 0 0 var(--space-md) 0; padding-left: var(--space-lg); }
+.sort-dialog-list li { margin-bottom: 4px; }
+
+/* --- F93: подтверждение сброса. window.confirm не умеет галочку, а галочка
+   «очистить кэш геоданных» обязана быть именно здесь: пользователь вспоминает про
+   кэш в момент «хочу переделать начисто», а не в настройках. --- */
+.reset-dialog { position: fixed; inset: 0; z-index: 2100; display: flex; align-items: center;
+      justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.86); }
+.reset-dialog[hidden] { display: none; }
+.reset-dialog-box { max-width: 520px; padding: var(--space-lg); border-radius: var(--radius-md);
+      background: var(--surface); box-shadow: var(--shadow-lg); }
+.reset-dialog-text { margin: 0 0 var(--space-md) 0; }
+.reset-dialog-actions { display: flex; gap: var(--space-sm); justify-content: flex-end;
+      margin-top: var(--space-md); }
+
+/* --- лайтбокс (F42): один переиспользуемый оверлей для крупного просмотра --- */
+.lightbox { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center;
+      justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.86);
+      cursor: zoom-out; }
+.lightbox[hidden] { display: none; }
+.lightbox img { width: auto; height: auto; max-width: 100%; max-height: 100%;
+      object-fit: contain; cursor: default;
+      border-radius: var(--radius-md); box-shadow: var(--shadow-lg); background: var(--surface); }
+
+/* --- F80: листалка кадров видео внутри лайтбокса (у фото скрыта) --- */
+.lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+      padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(10,14,22,.55); }
+.lightbox-nav:hover { background: rgba(10,14,22,.85); }
+.lightbox-nav[hidden] { display: none; }
+.lightbox-nav svg { width: 22px; height: 22px; }
+.lightbox-prev { left: var(--space-md); }
+.lightbox-next { right: var(--space-md); }
+.lightbox-dots { position: absolute; left: 0; right: 0; bottom: var(--space-md);
+      display: flex; justify-content: center; gap: 7px; }
+.lightbox-dots[hidden] { display: none; }
+.lightbox-dot { width: 10px; height: 10px; padding: 0; border-radius: 50%; cursor: pointer;
+      border: 1px solid rgba(255,255,255,.75); background: transparent; }
+.lightbox-dot.active { background: #fff; }
+
+/* --- F168: the one action the expanded frame offers, in every slice. A strip along the
+   bottom of the overlay rather than a control on every tile: F133 emptied the screen of
+   thirteen controls people reach for once a month, and this is one of them. Here it is
+   in context — the picture is already open and the thought "this one is soft" is the
+   reason it was opened. --- */
+.lightbox-restore { position: absolute; left: 0; right: 0; bottom: 0; cursor: default;
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+      gap: var(--space-sm); padding: var(--space-sm) var(--space-md);
+      background: rgba(10,14,22,.78); color: #fff; }
+.lightbox-restore[hidden] { display: none; }
+.lightbox-restore span { font-size: 0.82rem; max-width: 62ch; line-height: 1.4; }
+.lightbox-restore span[hidden] { display: none; }
+.lightbox-restore-badge { padding: 2px 9px; border-radius: var(--radius-pill);
+      border: 1px solid rgba(255,255,255,.45); background: rgba(255,255,255,.12); }
+.lightbox-restore button[hidden] { display: none; }
+
+@media (max-width: 1000px) {
+  .settings-panel-box { width: 100%; }
+}
+
+@media (max-width: 640px) {
+  body { padding: var(--space-md); }
+  #clusters-grid, #events-list { grid-template-columns: 1fr; }
+  #junk-grid, #animals-grid, #search-grid, #face-grid {
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .process-path-row { flex-direction: column; align-items: stretch; }
+  .process-path-row input[type="text"] { min-width: 100%; }
+}

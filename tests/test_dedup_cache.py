@@ -44,7 +44,7 @@ class TestDupesPayloadCache(DupesCacheTestBase):
     def test_second_call_without_db_change_is_served_from_cache(self):
         self.add_dupe("/a.jpg", "0" * 16, size=2000)
         self.add_dupe("/b.jpg", "0" * 16, size=1000)
-        with mock.patch.object(ui, "near_duplicate_groups",
+        with mock.patch.object(ui.review, "near_duplicate_groups",
                                wraps=ui.near_duplicate_groups) as spy:
             first = ui._dupes_payload(self.db_path, 5)
             second = ui._dupes_payload(self.db_path, 5)
@@ -54,7 +54,7 @@ class TestDupesPayloadCache(DupesCacheTestBase):
 
     def test_empty_result_is_cached_too(self):
         self.add_dupe("/lonely.jpg", "0" * 16)
-        with mock.patch.object(ui, "near_duplicate_groups",
+        with mock.patch.object(ui.review, "near_duplicate_groups",
                                wraps=ui.near_duplicate_groups) as spy:
             self.assertEqual(ui._dupes_payload(self.db_path, 5), [])
             self.assertEqual(ui._dupes_payload(self.db_path, 5), [])
@@ -63,7 +63,7 @@ class TestDupesPayloadCache(DupesCacheTestBase):
     def test_write_to_db_invalidates_the_cache(self):
         self.add_dupe("/a.jpg", "0" * 16, size=2000)
         self.add_dupe("/b.jpg", "0" * 16, size=1000)
-        with mock.patch.object(ui, "near_duplicate_groups",
+        with mock.patch.object(ui.review, "near_duplicate_groups",
                                wraps=ui.near_duplicate_groups) as spy:
             before = ui._dupes_payload(self.db_path, 5)
             self.add_dupe("/c.jpg", "0" * 16, size=3000)
@@ -75,7 +75,7 @@ class TestDupesPayloadCache(DupesCacheTestBase):
     def test_different_max_distance_is_a_different_entry(self):
         self.add_dupe("/a.jpg", "0" * 16)
         self.add_dupe("/b.jpg", "0" * 14 + "ff")  # distance 8
-        with mock.patch.object(ui, "near_duplicate_groups",
+        with mock.patch.object(ui.review, "near_duplicate_groups",
                                wraps=ui.near_duplicate_groups) as spy:
             self.assertEqual(ui._dupes_payload(self.db_path, 5), [])
             self.assertEqual(len(ui._dupes_payload(self.db_path, 8)), 1)
