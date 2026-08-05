@@ -446,6 +446,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **A slice shows its frames as a grid — every slice, by one rule** (F195). The owner,
+  reading «Животные · по запросу» on 2026-08-04: «все фотки растянуты — то есть одно фото
+  на весь ряд». The panel of the pinned queries was the one grid nobody had written an
+  `#id` rule for, so its cards fell out of the grid into block flow and stood **one to a
+  row**, each stretched across the panel — while the four grids that happened to have a
+  rule looked perfectly right, which is why the defect survived four features. The layout
+  is now **one class on the container and one on the tile** (`.slice-grid` / `.slice-card`)
+  worn by every panel that draws frames — the search line, the pinned queries, the three
+  face slices, the animals, the class buckets and the «Просмотр» workspace — so how many
+  frames stand in a row is decided by the **width of the panel** and never by which slice
+  is open, and the next slice gets the layout by existing rather than by someone
+  remembering to add a rule for it. What a slice keeps is what its cards **mean** (a
+  struck-through animal, a bucket that must not be deleted), never the box they are drawn
+  in. Two smaller things travel with it: the tile states `object-fit: cover` beside its
+  sizes, so a card cannot scale a photograph along one axis — the other reading of
+  "stretched" — and "loading" / "nothing found" / "it failed" now **span the row** instead
+  of being squeezed into one 150 px column of a grid they are not a tile of. The tests
+  walk the slices the interface actually draws instead of naming two of them.
 - **"Try to improve" no longer leaves a file the index has never heard of** (F185). The
   copy was written under its final name and the row inserted by a SEPARATE call, so an
   insert that did not happen left a `_restored` file lying in the archive with nothing

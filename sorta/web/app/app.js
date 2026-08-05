@@ -1515,7 +1515,9 @@
   // put the ticks of one list into the album of the other.
   function renderSearchCard(item, selection) {
     var card = document.createElement("div");
-    card.className = "search-card";
+    // F195: `slice-card` is the tile — one layout for every grid of this tab — and
+    // `search-card` is what this slice is counted and styled by on top of it.
+    card.className = "slice-card search-card";
     if (item.thumb_url) {
       card.appendChild(
           clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
@@ -4888,7 +4890,7 @@
   function renderJunkCard(item) {
     junkItems[item.file_id] = item;
     var card = document.createElement("div");
-    card.className = "junk-card" + (item.restored ? " restored" : "") +
+    card.className = "slice-card junk-card" + (item.restored ? " restored" : "") +
         (item.sensitive ? " sensitive" : "");
     // F175: the mark goes at the TOP of the card, above the picture — a bucket that must
     // not be deleted has to be readable while the eye runs over the grid, before the
@@ -5064,7 +5066,7 @@
     // F124: `is_animal` comes from the server (the one shared rule), it is never
     // recomputed here — a second spelling of that rule in JS is exactly how the tab
     // and the album start reporting different collections.
-    card.className = "animal-card" + (item.is_animal ? "" : " not-animal");
+    card.className = "slice-card animal-card" + (item.is_animal ? "" : " not-animal");
     card.dataset.fileId = String(item.file_id);
     card.appendChild(
         clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
@@ -5247,7 +5249,7 @@
 
   function renderFaceCard(item) {
     var card = document.createElement("div");
-    card.className = "face-card";
+    card.className = "slice-card face-card";
     if (item.thumb_url) {
       card.appendChild(
           clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
@@ -5418,7 +5420,7 @@
 
   function renderReviewCard(item) {
     var card = document.createElement("div");
-    card.className = "review-card" +
+    card.className = "slice-card review-card" +
         (item.action === "to_delete" ? " marked-delete" : "") +
         (item.action === "keep" ? " marked-keep" : "") +
         (item.restored ? " processed" : "");

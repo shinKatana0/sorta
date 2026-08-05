@@ -216,12 +216,6 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
 .slice-query-row { display: flex; align-items: center; gap: var(--space-sm); }
 .slice-query-row .slice-query-field { flex: 1; }
 .slice-query-field input:disabled { cursor: not-allowed; }
-#search-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: var(--space-md); }
-.search-card { border: 1px solid var(--line); border-radius: var(--radius-md);
-      padding: var(--space-sm); background: var(--card); display: flex;
-      flex-direction: column; gap: var(--space-xs); }
-.search-card img { width: 100%; height: 110px; margin: 0; }
 .search-card-name { font-size: 0.8rem; word-break: break-all; }
 .search-card-meta { font-size: 0.75rem; color: var(--muted); }
 /* The score is not decoration: it is the only thing that explains the order, and the
@@ -335,6 +329,34 @@ label { cursor: pointer; }
 .album-blocked { flex: 1; min-width: 120px; }
 /* the tick on a card of any slice grid — one gesture, one look */
 .slice-card-select { display: flex; align-items: center; gap: 5px; font-size: 0.8rem; color: var(--muted); }
+
+/* --- F195: one layout for every slice grid --------------------------------------
+   The frames of a slice stand in a grid of tiles, and how many of them fit a row is
+   decided by the WIDTH of the panel — never by which slice is open. One class rather
+   than a rule per grid, because the defect this closes was a MISSING rule: the pinned
+   queries (F151) were the one panel nobody wrote an `#id` for, so «Животные · по
+   запросу» fell back to block flow and its cards stood one to a row, each stretched
+   across the panel. The grids the ids happened to cover looked right, which is exactly
+   why the next slice would have shipped broken again — a slice added tomorrow wears
+   this class and gets the layout by existing.
+   The pair below is the whole of it: `.slice-grid` on the container, `.slice-card` on
+   the tile, worn by every panel that draws frames — the slices of this tab and the
+   «Просмотр» workspace, whose flat slices are the same tiles read for a decision. */
+.slice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--space-md); }
+/* "Loading", "nothing was found", "it failed" are sentences about the WHOLE slice, so
+   they span the row instead of being squeezed into one 150px column of it. */
+.slice-grid > .state-msg { grid-column: 1 / -1; }
+/* One tile whatever the slice: the decision on this tab is made by looking, and a card
+   that looked different per slice would be read as meaning something. `object-fit` is
+   stated here as well as in the base `img` rule, because it is the other half of "the
+   photos are stretched" — the picture is CROPPED to the tile, never scaled along one
+   axis, and a tile whose sizes live here must carry the fit that goes with them. */
+.slice-card { border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: var(--space-sm); background: var(--card); display: flex;
+      flex-direction: column; gap: var(--space-xs); }
+.slice-card img { width: 100%; height: 110px; margin: 0; object-fit: cover; }
+
 .event-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 var(--space-sm) 0; }
 .event-thumbs { display: flex; flex-wrap: wrap; gap: 3px; margin: 0 0 var(--space-sm) 0; }
 /* единый вид кликабельной миниатюры-превью (Города/Дубли/Перемещения/События) */
@@ -354,15 +376,11 @@ label { cursor: pointer; }
 
 /* --- F103: the buckets of «Служебные кадры» ---------------------------- */
 /* A grid of tiles rather than a table: the decision here is made by looking — «это
-   правда товар?» — from the picture and not from the columns. */
-#junk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: var(--space-md); }
-.junk-card { border: 1px solid var(--line); border-radius: var(--radius-md);
-      padding: var(--space-sm); background: var(--card); display: flex;
-      flex-direction: column; gap: var(--space-xs); }
+   правда товар?» — from the picture and not from the columns. F195: the grid and the
+   tile itself are `.slice-grid`/`.slice-card` now, shared with every other slice; what
+   stays here is what only this bucket has to say. */
 .junk-card.restored { outline: 2px solid var(--good); outline-offset: -2px;
       background: var(--good-soft); }
-.junk-card img { width: 100%; height: 110px; margin: 0; }
 /* Документ вместо превью получает нейтральную заглушку того же размера: сетка не
    ломается, а содержимое паспорта не декодируется вообще. */
 .junk-doc-box { height: 110px; display: flex; align-items: center; justify-content: center;
@@ -380,15 +398,10 @@ label { cursor: pointer; }
 .junk-card .chip { align-self: flex-start; }
 
 /* --- F123: the "Animals" tab -------------------------------------------- */
-/* The same tile grid as the junk buckets: the decision is made by looking. The one
-   difference is the confidence score on the card — the list is sorted by it, and the
-   reader is looking for the place where the quality runs out. */
-#animals-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: var(--space-md); }
-.animal-card { border: 1px solid var(--line); border-radius: var(--radius-md);
-      padding: var(--space-sm); background: var(--card); display: flex;
-      flex-direction: column; gap: var(--space-xs); }
-.animal-card img { width: 100%; height: 110px; margin: 0; }
+/* The same tile grid as the junk buckets — `.slice-grid`/`.slice-card`, the shared pair
+   of F195 — because the decision is made by looking. The one difference is the
+   confidence score on the card: the list is sorted by it, and the reader is looking for
+   the place where the quality runs out. */
 .animal-card-name { font-size: 0.8rem; word-break: break-all; }
 .animal-card-meta { font-size: 0.75rem; color: var(--muted); }
 .animal-card-score { font-size: 0.75rem; color: var(--muted);
@@ -411,12 +424,6 @@ label { cursor: pointer; }
 /* --- F152: the face slices -------------------------------------------------
    The same tile as the animal grid; no score line, because these slices have no
    confidence to print — a frame is in one because a face was detected on it. */
-#face-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: var(--space-md); }
-.face-card { border: 1px solid var(--line); border-radius: var(--radius-md);
-      padding: var(--space-sm); background: var(--card); display: flex;
-      flex-direction: column; gap: var(--space-xs); }
-.face-card img { width: 100%; height: 110px; margin: 0; }
 .face-card-name { font-size: 0.8rem; word-break: break-all; }
 .face-card-meta { font-size: 0.75rem; color: var(--muted); }
 
@@ -424,25 +431,21 @@ label { cursor: pointer; }
 /* The switcher looks like the junk bucket chips, for the same reason: a row of
    named counters is how a person picks which pile to go through next. Every slice
    stays in the row at zero — a slice that disappears when it empties turns an answer
-   into a question about the interface. The flat slices reuse the tile grid; only
-   duplicates keep their table, because only there is a keeper chosen. */
+   into a question about the interface. The flat slices reuse the tile grid — since F195
+   by wearing `.slice-grid`/`.slice-card`, the same pair as the slices of the other tab,
+   rather than by a copy of their declarations; only duplicates keep their table, because
+   only there is a keeper chosen. */
 .review-slices { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
       margin: var(--space-md) 0; }
 .review-slice-btn.active { background: var(--accent); color: var(--on-accent);
       border-color: var(--accent); font-weight: 600; }
 .review-slice-count { margin-left: 6px; font-variant-numeric: tabular-nums; }
-#review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      gap: var(--space-md); }
-.review-card { border: 1px solid var(--line); border-radius: var(--radius-md);
-      padding: var(--space-sm); background: var(--card); display: flex;
-      flex-direction: column; gap: var(--space-xs); }
 /* The decision is visible on the card itself: a frame already decided is not asked
    about again, in this slice or in any other it shows up in. */
 .review-card.marked-delete { outline: 2px solid var(--danger); outline-offset: -2px;
       background: var(--danger-soft); }
 .review-card.marked-keep { outline: 2px solid var(--good); outline-offset: -2px;
       background: var(--good-soft); }
-.review-card img { width: 100%; height: 110px; margin: 0; }
 .review-card-name { font-size: 0.8rem; word-break: break-all; }
 .review-card-meta { font-size: 0.75rem; color: var(--muted);
       font-variant-numeric: tabular-nums; }
@@ -782,8 +785,10 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 @media (max-width: 640px) {
   body { padding: var(--space-md); }
   #clusters-grid, #events-list { grid-template-columns: 1fr; }
-  #junk-grid, #animals-grid, #search-grid, #face-grid {
-      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  /* F195: the narrow-screen tile, for every slice at once. It used to be a list of the
+     grids that happened to exist, which is how the panel added after it got neither
+     this rule nor the one it narrows. */
+  .slice-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .process-path-row { flex-direction: column; align-items: stretch; }
   .process-path-row input[type="text"] { min-width: 100%; }
 }
