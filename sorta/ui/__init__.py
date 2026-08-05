@@ -638,7 +638,7 @@ from .moves import (
     _UndoState, _last_batch_id, _moves_payload, _run_undo, _target_rel,
 )
 from .process import (
-    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, _CACHE_TARGETS, _DEFAULT_RATES,
+    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, _CACHE_TARGETS, _DEFAULT_RATES,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
     _OPTIONAL_STAGES,
     _PIPELINE_STAGE_NAMES, _PipelineCancelled, _ProcessState, _RATE_DEFAULT, _RATE_FIXED,

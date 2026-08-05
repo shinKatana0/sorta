@@ -46,6 +46,8 @@ from .indexer import excludes_path, refresh_exif, save_excludes
 from .junk import (
     CLASSIFY_PHASE_CLIP,
     CLASSIFY_PHASE_OCR,
+    CLASSIFY_PHASE_PETS_VLM,
+    CLASSIFY_PHASE_RESCUE_VLM,
     CLASSIFY_PHASE_VLM,
     CLASSIFY_PHASE_WRITE,
 )
@@ -215,6 +217,9 @@ def _junk_phase_labels(lang: Lang) -> dict[str, str]:
         CLASSIFY_PHASE_CLIP: _t("cli.phase.junk_clip", lang),
         CLASSIFY_PHASE_OCR: _t("cli.phase.junk_ocr", lang),
         CLASSIFY_PHASE_VLM: _t("cli.phase.junk_vlm", lang),
+        # F205: the other two questions put to the same model, each under its own name.
+        CLASSIFY_PHASE_PETS_VLM: _t("cli.phase.junk_pets_vlm", lang),
+        CLASSIFY_PHASE_RESCUE_VLM: _t("cli.phase.junk_rescue_vlm", lang),
         CLASSIFY_PHASE_WRITE: _t("cli.phase.junk_write", lang),
     }
 

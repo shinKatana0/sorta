@@ -2674,6 +2674,21 @@ def _quality_source(use_clip: bool, pets: bool, pet_ask: PetAskFn | None = None,
 CLASSIFY_PHASE_CLIP = "junk_clip"
 CLASSIFY_PHASE_OCR = "junk_ocr"
 CLASSIFY_PHASE_VLM = "junk_vlm"
+# F205: the model is asked in THREE places, and until this feature all three reported
+# under the name above. The run of 2026-08-05 measured what that cost: the deep tier ran
+# 7 951 frames at 1.4 frames/s (pipelined), the animal check 2 997 at 0.42 and the rescue
+# 1 284 at 0.41-0.49 — one name over three prices that differ by a factor of three, so no
+# reader of the log and no arithmetic over it could price any of them. A phase name IS the
+# unit a measurement is filed under (runlog.measurement_unit), which is why three prices
+# need three names.
+#
+# The deep tier KEEPS `junk_vlm`. It is the one of the three whose seconds a log written
+# before this split can still be trusted for — it dominated that shared bucket — and
+# renaming it would throw those measurements away and buy nothing. The two questions of
+# the back half get the new names, and a log without them simply has no measurement for
+# them, which the estimate already handles by falling back to its default.
+CLASSIFY_PHASE_PETS_VLM = "junk_pets_vlm"
+CLASSIFY_PHASE_RESCUE_VLM = "junk_rescue_vlm"
 # F164: this phase is NOT the cost of writing. Its seconds are the per-frame loop the
 # writes share with the laplacian and the stored vector, and the laplacian is ~99% of
 # them — see the measured breakdown at _MEDIA_CLASS_UPSERT before reading a number under
@@ -2727,9 +2742,13 @@ class _PhaseProgress:
     F147 hangs the stopwatch on the very same object, and that is the whole design: the
     phases are timed under the names they are ANNOUNCED under, so the breakdown in the
     run log and the caption on the bar can never drift apart. It follows that timing
-    happens with no callback at all — every method here already works that way — and
-    that the deep passes, which re-`start` CLASSIFY_PHASE_VLM over three different
-    candidate lists, share one bucket instead of inventing three.
+    happens with no callback at all — every method here already works that way.
+
+    F205 is what that design cost once the passes it covered stopped being alike: the
+    three model passes re-`start`ed ONE phase over three candidate lists, so one bucket
+    held three prices that differ threefold. They now announce three names — still one
+    name each for the caption and for the stopwatch, which is the part of the design that
+    holds.
 
     F166 moved the stopwatch itself into `runlog.StagePhases` and kept that design
     intact: the same `enter`/`start` call still drives both the caption and the clock,
@@ -3382,11 +3401,14 @@ class _QualityPass:
         cheap tier that survives the failure of an expensive one is the rule this whole
         stage is built on, and guessing here would delete a label CLIP was right about.
 
-        The phase is CLASSIFY_PHASE_VLM rather than a name of its own: it IS the model
-        phase, the caption is already localized for it (F100), and the candidate list is
-        known before the loop starts, so the bar reports a real (done, total) over it.
-        The count reported is the list AFTER `_reclassified` has trimmed it, so the bar
-        counts questions that will actually be asked.
+        The phase is CLASSIFY_PHASE_PETS_VLM — its own name since F205, with its own
+        caption in all three languages. It shared CLASSIFY_PHASE_VLM with the deep tier
+        while the two cost the same per frame; measured, this one is serial and ~0.42
+        frames/s against that one's pipelined 1.4, and a shared name means the estimate
+        can only charge one of them at the other's rate. The candidate list is known
+        before the loop starts, so the bar reports a real (done, total) over it. The count
+        reported is the list AFTER `_reclassified` has trimmed it, so the bar counts
+        questions that will actually be asked.
         """
         if self._pet_ask is None or not self._pet_candidates:
             return
@@ -3395,8 +3417,8 @@ class _QualityPass:
         if not candidates:
             return
         self._stats.pet_candidates = len(candidates)
-        report.start(CLASSIFY_PHASE_VLM, len(candidates))
-        report.count(CLASSIFY_PHASE_VLM, len(candidates))
+        report.start(CLASSIFY_PHASE_PETS_VLM, len(candidates))
+        report.count(CLASSIFY_PHASE_PETS_VLM, len(candidates))
         with self._conn:
             for i, (file_id, path, before) in enumerate(candidates):
                 try:
@@ -3521,11 +3543,16 @@ class _JunkRescuePass:
         the ~15% of candidates that are real photographs need. It is written as a verdict
         anyway (the source becomes `vlm`) so that a later reader can tell a frame the model
         confirmed from one it was never shown.
+
+        F205: the phase is CLASSIFY_PHASE_RESCUE_VLM, not the deep tier's name. One
+        question per candidate, asked one at a time — a different price from the pipelined
+        pass that shares the model with it (0.41-0.49 frames/s against 1.4), and a price
+        the estimate can only quote if the log files it separately.
         """
         if self._ask is None:
             return
-        report.start(CLASSIFY_PHASE_VLM, len(candidates))
-        report.count(CLASSIFY_PHASE_VLM, len(candidates))
+        report.start(CLASSIFY_PHASE_RESCUE_VLM, len(candidates))
+        report.count(CLASSIFY_PHASE_RESCUE_VLM, len(candidates))
         with self._conn:
             for i, (file_id, path) in enumerate(candidates):
                 try:
