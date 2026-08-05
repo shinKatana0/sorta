@@ -312,7 +312,7 @@ class TestTheCopyIsNoNewDuplicateTask(RestoreUiTestBase):
 
         status, body, _ctype = self.get("/api/dupes")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), [])
+        self.assertEqual(json.loads(body)["groups"], [])
 
         review = self.review("?slice=dupes")
         self.assertEqual([c["count"] for c in review["counts"] if c["slice"] == "dupes"],

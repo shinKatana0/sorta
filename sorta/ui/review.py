@@ -4,6 +4,12 @@ The four things a person opens the tab to go through, plus the second entrance F
 added: an expanded frame that can be improved by request. Marks here decide what
 leaves for `_delete` during the layout, so everything that writes `dedup_choice` or
 `review_mark` is in this one module.
+
+F194 rewrote what the duplicates half RECOMMENDS. Three tiers of sameness with three
+different defaults (`_dupes_payload`), several keepers per group instead of one
+(`_validate_keep_ids`), and no preselected frame at all where the measurement says
+nobody can choose. What it did not touch is the machinery underneath: the routes, the
+one table a decision lives in, and the rule that a file leaves only by a human hand.
 """
 from __future__ import annotations
 
@@ -15,7 +21,9 @@ from pathlib import Path
 
 from .. import imaging, restore
 from ..config import FeaturesConfig
-from ..dedup import KEEPER_SOURCE_SHARPNESS, group_key, near_duplicate_groups, read_group_keepers
+from ..dedup import (KEEPER_SOURCE_SHARPNESS, TIER_SAME_IMAGE, GroupKeeper,
+                     exact_duplicate_summary, group_key, group_tier,
+                     near_duplicate_groups, read_group_keepers)
 # `_has_column`: "does this database have that column yet". The indexer reads its own
 # optional columns through it, and the blur list (F157) reads F155's `face_sharpness`
 # through the same one — the two features were merged in either order on purpose.
@@ -32,7 +40,7 @@ from .slices import _JUNK_NO_PREVIEW
 _DUPES_CACHE_MAX_ITEMS = 2
 _DupesFingerprint = tuple[tuple[int, int], ...]
 _DupesCacheKey = tuple[str, int, _DupesFingerprint]
-_dupes_cache: OrderedDict[_DupesCacheKey, list[dict]] = OrderedDict()
+_dupes_cache: OrderedDict[_DupesCacheKey, dict] = OrderedDict()
 _dupes_cache_lock = threading.Lock()
 
 
@@ -60,18 +68,30 @@ def _db_fingerprint(db_path: Path) -> _DupesFingerprint:
     return tuple(fingerprint)
 
 
-def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
-    """near_duplicate_groups -> JSON-compatible groups for the Duplicates tab.
+def _dupes_payload(db_path: Path, max_distance: int) -> dict:
+    """The Duplicates screen: the three tiers of sameness, each with its own default.
 
-    recommended (F14): the best frame of the group by (width*height, then size) desc.
-    action — the current decision from dedup_choice (keep/to_delete/None).
+    F194. `{"exact": {...}, "groups": [...]}` — one answer holding all three, because
+    "duplicate" was one word over three populations whose cost of a mistake differs by
+    orders of magnitude (`dedup.TIER_*` states the measurement):
 
-    keeper_id/keeper_source (F148): the STORED recommendation of the group, if it has
-    one — the row `group_keeper` has been getting since F132 and which nothing read.
-    Where it exists it names the recommended frame (the star and the preselected radio
-    follow it), and `keeper_source` says who chose: `model` or `sharpness`. A group
-    without a row — a pair, or one whose membership changed since it was asked about —
-    carries `None` in both and is ranked here exactly as it was before.
+    * `exact` is the first tier as a pair of NUMBERS. Byte-identical copies are half of a
+      real archive, and a list of "choose which to keep" over them is a question about
+      nothing — the bytes are the same bytes. Collapsed here means shown as a number, not
+      deleted: no route on this path removes a file by itself;
+    * a group of `tier == "same_image"` is one picture stored more than once. The rule
+      "keep the largest" is checkable — resolution and weight are facts, not taste — so
+      the largest frame carries `recommended` and `recommended_by` says by what. A person
+      may pick another;
+    * a group of `tier == "similar"` carries NO recommendation at all: `recommended` is
+      false on every frame and `recommended_by` is None. Measured blind on 111 groups, no
+      signal we have beats picking at random, and a highlighted frame reads as an answer —
+      so a person trusting it would choose worse than by chance and never learn. What the
+      group does carry is an ORDER (`order`: `sharpness` or `size`), which is what
+      sharpness honestly is, and the caption says so in those words.
+
+    `action` is the current decision from `dedup_choice` — the human's own table, which
+    nothing here writes, reads over, or reorders.
 
     Cached (F66) under (db path, max_distance, _db_fingerprint): any write to the
     index changes the fingerprint and the payload is recomputed.
@@ -83,7 +103,7 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
             _dupes_cache.move_to_end(key)
             return cached
 
-    def remember(payload: list[dict]) -> list[dict]:
+    def remember(payload: dict) -> dict:
         with _dupes_cache_lock:
             _dupes_cache[key] = payload
             _dupes_cache.move_to_end(key)
@@ -93,9 +113,11 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
 
     conn = _connect(db_path)
     try:
+        exact = exact_duplicate_summary(conn)
+        exact_json = {"copies": exact.copies, "originals": exact.originals}
         groups = near_duplicate_groups(conn, max_distance=max_distance)
         if not groups:
-            return remember([])
+            return remember({"exact": exact_json, "groups": []})
         all_ids = [r["id"] for g in groups for r in g]
         placeholders = ",".join("?" * len(all_ids))
         wh = {
@@ -128,8 +150,8 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
         # F148: a group is addressed by a hash of its membership (dedup.group_key), so a
         # key that is missing here means the group has never been asked about (a pair
         # under `keeper_min_group_size`) or has gained/lost a frame since it was. Both
-        # readings lead to the same behaviour: no stored recommendation, the ranking
-        # below decides, and the tab looks like it did before this feature.
+        # readings lead to the same behaviour: the group is ordered by its own sharpness,
+        # which is always available.
         keepers = read_group_keepers(
             conn, [group_key([r["id"] for r in g]) for g in groups])
     finally:
@@ -157,44 +179,71 @@ def _dupes_payload(db_path: Path, max_distance: int) -> list[dict]:
                 "action": choices.get(r["id"]),
                 "recommended": False,
             })
-        # Sharpness leads only when EVERY frame of the group has it. A partial comparison
-        # would quietly prefer whichever frames happened to be measured — and after F120
-        # only personal photographs are measured at all, so a mixed group is a real case,
-        # not a corner one.
-        by_sharpness = all(f["sharpness"] is not None for f in frames)
-        best = min(
-            frames,
-            key=lambda f: (
-                -(f["sharpness"] or 0.0) if by_sharpness else 0.0,
-                -((f["width"] or 0) * (f["height"] or 0)),
-                -(f["size"] or 0),
-                f["file_id"],
-            ),
-        )
-        # F148: the stored recommendation wins over the local ranking when the group has
-        # one — that is the whole point of having computed it. It never widens what is
-        # marked: it moves the star and the preselected keeper radio from one frame to
-        # another, and `dedup_choice` is still written by the user's hand alone.
+        tier = group_tier([r["phash"] for r in group])
         keeper = keepers.get(group_key([f["file_id"] for f in frames]))
-        keeper_source = None
-        if keeper is not None:
-            named = next((f for f in frames if f["file_id"] == keeper.keeper_id), None)
-            if named is not None:
-                best = named
-                # Two words, not the prompt fingerprint the row carries: the user needs
-                # to know WHO advises (trust in the advice depends on it), not which
-                # revision of the question was asked.
-                keeper_source = ("sharpness" if keeper.source == KEEPER_SOURCE_SHARPNESS
-                                 else "model")
-        best["recommended"] = True
-        result.append({"group": idx, "frames": frames,
-                       # Why this one — so the tab can say it instead of asking the user
-                       # to trust a star. This is the LOCAL ranking's basis; when
-                       # `keeper_source` is set, that is who named the starred frame.
-                       "recommended_by": "sharpness" if by_sharpness else "resolution",
-                       "keeper_id": best["file_id"] if keeper_source else None,
-                       "keeper_source": keeper_source})
-    return remember(result)
+        if tier == TIER_SAME_IMAGE:
+            frames, order = _order_by_size(frames), "size"
+            # The one place in this payload where something is proposed. It costs nothing
+            # and it is checkable: the frames are the same picture, so the larger file is
+            # the better copy of it by definition rather than by opinion.
+            frames[0]["recommended"] = True
+            recommended_by: str | None = "size"
+        else:
+            frames, order = _order_similar(frames, keeper)
+            recommended_by = None
+        result.append({"group": idx, "tier": tier, "frames": frames,
+                       # What the frames are SORTED by — never who is best. A caption
+                       # reading "sorted by sharpness" is a fact about the list; the same
+                       # number presented as an answer is the harmful advice F194 removes.
+                       "order": order,
+                       # Set only where a rule holds (`same_image`); None everywhere else,
+                       # and None is the honest value: no signal we have beats a coin.
+                       "recommended_by": recommended_by})
+    return remember({"exact": exact_json, "groups": result})
+
+
+def _order_by_size(frames: list[dict]) -> list[dict]:
+    """The same picture, biggest copy first — resolution, then weight, then id.
+
+    Both numbers are facts about the file rather than judgements about the photograph,
+    which is what makes this tier's default safe to apply. `file_id` closes the order so
+    two runs over an unchanged group answer the same way.
+    """
+    return sorted(frames, key=lambda f: (-((f["width"] or 0) * (f["height"] or 0)),
+                                         -(f["size"] or 0), f["file_id"]))
+
+
+def _order_similar(frames: list[dict],
+                   keeper: GroupKeeper | None) -> tuple[list[dict], str]:
+    """Similar frames in an ORDER, and the name of what ordered them. Nothing is chosen.
+
+    Sharpness is a fine order and a measured non-answer: inside a group it compares focus
+    honestly (one scene, one scale), and blind labelling of 111 groups put it at 27%
+    against 30.4% for random. So it decides which frame a person looks at FIRST and
+    nothing else — no star, no preselected control, no caption calling it best.
+
+    It leads only when EVERY frame has it, for the reason F120 gave: a partial comparison
+    would prefer whichever frames happened to be measured, and since F120 only personal
+    photographs are measured at all, a mixed group is ordinary. Where it is missing the
+    group falls back to size, and `order` says which of the two it was.
+
+    F194 keeps `group_keeper` in exactly this role and no other. The row is filled by
+    sharpness for free and is worth having as an order — a group whose stored answer
+    disagrees with the ranking recomputed here (sharpness measured after the row was
+    written) leads with the stored frame. A row from the retired model question (F186) is
+    ignored rather than honoured: that answer was measured to be a coin toss, and turning
+    it into a position would smuggle it back as advice by other means.
+    """
+    by_sharpness = all(f["sharpness"] is not None for f in frames)
+    order = "sharpness" if by_sharpness else "size"
+    ranked = sorted(frames, key=lambda f: (
+        -(f["sharpness"] or 0.0) if by_sharpness else 0.0,
+        -((f["width"] or 0) * (f["height"] or 0)), -(f["size"] or 0), f["file_id"]))
+    if keeper is not None and keeper.source == KEEPER_SOURCE_SHARPNESS:
+        lead = next((f for f in ranked if f["file_id"] == keeper.keeper_id), None)
+        if lead is not None:
+            ranked = [lead] + [f for f in ranked if f is not lead]
+    return ranked, order
 
 
 def _validate_group_payload(payload: object) -> tuple[list[int], int | None] | None:
@@ -251,31 +300,61 @@ def _skip_group(db_path: Path, group: list[int]) -> None:
         conn.close()
 
 
+def _validate_keep_ids(entry: dict, group: list[int],
+                       legacy: int | None) -> list[int] | None:
+    """The frames of one group a person chose to KEEP — several of them, since F194.
+
+    `keep_file_ids: [int,...]` is the new shape; `keep_file_id: int` is the one this
+    route has taken since F32 and still takes, because it is also the shape of the three
+    single-keeper routes beside it. None -> the entry is invalid (400).
+
+    An EMPTY list is invalid too, and deliberately so: "keep none of them" is the one
+    sentence this route must not be able to say. A group nobody chose in is simply not
+    sent — that IS the third tier's default (everything stays), and it writes nothing.
+
+    Why several at all: a burst of five good frames can hold three worth keeping — a
+    portrait with the eyes open, another expression, a wide shot — and "the best one"
+    throws away two a person would have kept. Duplicates are removed from the list of
+    keepers rather than refused: the same frame named twice is one keeper, not an error.
+    """
+    raw = entry.get("keep_file_ids")
+    if raw is None:
+        return None if legacy is None or legacy not in group else [legacy]
+    if (not isinstance(raw, list) or not raw
+            or not all(isinstance(x, int) and not isinstance(x, bool) for x in raw)
+            or not all(x in group for x in raw)):
+        return None
+    return list(dict.fromkeys(raw))
+
+
 def _validate_batch_choices_payload(
     payload: object,
-) -> tuple[list[tuple[list[int], int]], list[list[int]]] | None:
-    """Parse the body `{"groups": [{"group": [...], "keep_file_id": int}, ...],
+) -> tuple[list[tuple[list[int], list[int]]], list[list[int]]] | None:
+    """Parse the body `{"groups": [{"group": [...], "keep_file_ids": [int,...]}, ...],
     "skip": [[file_id,...], ...]}`. `skip` is optional (default []).
 
     None -> the body is invalid: `groups` is not a non-empty list / any entry does not
-    pass `_validate_group_payload` or its `keep_file_id` is absent/not in `group` /
-    `skip` is not a list of lists of int. The whole body is validated, before any DB
-    write (F32: atomicity — 400 without a partial write).
+    pass `_validate_group_payload` or `_validate_keep_ids` / `skip` is not a list of
+    lists of int. The whole body is validated, before any DB write (F32: atomicity — 400
+    without a partial write).
     """
     if not isinstance(payload, dict):
         return None
     raw_groups = payload.get("groups")
     if not isinstance(raw_groups, list) or not raw_groups:
         return None
-    groups: list[tuple[list[int], int]] = []
+    groups: list[tuple[list[int], list[int]]] = []
     for entry in raw_groups:
+        if not isinstance(entry, dict):
+            return None
         parsed = _validate_group_payload(entry)
         if parsed is None:
             return None
         group, keep = parsed
-        if keep is None or keep not in group:
+        keeps = _validate_keep_ids(entry, group, keep)
+        if keeps is None:
             return None
-        groups.append((group, keep))
+        groups.append((group, keeps))
     raw_skip = payload.get("skip", [])
     if not isinstance(raw_skip, list):
         return None
@@ -289,22 +368,28 @@ def _validate_batch_choices_payload(
 
 
 def _apply_batch_choices(
-    db_path: Path, groups: list[tuple[list[int], int]], skip: list[list[int]]
+    db_path: Path, groups: list[tuple[list[int], list[int]]], skip: list[list[int]]
 ) -> int:
-    """Apply the keeper choice over all groups + clear the skipped ones, atomically.
+    """Apply the kept frames over all groups + clear the skipped ones, atomically.
 
     One transaction for the whole batch: either all groups are applied and all skips
     are cleared, or (on an exception before the call — validation already passed in
     _validate_batch_choices_payload) nothing changes. Returns the number of saved
     (not skipped) groups.
+
+    F194: a group keeps as MANY frames as the person named, and exactly those — the rest
+    of the group becomes `to_delete`. `dedup_choice` is keyed by file and holds one of two
+    values, so it carried this from the start; what changed is that the interface stopped
+    insisting the answer be a single frame.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
     try:
         with conn:
-            for group, keep in groups:
+            for group, keeps in groups:
+                kept = set(keeps)
                 for fid in group:
-                    action = "keep" if fid == keep else "to_delete"
+                    action = "keep" if fid in kept else "to_delete"
                     conn.execute(
                         """INSERT INTO dedup_choice (file_id, action, updated_at)
                            VALUES (?, ?, ?)
@@ -612,7 +697,11 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
             items = [_review_item_to_json(r, actions.get(int(r["id"]))) for r in rows]
     finally:
         conn.close()
-    groups = _dupes_payload(db_path, max_distance)
+    # F194: the counter is the number of GROUPS on screen, i.e. the second and third
+    # tiers. The first one is a number and not a list by construction, so it cannot be
+    # part of a count of things to look at — it travels with `/api/dupes`, which is what
+    # the client renders this slice from.
+    groups = _dupes_payload(db_path, max_distance)["groups"]
     counts["dupes"] = len(groups)
     pending["dupes"] = _pending_dupe_groups(groups)
     if slice_ == "dupes":

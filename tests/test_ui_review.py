@@ -231,7 +231,7 @@ class TestDuplicatesSlice(ReviewTestBase):
         self.start_server()
         status, body, _ctype = self.get("/api/dupes")
         self.assertEqual(status, 200)
-        groups = json.loads(body)
+        groups = json.loads(body)["groups"]
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0]["frames"]), 2)
 
