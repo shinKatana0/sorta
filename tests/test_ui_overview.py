@@ -726,12 +726,12 @@ class TestOverviewSkeletonIsTheSameTree(unittest.TestCase):
     def state(self, name: str) -> list[dict]:
         return [self.normalised(node) for node in self.trees[name]]
 
-    def test_a_typical_collection_arrives_into_the_tree_that_was_waiting_for_it(self):
-        self.assertEqual(self.state("skeleton"), self.state("typical"))
-
     def rows_of_the_collection_card(self, name: str) -> list[dict]:
         card = self.state(name)[0]["children"][0]
         return [c for c in card["children"] if "overview-row" in c["cls"]]
+
+    def test_a_typical_collection_arrives_into_the_tree_that_was_waiting_for_it(self):
+        self.assertEqual(self.state("skeleton"), self.state("typical"))
 
     def test_the_fixed_backbone_matches_whatever_arrives(self):
         """The collection card has the same thirteen rows for every possible answer, and
