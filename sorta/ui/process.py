@@ -629,9 +629,21 @@ _SEC_PER_VLM_FRAME = 0.78    # F113: one frame in one prompt
 # The faces stage over the reference collection — the ~17 minutes the changelog and the
 # F123 note both quote — spread over its 19 757 photographs.
 _SEC_PER_FACES_FRAME = 17 * 60 / 19757
-# index + geo + landmarks + phash, the four that always run: ~5 minutes over the same
-# collection.
-_SEC_PER_BASE_FRAME = 5 * 60 / 19757
+# index + geo + landmarks + phash, the four that always run. The shipped figure was
+# ~5 minutes over the reference collection and it UNDERSTATED the stage by about a third:
+# the full run of 2026-07-27 (offline geo, 26 135 canonical photographs) spent
+#
+#     index 5.3 min + landmarks 2.8 min + phash 0.7 min + geo 2.4 s  =  ~8.8 min
+#
+# and landmarks alone is more than half of the five minutes this used to claim for all
+# four. Checked against the same run's other two defaults, which held up: faces was within
+# 8% and the VLM's 0.78 s/frame reproduced to the second decimal a year and three models
+# later. An estimate that runs long is a warning; one that runs short is a broken promise,
+# so the number is the measured one.
+#
+# This is the DEFAULT — what the screen quotes before it has ever seen a run. A real
+# measurement out of the run log replaces it, and the screen says which of the two it used.
+_SEC_PER_BASE_FRAME = 8.8 * 60 / 26135
 # events: a grouping pass over rows the DB already holds — under a minute there, and it
 # is scaled per frame for the same reason as the others rather than pinned at "fast".
 _SEC_PER_EVENTS_FRAME = 15.0 / 19757

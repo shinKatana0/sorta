@@ -5706,12 +5706,16 @@
     return g.frames.map(function (f) { return f.file_id; });
   }
 
-  function selectedKeeper(g) {
-    var radios = document.getElementsByName("keep-" + g.group);
-    for (var i = 0; i < radios.length; i++) {
-      if (radios[i].checked) return parseInt(radios[i].value, 10);
+  // F194: several frames per group, not one. A burst of five can hold three worth
+  // keeping, and an empty result is a meaningful answer — "nobody chose here", which on
+  // the third tier is the default and writes nothing.
+  function selectedKeepers(g) {
+    var boxes = document.getElementsByName("keep-" + g.group);
+    var ids = [];
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) ids.push(parseInt(boxes[i].value, 10));
     }
-    return null;
+    return ids;
   }
 
   function groupSkipped(g) {
@@ -5733,20 +5737,36 @@
     title.textContent = fmt(I18N.group_title, { n: g.group + 1, count: g.frames.length });
     box.appendChild(title);
 
+    // F194: what this tier is and what the screen does about it, above the frames. The
+    // third tier's note is the one that says the program cannot choose — without it the
+    // absence of a preselected frame reads as something forgotten.
+    var note = document.createElement("p");
+    note.className = "dupe-tier-note";
+    note.textContent = g.tier === "same_image"
+      ? I18N.dupe_same_image_note
+      : I18N.dupe_similar_note + " " +
+        (g.order === "sharpness" ? I18N.dupe_order_sharpness : I18N.dupe_order_size);
+    box.appendChild(note);
+
     var table = document.createElement("table");
     // клик по кадру группы -> лайтбокс; стрелки листают кадры этого дубль-набора
     var groupSamples = g.frames.map(function (fr) { return fr.file_id; });
     g.frames.forEach(function (f, frameIdx) {
       var tr = document.createElement("tr");
 
-      var tdRadio = document.createElement("td");
-      var radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = "keep-" + g.group;
-      radio.value = String(f.file_id);
-      radio.checked = f.action === "keep" || (!f.action && f.recommended);
-      tdRadio.appendChild(radio);
-      tr.appendChild(tdRadio);
+      // A checkbox, not a radio: the answer "these three of the five" has to be
+      // expressible. Ticked only where a decision already says so, or where the tier has
+      // a checkable rule (`recommended`, second tier only) — on similar frames every box
+      // starts empty, which is the measured position and not an oversight.
+      var tdKeep = document.createElement("td");
+      var keepBox = document.createElement("input");
+      keepBox.type = "checkbox";
+      keepBox.name = "keep-" + g.group;
+      keepBox.value = String(f.file_id);
+      keepBox.title = I18N.action_keep;
+      keepBox.checked = f.action === "keep" || (!f.action && f.recommended);
+      tdKeep.appendChild(keepBox);
+      tr.appendChild(tdKeep);
 
       var tdThumb = document.createElement("td");
       tdThumb.appendChild(clickableThumb(f.file_id, groupSamples, frameIdx, f.thumb_url));
@@ -5758,21 +5778,14 @@
       // глаз, — это где они лежат.
       nameEl.title = f.src_path ? f.src_path + "\\" + f.name : f.name;
       tdThumb.appendChild(nameEl);
+      // F194: the badge names the RULE that put it there, and the server sets
+      // `recommended` on the second tier alone. On similar frames no badge is drawn at
+      // all — a highlighted frame reads as an answer, and here there is none to give.
       if (f.recommended) {
         var badge = document.createElement("span");
         badge.className = "badge";
         badge.appendChild(icon("check"));
-        // F148: a group with a recommendation OF ITS OWN (`group_keeper`) says so under
-        // the frame it names, and says who advises. A pair — and any group without a
-        // stored row — keeps the plain star it has always had: naming a source where
-        // none was asked for invites the user to look for meaning that is not there.
-        var isKeeper = !!g.keeper_source && f.file_id === g.keeper_id;
-        badge.appendChild(document.createTextNode(
-            isKeeper
-              ? (g.keeper_source === "model"
-                   ? I18N.keeper_badge_model : I18N.keeper_badge_sharpness)
-              : I18N.recommended_badge));
-        if (isKeeper) { badge.title = I18N.keeper_badge_hint; }
+        badge.appendChild(document.createTextNode(I18N.dupe_largest_badge));
         tdThumb.appendChild(badge);
       }
       tr.appendChild(tdThumb);
@@ -5811,13 +5824,23 @@
 
     var btnTrash = makeBtn("danger", "trash", I18N.delete_dupes_button);
     btnTrash.addEventListener("click", function () {
-      var keep = selectedKeeper(g);
-      if (keep === null) { window.alert(I18N.alert_choose_keeper); return; }
+      var keeps = selectedKeepers(g);
+      if (!keeps.length) { window.alert(I18N.alert_choose_keeper); return; }
       var remember = document.getElementById("delete-remember").checked;
       if (!remember && !window.confirm(fmt(I18N.confirm_trash_group, { n: g.group + 1 }))) {
         return;
       }
-      postJson("/api/dupes/trash", { group: groupFileIds(g), keep_file_id: keep })
+      // The trash route keeps ONE frame of what it is given, so the frames a person kept
+      // beyond the first are left OUT of the request instead of being named as keepers:
+      // exactly the unticked frames are sent, and exactly they go to the trash. Written
+      // this way rather than by widening the route, because that route is the one path in
+      // the program that removes files from disk.
+      var kept = {};
+      keeps.forEach(function (id) { kept[id] = true; });
+      var group = [keeps[0]].concat(groupFileIds(g).filter(function (id) {
+        return !kept[id];
+      }));
+      postJson("/api/dupes/trash", { group: group, keep_file_id: keeps[0] })
         .then(loadDupes);
     });
     box.appendChild(btnTrash);
@@ -5825,14 +5848,28 @@
     return box;
   }
 
+  // F194: the first tier occupies one line, whatever its size. Twelve thousand
+  // byte-identical copies are half a real archive and there is nothing in them to look
+  // at — the line says how many were folded away and that they are still on disk.
+  function renderExactNote(exact) {
+    var box = document.createElement("div");
+    box.className = "card dupe-exact-note";
+    box.textContent = fmt(I18N.dupe_exact_note,
+                          { copies: exact.copies, originals: exact.originals });
+    return box;
+  }
+
   function loadDupes() {
     document.getElementById("dupes-save-status").textContent = "";
     fetch("/api/dupes")
       .then(function (r) { return r.json(); })
-      .then(function (groups) {
+      .then(function (payload) {
+        var groups = payload.groups || [];
+        var exact = payload.exact || { copies: 0, originals: 0 };
         currentGroups = groups;
         var container = document.getElementById("dupes-list");
         container.textContent = "";
+        if (exact.copies) { container.appendChild(renderExactNote(exact)); }
         if (!groups.length) {
           container.appendChild(stateEl("empty", I18N.no_dupes));
           return;
@@ -5855,9 +5892,12 @@
         skip.push(groupFileIds(g));
         return;
       }
-      var keep = selectedKeeper(g);
-      if (keep === null) return;
-      groups.push({ group: groupFileIds(g), keep_file_id: keep });
+      // Nothing ticked -> the group is not sent at all, and nothing is written about it.
+      // That is the third tier's default said in the only way that cannot go wrong: all
+      // its frames stay because nobody decided anything about them.
+      var keeps = selectedKeepers(g);
+      if (!keeps.length) return;
+      groups.push({ group: groupFileIds(g), keep_file_ids: keeps });
     });
     if (!groups.length) {
       statusEl.textContent = I18N.select_group_to_save;

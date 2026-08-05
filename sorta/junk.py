@@ -1249,6 +1249,39 @@ _DEFAULT_VLM_MAX_EDGE = VLM_MAX_EDGE
 # itself, which the parser below would then have to wade through.
 _VLM_MAX_NEW_TOKENS = 8
 
+# F196: the `product` line names an item HELD IN A HAND. The old wording narrowed itself
+# — `isolated object, catalog shot` — and a hand holding the thing fell into `everyday
+# life` instead. That is not a guess about the model: the owner labelled 20 misses against
+# a list of reasons fixed BEFORE the frames were opened, and it came out `narrow` 17 (85%),
+# `borderline` 3 (15%), `feature_missing` 0, `other` 0. Nothing needed the `other` bucket,
+# so the shape of the miss is named rather than approximated.
+#
+# What the wider question buys and what it costs, measured on 2026-08-05 over 733 frames
+# the model had ALREADY been asked about (a prompt edit does not move the gate, so the
+# selection layer was left out of the measurement), counted by layer and weighted by
+# population:
+#
+#     wording                precision   recall   marked
+#     narrow (before)            78%       80%    ~2 107
+#     this one (after)           75%       94%    ~2 604
+#
+# +14 points of recall for -3 of precision: ~290 more products found, at the price of ~190
+# frames in the product folder that do not belong there. Whoever clarifies this wording
+# next needs both halves of that in hand — the previous clarification WAS measured, and
+# three points of precision are what it spent.
+#
+# `personal_photo` and `document` are word for word what they were, deliberately: the
+# measurement priced ONE edit, and moving two lines at once would have made it inapplicable
+# to either.
+#
+# An edit here does not invalidate a stored verdict by itself. The deep tier's
+# incrementality marker is `media_class.tier = 'vlm'` (F68) and it carries no fingerprint of
+# the question — unlike `frame_quality.source`, which does (F120,
+# `quality_prompt_fingerprint`). So a collection that already has verdicts keeps the ones
+# the narrow wording produced until its rows are reprocessed: a run on the fast tier moves
+# every marker to `clip`, and the next `--deep` run asks the model again. ~6 901 candidates
+# ≈ 90 minutes, once. The permanent cost does not move — the same frames are asked, the
+# question is merely a little longer.
 _VLM_PROMPT = (
     "Classify this image into exactly one category: personal_photo, document, "
     "or product.\n"
@@ -1256,8 +1289,9 @@ _VLM_PROMPT = (
     "everyday life.\n"
     "document = a photographed or scanned document, receipt, ID card, form, or "
     "other text-heavy paper.\n"
-    "product = an item photographed for sale or a marketplace/e-commerce style "
-    "listing photo (isolated object, catalog shot).\n"
+    "product = an item photographed to show the item itself — for sale, for a "
+    "listing, or to show someone. This includes an item held in a hand or held "
+    "up to the camera: a hand in the frame does not make it a personal photo.\n"
     "Answer with exactly one word: personal_photo, document, or product."
 )
 

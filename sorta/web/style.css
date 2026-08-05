@@ -296,6 +296,10 @@ label { cursor: pointer; }
 .dupes-controls { margin: 0 0 var(--space-md) 0; display: flex; align-items: center; gap: var(--space-sm); }
 .dupes-controls #dupes-save-status { color: var(--good); font-size: 0.85rem; }
 .dupe-group .table-wrap { margin-bottom: var(--space-sm); }
+/* F194: the tier a group belongs to, said above its frames — and the first tier, which
+   is one line rather than a list of twelve thousand identical files. */
+.dupe-tier-note { margin: 0 0 var(--space-sm) 0; font-size: 0.8rem; color: var(--muted); }
+.dupe-exact-note { margin-bottom: var(--space-md); font-size: 0.85rem; color: var(--muted); }
 .skip-label { display: inline-flex; align-items: center; gap: 5px; font-size: 0.85rem; color: var(--muted);
       margin-right: var(--space-md); }
 .cluster-controls { margin: 0 0 var(--space-md) 0; }

@@ -108,9 +108,14 @@ class DedupConfig:
     # agreed with the person on 32% of them against 30.4% for picking a frame at random,
     # for 451 seconds of GPU. Nothing replaced it, because there was nothing to buy.
     #
+    # F194 retired what those answers were being USED for. The same 111 groups say every
+    # signal we have sits at the level of a coin — sharpness (27%) below it — so the
+    # Duplicates tab recommends nothing among similar frames, and `group_keeper` is read
+    # as the ORDER the frames are shown in rather than as the group's answer.
+    #
     # The two sizes below outlive the question they were chosen for: they describe the
-    # POPULATION of near-duplicate groups (`dedup.keeper_groups`, the ranking the
-    # Duplicates tab shows) and the measurement worksheet still reads them.
+    # POPULATION of near-duplicate groups (`dedup.keeper_groups`, the ranking that fills
+    # the rows) and the measurement worksheet still reads them.
     #
     # How many frames of a group go into ONE question. The live collection holds a group
     # of 38 near-duplicates: a 3B model asked to compare 38 pictures answers nothing

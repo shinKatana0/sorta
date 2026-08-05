@@ -770,10 +770,26 @@ work exactly as in the city/event examples above.
   perceptual hashing (`sorta phash`, then `sorta dupes --near` or the UI
   **Duplicates** tab).
 
-In the UI **Duplicates** tab: each group shows a recommended keeper (★). Adjust the
-radio where you disagree, tick *"don't delete this group"* to skip a group, then
-click **Save all choices** once (no per‑group clicking). On the next sort/copy, the
-non‑keepers are routed to a `_delete` folder (recoverable) — or use the per‑photo
+The UI **Duplicates** tab sorts sameness into **three tiers**, because the cost of a
+mistake is not the same in all three:
+
+1. **The same bytes.** Half a real archive. Losing the wrong one of two identical files
+   loses nothing, so they are collapsed into a **line with a number** instead of a list
+   to work through. Collapsed means off the screen — the files are still on disk.
+2. **The same picture in different files** (one pHash, different bytes). The **largest
+   file is suggested** (★): resolution and weight are checkable facts, not taste. Tick
+   another if you disagree.
+3. **Similar frames.** **Nothing is preselected here**, on purpose. Labelled blind over
+   111 groups on 2026‑08‑04, no signal we have beats choosing at random (sharpness 27%,
+   arithmetic 28%, cascade 28%, the model 32% — random 30.4%), so a highlighted frame
+   would be advice that makes you choose *worse* than by pointing blindly. The frames are
+   **sorted** by sharpness, which is what a ranking honestly is, and the caption says so.
+
+Ticks are **checkboxes, not radios**: a burst of five can hold three frames worth keeping,
+and you may keep as many as you like. Tick *"don't delete this group"* to skip a group, then
+click **Save all choices** once (no per‑group clicking). **A group you ticked nothing in
+keeps every frame** — that is the third tier's default. On the next sort/copy, the frames
+you did not tick are routed to a `_delete` folder (recoverable) — or use the per‑photo
 **Delete** button / **Delete duplicates** to send them to the OS recycle bin
 immediately.
 
@@ -1741,8 +1757,9 @@ The **Review** tab (§6) is one workspace for everything that has to be looked a
 and partly deleted. Four slices, switched by the buttons at the top, and each button
 carries the number of frames still undecided:
 
-- **Duplicates** — near‑duplicate groups, with the recommended keeper (★) pre‑selected
-  (§10).
+- **Duplicates** — three tiers of sameness with three different defaults: byte copies
+  collapsed into a number, the same picture suggesting its largest file (★), similar
+  frames suggesting nothing at all (§10).
 - **Blurred** — frames in order, the softest first. It is an **order, not a verdict**:
   read from the top and stop where the frames stop looking blurred to you. The first page
   opens as far as `features.blur_review_max` (default `300`) and the button simply
