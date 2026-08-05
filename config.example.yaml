@@ -771,10 +771,12 @@ features:
   #
   #   a frame BELOW it (a scan, a downloaded picture, an old small shot) goes to the model
   #     untouched — 800 px in, 3200 px out, nothing given up, the case this was built for;
-  #   a frame ABOVE it is reduced first, and the x4 brings it back to about its own size:
-  #     4032 px -> 1024 px -> 4096 px. Same size out, but the real detail of the original
-  #     was dropped on the way in and the model drew plausible detail instead. The Review
-  #     tab says exactly that when it happens, rather than calling the copy an improvement.
+  #   a frame ABOVE it is REFUSED (F198). It would have to be reduced first, and the x4
+  #     would bring it back to about its own size: 4032 px -> 1024 px -> 4096 px. Same size
+  #     out, the real detail of the original dropped on the way in and plausible detail
+  #     drawn instead — and on blind pairs above the ceiling that came back 35/35/30,
+  #     indistinguishable from the original. So the answer is a sentence naming this limit,
+  #     the size of the frame and this key, and no file is written.
   #
   # Raising it costs memory as the SQUARE of the number and on the x4 OUTPUT, not on the
   # input: 2048 is four times the pixels of 1024, and a full 4000 px frame would be 16 000

@@ -159,7 +159,10 @@ product shows the group, pre-selects nothing, and lets several be kept.
 Blind pairs, 80 of them: on frames under ~1280 px a super-resolution model beats plain
 enlargement **62% against 10%**, and the gain grows as the frame shrinks (66% below 640 px,
 52% at 1024–1280). Above the ceiling the frame is squeezed and rebuilt from a quarter of
-itself, and on *fidelity* that came back 35/35/30 — indistinguishable.
+itself, and on *fidelity* that came back 35/35/30 — indistinguishable. So above the ceiling
+the product **refuses** and says why (F198): doing it anyway spends a run of the model and
+leaves a near-duplicate file in the archive to buy a result nobody can tell from the
+original.
 
 A 1:1 deblurring model, the obvious answer for the other half, came back **21% against the
 original's 36%** on fidelity: also nothing. The structural argument for it was correct —
@@ -227,6 +230,15 @@ driver is SIZE and not blur. Without the control we would have shipped the wrong
 "570 downloaded frames" came from thirteen. The real population was ~143 — a fourfold
 error. Two detector figures moved ~20 points each between a 200-frame and a 500-frame
 sample.
+
+### 4.7 A decision deferred to a measurement needs a way back into the code
+
+A feature that ships an honest "the measurement will decide this" leaves a hole, and the
+hole does not close by itself. The enlargement ceiling had one for a day: the answer came
+back on 2026-08-04 and reached a document, the code kept doing the work it had been left
+doing, and the owner found out by pressing the button and receiving a useless file. **The
+verdict has to return to the place that was waiting for it** — a brief is where the number
+lives, not where it acts.
 
 ---
 
