@@ -899,8 +899,13 @@
     }
     confirmVals.place = chosen.label;
     if (!window.confirm(fmt(I18N[confirmKey], confirmVals))) return;
+    // F202: the option carries whichever level it is — a city id, a region id, or
+    // neither for a country. The two ids are never both set (the server refuses a body
+    // that asks for a place at two levels at once), and the picker passes on what it
+    // was given rather than deciding the level here.
     postPlace({ kind: kind, selector: selector, action: "assign",
-                country: chosen.country, city_geonameid: chosen.city_geonameid },
+                country: chosen.country, city_geonameid: chosen.city_geonameid,
+                region_geonameid: chosen.region_geonameid },
               statusEl, onDone);
   }
 

@@ -63,6 +63,12 @@ provider knows goes to <Country>/<year>/ (reason `country_only`) instead of
 _Unsorted/no_place/. Only a file without a country at all (place_confidence='unknown')
 still lands in no_place.
 
+F202 adds the level between the two: a place the user assigned as a REGION (a row in
+manual_places with region_geonameid and no city) goes to <Country>/<Region>/<year>/ with
+its own reason `region_only`, so the plan says at which level the decision was made. It
+is never inferred — GPS resolves to a city or to nothing, and a region only ever comes
+from a person naming it.
+
 F85c (manual_places, written by the web app): a place the user assigned to a whole event
 or a whole source folder. It is read here and NOT in geo, because `places` has a single
 writer and is recomputed from scratch on every geo run — a manual place stored there
@@ -392,6 +398,22 @@ def _city_display_name(city: str | None, city_gid: int | None,
     return name
 
 
+def _region_display_name(region_gid: int | None, lang: i18n.Lang,
+                         resolver: GeoResolver) -> str | None:
+    """F202: the name of a hand-assigned admin1 region, in `lang`; None — no region.
+
+    The region is stored as a geonameid alone (`manual_places.region_geonameid`), so
+    there is no anchor text to fall back on: an id the bundled data does not know
+    resolves to the number itself, and a folder called `552548` explains nothing to
+    anyone. Such a row is answered with None, and the caller lays the file out one level
+    up, under its country — the same refusal `_city_display_name` makes.
+    """
+    if region_gid is None:
+        return None
+    name = resolver.name(region_gid, lang)
+    return None if name == str(region_gid) else name
+
+
 def _year_of(taken_at: str | None, confidence: str | None) -> str | None:
     if not taken_at or len(taken_at) < 4 or not taken_at[:4].isdigit():
         return None
@@ -486,6 +508,15 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         country_name = row["country_name"] or (
             i18n.country(row["country"], lang) if row["country"] else "Unknown")
         if row["city"] is None:
+            # F202: between the country and the city stands the region the user named by
+            # hand — «Карелия» for frames whose city nobody remembers. It is a level of
+            # its own in the layout and in the reason, because that is what makes a wrong
+            # one visible in the plan; it exists only on a manual row, so nothing
+            # inferred can reach this branch.
+            region_name = _region_display_name(row["region_geonameid"], lang, resolver)
+            if region_name is not None:
+                return ([_sanitize(country_name), _sanitize(region_name), year],
+                        "region_only")
             # F86: the country is resolved, only the city is missing (no provider knows a
             # settlement for these coordinates — mid-ocean, a desert road). The file goes
             # to the country level: hiding it in _Unsorted/no_place would throw away the
@@ -778,7 +809,8 @@ class PlanItem:
     dst: Path
     in_place: bool
     target_rel: str            # path relative to dest, POSIX separators
-    reason: str                # city|country_only|person|person_primary|person_shared
+    reason: str                # city|region_only|country_only|person|person_primary|
+                               # person_shared
     #                            | event|no_place|no_faces|no_event|junk|low_date|downloaded
     #                            | dedup_delete|manual_reassign
     #                            | manual_exclude (preview only, see keep_manual_excluded)
@@ -1266,6 +1298,9 @@ _PLAN_ROWS_SQL = _CTE + """SELECT f.id, f.path, f.taken_at, f.taken_at_confidenc
                 ELSE 'manual' END AS place_confidence,
            CASE WHEN mp.file_id IS NULL THEN p.city_geonameid
                 ELSE mp.city_geonameid END AS city_geonameid,
+           -- F202: no CASE here — `places` has no region column at all, because a region
+           -- is never inferred. It comes from the manual row or from nowhere.
+           mp.region_geonameid AS region_geonameid,
            CASE WHEN mp.file_id IS NULL THEN p.district_geonameid END AS district_geonameid,
            CASE WHEN mp.file_id IS NULL THEN p.district_name END AS district_name,
            mc.verdict AS junk_verdict, mc.source AS junk_source,
@@ -1285,9 +1320,9 @@ _PLAN_ROWS_SQL = _CTE + """SELECT f.id, f.path, f.taken_at, f.taken_at_confidenc
 class Destination:
     """Where one file will lie after the next apply — the layout segments and the reason.
 
-    `reason` is the plan's own stable English code (`city`, `country_only`, `no_place`,
-    `low_date`, ...), not a sentence: the caller phrases it, the way `PlanItem.reason` is
-    phrased by the CSV and by the web app.
+    `reason` is the plan's own stable English code (`city`, `region_only`,
+    `country_only`, `no_place`, `low_date`, ...), not a sentence: the caller phrases it,
+    the way `PlanItem.reason` is phrased by the CSV and by the web app.
     """
     file_id: int
     parts: tuple[str, ...]

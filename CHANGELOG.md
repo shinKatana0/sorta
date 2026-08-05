@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A place can be a region, not only a city or a country** (F202). The owner typed
+  «Алтай» into the place picker on 2026‑08‑05 and got two Mongolian towns; «Карелия»,
+  «Крым» and «Тоскана» found nothing at all. The base knew only cities and countries,
+  while people remember regions — and **7 492 frames** of the live collection have no
+  city, many of them with a correct answer that exists at exactly that level. Nothing was
+  downloaded for it: `admin1.tsv` (**3 865 regions**, each with its own geonameid) has
+  shipped in the wheel all along, and city labels have been showing those names for as
+  long — only the **search** and the **layout** could not name one. Now the picker answers
+  **country, then region, then city** (the wider the level, the more visible a wrong pick
+  is in the plan), a region option **says that it is one** (`место (область, страна)` —
+  one word is regularly both a city and a region), `manual_places` stores it in one new
+  column (`region_geonameid`, schema **v28**, older rows unchanged), and the layout gains
+  a third branch — `<Country>/<Region>/<Year>` with its own reason `region_only`, so the
+  plan says at which level the decision was made. The F85c rule does not weaken: a manual
+  place is still taken **whole**, so an assigned region never keeps an inferred city, and
+  a body asking for a city and a region at once is refused. A region is never **inferred**
+  — that is a separate question with its own cost of being wrong. Names come from the same
+  `names.tsv` in all three languages. Note the data's own spelling: 552548 is «Карельская
+  республика» in Russian, so a Russian search finds it by the start of that name (or by
+  the short «Karelia» of `admin1.tsv`), not by the word «Карелия».
 - **A group of duplicates says which tier it is in** (F199). The tiers behaved correctly
   and named themselves nowhere: the owner opened the screen on 2026‑08‑05 and saw two
   outwardly identical pairs, one carrying "★ largest file" and the other carrying nothing,

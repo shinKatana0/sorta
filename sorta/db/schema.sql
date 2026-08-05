@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 27;
+PRAGMA user_version = 28;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -476,11 +476,24 @@ CREATE TABLE IF NOT EXISTS manual_overrides (
 -- offline mix): a manual row replaces country + city together, district included, and
 -- never has a Nominatim country glued onto a hand-picked city. A country-only
 -- assignment leaves city/city_geonameid NULL and lands in the `country_only` branch.
+--
+-- v28 (F202): `region_geonameid` — the admin1 region the user named instead of a city.
+-- People remember a region («Карелия», «Тоскана») where the base only knows cities and
+-- countries, and 7 492 frames of the live collection have no city at all while their
+-- region is exactly what their owner does remember. The region is stored as a GeoNames
+-- id and nothing else: admin1.tsv carries its own geonameid, so the name is localized by
+-- the same names.tsv lookup a city gets, in all three languages.
+--
+-- One level per row, by the same rule: a region assignment leaves city/city_geonameid
+-- NULL (and lands in the `region_only` branch), a city assignment leaves this NULL. An
+-- older row, written before this column existed, simply has it NULL and keeps behaving
+-- exactly as it did.
 CREATE TABLE IF NOT EXISTS manual_places (
     file_id INTEGER PRIMARY KEY REFERENCES files(id),
     country TEXT NOT NULL,                -- ISO cc; always known (a city implies its country)
     city TEXT,                            -- canonical en/asciiname anchor, NULL = country only
     city_geonameid INTEGER,               -- GeoNames id of the city, NULL = country only
+    region_geonameid INTEGER,             -- GeoNames id of the admin1 region, NULL = not a region
     updated_at TEXT NOT NULL
 );
 
