@@ -2039,6 +2039,71 @@
   // the list doubles as a statement of what a run will produce.
   var overviewEmpty = false;
 
+  // --- F190: the area takes its final size BEFORE the data arrives ------------
+  //
+  // F145 fixed the same jump for the empty index; the request itself still had it. The
+  // tab painted a one-line "loading" message and replaced it with four cards, which is a
+  // block of an entirely different height: everything below — the run options among them
+  // — moved down the page under the cursor of somebody who was already aiming at them.
+  //
+  // So the loading state is the SAME markup: the same cards, the same rows, built by the
+  // same builders from a constant stand-in payload, with the value column blank and the
+  // indicator INSIDE the reserved area rather than in place of it. The indicator stays —
+  // an empty grid on its own reads as "there is nothing here".
+  //
+  // Nothing is invented in a blank cell. A plausible number that a second later turns
+  // into a different one is worse than a dash: it gets read.
+  var overviewLoading = false;
+
+  // The rows a card draws one per data row are the only part of the grid whose length is
+  // not fixed, and the skeleton has to choose a length before it knows one. These are the
+  // counts of a collection that has been through a full run — the state this tab is
+  // opened in — and they are what the height parity between "loading" and "loaded" rests
+  // on. The fixed-length parts (the thirteen rows of the collection card, which is the
+  // tallest of the four and therefore the one that sets the height of the whole area on a
+  // screen wide enough for a row of cards) match exactly, whatever arrives.
+  var OVERVIEW_SKELETON_ROWS = { place: 4, verdicts: 5, sources: 2, tiers: 2 };
+
+  function overviewSkeletonRows(n) {
+    var out = [];
+    for (var i = 0; i < n; i++) out.push({ key: "", count: 0 });
+    return out;
+  }
+
+  // The stand-in payload. Its VALUES are never displayed — every cell is blanked while
+  // `overviewLoading` — they are here only to choose the same branches the real payload
+  // of a laid-out collection chooses, i.e. the shape.
+  function overviewSkeletonData() {
+    return {
+      empty: false,
+      collection: {
+        files: 0, photos: 0, videos: 0, duplicates: 0, errors: 0, events: 0, animals: 0,
+        with_people: 0, group_photos: 0, portraits: 0, faces_reason: null,
+        blurred: 0, eyes_closed: 0, low_resolution: 0
+      },
+      place: { total: 0, no_place: 0, no_place_percent: 0,
+               confidence: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.place) },
+      classes: {
+        total: 1,
+        verdicts: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.verdicts),
+        sources: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.sources),
+        tiers: overviewSkeletonRows(OVERVIEW_SKELETON_ROWS.tiers),
+        vlm_ran: false, updated_at: "…"
+      },
+      layout: {
+        batches: 1, unfinished: 0,
+        last: { mode: "", operation: "", dest_root: "", started_at: "",
+                finished_at: "", unfinished: false, files: 0, done: 0 }
+      }
+    };
+  }
+
+  // F190: text the DATA dictates — the name of a place group, of a class, a date, a
+  // destination. The skeleton keeps the row it will stand in and leaves the text out.
+  function overviewDataText(text) {
+    return overviewLoading ? "" : text;
+  }
+
   // Числа читают глазами: 7 619 против 7619. toLocaleString берёт разделитель
   // разрядов из локали браузера.
   function overviewNum(n) {
@@ -2053,10 +2118,13 @@
     return overviewNum(n);
   }
 
+  // F190: one place blanks every value of the tab. A cell of the skeleton keeps its
+  // class — and with it its size — and says nothing.
   function overviewValue(text, extraClass) {
     var el = document.createElement("span");
-    el.className = "overview-value" + (extraClass ? " " + extraClass : "");
-    el.textContent = text;
+    el.className = "overview-value" + (extraClass ? " " + extraClass : "")
+        + (overviewLoading ? " overview-blank" : "");
+    el.textContent = overviewLoading ? "" : text;
     return el;
   }
 
@@ -2067,6 +2135,9 @@
   // F133: the same is now true of "Slices", where people, events, animals and the
   // classifier's classes live side by side.
   function overviewCount(count, tab, slice) {
+    // F190: while loading there is no number, and a link that promises a slice nobody
+    // has counted yet is a dead one — the row keeps its cell and waits.
+    if (overviewLoading) return overviewValue("");
     if (!tab || !count) return overviewValue(overviewStat(count));
     var btn = document.createElement("button");
     btn.type = "button";
@@ -2088,6 +2159,7 @@
   // cannot answer this one — it dashes on an empty INDEX, and here the index is full
   // while this particular question has not been asked of it.
   function overviewFaceCount(count, slice) {
+    if (overviewLoading) return overviewValue("");
     if (count === null || count === undefined) return overviewValue("\u2014");
     return overviewCount(count, "slices", slice);
   }
@@ -2096,7 +2168,11 @@
     var row = document.createElement("div");
     row.className = "overview-row" + (main ? " overview-row-main" : "");
     var name = document.createElement("span");
-    name.className = "overview-label";
+    // F190: a label the skeleton could not know (it came out of `overviewDataText`
+    // empty) holds its size the way a value cell does. The labels this tab writes
+    // itself — "Photos", "Started" — are printed while loading: they are the structure,
+    // not a claim about this collection.
+    name.className = "overview-label" + (overviewLoading && !label ? " overview-blank" : "");
     name.textContent = label;
     row.appendChild(name);
     row.appendChild(valueEl);
@@ -2121,7 +2197,8 @@
 
   function overviewNote(text, warn) {
     var el = document.createElement("p");
-    el.className = "overview-note" + (warn ? " overview-note-warn" : "");
+    el.className = "overview-note" + (warn ? " overview-note-warn" : "")
+        + (overviewLoading && !text ? " overview-blank" : "");
     el.textContent = text;
     return el;
   }
@@ -2192,7 +2269,7 @@
       // «unknown» — ровно те кадры, что уже названы строкой выше (правилом
       // раскладки); второй раз их не повторяем.
       if (row.key === "unknown") return;
-      card.appendChild(overviewRow(overviewPlaceLabel(row.key),
+      card.appendChild(overviewRow(overviewDataText(overviewPlaceLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
     card.appendChild(overviewNote(I18N.overview_no_place_hint));
@@ -2212,25 +2289,28 @@
       // F133: everything that is not a personal photograph is a pinned slice of its own
       // class — the number leads straight into it rather than into the whole list.
       card.appendChild(overviewRow(
-          overviewVerdictLabel(row.key),
+          overviewDataText(overviewVerdictLabel(row.key)),
           overviewCount(row.count, row.key === "photo" ? null : "slices",
                         "junk:" + row.key)));
     });
     card.appendChild(overviewSubtitle(I18N.overview_by_source));
     cl.sources.forEach(function (row) {
-      card.appendChild(overviewRow(overviewSourceLabel(row.key),
+      card.appendChild(overviewRow(overviewDataText(overviewSourceLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
     card.appendChild(overviewSubtitle(I18N.overview_by_tier));
     cl.tiers.forEach(function (row) {
-      card.appendChild(overviewRow(overviewTierLabel(row.key),
+      card.appendChild(overviewRow(overviewDataText(overviewTierLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
     // Прогонялся ли глубокий ярус — вопрос, который раньше решался запросом в БД.
-    card.appendChild(overviewNote(
-        cl.vlm_ran ? I18N.overview_vlm_ran : I18N.overview_vlm_not_ran));
+    // F190: which is a fact about THIS collection, so the skeleton keeps the line and
+    // leaves it unwritten rather than saying either of the two answers.
+    card.appendChild(overviewNote(overviewDataText(
+        cl.vlm_ran ? I18N.overview_vlm_ran : I18N.overview_vlm_not_ran)));
     if (cl.updated_at) {
-      card.appendChild(overviewNote(fmt(I18N.overview_updated_at, { at: cl.updated_at })));
+      card.appendChild(overviewNote(
+          overviewDataText(fmt(I18N.overview_updated_at, { at: cl.updated_at }))));
     }
     return card;
   }
@@ -2270,6 +2350,37 @@
     return card;
   }
 
+  // F190: the four cards, and the ONE place they are built. Both states of the tab go
+  // through it — that is what makes "the same containers" a property of the code rather
+  // than of two lists kept in step by hand.
+  function overviewGroups(data) {
+    var groups = document.createElement("div");
+    groups.className = "overview-groups";
+    groups.appendChild(overviewCollectionCard(data));
+    groups.appendChild(overviewPlaceCard(data));
+    groups.appendChild(overviewClassesCard(data));
+    groups.appendChild(overviewLayoutCard(data));
+    return groups;
+  }
+
+  // F190: the loading state. It takes no argument — the skeleton is the same size
+  // whether the answer turns out to hold three files or three hundred thousand.
+  function renderOverviewSkeleton() {
+    var body = document.getElementById("overview-body");
+    body.textContent = "";
+    overviewLoading = true;
+    overviewEmpty = false;
+    var groups = overviewGroups(overviewSkeletonData());
+    groups.className += " overview-skeleton";
+    groups.setAttribute("aria-busy", "true");
+    // The word "loading" goes INSIDE the reserved area, not in place of it: the
+    // indicator floats over the grid and takes no height of its own, so the area it
+    // stands in is exactly the area the cards will occupy.
+    groups.appendChild(stateEl("loading", I18N.overview_loading));
+    body.appendChild(groups);
+    overviewLoading = false;
+  }
+
   function renderOverview(data) {
     var body = document.getElementById("overview-body");
     body.textContent = "";
@@ -2288,19 +2399,12 @@
       var picker = document.getElementById("process-source-dir");
       if (picker && !picker.value) picker.focus();
     }
-    var groups = document.createElement("div");
-    groups.className = "overview-groups";
-    groups.appendChild(overviewCollectionCard(data));
-    groups.appendChild(overviewPlaceCard(data));
-    groups.appendChild(overviewClassesCard(data));
-    groups.appendChild(overviewLayoutCard(data));
-    body.appendChild(groups);
+    body.appendChild(overviewGroups(data));
   }
 
   function loadOverview() {
     var body = document.getElementById("overview-body");
-    body.textContent = "";
-    body.appendChild(stateEl("loading", I18N.loading));
+    renderOverviewSkeleton();
     return fetch("/api/overview")
       .then(function (r) { return r.json(); })
       .then(function (data) { renderOverview(data); })

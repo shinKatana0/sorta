@@ -2044,6 +2044,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "まだデータがありません。以下は処理後に表示される項目です。"
               "写真フォルダを指定して「処理する」を押してください。",
     },
+    # F190: the caption of the indicator that stands INSIDE the reserved area while the
+    # numbers are on their way. Its own string rather than the shared `loading`: it is
+    # read over a full grid of empty cells, and it has to say that the cells are the ones
+    # being filled — not that the tab is still deciding what to draw.
+    "overview_loading": {
+        "ru": "Загрузка обзора…", "en": "Loading the overview…", "ja": "概要を読み込み中…",
+    },
     "overview_group_collection": {"ru": "Коллекция", "en": "Collection", "ja": "コレクション"},
     "overview_group_place": {"ru": "Место", "en": "Place", "ja": "場所"},
     "overview_group_classes": {"ru": "Разбор", "en": "Classification", "ja": "分類"},
