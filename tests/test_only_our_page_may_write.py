@@ -137,14 +137,31 @@ class PostingTestBase(UiServerTestBase):
         headers = {"Content-Type": content_type}
         if origin is not None:
             headers["Origin"] = origin
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=json.dumps(data).encode("utf-8"),
-            headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        body = json.dumps(data).encode("utf-8")
+        # One POST, retried once when the SOCKET fails rather than the server. This suite
+        # walks every writing route over a fresh connection each time, and a threading
+        # server and its client can disagree about who closes first: the answer is written,
+        # the handler returns, the socket goes away, and the client sees
+        # `ConnectionAbortedError: [WinError 10053]` with no reply at all. Enough attempts
+        # in a row and it happens somewhere -- caught on this file's first red gate, on a
+        # route the failure had nothing to do with, which is what a race of the transport
+        # looks like from here.
+        #
+        # The retry does NOT soften what the test claims: it re-opens the CONNECTION, not
+        # the assertion. A route that really answered wrong answers wrong the second time
+        # too.
+        for attempt in (1, 2):
+            req = urllib.request.Request(
+                f"{self.base_url}{path}", data=body, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return resp.status, json.loads(resp.read())
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read())
+            except (ConnectionError, TimeoutError):
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")
 
 
 class TestEveryPostRouteRefusesAForeignContentType(PostingTestBase):
