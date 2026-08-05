@@ -593,12 +593,33 @@ label { cursor: pointer; }
 .env-warning { margin-top: var(--space-md); padding: 10px 13px; font-size: 0.85rem;
       border-radius: var(--radius-md); color: var(--ink); line-height: 1.45;
       background: rgba(214, 158, 46, 0.13); border: 1px solid rgba(214, 158, 46, 0.42); }
+/* F191: the stage row is ONE line whatever the pipeline holds — the caption of the
+   stage that is going, "N of M", and a single bar. Everything here is sized by the
+   block (42rem, the same cap as .process-controls above) rather than by how many
+   stages there are, so the row cannot grow past the cards the way nine chips did.
+   The chips are still exactly what they were; they now live behind the disclosure. */
+.stage-summary { max-width: 42rem; margin: var(--space-sm) 0; }
+.stage-summary-head { display: flex; align-items: center; gap: var(--space-sm); width: 100%;
+      padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-md);
+      background: var(--surface); color: var(--ink); font: inherit; font-size: 0.85rem;
+      text-align: left; cursor: pointer; }
+.stage-summary-head:hover { background: var(--chip); }
+/* The name is the one part that may be long (and it is translated), so it is the one
+   part that gives way — the counter, the bar and the caret keep their size. */
+.stage-summary-current { flex: 1 1 auto; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.stage-summary-count { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stage-summary-bar { flex: 0 0 8rem; width: 8rem; height: 6px; }
+.stage-summary-caret { flex: 0 0 auto; color: var(--muted); }
+.stage-summary.failed .stage-summary-head { border-color: var(--danger); }
+.stage-summary.failed .stage-summary-current { color: var(--danger); }
 .stage-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: var(--space-sm) 0; }
 .stage-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: var(--radius-pill);
       font-size: 0.78rem; font-weight: 500; background: var(--chip); color: var(--muted); border: 1px solid var(--line); }
 .stage-chip svg { width: 11px; height: 11px; }
 .stage-chip.done { background: var(--good-soft); color: var(--good); border-color: transparent; }
 .stage-chip.now { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+.stage-chip.failed { background: var(--danger-soft); color: var(--danger); border-color: transparent; font-weight: 600; }
 
 /* --- F77: ручные правки раскладки ------------------------------------- */
 /* Два РАЗНЫХ состояния строки, которые нельзя путать: «не трогать» — красная
