@@ -1026,12 +1026,17 @@ class _SortState:
 
 def _validate_sort_payload(payload: object) -> tuple[str | None, str, str] | None:
     """Parse the body `POST /api/sort`:
-    `{"dest": str|null|"", "mode": "move"|"copy", "by": "city"|"person"|"event"?}`.
+    `{"dest": str|null|"", "mode": "move"|"copy"?, "by": "city"|"person"|"event"?}`.
 
-    None -> invalid (400): not dict / `mode` not in {move, copy} / `by` outside
-    `_SUPPORTED_MODES` / `dest` not a string and not null. `dest` an empty/whitespace
-    string or null -> None (in-place — layout inside the source folder, see
-    `plan_and_sort` F28).
+    None -> invalid (400): not dict / `mode` present but not in {move, copy} / `by`
+    outside `_SUPPORTED_MODES` / `dest` not a string and not null. `dest` an
+    empty/whitespace string or null -> None (in-place — layout inside the source folder,
+    see `plan_and_sort` F28).
+
+    F200: `mode` is optional and falls back to "copy" — the same value the radio in
+    `page.html` now carries `checked`. The screen and the parser are two defaults for
+    one question, and a body that omits the field has to land where the screen says it
+    would; copy is the answer that destroys nothing if the click was careless.
 
     F192: `by` is the criterion the layout screen now asks for — the same three values
     `sorta sort --by` and `GET /api/plan?mode=` have taken since F5. It is optional and
@@ -1044,7 +1049,7 @@ def _validate_sort_payload(payload: object) -> tuple[str | None, str, str] | Non
     """
     if not isinstance(payload, dict):
         return None
-    mode = payload.get("mode")
+    mode = payload.get("mode", "copy")
     if mode not in ("move", "copy"):
         return None
     by = payload.get("by", "city")

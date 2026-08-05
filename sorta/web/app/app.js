@@ -1931,8 +1931,8 @@
   // `config.yaml`, which the server refuses mid-run.
   function refreshQuerySliceControls() {
     var busy = uiBusy();
-    document.getElementById("query-up-btn").disabled = busy || querySliceIndex <= 0;
-    document.getElementById("query-down-btn").disabled =
+    document.getElementById("query-left-btn").disabled = busy || querySliceIndex <= 0;
+    document.getElementById("query-right-btn").disabled =
         busy || querySliceIndex < 0 || querySliceIndex >= savedSlices.length - 1;
     document.getElementById("query-unpin-btn").disabled = busy || querySliceIndex < 0;
   }
@@ -1965,10 +1965,10 @@
       });
   }
 
-  document.getElementById("query-up-btn").addEventListener("click", function () {
+  document.getElementById("query-left-btn").addEventListener("click", function () {
     moveSavedSlice(-1);
   });
-  document.getElementById("query-down-btn").addEventListener("click", function () {
+  document.getElementById("query-right-btn").addEventListener("click", function () {
     moveSavedSlice(1);
   });
 
@@ -3543,7 +3543,9 @@
   function updateSortApplyBtnStyle() {
     var btn = document.getElementById("sort-apply-btn");
     var checked = document.querySelector('input[name="sort-mode"]:checked');
-    var move = !checked || checked.value === "move";
+    // F200: no radio checked means the default, and the default is copy — so the
+    // button is the alarming red one only when "move" was actually chosen.
+    var move = !!checked && checked.value === "move";
     btn.classList.toggle("btn-danger", move);
     btn.classList.toggle("btn-primary", !move);
   }
@@ -3739,7 +3741,7 @@
   function startSort() {
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
-    var mode = checked ? checked.value : "move";
+    var mode = checked ? checked.value : "copy";  // F200: the default the markup shows
     // F192: `by` is the criterion, `mode` is move-or-copy — two different questions
     // that the server has kept apart since F43 and the field names keep apart here.
     postJson("/api/sort", { dest: dest || null, mode: mode, by: layoutBy() })
@@ -3760,7 +3762,7 @@
     if (!planCount) return;
     var dest = document.getElementById("sort-dest").value.trim();
     var checked = document.querySelector('input[name="sort-mode"]:checked');
-    var mode = checked ? checked.value : "move";
+    var mode = checked ? checked.value : "copy";  // F200: the default the markup shows
     var statusEl = document.getElementById("sort-status");
     statusEl.textContent = "";
     // The dialog states the numbers of the plan the tab is showing, so it asks about
@@ -4438,16 +4440,17 @@
       lightboxRestoreBadge.title = I18N.review_restore_badge_hint;
     }
     // The size decides, not the slice. Above `features.restore_max_edge` the copy would be
-    // rebuilt from a reduced frame and the measurement found no gain there, so the button
-    // goes and the sentence stays — a withdrawn offer without a word is the silent half of
-    // the same promise.
-    var offered = offer.available && !offer.rebuilt;
+    // rebuilt from a reduced frame and the measurement found no gain there, so the server
+    // refuses (F198) — the button goes and the sentence stays, because a withdrawn offer
+    // without a word is the silent half of the same promise. The sentence is the one the
+    // route answers a press with: one refusal, one wording.
+    var offered = offer.available;
     lightboxRestoreBtn.hidden = !offered;
     lightboxRestoreBtn.disabled = uiBusy() || lightboxRestoring;   // F145
     lightboxRestoreBtn.textContent = lightboxRestoring ? I18N.review_restore_running
                                                        : I18N.review_restore;
-    var note = offer.available && offer.rebuilt
-        ? fmt(I18N.review_restore_too_large,
+    var note = offer.reason === "too_large"
+        ? fmt(I18N.review_restore_error_too_large,
               { max_edge: offer.max_edge, source_edge: offer.source_edge })
         : "";
     lightboxRestoreNote.hidden = !note;
@@ -4507,10 +4510,12 @@
           return;
         }
         // A reason, never an empty result — and the same codes the Review tab translates,
-        // including the two refusals this entrance made necessary (a private class, a
-        // clip), which the ROUTE decides and not the page.
+        // including the refusals this entrance made necessary (a private class, a clip,
+        // a frame above the ceiling), which the ROUTE decides and not the page. The
+        // answer's own numbers fill the sentence: the "too large" one names the limit and
+        // the size of the frame in front of the person.
         var reason = resp && resp.reason
-            ? I18N["review_restore_error_" + resp.reason] : null;
+            ? fmt(I18N["review_restore_error_" + resp.reason] || "", resp) : null;
         lightboxRestoreStatus.textContent = reason
             || (I18N.review_error_prefix + ((resp && (resp.detail || resp.error)) || ""));
       })
@@ -5678,9 +5683,11 @@
           }
         } else {
           // A reason, never an empty result: the weights come off the network and being
-          // offline is an ordinary state for this program.
+          // offline is an ordinary state for this program. F198: the answer's own numbers
+          // fill the sentence, so a frame above the ceiling is refused here by the limit
+          // and the size it actually has.
           var reason = resp && resp.reason
-              ? I18N["review_restore_error_" + resp.reason] : null;
+              ? fmt(I18N["review_restore_error_" + resp.reason] || "", resp) : null;
           status.textContent = reason
               || (I18N.review_error_prefix + ((resp && (resp.detail || resp.error)) || ""));
         }
@@ -5767,6 +5774,40 @@
     return "";
   }
 
+  // F199: the tier of THIS group, in one line, with the reasoning folded behind it. The
+  // captions are named by the server (`tier_caption`, `tier_why` — keys of the string
+  // catalog), so a group can never arrive without a line: deriving the sentence from
+  // `tier` in a ternary is what left an unknown tier silently wearing the third one's
+  // words. The order rides on the same line because it is a fact about the list on
+  // screen — "sorted by sharpness" is not "this one is best".
+  function renderTierNote(g) {
+    var wrap = document.createElement("div");
+    wrap.className = "dupe-tier-note";
+
+    var line = document.createElement("p");
+    line.className = "dupe-tier-line";
+    var order = g.order === "sharpness" ? I18N.dupe_order_sharpness : I18N.dupe_order_size;
+    line.textContent = [I18N[g.tier_caption], order].filter(Boolean).join(" · ");
+    wrap.appendChild(line);
+
+    // The "why" is a paragraph and the line is not the place for it (F199): the reason a
+    // tier suggests the largest file, or refuses to suggest anything at all, is worth a
+    // measured sentence — and worth reading once rather than on every group.
+    var why = I18N[g.tier_why];
+    if (why) {
+      var details = document.createElement("details");
+      details.className = "dupe-tier-why";
+      var summary = document.createElement("summary");
+      summary.textContent = I18N.dupe_tier_why;
+      details.appendChild(summary);
+      var text = document.createElement("p");
+      text.textContent = why;
+      details.appendChild(text);
+      wrap.appendChild(details);
+    }
+    return wrap;
+  }
+
   function renderGroup(g) {
     var box = document.createElement("div");
     box.className = "card dupe-group";
@@ -5778,13 +5819,7 @@
     // F194: what this tier is and what the screen does about it, above the frames. The
     // third tier's note is the one that says the program cannot choose — without it the
     // absence of a preselected frame reads as something forgotten.
-    var note = document.createElement("p");
-    note.className = "dupe-tier-note";
-    note.textContent = g.tier === "same_image"
-      ? I18N.dupe_same_image_note
-      : I18N.dupe_similar_note + " " +
-        (g.order === "sharpness" ? I18N.dupe_order_sharpness : I18N.dupe_order_size);
-    box.appendChild(note);
+    box.appendChild(renderTierNote(g));
 
     var table = document.createElement("table");
     // a click on a frame of the group -> the lightbox; the arrows page this dupe set

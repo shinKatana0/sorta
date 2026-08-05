@@ -76,7 +76,9 @@ app**.
 
 ---
 
-![The Cities tab — the proposed Country / City / Year folder tree, reviewed before anything moves](docs/assets/process.png)
+![The Overview tab — the condition of the collection on one screen, every number a link into the frames behind it](docs/assets/process.png)
+
+![The Layout tab — the two things needed every time (where, and by what) on the desk; everything else behind the gear](docs/assets/layout.png)
 
 ### Two entry points, one job each
 

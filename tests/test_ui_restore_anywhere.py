@@ -268,10 +268,10 @@ class TestTheCeilingDecidesWhereItIsOffered(RestoreAnywhereBase):
 
         _status, offer = self.offer(file_id)
 
-        # Not a refusal — the action is allowed and the Review tab still offers it (F169
-        # does the work and says what was done). What the ceiling decides is the OFFER on
-        # the expanded frame, and the two numbers are what the sentence is built from.
-        self.assertTrue(offer["available"])
+        # F198: a refusal now, and the same one the route answers a press with — the two
+        # numbers are what the sentence saying why is built from.
+        self.assertFalse(offer["available"])
+        self.assertEqual(offer["reason"], ui.RESTORE_ERROR_TOO_LARGE)
         self.assertTrue(offer["rebuilt"])
         self.assertEqual(offer["source_edge"], 2400)
         self.assertEqual(offer["max_edge"], 600)
@@ -279,12 +279,12 @@ class TestTheCeilingDecidesWhereItIsOffered(RestoreAnywhereBase):
     def test_the_page_withdraws_the_button_and_keeps_the_sentence(self):
         self.start_server()
         html = self.html()
-        self.assertIn("var offered = offer.available && !offer.rebuilt;", html)
+        self.assertIn("var offered = offer.available;", html)
         self.assertIn("lightboxRestoreBtn.hidden = !offered;", html)
-        self.assertIn("fmt(I18N.review_restore_too_large,", html)
+        self.assertIn("fmt(I18N.review_restore_error_too_large,", html)
 
     def test_the_sentence_names_both_numbers_and_the_key_in_three_languages(self):
-        entry = ui._UI_STRINGS["review_restore_too_large"]
+        entry = ui._UI_STRINGS["review_restore_error_too_large"]
         self.assertEqual(set(entry), {"ru", "en", "ja"})
         for lang in ("ru", "en", "ja"):
             with self.subTest(lang=lang):

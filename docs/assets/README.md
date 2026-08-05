@@ -1,8 +1,15 @@
 # Screenshot assets
 
-`hero.gif` and `process.png` (referenced from the top‑level README) are captured on
-a **synthetic** demo collection — generated JPEGs with fake EXIF/GPS labelled "SORTA
-DEMO", no real photos or people. Regenerate them the same way if the UI changes.
+`hero.gif`, `process.png` and `layout.png` (referenced from the top‑level README) are
+captured on a **synthetic** demo collection — generated JPEGs with fake EXIF/GPS labelled
+"SORTA DEMO", no real photos or people. `icon.png` is the brand mark the header draws.
+Regenerate them the same way if the UI changes.
+
+**One trap when recapturing.** The web app remembers the last source folder in the
+browser's `localStorage`, and a demo instance served from the same `127.0.0.1:8756` will
+restore the path of a REAL session into the Source field. Nothing leaks from the server —
+the path is in the browser — but it lands in the screenshot all the same. Capture in a
+private window, or process the demo folder once so the remembered path is the demo's.
 
 The user guides currently ship **without** UI screenshots (text worked‑examples
 with real command output carry the walkthrough instead). To add real screenshots

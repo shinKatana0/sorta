@@ -300,6 +300,12 @@ label { cursor: pointer; }
 /* F194: the tier a group belongs to, said above its frames — and the first tier, which
    is one line rather than a list of twelve thousand identical files. */
 .dupe-tier-note { margin: 0 0 var(--space-sm) 0; font-size: 0.8rem; color: var(--muted); }
+/* F199: one line names the tier, and the measured reason folds out under it — the group
+   header is not the place for a paragraph, and the paragraph is worth reading once. */
+.dupe-tier-line { margin: 0; }
+.dupe-tier-why { margin: 2px 0 0 0; }
+.dupe-tier-why > summary { margin: 0; font-weight: 400; }
+.dupe-tier-why > p { margin: 2px 0 0 var(--space-md); max-width: 42rem; }
 .dupe-exact-note { margin-bottom: var(--space-md); font-size: 0.85rem; color: var(--muted); }
 .skip-label { display: inline-flex; align-items: center; gap: 5px; font-size: 0.85rem; color: var(--muted);
       margin-right: var(--space-md); }

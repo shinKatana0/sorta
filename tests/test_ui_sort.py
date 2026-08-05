@@ -132,11 +132,18 @@ class TestSortValidation(SortTestBase):
         self.assertEqual(status, 400)
         self.assertIn("error", resp)
 
-    def test_missing_mode_returns_400(self):
+    def test_missing_mode_is_the_default_and_the_default_is_copy(self):
+        """F200: an absent `mode` used to be a 400. It is now the same answer the
+        switch shows preselected — see test_layout_copies_by_default.py for why, and
+        for the check that the two defaults cannot drift apart."""
+        self.add_photo_file("a.jpg", country="ru", city="Moscow")
         self.start_server()
         status, resp = self.post("/api/sort", {"dest": str(self.root / "dest")})
-        self.assertEqual(status, 400)
-        self.assertIn("error", resp)
+        self.assertEqual(status, 200)
+        self.assertTrue(resp.get("ok"))
+        final = _poll_until(self.sort_status, lambda d: d["finished"])
+        self.assertIsNone(final["error"])
+        self.assertEqual(final["result"]["mode"], "copy")
 
     def test_non_dict_dest_returns_400(self):
         self.start_server()
