@@ -21,10 +21,10 @@ app**.
 
 <sub>The local web app (`sorta ui`) on a synthetic demo collection — city tree, live folder‑language switch (en/ru/ja), and duplicate review.</sub>
 
-> ⚡ **For full‑speed use** — face recognition, the deep VLM tier, or large
-> collections — an **NVIDIA GPU (CUDA 13) with ≥ 4 GB VRAM** is recommended
-> (**≥ 8 GB** for the VLM tier). Everything still runs on CPU, just noticeably
-> slower for those — see [System requirements](#system-requirements).
+> ⚡ **An NVIDIA GPU (CUDA 13) is what this is built for.** 6 GB of VRAM covers
+> everything except the deep VLM tier, which peaks at a measured **20.5 GB** and
+> wants a 24 GB card. The CPU profile runs the rest and has never been timed on a
+> large collection — see [System requirements](#system-requirements).
 
 > 📖 **User guide:** [English](docs/guide/user-guide.en.md) ·
 > [Русский](docs/guide/user-guide.ru.md) · [日本語](docs/guide/user-guide.ja.md)
@@ -93,11 +93,29 @@ reproducible is scriptable; nothing that needs an opinion pretends to be.
 
 ## System requirements
 
+> [!WARNING]
+> **Sorta is built for a machine with an NVIDIA GPU.** Every stage that costs real time —
+> face detection, CLIP classification, the deep VLM tier — is a neural network, and the
+> numbers below were measured on one.
+>
+> **The deep tier needs ~20.5 GB of VRAM** (a measured peak, not an estimate: Qwen2.5‑VL‑3B
+> holds that much and a second copy does not fit). A 24 GB card runs it; a 8–12 GB card
+> does not, and the run will fail rather than crawl. The rest of the pipeline is far
+> lighter — about 3 GB — so **city sorting, duplicates, faces and events are comfortable on
+> a 6–8 GB card**.
+>
+> **The CPU profile works and has never been measured end to end.** It exists so that a
+> machine without a GPU can still index, geolocate, find duplicates and sort by city. Take
+> it as: small collections, or a large one with faces, events and the deep tier switched
+> off. Nobody has run 38 000 files through it, and we will not pretend to know how long
+> that takes.
+
+
 | | CPU profile (the `cpu` extra) | GPU profile (the `gpu` extra) |
 |---|---|---|
 | Hardware | Any x86‑64 machine | NVIDIA GPU + driver supporting **CUDA 13** |
-| VRAM | n/a | **~3 GB** base + faces (measured on RTX 5090: CLIP ViT‑L 2.0 GB + buffalo_l 0.6 GB) — **≥ 4 GB** comfortable, **≥ 8 GB** for the deep VLM tier (Qwen2.5‑VL‑3B, ~7 GB est.) |
-| Faces / CLIP speed | Works, but **slow** (hours on a large, faces/events‑enabled collection) | Fast — measured 2026‑07‑28: 24,196 photos, faces+events+junk ≈ **40 min** without the deep tier; the optional deep VLM tier adds **+122 min**, once |
+| VRAM | n/a | **~3 GB** for everything except the deep tier (measured on RTX 5090: CLIP ViT‑L 2.0 GB + buffalo_l 0.6 GB) — **6 GB** comfortable. The **deep VLM tier peaks at 20.5 GB**, measured, so it wants a **24 GB** card |
+| Speed | Works; **never measured end to end** on a large collection | Measured 2026‑08‑05, 38 485 files from cold: index 5.3 min · geo 3 s offline · landmarks 4.9 · classify 32.4 · faces 14.2 · events 2 s · junk 19.3 · phash 45 s — **77.5 min** in all, and ~10 minutes less with the preview cache warm |
 | Best for | City sorting + duplicates on any machine; smaller collections with faces/events on | Large collections (300 GB+) with faces/events routinely on |
 
 Common to both: Python **3.11–3.14**, [`uv`](https://docs.astral.sh/uv/), and
