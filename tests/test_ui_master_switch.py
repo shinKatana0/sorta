@@ -65,11 +65,17 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         three entries OUT of the same list — the quality question, the scope that chose
         who it was asked of and the keeper question — so the list is checked exactly
         rather than for what it contains, and a retired control cannot linger in it.
+
+        F204 added the two the list could not have caught: the screenshot rescue and the
+        landmark check were subordinate on the server and on no screen at all, so there
+        was no control for this list to hold. Now there is one each, and they are in it.
         """
         listed = self.html[self.html.index("var VLM_SUBORDINATE_IDS = ["):]
         listed = listed[:listed.index("];")]
         self.assertEqual(set(re.findall(r'"([\w-]+)"', listed)),
-                         {"process-products-checkbox", "process-pets-verify-checkbox"})
+                         {"process-products-checkbox", "process-pets-verify-checkbox",
+                          "process-junk-rescue-checkbox",
+                          "process-landmarks-verify-checkbox"})
         self.assertIn("VLM_SUBORDINATE_IDS.forEach",
                       self.body("updateVlmSubordinatesDisabled"))
 
@@ -87,11 +93,11 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         body = self.body("updateVlmSubordinatesDisabled")
         self.assertIn('document.querySelectorAll(".vlm-off-hint")', body)
         self.assertIn('el.style.display = off ? "" : "none"', body)
-        # One caption per subordinate option, and there are two of them: the product
-        # line (F161) and the animal check. The other two went with the questions F186
-        # retired.
+        # One caption per subordinate option, and there are four of them: the product
+        # line (F161), the animal check, and the screenshot rescue and the landmark check
+        # F204 brought onto the screen. Two others went with the questions F186 retired.
         self.assertEqual(self.html.count('class="process-toggle-hint cost-hint '
-                                         'vlm-off-hint"'), 2)
+                                         'vlm-off-hint"'), 4)
 
     def test_their_price_is_zero_and_not_the_old_number(self):
         """The estimate has to add up to what the run will do — a dash would say
@@ -118,7 +124,7 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         for match in re.finditer(r"\{ key: \"(\w+)\"(.*?)\}", rows, re.S):
             entries[match.group(1)] = "vlm: true" in match.group(2)
         self.assertEqual({key for key, marked in entries.items() if marked},
-                         {"products", "pets_verify"})
+                         {"products", "pets_verify", "junk_rescue", "landmarks_verify"})
         self.assertNotIn("vlm: true", rows.split('{ key: "deep"', 1)[1].split("}", 1)[0])
 
     def test_the_sum_is_recomputed_whenever_the_master_moves(self):
