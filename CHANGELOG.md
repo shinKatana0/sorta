@@ -163,15 +163,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
-- **The animal check and the screen‑capture rescue got the pipeline back** (F206). The
-  numbers F205 separated said it in one line: the deep tier ran **7 951** frames at **1.4
-  frames/s** while the two questions of the junk stage's back half ran **4 281** at
-  **0.42** — the same model, the same one frame per call, the same card, **three times the
-  price**. F165 split the stage in two and the overlap of the CPU half with the GPU half
-  (F101) went with the verdicts; `_frame_question` stayed the plain serial path, on an
-  argument that was true when those populations were short lists. At the previous run's
-  rate those frames cost 3 243 s, so the gap is **116 minutes a run**, and the balance of
-  the two runs closes on it exactly. Both questions now go through the tier's own machinery
+- **The animal check and the screen‑capture rescue got the pipeline back** (F206). F165
+  split the junk stage in two and the overlap of the CPU half with the GPU half (F101) went
+  with the verdicts; `_frame_question` stayed the plain serial path, on an argument that was
+  true while those populations were short lists and stopped being true at **4 281** frames.
+  Both questions now go through the tier's own machinery.
+
+  **What that is worth, measured five times over 300 frames each, because the first four
+  answered a different question than the one asked.** The gain is the decode it hides, so
+  it is worth exactly what decoding costs:
+
+  ```
+                              serial   pipeline
+  previews already on disk      1.35       1.49   x1.10
+  the same, under a full gate   1.36       1.44   x1.06
+  the code this replaces        1.34       1.49   x1.11
+  PREVIEWS COLD                 1.01       1.49   x1.47
+  ```
+
+  The first three sampled frames whose previews the last run had already written, i.e. a
+  population where preparation is free — **a measurement of an overlap that had nothing
+  left to overlap, and it could not have returned any other answer.** Repeating it does not
+  catch that; asking whether the question can come back differently does.
+
+  **The claim this entry used to make — that the serial path cost 116 minutes a run — is
+  withdrawn.** It came from arithmetic over the run log, not from a measurement: the serial
+  path runs at the model's own price (0.74 s a frame, the figure measured long ago), and
+  the code being replaced here prices identically to its replacement on the same sample.
+  The run of 2026‑08‑05 really did spend **0.43 frames/s** over those 4 281 frames while
+  the deep tier held 1.4 in the same run, minutes apart, on the same card — cold decoding
+  explains part of that and **not all of it**, and the rest is written down as an open
+  question rather than guessed at. The next full run answers it directly, because F205
+  taught the log to price these three passes apart.
+
+  Everything below stands as it was. Both questions go through the tier's own machinery
   — `vlm.workers` preparation threads decoding the next frames while the model answers
   about this one — and **nothing about the question moved**: same prompts, same token
   budgets, same input size, same thresholds, same populations, one frame per call. The
