@@ -549,6 +549,18 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "глубокий анализ (VLM)", "en": "deep analysis (VLM)",
         "ja": "詳細解析 (VLM)",
     },
+    # F205: the animal check and the rescue, each under its own name since the measured
+    # price of the three model passes turned out to differ threefold. The captions name
+    # the question rather than the model: three lines all reading "deep analysis (VLM)"
+    # would tell the reader of the bar exactly as much as the one name did.
+    "process_phase_junk_pets_vlm": {
+        "ru": "проверка животных (VLM)", "en": "animal check (VLM)",
+        "ja": "動物の確認 (VLM)",
+    },
+    "process_phase_junk_rescue_vlm": {
+        "ru": "поиск экранного (VLM)", "en": "screen-capture check (VLM)",
+        "ja": "画面コマの確認 (VLM)",
+    },
     "process_phase_junk_write": {
         "ru": "запись вердиктов", "en": "saving verdicts",
         "ja": "判定を保存中",

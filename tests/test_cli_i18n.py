@@ -418,6 +418,9 @@ class TestRussianOutputIsUnchanged(_EnvCase):
             "junk_clip": "junk: классификация CLIP",
             "junk_ocr": "junk: распознавание текста",
             "junk_vlm": "junk: глубокий анализ (VLM)",
+            # F205: the other two passes that ask the model, each with a caption of its own
+            "junk_pets_vlm": "junk: проверка животных (VLM)",
+            "junk_rescue_vlm": "junk: поиск экранного (VLM)",
             "junk_write": "junk: запись вердиктов",
         })
         self.assertEqual(i18n.cli_text("cli.progress.index", "ru"), "index: сканирование")

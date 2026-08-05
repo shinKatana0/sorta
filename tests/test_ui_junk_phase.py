@@ -115,7 +115,9 @@ class TestJunkPhaseI18n(ProcessTestBase):
     """Requirement 6: captions for the new phases in all three languages."""
 
     _KEYS = ("process_phase_junk_clip", "process_phase_junk_ocr",
-             "process_phase_junk_vlm", "process_phase_junk_write")
+             "process_phase_junk_vlm", "process_phase_junk_write",
+             # F205: the two model passes that stopped sharing the deep tier's caption
+             "process_phase_junk_pets_vlm", "process_phase_junk_rescue_vlm")
 
     def test_every_junk_phase_has_a_ui_string(self):
         # The client looks the caption up as "process_phase_" + the key from the
