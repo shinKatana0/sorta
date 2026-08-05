@@ -70,10 +70,17 @@ class TiersTestBase(DupesTestBase):
         return [self.add_dupe(f"{prefix}{i}.jpg", phash=SAME, width=size, height=size,
                               size=size) for i, size in enumerate(sizes)]
 
-    def add_similar(self, prefix: str, count: int, *, size: int = 500) -> list[int]:
-        """A burst: frames that only look alike, each with its own pHash."""
-        return [self.add_dupe(f"{prefix}{i}.jpg", phash=NEAR[i], width=size, height=size,
-                              size=size) for i in range(count)]
+    def add_similar(self, prefix: str, count: int, *, size: int = 500,
+                    family: str = "0") -> list[int]:
+        """A burst: frames that only look alike, each with its own pHash.
+
+        `family` is the leading nibble, and a second burst needs its own — identical
+        pHashes are unioned into ONE group by construction, so two bursts built from the
+        same family would arrive as a single group rather than as two.
+        """
+        return [self.add_dupe(f"{prefix}{i}.jpg", phash=family * 15 + NEAR[i][-1],
+                              width=size, height=size, size=size)
+                for i in range(count)]
 
     def set_sharpness(self, file_id: int, value: float) -> None:
         self.conn.execute(
@@ -248,10 +255,13 @@ class TestKeepingSeveral(TiersTestBase):
         self.assertEqual(self.choices(), {})
 
     def test_a_group_nobody_chose_in_keeps_every_frame(self):
-        """The third tier's default, said the only way that cannot go wrong: no rows."""
+        """The third tier's default, said the only way that cannot go wrong: no rows.
+
+        Two bursts, and the decision in one of them says nothing about the other."""
         ids = self.add_similar("b", 3)
-        other = self.add_similar("c", 2)
+        other = self.add_similar("c", 2, family="e")
         self.start_server()
+        self.assertEqual(len(self.payload()["groups"]), 2)
         status, _payload = self.post("/api/dupes/choices", {"groups": [
             {"group": other, "keep_file_ids": [other[0]]}]})
         self.assertEqual(status, 200)
