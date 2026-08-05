@@ -264,7 +264,7 @@ class TestTheBlockItself(RunCostsTestBase):
 
     def test_every_line_carries_a_price_slot(self):
         for key in ("base", "faces", "events", "pets", "pets_verify", "deep",
-                    "products"):
+                    "products", "junk_rescue", "landmarks_verify"):
             with self.subTest(key=key):
                 self.assertIn(f'data-cost="{key}"', self.options)
 
@@ -284,12 +284,12 @@ class TestTheBlockItself(RunCostsTestBase):
         """A subordinate control of a subordinate control is where this block would
         stop being readable, so there is deliberately no second level.
 
-        Two children: the animal check under the animals, and the product line under the
-        master switch (F161) — which is what keeps the block short while the master stops
-        doing anything by itself. The third was the scope select of the quality question,
-        and F186 retired it with the question.
+        Four children: the animal check under the animals, and three under the master
+        switch — the product line (F161) plus the screenshot rescue and the landmark
+        check (F204). All of them are still ONE level down, which is the rule; the
+        retired scope select of the quality question was the third of the F186 set.
         """
-        self.assertEqual(self.options.count('class="cost-child"'), 2)
+        self.assertEqual(self.options.count('class="cost-child"'), 4)
         for child in self.options.split('class="cost-child"')[1:]:
             self.assertNotIn("cost-child", child.split("</span>", 1)[0])
 
@@ -310,7 +310,7 @@ class TestTheBlockItself(RunCostsTestBase):
         self.assertIn("total += seconds;", self.html)
         self.assertIn('value.textContent = formatCost(total);', self.html)
         listeners = self.html.split(
-            '"process-products-checkbox"].forEach', 1)[1]
+            '"process-landmarks-verify-checkbox"].forEach', 1)[1]
         self.assertIn('addEventListener("change", renderCosts)',
                       listeners.split("});", 1)[0])
 
@@ -424,6 +424,10 @@ class TestEstimateEndpoint(RunCostsTestBase):
         per frame, once for each of its four scopes. Neither stage runs, so neither may
         appear in a budget; and the lines that stayed have to be exactly the ones the run
         still has, which is what the second half of this case says.
+
+        F204 works the same rule the other way: two questions the run DID have — the
+        screenshot rescue and the landmark check — were missing from the budget, so they
+        join the set here rather than being allowed to sit outside it.
         """
         for i in range(2):
             self.add_photo(f"dup{i}.jpg", phash="f" * 16)
@@ -431,7 +435,7 @@ class TestEstimateEndpoint(RunCostsTestBase):
         data = self.estimate()
         self.assertEqual(set(data["seconds"]),
                          {"base", "faces", "events", "pets", "pets_verify", "deep",
-                          "products"})
+                          "products", "junk_rescue", "landmarks_verify"})
         for retired in ("keeper", "quality_all", "quality_groups", "quality_events",
                         "quality_faces"):
             with self.subTest(line=retired):

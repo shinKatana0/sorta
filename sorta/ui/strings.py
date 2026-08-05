@@ -248,6 +248,54 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "候補を 1 枚ずつモデルに見せます（実際の動物か、その画像か、いないか）。"
               "精度は上がりますが、コマごとにモデルへ問い合わせます。",
     },
+    # F204: the two questions that were asked without anybody being told. The rescue
+    # (F140) reads the score the junk stage computes for every photograph and shows the
+    # frames above `features.junk_rescue_threshold` to the model — on the run of
+    # 2026-08-04 it moved 441 frames into the screenshots slice, and 41% of them were
+    # ordinary photographs of the owner (the F171 measurement, 350 frames). That number
+    # is in the caption on purpose: this option takes personal pictures out of the city
+    # layout, and a person switching it on is entitled to know the price in both
+    # directions before the run rather than after it.
+    "process_junk_rescue_label": {
+        "ru": "Искать экранное среди фотографий",
+        "en": "Find screen captures among the photographs",
+        "ja": "写真の中から画面のコマを探す",
+    },
+    "process_junk_rescue_hint": {
+        "ru": "Кадры, уже названные фотографией, ещё раз показываются модели: скриншоты, "
+              "снятые экраны и чеки уходят в «Служебные кадры». Замер 2026-08-04: из 441 "
+              "найденного кадра 41% — обычные фотографии, и они тоже уходят из раскладки "
+              "по городам.",
+        "en": "The frames already called photographs are shown to the model once more: "
+              "screenshots, photographed screens and receipts leave for “Utility "
+              "frames”. Measured 2026-08-04: of the 441 frames it found, 41% were "
+              "ordinary photographs, and those leave the city layout too.",
+        "ja": "すでに写真と判定されたコマを、もう一度モデルに見せます: "
+              "スクリーンショット、画面を撮った写真、レシートは「実用目的のコマ」へ"
+              "移ります。2026-08-04 の測定: 見つかった 441 コマのうち 41% は普通の"
+              "写真で、それらも都市ごとの振り分けから外れます。",
+    },
+    # F131 on screen. The hint says what the check does AND why it is worth a model call:
+    # the F75 rule — a wrong city is worse than no city, so a proposal nobody corroborated
+    # leaves the frame where it is instead of moving it somewhere else.
+    "process_landmarks_verify_label": {
+        "ru": "Проверять узнанные места моделью",
+        "en": "Verify the recognised places with the model",
+        "ja": "認識した場所をモデルで確認",
+    },
+    "process_landmarks_verify_hint": {
+        "ru": "CLIP предлагает достопримечательность, модель отвечает, что за место на "
+              "кадре, и дальше идут только совпавшие предложения. Ложный город хуже "
+              "отсутствия города: непроверенное предложение оставляет кадр без места, а "
+              "не уносит его в чужой город.",
+        "en": "CLIP proposes a landmark, the model says what place the frame shows, and "
+              "only a proposal the two agree on goes on. A wrong city is worse than no "
+              "city: a proposal the model does not back leaves the frame without a place "
+              "instead of carrying it off to somebody else's.",
+        "ja": "CLIP が名所を提案し、モデルがそのコマの場所を答え、一致した提案だけが"
+              "先へ進みます。誤った都市は都市なしより悪いため、モデルが裏づけない提案は"
+              "コマを別の都市へ移さず、場所なしのままにします。",
+    },
     # F145: said next to every option that asks the SAME model the "Deep analysis"
     # checkbox loads. With the checkbox clear each of them costs nothing and does
     # nothing — the line says which switch turns it back on, so a dead option does not

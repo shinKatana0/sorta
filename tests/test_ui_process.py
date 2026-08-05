@@ -717,9 +717,13 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         # deep tier, which a config that never heard of the key has always run.
         # F186 retired three of that set — `quality`, `quality_scope` and `keeper` — with
         # the two questions they switched on, and the payload lost them with the boxes.
+        # F204 added the two that had been reachable only by editing config.yaml:
+        # `junk_rescue` (which moved 181 of the owner's photographs into the screenshot
+        # bin on one run) and `landmarks_verify`. The screen was already PRICING
+        # junk_rescue in the run estimate while never showing it.
         self.assertEqual(set(data.keys()),
                          {"deep", "products", "geo_online", "pets", "pets_verify",
-                          "vlm_available"})
+                          "junk_rescue", "landmarks_verify", "vlm_available"})
         self.assertFalse(data["deep"])
         self.assertTrue(data["products"])
         self.assertFalse(data["geo_online"])
