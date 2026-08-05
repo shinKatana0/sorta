@@ -1917,8 +1917,8 @@
   // `config.yaml`, which the server refuses mid-run.
   function refreshQuerySliceControls() {
     var busy = uiBusy();
-    document.getElementById("query-up-btn").disabled = busy || querySliceIndex <= 0;
-    document.getElementById("query-down-btn").disabled =
+    document.getElementById("query-left-btn").disabled = busy || querySliceIndex <= 0;
+    document.getElementById("query-right-btn").disabled =
         busy || querySliceIndex < 0 || querySliceIndex >= savedSlices.length - 1;
     document.getElementById("query-unpin-btn").disabled = busy || querySliceIndex < 0;
   }
@@ -1951,10 +1951,10 @@
       });
   }
 
-  document.getElementById("query-up-btn").addEventListener("click", function () {
+  document.getElementById("query-left-btn").addEventListener("click", function () {
     moveSavedSlice(-1);
   });
-  document.getElementById("query-down-btn").addEventListener("click", function () {
+  document.getElementById("query-right-btn").addEventListener("click", function () {
     moveSavedSlice(1);
   });
 

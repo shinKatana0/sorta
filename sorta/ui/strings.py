@@ -2686,8 +2686,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "スライス「{name}」を外しますか？外れるのは固定だけで、ファイルはそのまま"
               "残ります。",
     },
-    "pin_move_up": {"ru": "Выше", "en": "Move up", "ja": "上へ"},
-    "pin_move_down": {"ru": "Ниже", "en": "Move down", "ja": "下へ"},
+    # Закреплённые срезы стоят вкладками В СТРОКУ, поэтому направление —
+    # горизонтальное. Подписи говорили «выше/ниже» с самого F156, хотя код рядом
+    # знал правду («where this slice sits in the row»): назвали по тому, как
+    # список устроен в памяти, а не по тому, что видит человек.
+    "pin_move_left": {"ru": "Левее", "en": "Move left", "ja": "左へ"},
+    "pin_move_right": {"ru": "Правее", "en": "Move right", "ja": "右へ"},
     # The album gathers what a single query ranks (`sorta album query`), and a slice asking
     # several phrases is ranked by their average — one selector cannot reproduce it, so the
     # button is not offered rather than gathering a different list under the same name.
