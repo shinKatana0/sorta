@@ -43,9 +43,15 @@ _FRONTEND = ("app/app.js", "style.css")
 # tests/test_ui_frontend_files.py, and for a good reason) this one does not move when a
 # caption changes: it is a digest of the code alone, so what it pins is exactly the
 # promise this feature makes and nothing else.
+#
+# F199 is the first feature to change the frontend since, and that is how this line is
+# maintained: a feature that really edits app.js or style.css moves the digest IN THE SAME
+# commit as the edit, so the number always states "the code as of the last deliberate
+# change to it". What the guard catches is the other case — a diff that claims to touch
+# only prose and quietly nudges a selector, an i18n key or a comparison along with it.
 _CODE_BEFORE_TRANSLATION = {
-    "app/app.js": "a2fd2e67155f730dab76335c498856c51bca11213f317a6d31c3662722a6e3f5",
-    "style.css": "cf1e7fb5d55070a1a46adac20a6c767ab415ed0fd443f8f5fdc6c165842692a5",
+    "app/app.js": "5b139bb43139c4d2a424b7748019f1a65c764e6e1e277621c9fdaf9c288a8bb1",
+    "style.css": "3589b4b03d93b2e643c4a422c1d0f067c299d403b861885c2fa68861ed68bd8a",
 }
 
 # A `/` opens a regular expression only where a value cannot already have ended; after an

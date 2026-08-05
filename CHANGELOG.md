@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A group of duplicates says which tier it is in** (F199). The tiers behaved correctly
+  and named themselves nowhere: the owner opened the screen on 2026‑08‑05 and saw two
+  outwardly identical pairs, one carrying "★ largest file" and the other carrying nothing,
+  with the files differing in size in **both**. The behaviour was right — one pHash across
+  a group means one picture stored twice, where "keep the largest" is a statement about
+  **facts** (resolution and weight); several pHashes mean different photographs, where no
+  rule may speak. Unsaid, that reads as randomness, and a person who reads it that way
+  stops trusting the suggestion in the tier where it holds. So **every group now carries
+  its tier in words** (`tier_caption`, `tier_why` in `/api/dupes`), shown as one line above
+  its frames with the reasoning folded behind a *why*. The third tier's line states the
+  **measured** number in the form F171 set for the other slices — over 111 groups labelled
+  blind, **not one rule beat picking at random** (27–32% against 30.4%) — and says the
+  thing the report was really about: the **file size has nothing to do with the tier**,
+  which follows from whether it is one picture. Nothing about the tiers themselves moved:
+  `dedup.group_tier` is unchanged, `phash_max_distance` is unchanged, the first tier is
+  still a number rather than a list, and the third tier still preselects **nothing**.
 - **Three tiers of sameness on the duplicates screen** (F194). One word, "duplicate", was
   covering three populations whose cost of a mistake differs by orders of magnitude — and
   the screen applied the same apparatus of "choose the one to keep" to all three. Counted

@@ -820,15 +820,31 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "{originals} 件）。ファイルは同一なので選ぶ余地はありません。削除は"
               "行われず、ファイルはそのまま残っています。",
     },
+    # F199: the tier NAMED, on the group that is in it. Both tiers behaved correctly and
+    # neither said so: two outwardly identical pairs, a suggestion on one and none on the
+    # other, and the reason printed nowhere. A person is right to read that as randomness
+    # — and then to distrust the suggestion in the one tier where it holds. One line per
+    # group; the sentences below it fold out on request (F199 requirement 5).
+    "dupe_tier_same_image": {
+        "ru": "Та же картинка в разных файлах",
+        "en": "The same picture in different files",
+        "ja": "同じ画像が別々のファイルに",
+    },
+    "dupe_tier_similar": {
+        "ru": "Похожие кадры — выбор за вами",
+        "en": "Similar frames — the choice is yours",
+        "ja": "似ているコマ — 選ぶのはあなたです",
+    },
+    "dupe_tier_why": {"ru": "почему", "en": "why", "ja": "理由"},
     # The second tier: one picture in several files. The rule is stated together with
     # WHAT MAKES IT CHECKABLE, because that is the whole difference from the third tier.
     "dupe_same_image_note": {
-        "ru": "Та же картинка в разных файлах. Предложен самый большой — разрешение и "
-              "вес проверяемы. Можно выбрать другой.",
-        "en": "The same picture in different files. The largest one is suggested — "
-              "resolution and weight are checkable facts. You may choose another.",
-        "ja": "同じ画像が別々のファイルにあります。解像度とサイズは確認できる事実"
-              "なので、最大のものを提案しています。別のものも選べます。",
+        "ru": "Предложен самый большой — разрешение и вес проверяемы, это факты, а не "
+              "вкус. Можно выбрать другой.",
+        "en": "The largest one is suggested — resolution and weight are checkable facts, "
+              "not taste. You may choose another.",
+        "ja": "解像度とサイズは好みではなく確認できる事実なので、最大のものを提案して"
+              "います。別のものも選べます。",
     },
     "dupe_largest_badge": {
         "ru": "★ самый большой файл", "en": "★ largest file", "ja": "★ 最大のファイル",
@@ -837,16 +853,28 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # do something. It says it because the alternative is a highlighted frame, which
     # reads as an answer: a person following it chooses worse than by pointing blindly
     # and never finds out.
+    # F199 gives it the MEASURED number, in the form F171 set for the other slices: the
+    # sentence that says the program cannot choose is worth more than the fact behind it,
+    # and the fact is that on 111 groups labelled blind not one rule beat a coin. The
+    # second sentence answers what the owner actually asked on 2026-08-05 — the files
+    # weigh different amounts here too, and the weight is not what the tier is read from.
     "dupe_similar_note": {
-        "ru": "Похожие кадры. Заранее не выбран ни один: какой из них лучше, "
-              "не умеет определить ни один известный нам признак. Отметьте те, что "
+        "ru": "Заранее не выбран ни один: на 111 группах, размеченных вслепую, ни одно "
+              "правило не обыграло случайный выбор — 27–32% против 30.4% у монетки, так "
+              "что советовать здесь нечем. Разный вес файлов ничего не меняет: ярус "
+              "определяется тем, одна ли это картинка, а не размером. Отметьте те, что "
               "оставить, — можно несколько. Если не отметить ничего, останутся все.",
-        "en": "Similar frames. None is preselected: no signal we have can tell which of "
-              "them is better. Tick the ones to keep — as many as you like. Tick none "
-              "and they all stay.",
-        "ja": "似ているコマです。どれが良いかを判定できる指標は見つかっていないため、"
-              "事前選択はありません。残すコマにチェックを入れてください（複数可）。"
-              "何も選ばなければ、すべて残ります。",
+        "en": "None is preselected: on 111 groups labelled blind not one rule beat "
+              "picking at random — 27–32% right against 30.4% for a coin — so there is "
+              "nothing here to advise with. A different file size changes nothing: the "
+              "tier is read from whether it is one picture, not from the weight. Tick "
+              "the ones to keep — as many as you like. Tick none and they all stay.",
+        "ja": "事前選択はありません。目隠しでラベル付けした 111 グループでは、どの規則も"
+              "ランダムな選択を上回りませんでした（正解率 27〜32% に対し、でたらめでも "
+              "30.4%）。そのため、ここで勧められることはありません。ファイルのサイズが"
+              "違っても関係ありません。この段は、サイズではなく同じ画像かどうかで決まり"
+              "ます。残すコマにチェックを入れてください（複数可）。何も選ばなければ、"
+              "すべて残ります。",
     },
     # The order, named as an order. Sharpness IS a ranking — it is only not an answer.
     "dupe_order_sharpness": {

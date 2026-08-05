@@ -5758,6 +5758,40 @@
     return "";
   }
 
+  // F199: the tier of THIS group, in one line, with the reasoning folded behind it. The
+  // captions are named by the server (`tier_caption`, `tier_why` — keys of the string
+  // catalog), so a group can never arrive without a line: deriving the sentence from
+  // `tier` in a ternary is what left an unknown tier silently wearing the third one's
+  // words. The order rides on the same line because it is a fact about the list on
+  // screen — "sorted by sharpness" is not "this one is best".
+  function renderTierNote(g) {
+    var wrap = document.createElement("div");
+    wrap.className = "dupe-tier-note";
+
+    var line = document.createElement("p");
+    line.className = "dupe-tier-line";
+    var order = g.order === "sharpness" ? I18N.dupe_order_sharpness : I18N.dupe_order_size;
+    line.textContent = [I18N[g.tier_caption], order].filter(Boolean).join(" · ");
+    wrap.appendChild(line);
+
+    // The "why" is a paragraph and the line is not the place for it (F199): the reason a
+    // tier suggests the largest file, or refuses to suggest anything at all, is worth a
+    // measured sentence — and worth reading once rather than on every group.
+    var why = I18N[g.tier_why];
+    if (why) {
+      var details = document.createElement("details");
+      details.className = "dupe-tier-why";
+      var summary = document.createElement("summary");
+      summary.textContent = I18N.dupe_tier_why;
+      details.appendChild(summary);
+      var text = document.createElement("p");
+      text.textContent = why;
+      details.appendChild(text);
+      wrap.appendChild(details);
+    }
+    return wrap;
+  }
+
   function renderGroup(g) {
     var box = document.createElement("div");
     box.className = "card dupe-group";
@@ -5769,13 +5803,7 @@
     // F194: what this tier is and what the screen does about it, above the frames. The
     // third tier's note is the one that says the program cannot choose — without it the
     // absence of a preselected frame reads as something forgotten.
-    var note = document.createElement("p");
-    note.className = "dupe-tier-note";
-    note.textContent = g.tier === "same_image"
-      ? I18N.dupe_same_image_note
-      : I18N.dupe_similar_note + " " +
-        (g.order === "sharpness" ? I18N.dupe_order_sharpness : I18N.dupe_order_size);
-    box.appendChild(note);
+    box.appendChild(renderTierNote(g));
 
     var table = document.createElement("table");
     // a click on a frame of the group -> the lightbox; the arrows page this dupe set
