@@ -49,15 +49,15 @@ class TestDupesPayloadCache(DupesCacheTestBase):
             first = ui._dupes_payload(self.db_path, 5)
             second = ui._dupes_payload(self.db_path, 5)
         self.assertEqual(spy.call_count, 1)
-        self.assertEqual(len(first[0]["frames"]), 2)
+        self.assertEqual(len(first["groups"][0]["frames"]), 2)
         self.assertEqual(first, second)
 
     def test_empty_result_is_cached_too(self):
         self.add_dupe("/lonely.jpg", "0" * 16)
         with mock.patch.object(ui.review, "near_duplicate_groups",
                                wraps=ui.near_duplicate_groups) as spy:
-            self.assertEqual(ui._dupes_payload(self.db_path, 5), [])
-            self.assertEqual(ui._dupes_payload(self.db_path, 5), [])
+            self.assertEqual(ui._dupes_payload(self.db_path, 5)["groups"], [])
+            self.assertEqual(ui._dupes_payload(self.db_path, 5)["groups"], [])
         self.assertEqual(spy.call_count, 1)
 
     def test_write_to_db_invalidates_the_cache(self):
@@ -69,17 +69,17 @@ class TestDupesPayloadCache(DupesCacheTestBase):
             self.add_dupe("/c.jpg", "0" * 16, size=3000)
             after = ui._dupes_payload(self.db_path, 5)
         self.assertEqual(spy.call_count, 2)
-        self.assertEqual(len(before[0]["frames"]), 2)
-        self.assertEqual(len(after[0]["frames"]), 3)
+        self.assertEqual(len(before["groups"][0]["frames"]), 2)
+        self.assertEqual(len(after["groups"][0]["frames"]), 3)
 
     def test_different_max_distance_is_a_different_entry(self):
         self.add_dupe("/a.jpg", "0" * 16)
         self.add_dupe("/b.jpg", "0" * 14 + "ff")  # distance 8
         with mock.patch.object(ui.review, "near_duplicate_groups",
                                wraps=ui.near_duplicate_groups) as spy:
-            self.assertEqual(ui._dupes_payload(self.db_path, 5), [])
-            self.assertEqual(len(ui._dupes_payload(self.db_path, 8)), 1)
-            self.assertEqual(ui._dupes_payload(self.db_path, 5), [])
+            self.assertEqual(ui._dupes_payload(self.db_path, 5)["groups"], [])
+            self.assertEqual(len(ui._dupes_payload(self.db_path, 8)["groups"]), 1)
+            self.assertEqual(ui._dupes_payload(self.db_path, 5)["groups"], [])
         self.assertEqual(spy.call_count, 2)  # the third call reuses the max_distance=5 entry
 
     def test_cache_keeps_at_most_two_entries(self):

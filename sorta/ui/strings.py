@@ -801,33 +801,60 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Кластеры лиц не найдены.", "en": "No face clusters found.",
         "ja": "顔クラスターが見つかりません。",
     },
-    "recommended_badge": {
-        "ru": "★ рекомендовано", "en": "★ recommended", "ja": "★ おすすめ",
+    # F194: the three tiers of sameness, in the three captions they need. F148's badges
+    # ("recommended to keep · by the model" / "· by sharpness") are gone with the thing
+    # they named: measured blind on 111 groups, neither judge beats a coin, and a caption
+    # calling one frame of a burst the one to keep is advice that makes a person choose
+    # worse than at random.
+    #
+    # The first tier is a NUMBER. Half a real archive is byte-identical copies, and the
+    # sentence has to say both what happened to them (they left the screen) and what did
+    # NOT (they are still on disk) — collapsing a list is not deleting files.
+    "dupe_exact_note": {
+        "ru": "Одинаковых по байтам копий свёрнуто: {copies} (оригиналов: {originals}). "
+              "Выбирать не из чего — файлы те же. Ничего не удалено, файлы на месте.",
+        "en": "{copies} byte-identical copies collapsed ({originals} originals). "
+              "There is nothing to choose — the files are the same. Nothing was deleted, "
+              "the files are still on disk.",
+        "ja": "バイト単位で同一のコピー {copies} 件をまとめました（オリジナル "
+              "{originals} 件）。ファイルは同一なので選ぶ余地はありません。削除は"
+              "行われず、ファイルはそのまま残っています。",
     },
-    # F148: what the group's STORED recommendation says under the frame it names. The
-    # source is part of the caption and not a detail: how much an advice is worth
-    # depends on who gives it, and these two are given by different judges.
-    "keeper_badge_model": {
-        "ru": "рекомендуем оставить · по модели",
-        "en": "recommended to keep · by the model",
-        "ja": "残すのがおすすめ · モデルの判断",
+    # The second tier: one picture in several files. The rule is stated together with
+    # WHAT MAKES IT CHECKABLE, because that is the whole difference from the third tier.
+    "dupe_same_image_note": {
+        "ru": "Та же картинка в разных файлах. Предложен самый большой — разрешение и "
+              "вес проверяемы. Можно выбрать другой.",
+        "en": "The same picture in different files. The largest one is suggested — "
+              "resolution and weight are checkable facts. You may choose another.",
+        "ja": "同じ画像が別々のファイルにあります。解像度とサイズは確認できる事実"
+              "なので、最大のものを提案しています。別のものも選べます。",
     },
-    "keeper_badge_sharpness": {
-        "ru": "рекомендуем оставить · по резкости",
-        "en": "recommended to keep · by sharpness",
-        "ja": "残すのがおすすめ · 鮮明さで判定",
+    "dupe_largest_badge": {
+        "ru": "★ самый большой файл", "en": "★ largest file", "ja": "★ 最大のファイル",
     },
-    # What the recommendation does NOT say, in the one place it can be read: there is
-    # always exactly one per group, and a burst of six can hold two moments both worth
-    # keeping. Keeping several frames is allowed and normal — advising several is what
-    # the program cannot do.
-    "keeper_badge_hint": {
-        "ru": "Рекомендация одна на группу. В серии может быть несколько удачных "
-              "кадров — оставить можно любой из них и не один.",
-        "en": "One recommendation per group. A burst can hold more than one frame worth "
-              "keeping — you may keep any of them, and more than one.",
-        "ja": "推奨はグループにつき1件です。連写には残す価値のあるコマが複数ある"
-              "こともあり、どれでも、また複数でも残せます。",
+    # The third tier, and the only caption in the product that says the program cannot
+    # do something. It says it because the alternative is a highlighted frame, which
+    # reads as an answer: a person following it chooses worse than by pointing blindly
+    # and never finds out.
+    "dupe_similar_note": {
+        "ru": "Похожие кадры. Заранее не выбран ни один: какой из них лучше, "
+              "не умеет определить ни один известный нам признак. Отметьте те, что "
+              "оставить, — можно несколько. Если не отметить ничего, останутся все.",
+        "en": "Similar frames. None is preselected: no signal we have can tell which of "
+              "them is better. Tick the ones to keep — as many as you like. Tick none "
+              "and they all stay.",
+        "ja": "似ているコマです。どれが良いかを判定できる指標は見つかっていないため、"
+              "事前選択はありません。残すコマにチェックを入れてください（複数可）。"
+              "何も選ばなければ、すべて残ります。",
+    },
+    # The order, named as an order. Sharpness IS a ranking — it is only not an answer.
+    "dupe_order_sharpness": {
+        "ru": "отсортировано по резкости", "en": "sorted by sharpness",
+        "ja": "鮮明さ順",
+    },
+    "dupe_order_size": {
+        "ru": "отсортировано по размеру", "en": "sorted by size", "ja": "サイズ順",
     },
     "action_keep": {"ru": "оставить", "en": "keep", "ja": "保持"},
     "action_to_delete": {"ru": "к удалению", "en": "to delete", "ja": "削除予定"},
@@ -843,9 +870,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Move all frames in group {n} to trash, except the selected one?",
         "ja": "選択したもの以外、グループ{n}のすべてのフレームをごみ箱に移動しますか?",
     },
+    # F194: "at least one", because keeping several is now the normal answer — and
+    # because deleting a whole group is the one thing the screen must not be able to do
+    # by a slip of the hand.
     "alert_choose_keeper": {
-        "ru": "Выберите кадр, который нужно оставить.", "en": "Select the frame to keep.",
-        "ja": "残すフレームを選択してください。",
+        "ru": "Отметьте хотя бы один кадр, который нужно оставить.",
+        "en": "Tick at least one frame to keep.",
+        "ja": "残すコマを少なくとも1つ選択してください。",
     },
     "no_dupes": {
         "ru": "Почти-дубликаты не найдены.", "en": "No near-duplicates found.",
