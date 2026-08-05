@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from sorta import ui
@@ -570,6 +574,187 @@ def _js_function(html: str, name: str) -> str:
             if depth == 0:
                 return html[start:j + 1]
     raise AssertionError(f"the body of {name} does not close")
+
+
+# --- F190: the two states, rendered and compared node by node --------------------------
+#
+# "The same containers" is a statement about the tree the browser ends up with, and the
+# rest of this file can only reach the source that builds it. So the overview builders are
+# run for real — in node, against a stub of the handful of DOM calls they make — and the
+# two trees are compared here. Node is not a dependency of the project: where it is
+# missing the test says so and skips, and the source-level tests above stay the floor.
+_NODE = shutil.which("node")
+
+_PROBE_JS = r"""
+'use strict';
+// Renders the Overview tab in a stub DOM: the loading skeleton, then two answers from
+// the server. Prints the three trees as JSON.
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const start = src.indexOf("var overviewEmpty = false;");
+const end = src.indexOf("var vlmAvailable = true;");
+if (start < 0 || end < 0) throw new Error("the overview region is not where it was");
+
+function El(tag) {
+  this.tagName = tag; this.className = ""; this._text = ""; this.children = [];
+}
+Object.defineProperty(El.prototype, "textContent", {
+  get() { return this._text; },
+  // The one call the renderers make to empty the tab before drawing it.
+  set(v) { this._text = v; if (v === "") this.children = []; },
+});
+El.prototype.appendChild = function (c) { this.children.push(c); return c; };
+El.prototype.setAttribute = function () {};
+El.prototype.addEventListener = function () {};
+
+const body = new El("div");
+const document = {
+  createElement: (t) => new El(t),
+  getElementById: (id) => (id === "overview-body" ? body : null),
+};
+// Every caption resolves to its own key: this test is about the tree, not the words.
+const I18N = new Proxy({}, { get: (_, k) => String(k) });
+const fmt = (t, v) => String(t).replace(/\{(\w+)\}/g, (_, k) => v[k]);
+const junkBucketLabel = (v) => "junk_bucket_" + v;
+function stateEl(kind, text) {
+  const d = new El("div"); d.className = "state-msg state-" + kind; d.textContent = text;
+  return d;
+}
+const activateTab = () => {}, gotoSlice = () => {}, selectReviewSlice = () => {};
+const fetch = () => { throw new Error("the probe does not run loadOverview"); };
+
+const api = eval(src.slice(start, end) +
+                 "\n;({renderOverview, renderOverviewSkeleton});");
+
+function tree(el) {
+  return { tag: el.tagName, cls: el.className,
+           children: el.children.map(tree) };
+}
+function snapshot() { return body.children.map(tree); }
+
+const payloads = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+api.renderOverviewSkeleton();
+const out = { skeleton: snapshot() };
+for (const name of Object.keys(payloads)) {
+  api.renderOverview(payloads[name]);
+  out[name] = snapshot();
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def _rows(keys: list[str]) -> list[dict]:
+    return [{"key": key, "count": 12} for key in keys]
+
+
+# What a collection that has been through a full run answers: the lengths the skeleton is
+# cut to. The values are irrelevant to a tree of containers, so they are round numbers.
+_TYPICAL_PAYLOAD = {
+    "empty": False,
+    "collection": {"files": 24000, "photos": 23000, "videos": 1000, "duplicates": 40,
+                   "errors": 2, "events": 30, "animals": 12, "with_people": 900,
+                   "group_photos": 100, "portraits": 80, "faces_reason": None,
+                   "blurred": 5, "eyes_closed": 3, "low_resolution": 7},
+    "place": {"total": 24000, "no_place": 300, "no_place_percent": 1.2,
+              "confidence": _rows(["exact_gps", "session_inferred", "trip_inferred",
+                                   "path_inferred"])},
+    "classes": {"total": 20000,
+                "verdicts": _rows(["photo", "screenshot", "document", "meme", "product"]),
+                "sources": _rows(["heuristic", "clip"]),
+                "tiers": _rows(["heuristic", "clip"]),
+                "vlm_ran": True, "updated_at": "2026-08-05"},
+    "layout": {"batches": 1, "unfinished": 0,
+               "last": {"mode": "city", "operation": "move", "dest_root": "D:/Sorted",
+                        "started_at": "2026-08-04", "finished_at": "2026-08-04",
+                        "unfinished": False, "files": 24000, "done": 24000}},
+}
+
+# The other extreme: an index that has been through nothing at all. Its variable lists are
+# empty and its layout card is a single line — the fixed backbone is what still has to
+# match the skeleton row for row.
+_BARE_PAYLOAD = {
+    "empty": False,
+    "collection": dict(_TYPICAL_PAYLOAD["collection"], with_people=None,
+                       group_photos=None, portraits=None, faces_reason="no_faces_run"),
+    "place": {"total": 3, "no_place": 3, "no_place_percent": 100.0, "confidence": []},
+    "classes": {"total": 0, "verdicts": [], "sources": [], "tiers": [], "vlm_ran": False,
+                "updated_at": None},
+    "layout": {"batches": 0, "unfinished": 0, "last": None},
+}
+
+
+class TestOverviewSkeletonIsTheSameTree(unittest.TestCase):
+    """F190, the main test: the loading markup holds the SAME containers as the loaded
+    one — checked on the composition of the nodes, not on a picture of them."""
+
+    maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        if _NODE is None:
+            raise unittest.SkipTest("node is not installed — the source-level tests stand")
+        app_js = Path(ui.__file__).resolve().parent.parent / "web" / "app" / "app.js"
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.js"
+            probe.write_text(_PROBE_JS, encoding="utf-8")
+            payloads = Path(tmp) / "payloads.json"
+            payloads.write_text(
+                json.dumps({"typical": _TYPICAL_PAYLOAD, "bare": _BARE_PAYLOAD}),
+                encoding="utf-8")
+            done = subprocess.run(
+                [_NODE, str(probe), str(app_js), str(payloads)],
+                capture_output=True, text=True, encoding="utf-8")
+        if done.returncode != 0:
+            raise AssertionError("the overview did not render:\n" + done.stderr)
+        cls.trees = json.loads(done.stdout)
+
+    def normalised(self, node: dict) -> dict:
+        """The tree as the LAYOUT sees it.
+
+        Three differences are not differences of structure: the marker class of the
+        skeleton, the indicator that floats over it out of flow, and a value that is a
+        link (a number with a tab of its own) rather than a plain cell — the skeleton has
+        no number, so it cannot know which of the two a row will get.
+        """
+        cls = (node["cls"].replace(" overview-skeleton", "")
+               .replace(" overview-blank", "").replace("overview-value-link", "overview-value"))
+        tag = "span" if cls == "overview-value" else node["tag"]
+        return {"tag": tag, "cls": cls,
+                "children": [self.normalised(c) for c in node["children"]
+                             if "state-msg" not in c["cls"]]}
+
+    def state(self, name: str) -> list[dict]:
+        return [self.normalised(node) for node in self.trees[name]]
+
+    def test_a_typical_collection_arrives_into_the_tree_that_was_waiting_for_it(self):
+        self.assertEqual(self.state("skeleton"), self.state("typical"))
+
+    def rows_of_the_collection_card(self, name: str) -> list[dict]:
+        card = self.state(name)[0]["children"][0]
+        return [c for c in card["children"] if "overview-row" in c["cls"]]
+
+    def test_the_fixed_backbone_matches_whatever_arrives(self):
+        """The collection card has the same thirteen rows for every possible answer, and
+        it is the tallest of the four — the one that sets the height of the whole area on
+        a screen wide enough to put the cards side by side. Rows, not the whole card: a
+        collection whose faces stage never ran carries one note more, saying so.
+        """
+        skeleton = self.rows_of_the_collection_card("skeleton")
+        self.assertEqual(len(skeleton), 13)
+        for name in ("typical", "bare"):
+            with self.subTest(payload=name):
+                self.assertEqual(skeleton, self.rows_of_the_collection_card(name))
+
+    def test_the_indicator_is_inside_the_area_and_out_of_flow(self):
+        """Test 3, from the tree's side: the word "loading" is a child of the grid the
+        cards are in — not a block standing where they will be."""
+        groups = self.trees["skeleton"][0]
+        self.assertIn("overview-skeleton", groups["cls"])
+        indicators = [c for c in groups["children"] if "state-msg" in c["cls"]]
+        self.assertEqual(len(indicators), 1)
+        self.assertIn("state-loading", indicators[0]["cls"])
+        self.assertEqual(len(self.trees["skeleton"]), 1,
+                         "the loading state is one area and nothing beside it")
 
 
 class TestOverviewSkeleton(OverviewTestBase):
