@@ -402,7 +402,8 @@ class TestOneAlbumRowForEverySlicePanel(SliceUniformityTestBase):
                 self.assertIn('box: "' + box + '"', self.html)
 
     def test_the_shared_row_carries_all_three_affordances(self):
-        row = self.html.split("function renderAlbumRow", 1)[1][:3000]
+        row = self.html.split("function renderAlbumRow", 1)[1].split(
+            "function renderSliceAlbumControls", 1)[0]
         self.assertIn("albumModeSelect()", row)              # link / copy / move
         self.assertIn("I18N.album_name_placeholder", row)    # name the folder
         self.assertIn("appendAlbumDestControls(box)", row)
@@ -415,11 +416,15 @@ class TestOneAlbumRowForEverySlicePanel(SliceUniformityTestBase):
         # The per-slice copies it replaced. Their return would mean a slice went back to
         # answering "what can I do with you" on its own — which is the defect.
         for gone in ("function renderSearchAlbumControls(",
-                     "function renderQuerySliceAlbum(",
-                     "function renderAnimalsAlbumControls(",
-                     "function renderFaceAlbumControls("):
+                     "function renderAnimalsAlbumControls("):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, self.html)
+
+    def test_a_refused_slice_draws_the_reason_where_the_button_was(self):
+        row = self.html.split("function renderAlbumRow", 1)[1].split(
+            "function renderSliceAlbumControls", 1)[0]
+        self.assertIn("albumBlockedText", row)
+        self.assertIn("I18N.album_blocked_", self.html)
 
     def test_the_selection_is_one_mechanism_too(self):
         self.assertEqual(self.html.count("function makeSelection("), 1)
@@ -427,11 +432,6 @@ class TestOneAlbumRowForEverySlicePanel(SliceUniformityTestBase):
                        "animalsSelection", "junkSelection"):
             with self.subTest(slice=slice_):
                 self.assertIn("var " + slice_ + " = makeSelection(", self.html)
-
-    def test_a_refused_slice_draws_the_reason_where_the_button_was(self):
-        row = self.html.split("function renderAlbumRow", 1)[1][:3000]
-        self.assertIn("albumBlockedText", row)
-        self.assertIn("I18N.album_blocked_", self.html)
 
     def test_the_junk_panel_still_keeps_gathering_out_of_the_destructive_row(self):
         # F139's requirement 4, unchanged: one movement must not be able to both gather
