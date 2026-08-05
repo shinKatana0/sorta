@@ -367,15 +367,32 @@ class TestEveryWriteRouteRefusesWhileBusy(UiServerTestBase):
         self.start_server()
 
     def post(self, path: str, payload: object) -> tuple[int, dict]:
+        """One POST, retried once if the SOCKET fails rather than the server.
+
+        Measured 2026-08-05: this test failed about one run in five, on a different route
+        each time, and the reason was never the answer — it was
+        `ConnectionAbortedError: [WinError 10053]`, the threaded server and the client
+        racing on connection teardown on Windows. Twenty-six requests in a row over
+        fresh connections is simply enough tries for that to land somewhere.
+
+        The retry does NOT soften the claim: the assertion still demands 409, and an
+        answer of any other status is returned as it came. What is retried is a
+        connection that never carried an answer at all.
+        """
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(f"{self.base_url}{path}", data=data,
-                                     headers={"Content-Type": "application/json"},
-                                     method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        for attempt in (1, 2):
+            req = urllib.request.Request(f"{self.base_url}{path}", data=data,
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status, json.loads(resp.read())
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read())
+            except (ConnectionError, TimeoutError):
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")
 
     def test_every_route_answers_409(self):
         for path in sorted(ui.BUSY_REFUSED_ROUTES):
