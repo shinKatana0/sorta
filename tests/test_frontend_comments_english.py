@@ -43,17 +43,6 @@ _FRONTEND = ("app/app.js", "style.css")
 # tests/test_ui_frontend_files.py, and for a good reason) this one does not move when a
 # caption changes: it is a digest of the code alone, so what it pins is exactly the
 # promise this feature makes and nothing else.
-#
-# F199 is the first feature to change the frontend since, and that is how this line is
-# maintained: a feature that really edits app.js or style.css moves the digest IN THE SAME
-# commit as the edit, so the number always states "the code as of the last deliberate
-# change to it". What the guard catches is the other case — a diff that claims to touch
-# only prose and quietly nudges a selector, an i18n key or a comparison along with it.
-_CODE_BEFORE_TRANSLATION = {
-    "app/app.js": "5b139bb43139c4d2a424b7748019f1a65c764e6e1e277621c9fdaf9c288a8bb1",
-    "style.css": "3589b4b03d93b2e643c4a422c1d0f067c299d403b861885c2fa68861ed68bd8a",
-}
-
 # A `/` opens a regular expression only where a value cannot already have ended; after an
 # identifier, a number, a `)` or a `]` the same character is division. The set is small
 # on purpose — it covers the three literals app.js actually contains, and anything it
@@ -265,14 +254,27 @@ class TestTheScannerReadsJavaScriptAndNotJustLines(unittest.TestCase):
 
 
 class TestTranslatingACommentChangedNoCode(unittest.TestCase):
-    """The acceptance criterion, and the only one that can catch the mistake worth
-    catching: a rewrite of 271 lines that also nudged a selector, an i18n key or a
-    comparison. The digests were taken before the first line was translated."""
+    """What is left of F197's acceptance criterion, and why the rest is gone.
 
-    def test_the_code_of_both_files_is_byte_for_byte_what_it_was(self):
-        for rel, source, js in frontend_files():
-            with self.subTest(rel):
-                self.assertEqual(code_fingerprint(source, js=js), _CODE_BEFORE_TRANSLATION[rel])
+    It held a digest of both files' CODE taken before the first line was translated, and
+    it did its job: it proved that a rewrite of 271 comments moved no selector, no i18n
+    key and no comparison. That proof was worth having ONCE.
+
+    It cannot stay, and the rule written to keep it was tried first. F199 set one down
+    beside the digest: a feature that really edits the frontend moves the number IN THE
+    SAME commit, so it always states "the code as of the last deliberate change". That is
+    sound and it failed immediately — F198 and F200 both edited app.js for good reasons
+    and neither had any way to know a digest lived in a test about translating comments.
+    Two of the first three occasions.
+
+    A check that fires on honest work is a check somebody re-anchors without reading, and
+    one day they will re-anchor it while a selector really did move.
+
+    What survives is the part that keeps working: the fingerprint itself, and the proof
+    that it ignores comments and notices code. It is the tool the next such translation
+    will use to take its own before-and-after, which is the only way a digest of this kind
+    is honest.
+    """
 
     def test_the_fingerprint_ignores_comments_and_notices_code(self):
         """Both halves of the claim, because either one alone would make it useless."""
