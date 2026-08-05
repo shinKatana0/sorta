@@ -785,6 +785,11 @@ mistake is not the same in all three:
    would be advice that makes you choose *worse* than by pointing blindly. The frames are
    **sorted** by sharpness, which is what a ranking honestly is, and the caption says so.
 
+**Every group says which tier it is in**, on one line above its frames, with the reasoning
+behind a *why* fold. A suggestion on one pair and none on the next is a rule, not chance —
+and the rule follows from whether it is **one picture**, never from the file size, which is
+why two frames of different weight can sit there with nothing suggested.
+
 Ticks are **checkboxes, not radios**: a burst of five can hold three frames worth keeping,
 and you may keep as many as you like. Tick *"don't delete this group"* to skip a group, then
 click **Save all choices** once (no per‑group clicking). **A group you ticked nothing in
