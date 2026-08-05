@@ -187,6 +187,13 @@ class TestWhatStaysVisibleCollapsed(StageRowTestBase):
         body = _js_body(ui._render_index_html("ru"), "renderStages")
         self.assertIn("data.running || data.finished", body)
 
+    def test_the_bar_is_only_full_for_a_run_that_reached_the_end(self):
+        """A stopped or failed run must not be drawn as a completed one — the bar is
+        the part of the row a glance reads first."""
+        body = _js_body(ui._render_index_html("ru"), "stageBarValue")
+        self.assertIn("data.running || data.cancel_requested", body)
+        self.assertIn("Math.max(index - 1, 0)", body)
+
 
 class TestOpeningItShowsTheOldRow(unittest.TestCase):
     def setUp(self):

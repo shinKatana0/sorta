@@ -2623,6 +2623,15 @@
     return data.cancel_requested ? I18N.process_stages_stopped : I18N.process_stages_done;
   }
 
+  // The bar fills to the end only for a run that reached it: a cancelled one stopped
+  // where it stopped, and a failed one stopped BEFORE the stage it names — drawing that
+  // stage as done would contradict the caption right next to it.
+  function stageBarValue(data, index, total) {
+    if (data.running || data.cancel_requested) return index;
+    if (data.error) return Math.max(index - 1, 0);
+    return total;
+  }
+
   // Writes into nodes page.html already carries and creates none of its own — that is
   // what keeps the collapsed row the same shape for three stages and for nine.
   function renderStageSummary(data) {
@@ -2634,9 +2643,7 @@
     document.getElementById("process-stages-count").textContent =
         fmt(I18N.process_stage_counter, { index: index, total: total });
     bar.max = total || 1;
-    // A finished run has filled the bar; a failed one stopped BEFORE the stage it names,
-    // and drawing that stage as done would contradict the caption right next to it.
-    bar.value = data.running ? index : (data.error ? Math.max(index - 1, 0) : total);
+    bar.value = stageBarValue(data, index, total);
     if (data.error) box.classList.add("failed");
     else box.classList.remove("failed");
   }
