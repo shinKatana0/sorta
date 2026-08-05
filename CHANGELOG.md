@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A group of duplicates says which tier it is in** (F199). The tiers behaved correctly
+  and named themselves nowhere: the owner opened the screen on 2026‑08‑05 and saw two
+  outwardly identical pairs, one carrying "★ largest file" and the other carrying nothing,
+  with the files differing in size in **both**. The behaviour was right — one pHash across
+  a group means one picture stored twice, where "keep the largest" is a statement about
+  **facts** (resolution and weight); several pHashes mean different photographs, where no
+  rule may speak. Unsaid, that reads as randomness, and a person who reads it that way
+  stops trusting the suggestion in the tier where it holds. So **every group now carries
+  its tier in words** (`tier_caption`, `tier_why` in `/api/dupes`), shown as one line above
+  its frames with the reasoning folded behind a *why*. The third tier's line states the
+  **measured** number in the form F171 set for the other slices — over 111 groups labelled
+  blind, **not one rule beat picking at random** (27–32% against 30.4%) — and says the
+  thing the report was really about: the **file size has nothing to do with the tier**,
+  which follows from whether it is one picture. Nothing about the tiers themselves moved:
+  `dedup.group_tier` is unchanged, `phash_max_distance` is unchanged, the first tier is
+  still a number rather than a list, and the third tier still preselects **nothing**.
 - **Three tiers of sameness on the duplicates screen** (F194). One word, "duplicate", was
   covering three populations whose cost of a mistake differs by orders of magnitude — and
   the screen applied the same apparatus of "choose the one to keep" to all three. Counted
@@ -108,6 +124,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
+- **The layout screen copies by default instead of moving** (F200). Everything else about
+  a layout is built so a careless first click costs nothing — the plan is a dry run, the
+  journal is written before the first file travels, `undo` puts them back, blake3 says the
+  copy is the original and nothing is ever overwritten. "Move" preselected was the one
+  place left where the first click is irreversible in substance: `undo` returns the files,
+  but only while the journal is intact and nobody has tidied the tree by hand. A collection
+  laid out by copying can always have its originals deleted afterwards; one laid out by
+  moving has to be reconstructed from a log. **`move` is not removed** — it is one click
+  away, in the same pair, under the same heading. A body of `POST /api/sort` that omits
+  `mode` now means "copy" instead of being a 400: the screen and the parser answer one
+  question, and two defaults in two places would be free to drift apart. **The terminal is
+  untouched** — `sorta sort` still moves by default and still writes nothing without
+  `--apply`; that is a separate entry point with a decision of its own.
 - **The "Layout" tab asks two questions instead of showing thirteen controls** (F192).
   The tab opened onto a destination field, a move/copy pair, the apply button, expand and
   collapse, four buttons of manual corrections with a folder list, a place picker, a
@@ -446,6 +475,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures, its name says what it is, and the guides describe it.
 
 ### Fixed
+- **"Try to improve" on a big frame refuses instead of working for nothing** (F198). The
+  owner pressed it on a **4320 px** frame on 2026-08-05: the copy was made, and *then* the
+  warning arrived — "the frame is larger than the limit (1024 px, this one is 4320), the
+  copy was rebuilt from a reduced frame… this is not an improved original". The result was
+  the original again, which is exactly what the measurement predicted: **35/35/30 on blind
+  pairs above the ceiling — nothing**. Two entrances had drifted apart. The offer on the
+  expanded frame **withdrew** the button above `features.restore_max_edge` (F168), and the
+  route **did the work anyway** and said so afterwards (F169) — deliberately, because F169
+  was written *before* the measurement and left the question to it. The verdict arrived on
+  2026-08-04 and never came back to the code; the owner found it a day later. So the cost
+  was not an impression but a **file**: a model run spent, a near-duplicate lying beside
+  the original, a row in the index — for a warning that could only be read once all three
+  existed. Above the ceiling the route now **refuses**, with the same reason code every
+  other refusal travels as (`too_large`) and the wording the warning already had: the
+  limit, the size of *this* frame, and `features.restore_max_edge`, so a person who
+  disagrees with the threshold can see that the threshold is theirs. Both entrances read
+  **one answer** now — the offer shows what the route enforces, so they cannot disagree
+  again. **Below the ceiling nothing is narrowed** (62% against 10% for plain bicubic on
+  small frames), the ceiling itself does not move, and the copies already made are **left
+  alone**: deleting them is a decision a person makes, not a side effect of a fix.
 - **A slice shows its frames as a grid — every slice, by one rule** (F195). The owner,
   reading «Животные · по запросу» on 2026-08-04: «все фотки растянуты — то есть одно фото
   на весь ряд». The panel of the pinned queries was the one grid nobody had written an
