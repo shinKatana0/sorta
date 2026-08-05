@@ -4424,16 +4424,17 @@
       lightboxRestoreBadge.title = I18N.review_restore_badge_hint;
     }
     // The size decides, not the slice. Above `features.restore_max_edge` the copy would be
-    // rebuilt from a reduced frame and the measurement found no gain there, so the button
-    // goes and the sentence stays — a withdrawn offer without a word is the silent half of
-    // the same promise.
-    var offered = offer.available && !offer.rebuilt;
+    // rebuilt from a reduced frame and the measurement found no gain there, so the server
+    // refuses (F198) — the button goes and the sentence stays, because a withdrawn offer
+    // without a word is the silent half of the same promise. The sentence is the one the
+    // route answers a press with: one refusal, one wording.
+    var offered = offer.available;
     lightboxRestoreBtn.hidden = !offered;
     lightboxRestoreBtn.disabled = uiBusy() || lightboxRestoring;   // F145
     lightboxRestoreBtn.textContent = lightboxRestoring ? I18N.review_restore_running
                                                        : I18N.review_restore;
-    var note = offer.available && offer.rebuilt
-        ? fmt(I18N.review_restore_too_large,
+    var note = offer.reason === "too_large"
+        ? fmt(I18N.review_restore_error_too_large,
               { max_edge: offer.max_edge, source_edge: offer.source_edge })
         : "";
     lightboxRestoreNote.hidden = !note;
@@ -4493,10 +4494,12 @@
           return;
         }
         // A reason, never an empty result — and the same codes the Review tab translates,
-        // including the two refusals this entrance made necessary (a private class, a
-        // clip), which the ROUTE decides and not the page.
+        // including the refusals this entrance made necessary (a private class, a clip,
+        // a frame above the ceiling), which the ROUTE decides and not the page. The
+        // answer's own numbers fill the sentence: the "too large" one names the limit and
+        // the size of the frame in front of the person.
         var reason = resp && resp.reason
-            ? I18N["review_restore_error_" + resp.reason] : null;
+            ? fmt(I18N["review_restore_error_" + resp.reason] || "", resp) : null;
         lightboxRestoreStatus.textContent = reason
             || (I18N.review_error_prefix + ((resp && (resp.detail || resp.error)) || ""));
       })
@@ -5664,9 +5667,11 @@
           }
         } else {
           // A reason, never an empty result: the weights come off the network and being
-          // offline is an ordinary state for this program.
+          // offline is an ordinary state for this program. F198: the answer's own numbers
+          // fill the sentence, so a frame above the ceiling is refused here by the limit
+          // and the size it actually has.
           var reason = resp && resp.reason
-              ? I18N["review_restore_error_" + resp.reason] : null;
+              ? fmt(I18N["review_restore_error_" + resp.reason] || "", resp) : null;
           status.textContent = reason
               || (I18N.review_error_prefix + ((resp && (resp.detail || resp.error)) || ""));
         }

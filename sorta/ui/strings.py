@@ -2050,24 +2050,27 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "ため元の写真の隣には印の付いた複製が現れ、元の写真はそのまま残ります。"
               "初回は重み (約 400 MB) を取得し、その後は 1 枚あたり約 1 秒です。",
     },
-    # F168/F169: why the action is NOT offered on a big frame. The gain the measurement
-    # found belongs to small frames (66% under 640 px, a coin toss by 1280), and above the
-    # ceiling the copy would be rebuilt from a quarter of the original. Withdrawing the
-    # button without a word would be the silent half of the same promise.
-    "review_restore_too_large": {
+    # F168/F169/F198: why a big frame is REFUSED. The gain the measurement found belongs to
+    # small frames (66% under 640 px, a coin toss by 1280), and above the ceiling the copy
+    # would be rebuilt from a quarter of the original — 35/35/30 on blind pairs, i.e.
+    # nothing. So this is one sentence in two places: under the withdrawn button on the
+    # expanded frame, and as the answer of the route when the press arrives anyway. It
+    # names the limit, the size of THIS frame and the key that moves the limit, because a
+    # person who disagrees with the threshold has to be able to see that it is theirs.
+    "review_restore_error_too_large": {
         "ru": "Кадр крупнее предела ({max_edge} px по длинной стороне, здесь "
               "{source_edge}): копию пришлось бы пересобирать из уменьшенной, а на таких "
-              "кадрах замер пользы не показал. Поэтому здесь действие не предлагается — "
-              "предел меняется ключом features.restore_max_edge.",
+              "кадрах замер пользы не показал. Поэтому здесь действие не выполняется, и "
+              "ничего не создано — предел меняется ключом features.restore_max_edge.",
         "en": "This frame is larger than the limit ({max_edge} px on the longer side, "
               "this one is {source_edge}): the copy would be rebuilt from a reduced "
               "frame, and on frames this size the measurement found no gain. So the "
-              "action is not offered here — the limit is the features.restore_max_edge "
-              "key.",
+              "action is not carried out here and nothing was created — the limit is the "
+              "features.restore_max_edge key.",
         "ja": "このコマは上限 (長辺 {max_edge} px、このコマは {source_edge} px) を超えて"
               "います。複製は縮小した画像から作り直すことになり、この大きさのコマでは"
-              "効果が確認できませんでした。そのためここでは操作を提供しません。上限は "
-              "features.restore_max_edge で変えられます。",
+              "効果が確認できませんでした。そのためここでは実行せず、何も作成されて"
+              "いません。上限は features.restore_max_edge で変えられます。",
     },
     # The copy is a canonical file: it lies in the city folder beside its source and turns
     # up in every slice the source does. Wherever it is opened it says what it is and
