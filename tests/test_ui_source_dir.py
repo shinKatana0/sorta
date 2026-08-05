@@ -3,7 +3,7 @@
 41% of the validation collection sits in hand-named directories ("Тайланд 04.2025"),
 i.e. a person's own labelling of place and date, and only the basename used to be
 exposed. It is also what makes a wrong guess recognisable: a Colosseum match is
-plainly wrong once you see the file lives under "рускеала".
+plainly wrong once you see the file lives under "карелия".
 """
 from __future__ import annotations
 

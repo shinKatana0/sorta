@@ -939,7 +939,7 @@
       var tdMeta = document.createElement("td");
       tdMeta.className = "plan-meta";
       // Исходная папка идёт первой: по ней чаще всего и видно, верна ли догадка
-      // («Колизей» из папки «рускеала» — очевидная ошибка). Полный путь — в тултипе.
+      // («Колизей» из папки «карелия» — очевидная ошибка). Полный путь — в тултипе.
       tdMeta.textContent = [item.src_dir, item.date, item.geo, item.category]
           .filter(Boolean).join(" \u00b7 ");
       if (item.src_path) { tdMeta.title = item.src_path; }

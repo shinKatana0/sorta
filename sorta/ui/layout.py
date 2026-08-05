@@ -56,7 +56,7 @@ def _plan_item_to_json(item: PlanItem,
         # collection sits in hand-named directories ("Тайланд 04.2025",
         # "Турция. Белек") — a person's own labelling of place and date. It is also
         # what you need in order to judge a wrong guess: a Colosseum match is plainly
-        # wrong once you can see the file lives under "рускеала".
+        # wrong once you can see the file lives under "карелия".
         "src_dir": item.src.parent.name,
         "src_path": str(item.src.parent),
         "target_rel": item.target_rel,
