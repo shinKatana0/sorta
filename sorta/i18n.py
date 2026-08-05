@@ -842,6 +842,20 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "junk: глубокий анализ (VLM)", "en": "junk: deep analysis (VLM)",
         "ja": "junk: 詳細分析（VLM）",
     },
+    # F205: the two other passes that ask the same model. They reported under the caption
+    # above until their measured price turned out to be a third of it, and a phase that is
+    # named is a phase that can be priced — the name is what the run log files the seconds
+    # under. Each says WHICH question is being asked, because that is the difference the
+    # reader of a bar standing at 42% needs.
+    "cli.phase.junk_pets_vlm": {
+        "ru": "junk: проверка животных (VLM)", "en": "junk: animal check (VLM)",
+        "ja": "junk: 動物の確認（VLM）",
+    },
+    "cli.phase.junk_rescue_vlm": {
+        "ru": "junk: поиск экранного (VLM)",
+        "en": "junk: screen-capture check (VLM)",
+        "ja": "junk: 画面コマの確認（VLM）",
+    },
     "cli.phase.junk_write": {
         "ru": "junk: запись вердиктов", "en": "junk: writing verdicts",
         "ja": "junk: 判定の書き込み",

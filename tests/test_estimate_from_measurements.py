@@ -45,12 +45,14 @@ MEASURED = {
     "stage=phash": 0.40,
     "stage=faces": 2.00,
     "stage=events": 0.50,
-    # F165 split the stage that asks the model in two, and both halves call their VLM
-    # phase `junk_vlm`. The rates differ here on purpose: a line priced off the wrong
-    # half would be charged the rate of a different population, and these numbers are
+    # The three passes that ask the model, each under the phase F205 gave it: the deep
+    # tier ahead of faces (`classify`), the animal check and the rescue behind it
+    # (`junk`). All three rates differ here on purpose — a line priced off another pass's
+    # phase would be charged the rate of a different population, and these numbers are
     # what makes that visible instead of a coincidence.
     "stage=classify phase=junk_vlm": 3.00,
-    "stage=junk phase=junk_vlm": 5.00,
+    "stage=junk phase=junk_pets_vlm": 5.00,
+    "stage=junk phase=junk_rescue_vlm": 7.00,
 }
 BASE_RATE = sum(MEASURED[f"stage={s}"] for s in ("index", "geo", "landmarks", "phash"))
 
@@ -240,9 +242,10 @@ class TestTheLogIsBelievedOverTheConstants(EstimateTestBase):
 
     def test_the_model_questions_are_priced_by_the_vlm_phase_that_asks_them(self):
         """F165 runs the deep tier ahead of faces, in `classify`, and leaves the quality
-        and animal questions behind it, in `junk`. Both phases are named `junk_vlm`, so a
-        line priced off the wrong one is charged the rate of a different population — and
-        nothing but this case would notice."""
+        and animal questions behind it, in `junk`. F205 gave the three passes three phase
+        names, so each line is priced off the pass that asks it — off another one it would
+        be charged the rate of a different population, and nothing but this case and
+        tests/test_vlm_phase_names.py would notice."""
         ids = [self.add_photo(f"p{i}.jpg") for i in range(3)]
         for file_id in ids[:2]:
             self.conn.execute(

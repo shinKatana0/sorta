@@ -28,7 +28,13 @@ from ..faces import detect_and_cluster
 from ..geo import geo_cache_size, resolve_places
 from ..indexer import excludes_path, index as run_index, load_excludes
 from ..junk import classify as classify_junk
-from ..junk import CLASSIFY_PHASE_VLM, CLASSIFY_STAGE, VERDICTS_STAGE
+from ..junk import (
+    CLASSIFY_PHASE_PETS_VLM,
+    CLASSIFY_PHASE_RESCUE_VLM,
+    CLASSIFY_PHASE_VLM,
+    CLASSIFY_STAGE,
+    VERDICTS_STAGE,
+)
 from ..landmarks import _SCAN_KEY as _LANDMARK_SCAN_KEY
 from ..landmarks import Classifier, clip_classifier, detect_landmarks
 from ..naming import name_events, naming_settings
@@ -668,11 +674,18 @@ _RATE_FIXED = "fixed"
 # counts as measured only when EVERY unit behind it is: `base` covers four stages, and
 # three measured ones plus a guessed fourth is a guess wearing a measurement's clothes.
 #
-# The model questions are read from TWO units, because F165 split the stage that asks them
-# in half: the deep tier decides what a frame IS and runs ahead of faces (`classify`),
-# while the quality and animal questions read what faces wrote and stay behind it
-# (`junk`). Both phases are called `junk_vlm`, so pricing the deep line off the wrong one
-# would quietly charge it the rate of a different population.
+# The model is asked in three passes and each is read from its OWN phase (F205). They
+# used to share the name `junk_vlm`, and the price of a frame is not the same in all
+# three: measured 2026-08-05, the deep tier runs pipelined at 1.4 frames/s while the
+# animal check and the rescue ask one frame at a time at ~0.42 — so a line priced off
+# another pass's phase is charged the rate of a different population, threefold wrong.
+# The stage each phase belongs to is part of the unit key because that is the log's own
+# spelling, not because it is what tells the three apart any more: the deep tier runs
+# ahead of faces in `classify` (F165), the other two behind it in `junk`.
+#
+# A log written before this split holds only `junk_vlm`, so the two new units are simply
+# absent there and their lines fall back to the shipped default — the same answer a
+# machine that has never run gets, and the screen says so.
 #
 # F186 removed a fourth reader of that phase — the keeper question, which was priced from
 # `estimate:` because the log could not tell its seconds from the per-frame ones. It is not
@@ -683,14 +696,16 @@ _RATE_UNITS: dict[str, tuple[str, ...]] = {
     "faces": (measurement_unit("faces"),),
     "events": (measurement_unit("events"),),
     "vlm_verdict": (measurement_unit(VERDICTS_STAGE, CLASSIFY_PHASE_VLM),),
-    "vlm_frame": (measurement_unit(CLASSIFY_STAGE, CLASSIFY_PHASE_VLM),),
+    "vlm_pets": (measurement_unit(CLASSIFY_STAGE, CLASSIFY_PHASE_PETS_VLM),),
+    "vlm_rescue": (measurement_unit(CLASSIFY_STAGE, CLASSIFY_PHASE_RESCUE_VLM),),
 }
 _DEFAULT_RATES: dict[str, float] = {
     "base": _SEC_PER_BASE_FRAME,
     "faces": _SEC_PER_FACES_FRAME,
     "events": _SEC_PER_EVENTS_FRAME,
     "vlm_verdict": _SEC_PER_VLM_FRAME,
-    "vlm_frame": _SEC_PER_VLM_FRAME,
+    "vlm_pets": _SEC_PER_VLM_FRAME,
+    "vlm_rescue": _SEC_PER_VLM_FRAME,
 }
 
 
@@ -858,7 +873,7 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         "faces": rates["faces"],
         "events": rates["events"],
         "pets": _Rate(0.0, _RATE_FIXED),
-        "pets_verify": rates["vlm_frame"],
+        "pets_verify": rates["vlm_pets"],
         # F161: the master switch itself. Zero and `fixed`, like the animal line and for
         # a kinder reason — that one rides on a pass that runs anyway, this one has no
         # pass at all.
@@ -866,11 +881,15 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         # F165 moved the deep tier ahead of faces, into a stage of its own — so this is
         # the one model line whose rate comes from `classify` rather than from `junk`.
         "products": rates["vlm_verdict"],
-        # F204: one question per candidate, the same shape and the same rate as the
-        # animal check — the rescue asks in the back half of the junk stage, the landmark
-        # check in `landmarks`, and neither is a pass over the collection.
-        "junk_rescue": rates["vlm_frame"],
-        "landmarks_verify": rates["vlm_frame"],
+        # F204: one question per candidate, the same shape as the animal check — the
+        # rescue asks in the back half of the junk stage, the landmark check in
+        # `landmarks`, and neither is a pass over the collection.
+        # F205: the rescue is now priced off its own seconds rather than off whichever
+        # pass happened to write the shared phase last. The landmark check has no phase of
+        # its own to be priced from, so it keeps the nearest measurement there is — the
+        # animal check, which is the same shape: one frame, one question, one at a time.
+        "junk_rescue": rates["vlm_rescue"],
+        "landmarks_verify": rates["vlm_pets"],
     }
     seconds: dict[str, float | None] = {}
     for name, rate in per_line.items():
