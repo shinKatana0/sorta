@@ -404,6 +404,14 @@ only on a file_id from the JSON body (no paths from the client); before deleting
 `SELECT ... FROM files WHERE id IN (...)` — unknown ids are silently ignored, not
 substituted as a path. The server binds only to 127.0.0.1.
 
+F208: the binding is what protects this port from the NETWORK; it protects nothing from
+the user's own browser, which visits other people's pages and this port in one session. So
+every POST must carry `Content-Type: application/json` and, when the request states an
+`Origin`, that origin must be this server — see `_post_refusal` above `_make_handler` for
+why the content type is the line that closes the class and the origin is only the second
+one. A refusal is a 403 with a code and a sentence. GET is untouched: thumbnails and
+previews are ordinary browser requests and carry no content type at all.
+
 plan_and_sort (sorter, dry-run) — the single source of the plan; PlanCache calls it
 with `write_reports=False` (no CSV/HTML side files from the UI path) and at most once
 per mode per cache generation — LAZILY, on the first request for that mode (F70), so
@@ -710,6 +718,71 @@ _BUSY_EXEMPT_ROUTES = frozenset({
 BUSY_REFUSED_ROUTES = _BUSY_SELF_GUARDED_ROUTES | _BUSY_GUARDED_ROUTES
 
 
+# F208: who is allowed to POST here at all.
+#
+# `127.0.0.1` keeps the network out. It does not keep out the user's own browser — and
+# the browser is precisely the program that visits somebody else's page and this port in
+# the same session. A page open in another tab could POST here: with
+# `Content-Type: text/plain` the request is a "simple" one by the CORS rules, so the
+# browser sends it WITHOUT asking permission first. The answer stays unreadable to that
+# page, but the action has already happened — `/api/sort` moves files, `/api/photos/trash`
+# empties them into the bin, `/api/settings` rewrites config.yaml. Every safety net this
+# product is built on (dry-run by default, the journal, `undo`, blake3) protects against a
+# human mistake and against nothing at all here.
+#
+# Requiring `application/json` is what closes the whole class rather than one route:
+# that content type is not "simple", so the browser MUST ask first with an `OPTIONS`
+# preflight, this server answers no such permission (there is no `do_OPTIONS` and no CORS
+# header anywhere in it), and the real request is never sent. `Origin` is the second line
+# and not the first: the header is not always present, so it can convict a foreign source
+# but cannot vouch for a missing one.
+#
+# Deliberately NOT a token or a session: this is a local single-user server, and a secret
+# is state that would have to be stored, rotated and handed to the page.
+_JSON_MEDIA_TYPE = "application/json"
+# The refusal codes. A code and a reason, like every other refusal here — whoever this
+# breaks (a browser extension, somebody's own script) has to be able to read WHY, instead
+# of getting a bare 400 with nothing in it.
+REFUSED_CONTENT_TYPE = "content_type"
+REFUSED_ORIGIN = "origin"
+_POST_REFUSAL_DETAIL = {
+    REFUSED_CONTENT_TYPE: f"POST requires Content-Type: {_JSON_MEDIA_TYPE}",
+    REFUSED_ORIGIN: "POST is served only to a page of this server",
+}
+
+
+def _media_type(raw: str | None) -> str:
+    """`Content-Type` -> the media type alone: lowercased, without the parameters.
+
+    `application/json; charset=utf-8` is what fetch() sends and it is the same type.
+    """
+    return (raw or "").split(";", 1)[0].strip().lower()
+
+
+def _origin_is_ours(origin: str, host: str | None) -> bool:
+    """Is this `Origin` the very server the request reached?
+
+    Compared against the request's own `Host` header rather than against a constant: the
+    port is chosen at start-up (0 in tests -> whatever the OS gave) and the page is opened
+    under whatever name the user typed. `null` — a sandboxed frame, a `file://` page — has
+    no netloc and is not ours.
+    """
+    parsed = urlsplit(origin.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    return parsed.netloc.lower() == (host or "").strip().lower()
+
+
+def _post_refusal(content_type: str | None, origin: str | None,
+                  host: str | None) -> str | None:
+    """Why this POST may not be served — a refusal code, or None to let it through."""
+    if _media_type(content_type) != _JSON_MEDIA_TYPE:
+        return REFUSED_CONTENT_TYPE
+    if origin is not None and not _origin_is_ours(origin, host):
+        return REFUSED_ORIGIN
+    return None
+
+
 def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                   process_state: _ProcessState,
                   sort_state: _SortState,
@@ -828,6 +901,17 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
 
         def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler contract)
             path = urlsplit(self.path).path
+            # F208: before the route, before the body, before the busy guard — the
+            # question here is WHO is asking, and a refused request must not have read a
+            # single byte of what it wanted done.
+            refusal = _post_refusal(self.headers.get("Content-Type"),
+                                    self.headers.get("Origin"),
+                                    self.headers.get("Host"))
+            if refusal is not None:
+                self._send_json({"error": "request refused", "reason": refusal,
+                                 "detail": _POST_REFUSAL_DETAIL[refusal]},
+                                status=HTTPStatus.FORBIDDEN)
+                return
             if path not in _BUSY_GUARDED_ROUTES:
                 self._dispatch_post(path)
                 return
