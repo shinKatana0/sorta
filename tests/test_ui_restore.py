@@ -340,8 +340,13 @@ class TestTheCopyIsNoNewDuplicateTask(RestoreUiTestBase):
 class TestTheCeilingIsPassedAndSaidOutLoud(RestoreUiTestBase):
     """F169. The route used to call the engine WITHOUT a ceiling, so one number in the
     code decided for every frame and nobody was told: a 12 Mpx shot came back the size it
-    went in, rebuilt out of a 1024 px copy of itself. Two things are checked here — the
-    ceiling is the config's, and a frame above it is told so in the answer."""
+    went in, rebuilt out of a 1024 px copy of itself. The ceiling is the config's, and it
+    is still handed to the engine.
+
+    What happens ABOVE it is F198's and lives in `tests/test_ui_restore_ceiling.py`: the
+    frame is refused rather than processed with a warning attached to the result. So the
+    cases below are the ordinary ones — a frame under the ceiling, which is where the gain
+    was measured and where nothing has changed."""
 
     def set_ceiling(self, max_edge: int) -> None:
         self.cfg = dataclasses.replace(
@@ -364,7 +369,9 @@ class TestTheCeilingIsPassedAndSaidOutLoud(RestoreUiTestBase):
         self.patch_model(loader)
 
     def test_the_engine_is_given_the_ceiling_from_the_config(self):
-        self.set_ceiling(600)
+        """A frame the ceiling admits reaches the model WHOLE — that is the case this
+        action is a pure gain in, and the config's number is what says so."""
+        self.set_ceiling(4000)
         file_id = self.big_frame()
         seen: list = []
         self.watching(seen)
@@ -373,20 +380,28 @@ class TestTheCeilingIsPassedAndSaidOutLoud(RestoreUiTestBase):
         status, payload = self.restore_frame({"file_id": file_id})
 
         self.assertEqual(status, 200, payload)
-        self.assertEqual(seen, [(600, 450)])
+        self.assertEqual(seen, [(2400, 1800)])
 
-    def test_a_frame_above_the_ceiling_says_the_copy_was_rebuilt(self):
-        self.set_ceiling(600)
+    def test_the_number_the_engine_is_told_is_the_config_key(self):
+        """F198 refuses above the ceiling, so the engine no longer meets a frame it would
+        have to reduce. It is still TOLD the number: the size is read off the header here
+        and off the pixels there, and the two must not be able to disagree."""
+        self.set_ceiling(4000)
         file_id = self.big_frame()
         self.patch_model()
         self.start_server()
+        real = restore.restore_frame
+        seen: dict = {}
 
-        _status, payload = self.restore_frame({"file_id": file_id})
+        def spy(src, model_name, **kwargs):
+            seen.update(kwargs)
+            return real(src, model_name, **kwargs)
+
+        with mock.patch.object(restore, "restore_frame", spy):
+            _status, payload = self.restore_frame({"file_id": file_id})
 
         self.assertTrue(payload["ok"], payload)
-        self.assertTrue(payload["rebuilt"])
-        self.assertEqual(payload["source_edge"], 2400)
-        self.assertEqual(payload["max_edge"], 600)
+        self.assertEqual(seen["max_edge"], 4000)
 
     def test_a_frame_below_the_ceiling_claims_nothing_of_the_sort(self):
         """The ordinary case of this action — a small frame, a clean gain, no warning."""
@@ -400,9 +415,9 @@ class TestTheCeilingIsPassedAndSaidOutLoud(RestoreUiTestBase):
         self.assertEqual(payload["source_edge"], 64)
         self.assertEqual(payload["max_edge"], self.cfg.features.restore_max_edge)
 
-    def test_the_second_press_repeats_the_warning_with_the_reused_copy(self):
+    def test_the_second_press_returns_the_copy_and_repeats_what_is_owed(self):
         """The frame and the ceiling have not changed, so neither has what is owed."""
-        self.set_ceiling(600)
+        self.set_ceiling(4000)
         file_id = self.big_frame()
         self.patch_model()
         self.start_server()
@@ -411,11 +426,11 @@ class TestTheCeilingIsPassedAndSaidOutLoud(RestoreUiTestBase):
         _status, second = self.restore_frame({"file_id": file_id})
 
         self.assertTrue(second["reused"])
-        self.assertTrue(second["rebuilt"])
+        self.assertFalse(second["rebuilt"])
         self.assertEqual(second["source_edge"], 2400)
 
-    def test_the_original_is_untouched_even_when_the_copy_is_rebuilt(self):
-        self.set_ceiling(600)
+    def test_the_original_is_untouched(self):
+        self.set_ceiling(4000)
         file_id = self.big_frame()
         before = (self.src_dir / "big.jpg").read_bytes()
         self.patch_model()
@@ -423,7 +438,7 @@ class TestTheCeilingIsPassedAndSaidOutLoud(RestoreUiTestBase):
 
         _status, payload = self.restore_frame({"file_id": file_id})
 
-        self.assertTrue(payload["rebuilt"])
+        self.assertTrue(payload["ok"], payload)
         self.assertEqual((self.src_dir / "big.jpg").read_bytes(), before)
 
     def test_the_warning_reaches_the_screen_in_three_languages(self):

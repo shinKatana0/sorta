@@ -872,11 +872,20 @@ def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
 # button there would promise what the measurement did not find, and a frame silently
 # rebuilt from a quarter of itself is exactly the trade F169 exists to disclose.
 #
-# The two bans below are enforced HERE, in the route, and not by not drawing a button —
+# The bans below are enforced HERE, in the route, and not by not drawing a button —
 # the F133 rule: a hidden control is not a rule, and a request made past the interface
 # collects the same thing.
+#
+# F198: the ceiling is one of them now. F169 left the question open on purpose — it was
+# written BEFORE the measurement and refused nothing above the ceiling, did the work and
+# said afterwards that the copy had been rebuilt from a reduced frame. The measurement
+# answered on 2026-08-04 (35/35/30 on blind pairs above the ceiling, i.e. nothing), and
+# until this feature the code was still waiting for it: a press on a 4320 px frame spent
+# the model and left a useless file beside the original, with the honest warning arriving
+# after the copy existed. A verdict has to come back to the code, not only to a document.
 RESTORE_ERROR_SENSITIVE = "sensitive_class"
 RESTORE_ERROR_VIDEO = "video"
+RESTORE_ERROR_TOO_LARGE = "too_large"
 
 
 def _restore_refusal(path: Path, verdict: str | None, media_type: str | None,
@@ -919,6 +928,37 @@ def _restore_notice(src: Path, max_edge: int) -> dict:
             "max_edge": int(max_edge)}
 
 
+def _restore_decision(path: Path, verdict: str | None, media_type: str | None,
+                      sensitive: frozenset[str], max_edge: int) -> dict:
+    """F198: may this frame be processed — the ONE answer both entrances read.
+
+    `_restore_offer` shows it and `_restore_frame` enforces it, and neither works it out
+    for itself: a second place deciding "is this allowed" is a second source of truth, and
+    the last one drifted apart within a day (the offer withdrew itself above the ceiling
+    while the route did the work anyway).
+
+    Above `features.restore_max_edge` the answer is NO. The model is x4 and cannot be shown
+    a 12-megapixel frame, so a big one would be reduced first and blown back up to about
+    its own size — and the measurement of 2026-08-04 found nothing there (35/35/30 on blind
+    pairs). Doing it anyway costs a run of the model and leaves a near-duplicate file in the
+    archive, so the refusal carries both numbers and the answer is a sentence rather than a
+    file. Below the ceiling nothing is narrowed: that is where the gain was measured (62%
+    against 10% for bicubic on small frames).
+
+    The order matters. A frame refused as a personal document is never measured — the size
+    comes off the file's header, and that is a file this program opens for no purpose,
+    including for a sentence it will not print.
+    """
+    refusal = _restore_refusal(path, verdict, media_type, sensitive)
+    if refusal is not None:
+        return {"available": False, "reason": refusal, "rebuilt": False,
+                "source_edge": 0, "max_edge": int(max_edge)}
+    notice = _restore_notice(path, max_edge)
+    if notice["rebuilt"]:
+        return {"available": False, "reason": RESTORE_ERROR_TOO_LARGE, **notice}
+    return {"available": True, "reason": None, **notice}
+
+
 def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int,
                    sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
     """`POST /api/review/restore` for ONE id -> the card of the copy, or the reason.
@@ -930,19 +970,22 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int,
     is not here" has to be an answer a person can read rather than an empty result.
 
     F169: the ceiling comes from `features.restore_max_edge` and is PASSED — it used to be
-    a constant the engine defaulted to, i.e. one number for every frame with nobody told —
-    and the answer carries `rebuilt` whenever the frame was larger than it. The action is
-    not refused for such a frame: what should happen to a 12 Mpx one is the measurement's
-    decision (`scripts/measure_restore.py`), and until it is made the honest thing is to
-    do the work and say what was done.
+    a constant the engine defaulted to, i.e. one number for every frame with nobody told.
+    F198: a frame above that ceiling is now REFUSED here instead of processed with a
+    warning attached to the result. The measurement F169 was waiting for came back empty
+    for such frames, so the work spent the model and left a useless near-duplicate in the
+    archive; the warning was honest but arrived after the file existed. The answer says no
+    and names both numbers. `rebuilt` still travels with a successful answer: the size is
+    read before the work and the engine measures what it actually processed, so a file
+    replaced in between is still reported rather than passed off as untouched.
 
-    F168: `sensitive` is `vlm.exclude_classes`, and the two bans it and `media_type` carry
-    are refused HERE rather than by not drawing a button — this route is now reachable
-    from every slice, and a rule that lives in the markup is a rule a request made past
-    the interface never meets. The default is the fallback list for the same reason
+    F168: `sensitive` is `vlm.exclude_classes`, and the bans it and `media_type` carry are
+    refused HERE rather than by not drawing a button — this route is now reachable from
+    every slice, and a rule that lives in the markup is a rule a request made past the
+    interface never meets. The default is the fallback list for the same reason
     `_junk_payload` has one: a privacy guard must not switch itself off through an
-    omission. Both refusals are ordinary reasons (200 + a code the client translates),
-    not errors: the person pointed at a frame this action does not apply to, which is
+    omission. Every refusal is an ordinary reason (200 + a code the client translates),
+    not an error: the person pointed at a frame this action does not apply to, which is
     something the interface has to be able to say.
     """
     conn = _connect(db_path)
@@ -950,12 +993,17 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int,
         row = _restore_source_row(conn, file_id)
         if row is None:
             return {"ok": False, "error": "file not found"}
-        refusal = _restore_refusal(Path(row["path"]), row["verdict"], row["media_type"],
-                                   sensitive)
-        if refusal is not None:
-            return {"ok": False, "reason": refusal}
+        # The same answer the offer showed, from the same function: what is drawn and what
+        # is enforced cannot be two decisions (F198).
+        decision = _restore_decision(Path(row["path"]), row["verdict"], row["media_type"],
+                                     sensitive, features.restore_max_edge)
+        if not decision["available"]:
+            return {"ok": False, "reason": decision["reason"],
+                    "rebuilt": decision["rebuilt"],
+                    "source_edge": decision["source_edge"],
+                    "max_edge": decision["max_edge"]}
         model = features.restore_model
-        notice = _restore_notice(Path(row["path"]), features.restore_max_edge)
+        notice = {key: decision[key] for key in ("rebuilt", "source_edge", "max_edge")}
         existing = restore.existing_copy(conn, file_id, model)
         if existing is not None:
             copy_id, copy_path = existing
@@ -1026,39 +1074,32 @@ def _restore_offer(db_path: Path, features: FeaturesConfig, file_id: int,
     to the one route, and a reason still travels as the same code. This answers the two
     questions the expanded frame has to answer before anything is offered —
 
-    * `available`: may this frame be processed at all (the bans the route enforces). A
-      client that worked that out for itself would be a second copy of the privacy rule,
-      which is the mistake F133 named;
+    * `available`: may this frame be processed at all — the bans the route enforces, and
+      the ceiling among them (F198). A client that worked any of that out for itself would
+      be a second copy of the rule, which is the mistake F133 named;
     * `rebuilt`: is the frame ABOVE `features.restore_max_edge`, i.e. would the copy be
       rebuilt from a reduced version of itself. The measurement found the gain on small
-      frames and nothing by 1280 px, so above the ceiling the offer is withdrawn and the
-      two numbers are handed over for the sentence that says why. Silence there would be
-      a promise the measurement does not support.
+      frames and nothing above the ceiling, so there the answer is `available: False` with
+      `reason` `too_large` and the two numbers the sentence is built from. Silence there
+      would be a promise the measurement does not support.
 
     `restored_from` is the other direction: this frame IS a copy, and here is the frame it
     was made from.
 
-    A refused frame is not measured: the size comes off the file's header, and a frame
-    classed as a personal document is one this program does not open for any purpose. The
-    two numbers are what the "too large" sentence is built from, and there is no such
-    sentence to build when the answer is already no.
+    Both facts come from `_restore_decision`, which is also what the route enforces: this
+    is a VIEW of the answer, never a second one.
     """
     conn = _connect(db_path)
     try:
         row = _restore_source_row(conn, file_id)
         if row is None:
             return None
-        path = Path(row["path"])
-        refusal = _restore_refusal(path, row["verdict"], row["media_type"], sensitive)
-        notice = ({"rebuilt": False, "source_edge": 0,
-                   "max_edge": int(features.restore_max_edge)} if refusal is not None
-                  else _restore_notice(path, features.restore_max_edge))
+        decision = _restore_decision(Path(row["path"]), row["verdict"], row["media_type"],
+                                     sensitive, features.restore_max_edge)
         return {
             "file_id": int(row["id"]),
-            "available": refusal is None,
-            "reason": refusal,
             "restored_from": _restored_source_json(conn, file_id),
-            **notice,
+            **decision,
         }
     finally:
         conn.close()
