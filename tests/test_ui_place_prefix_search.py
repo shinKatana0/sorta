@@ -33,8 +33,8 @@ from sorta.ui.layout import (
 )
 
 # A tiny world built for the failure that started F201. It holds, on purpose:
-# «Мо» — a real town in Norway, the accidental hit on the way to «Москва»; Москва with
-# a population and Мосальск without one; a composite «Нижний Новгород»; «Дурим», which
+# «Мо» — a real town in Norway, the accidental hit on the way to «Москва»; «Москва»
+# with a population and «Мосальск» without one; a composite «Нижний Новгород»; «Дурим», which
 # contains «Рим» without starting with it; and enough «Мост...» to overflow a short list.
 _MOSCOW, _MOSALSK, _MO, _NIZHNY, _ROSTOV = 524901, 526401, 3144873, 520555, 501175
 _ROME, _DURIM, _MAGADAN = 3169070, 900001, 2123628
@@ -51,7 +51,7 @@ _PLACES = [
     (_DURIM, 40.0, 20.0, "PPLA3", "AL", "", "", "Durim", 500),
     (_MAGADAN, 59.5638, 150.8035, "PPLA", "RU", "44", "", "Magadan", 95982),
 ] + [
-    # Same prefix as Москва, no population — the tail a short list has to cut off.
+    # Same prefix as «Москва», no population — the tail a short list has to cut off.
     (_FILLER_BASE + n, 55.0 + n / 100, 37.0, "PPLA3", "RU", "48", "", f"Mostograd{n:02d}", 0)
     for n in range(_FILLER_COUNT)
 ]
@@ -170,7 +170,7 @@ class TestPrefixFindsTheCity(PrefixSearchTestBase):
 
 class TestOrderOfTheAnswer(PrefixSearchTestBase):
     def test_an_exact_name_comes_before_everything_it_is_a_prefix_of(self):
-        # «Мо» IS a town in Norway. Москва is ten thousand times bigger and still comes
+        # «Мо» IS a town in Norway. «Москва» is ten thousand times bigger and still comes
         # second: the user who typed the whole name typed the whole name.
         self.assertEqual(self.city_ids("Мо")[0], _MO)
 
@@ -212,7 +212,7 @@ class TestTheAnswerIsShort(PrefixSearchTestBase):
         self.assertEqual(len(self.search("Мос")), _PLACE_SEARCH_LIMIT)
 
     def test_the_countries_never_take_the_whole_list(self):
-        # Six countries start with «Ма» in the fixture; Магадан has to survive them.
+        # Six countries start with «Ма» in the fixture; «Магадан» has to survive them.
         results = self.search("Ма")
         countries = [r for r in results if r["kind"] == "country"]
         self.assertEqual(len(countries), _PLACE_COUNTRY_LIMIT)

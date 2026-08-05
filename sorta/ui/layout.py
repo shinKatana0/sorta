@@ -484,17 +484,17 @@ def _city_option(gid: int, cc: str, lang: i18n.Lang) -> dict:
 def _city_candidates(query: str, lang: i18n.Lang, limit: int = _PLACE_SEARCH_LIMIT,
                      ) -> list[dict]:
     """Cities of the bundled base whose name in ANY of the three languages STARTS with
-    `query` — the whole name, or any word inside a composite one («Новг» -> Нижний
-    Новгород). The geonameids are the ones `city_ids_by_name` (F46) answers with and the
+    `query` — the whole name, or any word inside a composite one («Новг» -> «Нижний
+    Новгород»). The geonameids are the ones `city_ids_by_name` (F46) answers with and the
     ones that land in `places.city_geonameid`; only the way they are LOOKED UP is wider.
 
     The order is part of the answer (F201), and it is:
 
     1. an exact full-name match first — if the user finished typing a name, that name is
        what they meant, whatever else begins with it («Мо» is a town in Norway before it
-       is the start of Москва);
+       is the start of «Москва»);
     2. then by population, descending — the base holds 150 000 settlements, so every
-       prefix finds hamlets, and «Моск» has to answer Москва before Москаленки;
+       prefix finds hamlets, and «Моск» has to answer «Москва» before «Москаленки»;
     3. then by the shown name, alphabetically — a predictable tail for the places the
        base gives no population for.
 

@@ -88,7 +88,7 @@ class _Place:
     admin1: str
     name_en: str
     # F201: the 9th column of places.tsv, kept because a prefix search has to RANK its
-    # answer — «Моск» finds Москва and a dozen hamlets, and only the population tells
+    # answer — «Моск» finds «Москва» and a dozen hamlets, and only the population tells
     # them apart. 0 means "the base does not say", not "empty".
     population: int = 0
 
@@ -100,11 +100,11 @@ _WORD_SPLIT_RE = re.compile(r"[^\w]+", re.UNICODE)
 
 
 def _name_words(name: str) -> list[str]:
-    """The words a name can be found by: «Нижний Новгород» -> [нижний, новгород].
+    """The words a name can be found by: «Нижний Новгород» -> «нижний», «новгород».
 
     Word starts, not substrings: a substring match would answer «Рим» with every
     «Дурим» in the base and drown the list, while a word inside a composite name is
-    exactly what a person types («Новг» for Нижний Новгород). Casefolded, like the
+    exactly what a person types («Новг» for «Нижний Новгород»). Casefolded, like the
     rest of the reverse indexes.
     """
     return [w for w in _WORD_SPLIT_RE.split(name.casefold()) if w]
@@ -114,9 +114,9 @@ def _starts_a_word(text: str, key: str) -> bool:
     """True if `key` begins `text` at its start or right after a separator.
 
     The same rule `_name_words` states, applied to a query that has grown past one
-    word: typing does not stop at a space, so «Нижний Новг» has to keep finding Нижний
-    Новгород and «Sankt-Pet» has to survive the hyphen the words were split on. Both
-    arguments are expected casefolded.
+    word: typing does not stop at a space, so «Нижний Новг» has to keep finding
+    «Нижний Новгород» and «Sankt-Pet» has to survive the hyphen the words were split
+    on. Both arguments are expected casefolded.
     """
     pos = text.find(key)
     while pos != -1:
@@ -498,10 +498,13 @@ class GeoResolver:
     # The full-name lookups above are right for `--where city=`, where the name is typed
     # whole, and wrong for a combobox: until the last letter is there the answer is
     # empty, and on the way it can hit a different city by accident. Measured on the
-    # bundled base (63 034 cities, 59 000 index keys per language): a linear pass over
+    # bundled base (63 034 cities, ~59 000 index keys per language): a linear pass over
     # the keys of all three languages costs 10–36 ms per keystroke, so the words are
-    # indexed once (~240 ms per language, on the first search of the process) and looked
-    # up with `bisect` — 0.03–3 ms per query, no new dependency.
+    # indexed once instead (~280 ms per language, on the first search of the process)
+    # and looked up with `bisect` — no new dependency, a sorted list is enough. The
+    # whole `/api/places/search` answer then measures 0.2–2.5 ms for a six-letter query
+    # and 0.3–10 ms for a three-letter one (the tail is the ranking of what a broad
+    # prefix like "San" matches, not the lookup); the client debounces at 250 ms.
 
     def _city_prefix_index(self, lang: Lang) -> list[tuple[str, int]]:
         """(word, geonameid) pairs for every word of every city name in `lang`, sorted.
