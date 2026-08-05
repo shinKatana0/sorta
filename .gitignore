@@ -33,6 +33,7 @@
 # 3) within docs/, publish only these — internal docs stay unlisted
 /docs/*
 !/docs/ARCHITECTURE.md
+!/docs/DECISIONS.md
 !/docs/assets/
 !/docs/guide/
 

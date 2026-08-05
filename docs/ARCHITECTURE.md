@@ -150,6 +150,38 @@ Switching the sort mode does not require re-running the pipelines.
   nothing, and the deep tier is paid for once).
 - A missing row = "not classified" — the sorter treats it as photo.
 
+### frame_quality (written only by junk) — F113 …
+
+- 1:1 with files, and every column answers one question about how a frame turned out.
+  **NULL means NOT ASKED** — never "no". A consumer reading a defaulted False would
+  conclude that a frame nothing has ever looked at has its eyes closed.
+- Measured cheaply, by arithmetic over the shared preview: `sharpness` (laplacian
+  variance over the whole frame), `face_sharpness` (the same inside the face boxes, F155),
+  `eye_openness` (the eye opening over its width, F179), `pet_score`/`pet` (a CLIP score
+  and the label it produced), `junk_score` (F140).
+- `eyes_open` / `has_subject` / `is_accidental` are **retired questions**. The columns stay
+  and stay NULL: "not asked" is exactly what that means, dropping them would need a table
+  rebuild, and a documented empty column is cheaper than an excised one. Every one of them
+  was closed by a measurement — 5% precision, no discrimination, and 60%/9% respectively —
+  and `eye_openness` replaced the third at 62%/48% without a model call.
+- `source` carries a FINGERPRINT of the prompts an answer came from (`clip#abc12345`), so
+  editing the wording invalidates the rows it produced. This is what makes a prompt change
+  take effect on a collection that is already indexed, and it is why a measurement can be
+  trusted to describe the question it was asked.
+
+### group_keeper (written only by dedup) — F132
+
+- One row per near-duplicate group: `group_key`, `keeper_id`, `source` (`sharpness` |
+  `model`). It is a RECOMMENDATION and never an action — `dedup_choice` is the user's hand
+  and nothing here writes it.
+- **Nothing is pre-selected from it on screen** (F194). 111 groups labelled blind put
+  sharpness at 27% agreement with the person, arithmetic at 28%, the model at 32% —
+  against **30.4% for picking at random**. A highlighted frame reads as an answer, and one
+  that is worse than chance is a confident wrong answer. The table stays because the order
+  it produces is useful; the crown it used to wear is not.
+- The question to the VLM was removed with the same measurement (F186): 451 seconds of a
+  run for a result at chance is not a cheaper answer, it is nothing to buy.
+
 ### restored_files (written only by restore) — F149
 - One frame the user asked a model to redraw (`file_id`, the COPY) and the frame it was
   made from (`source_file_id`), plus the `model` that did it. Never written by a stage and
