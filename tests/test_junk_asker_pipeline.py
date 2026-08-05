@@ -35,8 +35,10 @@ suite.
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -72,6 +74,21 @@ _RUNLOG = "sorta.runlog"
 _PHASE_LINE = re.compile(
     r"^stage=(?P<stage>\S+) phase=(?P<phase>\S+) elapsed=(?P<elapsed>[0-9.]+)"
     r"(?: processed=(?P<processed>\d+))?")
+
+_MEASURE_SCRIPT = (Path(__file__).resolve().parent.parent
+                   / "scripts" / "measure_asker_pipeline.py")
+
+
+def _load_measure_script():
+    """Import the acceptance script — it is a script, not a package module."""
+    spec = importlib.util.spec_from_file_location("measure_asker_pipeline",
+                                                  _MEASURE_SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module   # the dataclasses inside need to find their module
+    spec.loader.exec_module(module)
+    return module
+
 
 # The synthetic shape of a frame's cost, and it is the production one in miniature: the
 # CPU half (decode + the processor) is the long one and the GPU half is short, which is
@@ -596,6 +613,72 @@ class TestTheQuestionKeepsItsHalves(unittest.TestCase):
         runtime, _calls = self.split_runtime("I could not say")
         self.assertIsNone(
             junk.parse_pet_answer(vlm_pet_asker(runtime, max_edge=128)(self.path)))
+
+
+class TestTheAcceptanceScript(unittest.TestCase):
+    """`scripts/measure_asker_pipeline.py` — the halves of it that need no model.
+
+    The script is what the sample acceptance is read off (rates, the VRAM peak of both
+    arms, and how many frames answered differently), so the two things it must not get
+    wrong are covered here: the population it samples is the one the stage gates on, and
+    the pre-registered verdict puts the answers ABOVE the speed.
+    """
+
+    def setUp(self):
+        self.script = _load_measure_script()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def arm(self, name, workers, seconds, answers, peak=None):
+        return self.script.ArmRow(name=name, workers=workers, frames=len(answers),
+                                  seconds=seconds, answers=answers, errors=0,
+                                  peak_vram_mb=peak)
+
+    def test_the_sample_is_the_candidate_population_of_the_question(self):
+        db = Path(self.tmp.name) / "sample.db"
+        conn = connect(db)
+        existing = str(Path(self.tmp.name) / "here.jpg")
+        Image.new("RGB", (8, 8)).save(existing, "JPEG")
+        for path, pet in ((existing, 0.9), ("/photos/low.jpg", 0.1),
+                          ("/photos/gone.jpg", 0.9)):
+            cur = conn.execute(
+                """INSERT INTO files (path, size, mtime, ext, media_type, indexed_at)
+                   VALUES (?, 1, 0, 'jpg', 'photo', '2026-01-01')""", (path,))
+            conn.execute(
+                "INSERT INTO frame_quality (file_id, pet_score, source, updated_at)"
+                " VALUES (?, ?, 'vlm', '2026-01-01')", (cur.lastrowid, pet))
+        conn.commit()
+        conn.close()
+
+        # below the threshold — not a candidate; missing from disk — nothing to ask about
+        self.assertEqual(
+            self.script.sample_paths(str(db), "pets", 0.3, 10, seed=1), [existing])
+
+    def test_a_disagreement_is_counted_on_the_parsed_answer(self):
+        before = self.arm("serial", 1, 4.0, ["real", "  DEPICTION  ", "none"])
+        after = self.arm("pipeline", 4, 1.0, ["real", "depiction", "real"])
+        # the middle pair differs in wording alone and is not a disagreement; the last
+        # pair is a different stored label and is
+        self.assertEqual(self.script.disagreements(before, after, "pets"), 1)
+
+    def test_answers_that_moved_outrank_a_speedup(self):
+        before = self.arm("serial", 1, 10.0, ["real"] * 4)
+        after = self.arm("pipeline", 4, 1.0, ["none"] * 4)
+        self.assertIn("СТОП", self.script.outcome([before, after], moved=4))
+
+    def test_a_pass_that_did_not_overlap_is_not_accepted(self):
+        before = self.arm("serial", 1, 10.0, ["real"] * 4)
+        after = self.arm("pipeline", 4, 9.5, ["real"] * 4)
+        self.assertIn("не принято", self.script.outcome([before, after], moved=0))
+
+    def test_a_clean_run_is_accepted_and_the_table_prints_both_vram_peaks(self):
+        before = self.arm("serial", 1, 10.0, ["real"] * 4, peak=20500.0)
+        after = self.arm("pipeline", 4, 2.5, ["real"] * 4, peak=20512.0)
+        self.assertIn("принято", self.script.outcome([before, after], moved=0))
+        table = self.script.format_table([before, after], moved=0)
+        self.assertIn("20500 МБ", table)
+        self.assertIn("20512 МБ", table)
+        self.assertIn("вердикты разошлись: 0", table)
 
 
 if __name__ == "__main__":

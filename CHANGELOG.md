@@ -163,6 +163,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty.
 
 ### Changed
+- **The animal check and the screen‑capture rescue got the pipeline back** (F206). The
+  numbers F205 separated said it in one line: the deep tier ran **7 951** frames at **1.4
+  frames/s** while the two questions of the junk stage's back half ran **4 281** at
+  **0.42** — the same model, the same one frame per call, the same card, **three times the
+  price**. F165 split the stage in two and the overlap of the CPU half with the GPU half
+  (F101) went with the verdicts; `_frame_question` stayed the plain serial path, on an
+  argument that was true when those populations were short lists. At the previous run's
+  rate those frames cost 3 243 s, so the gap is **116 minutes a run**, and the balance of
+  the two runs closes on it exactly. Both questions now go through the tier's own machinery
+  — `vlm.workers` preparation threads decoding the next frames while the model answers
+  about this one — and **nothing about the question moved**: same prompts, same token
+  budgets, same input size, same thresholds, same populations, one frame per call. The
+  answers come back in the **candidate order** rather than in completion order (an answer
+  written against a neighbour's file is worse than a slow pass), a frame whose preparation
+  fails still keeps its cheap‑tier answer, the writes still happen on one thread, and the
+  VRAM peak is what it was — the prepared tensors are CPU tensors, and the window bounds
+  them at two per worker. No batching (that is its own measurement) and nothing optimized
+  along the way, so the next run can say what helped. The regression lived three days
+  because **no test priced a frame**; the one that now does is relative — the animal phase
+  against the deep tier's phase of the **same run**, since seconds are a statement about a
+  machine and a ratio between two phases asking one model one question is a statement about
+  the stage.
 - **The three passes that ask the model are counted apart** (F205). The run of
   2026‑08‑05 put three different questions to the model and filed all three under one
   phase name, `junk_vlm`: the deep tier over **7 951** frames at **1.4 frames/s**
