@@ -1,3 +1,5 @@
+<img src="docs/assets/icon.png" alt="" width="72" align="left" hspace="12">
+
 # Sorta
 
 [![CI](https://github.com/shinKatana0/sorta/actions/workflows/check.yml/badge.svg)](https://github.com/shinKatana0/sorta/actions/workflows/check.yml)
@@ -73,6 +75,17 @@ Sorta は**すべてローカルで動作**し（顔・シーン・テキスト�
 ---
 
 ![「都市」タブ — 移動前に確認する、提案されたフォルダ構成（国 / 都市 / 年）](docs/assets/process.png)
+
+### 2 つの入口、それぞれの役割
+
+**CLI はパイプラインを実行します**——全ステージ、`sort`、`album`、`search`、そして各
+オプションの 1 回限りのフラグ。**Web アプリは判断する場所です**——重複の解消、場所の訂正、
+クエリの固定、写真の復元。`sorta dupes` は重複を一覧しますが解消はしません。コマンド
+ラインから解消するとは、写真を見ずに選ぶことであり、ブラインド比較では我々のどの規則も
+偶然を上回りませんでした。再現できるものはすべてスクリプト化でき、判断を要するものは
+スクリプト化できるふりをしません。
+
+---
 
 ## システム要件
 

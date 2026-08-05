@@ -44,14 +44,41 @@ The alternative is worse than useless. On one live run the screenshot rescue mov
 the owner's own photographs** into the screenshot bin, and a caption promising a
 classification is what stops a person from looking again.
 
-### 1.4 Safety of moves comes before everything
+### 1.4 The terminal computes; the interface decides
+
+Both entry points are first-class, and they do different work. The CLI runs **every stage
+of the pipeline** and applies a layout — `index`, `geo`, `landmarks`, `phash`, `junk`,
+`classify`, `faces`, `events`, `run`, `sort`, `album`, `search`, `dupes`, `stats`,
+`doctor`, `cache`, `reset`, `undo`, and per-run overrides for every option a feature ever
+added.
+
+What it deliberately does **not** carry is the set of actions where a person looks at a
+photograph and decides:
+
+```
+resolving a duplicate group        marking an animal by hand
+correcting a place                 pinning a query as a slice
+restoring a soft frame             sending a frame to the trash
+```
+
+`sorta dupes` lists them; it does not resolve them.
+
+**This follows from §1.2.** Resolving duplicates from a command line means choosing without
+seeing the frames — and §3.4 says that even with the frames in front of it, no rule we have
+beats chance. An action whose whole content is human judgement has no business having a
+flag.
+
+The consequence for a script: everything reproducible is scriptable, and nothing that
+needs an opinion pretends to be.
+
+### 1.5 Safety of moves comes before everything
 
 - `sort` is dry-run by default; real movement needs `--apply`.
 - Every move is journaled **before** it happens; `undo` replays the journal backwards.
 - blake3 is verified before a move and the destination is checked after.
 - A name conflict never overwrites: `_1`, `_2`.
 
-### 1.5 Local by construction, not by default
+### 1.6 Local by construction, not by default
 
 No code in the product sends an image anywhere. The cloud naming provider was removed
 together with its upload, and a test refuses to let the string return unnoticed. The single
