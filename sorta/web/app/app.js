@@ -5739,7 +5739,7 @@
     // third tier's note is the one that says the program cannot choose — without it the
     // absence of a preselected frame reads as something forgotten.
     var note = document.createElement("p");
-    note.className = "hint dupe-tier-note";
+    note.className = "dupe-tier-note";
     note.textContent = g.tier === "same_image"
       ? I18N.dupe_same_image_note
       : I18N.dupe_similar_note + " " +
