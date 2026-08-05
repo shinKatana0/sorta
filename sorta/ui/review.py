@@ -21,8 +21,8 @@ from pathlib import Path
 
 from .. import imaging, restore
 from ..config import FeaturesConfig
-from ..dedup import (KEEPER_SOURCE_SHARPNESS, TIER_SAME_IMAGE, GroupKeeper,
-                     exact_duplicate_summary, group_key, group_tier,
+from ..dedup import (KEEPER_SOURCE_SHARPNESS, TIER_SAME_IMAGE, TIER_SIMILAR,
+                     GroupKeeper, exact_duplicate_summary, group_key, group_tier,
                      near_duplicate_groups, read_group_keepers)
 # `_has_column`: "does this database have that column yet". The indexer reads its own
 # optional columns through it, and the blur list (F157) reads F155's `face_sharpness`
@@ -68,6 +68,37 @@ def _db_fingerprint(db_path: Path) -> _DupesFingerprint:
     return tuple(fingerprint)
 
 
+# --- F199: the group says which tier it is, and why it advises or does not -----------
+# The tier has travelled with the group since F194, and the screen has been turning it
+# into a sentence in JS — two branches and a silent fallback into the third tier's words.
+# What a person saw was two outwardly identical pairs, one carrying a suggestion and one
+# not, with the reason named nowhere: they are entitled to read that as randomness, and
+# then to stop trusting the suggestion in the tier where it is right.
+#
+# So the ANSWER names both captions. `tier_caption` is the line on the group, `tier_why`
+# is the reasoning behind it — string KEYS rather than text, because the catalog is
+# `strings.py` in three languages and the page carries all of it (`page._render_index_html`),
+# which is how `blur_order` and the restore refusals already travel. Naming them here also
+# makes "every group says which tier it is" a property of the payload, checkable by
+# walking the groups instead of by reading the markup.
+_TIER_CAPTIONS = {
+    TIER_SAME_IMAGE: ("dupe_tier_same_image", "dupe_same_image_note"),
+    TIER_SIMILAR: ("dupe_tier_similar", "dupe_similar_note"),
+}
+
+
+def _tier_captions(tier: str) -> dict[str, str]:
+    """The two caption keys one tier is said with: the line, and the reasoning.
+
+    A tier with no entry falls back to the SIMILAR captions rather than to no caption at
+    all. A group without a line is the exact defect this exists to remove, and of the two
+    tiers the one that promises nothing is the safe thing to say about a group whose tier
+    the table does not know.
+    """
+    caption, why = _TIER_CAPTIONS.get(tier, _TIER_CAPTIONS[TIER_SIMILAR])
+    return {"tier_caption": caption, "tier_why": why}
+
+
 def _dupes_payload(db_path: Path, max_distance: int) -> dict:
     """The Duplicates screen: the three tiers of sameness, each with its own default.
 
@@ -89,6 +120,12 @@ def _dupes_payload(db_path: Path, max_distance: int) -> dict:
       so a person trusting it would choose worse than by chance and never learn. What the
       group does carry is an ORDER (`order`: `sharpness` or `size`), which is what
       sharpness honestly is, and the caption says so in those words.
+
+    F199: every group also carries the two captions its tier is SAID with —
+    `tier_caption` (the line) and `tier_why` (the reasoning behind it). The tiers were
+    already distinguishable in the data; what was missing is that the screen never named
+    which one a group was in, so a suggestion on one pair and none on the next read as
+    chance rather than as the rule it is.
 
     `action` is the current decision from `dedup_choice` — the human's own table, which
     nothing here writes, reads over, or reorders.
@@ -192,6 +229,10 @@ def _dupes_payload(db_path: Path, max_distance: int) -> dict:
             frames, order = _order_similar(frames, keeper)
             recommended_by = None
         result.append({"group": idx, "tier": tier, "frames": frames,
+                       # F199: the tier in words, on the group that is in it. Both are
+                       # keys of `strings.py`; `_tier_captions` says why the answer names
+                       # them instead of leaving the client to derive a sentence.
+                       **_tier_captions(tier),
                        # What the frames are SORTED by — never who is best. A caption
                        # reading "sorted by sharpness" is a fact about the list; the same
                        # number presented as an answer is the harmful advice F194 removes.
