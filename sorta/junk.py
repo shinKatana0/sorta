@@ -470,6 +470,37 @@ later the faces are in the database and the veto is back for every frame that st
 there — but a frame this stage calls junk is a frame `faces` now skips, so the veto cannot
 reach it afterwards. The brief accepted that trade for the 18% (F165, "Оговорки", 2 and 3);
 it is written down here because no test can show it and no log line will mention it.
+
+F206: THE OTHER HALF OF THAT SPLIT KEPT ASKING SERIALLY, and the phase names of F205 are
+what finally showed it. The run of 2026-08-05:
+
+    stage=classify phase=junk_vlm         7 951 frames    5 503 s   1.4 frames/s
+    stage=junk     phase=junk_pets_vlm  }
+    stage=junk     phase=junk_rescue_vlm }  4 281 frames  ~10 200 s  0.42
+
+Same model, same one frame per call, same card — three times the price, because the
+pipeline went to `classify` with the verdicts (F101 built it there) while `_frame_question`
+stayed the plain serial path. At the previous run's rate those 4 281 frames cost 3 243 s:
+116 minutes a run, and the balance of the two runs closes on that number exactly (6 041
+frames fewer saved ~76 min, the lost pipeline cost ~116, +40 against the +27 observed).
+
+The fix is a MOVE and not a design: `_frame_question` hands back its halves the way
+`vlm_classifier_from` does, and the two askers go through `_vlm_labels` — the same FIFO of
+futures, the same bounded window, the same "generation stays on the caller's thread". So
+the properties the deep tier has had since F101 are the ones these two questions get: the
+verdicts cannot move (the prompt, the token budget and the input size are untouched, and
+one frame is still one call), the answers arrive in the CANDIDATE order rather than in
+completion order, a frame whose preparation fails still keeps its cheap-tier answer, and
+the VRAM peak is one frame's inputs — the prepared tensors stay on the CPU
+(naming.qwen_runtime), which is what the window bounds.
+
+What was NOT done here, deliberately: no batching (that is F105, with a measurement of its
+own), no prompt, threshold or population touched, and no second optimization riding along —
+one edit, one effect, or the next run cannot say what helped. The guard against a third
+serial pass is a test rather than a comment: `tests/test_junk_asker_pipeline.py` prices the
+animal phase AGAINST the deep tier's phase of the same run, because a cost per frame in
+seconds is a statement about a machine and a RATIO between two phases asking one model one
+question about one frame is a statement about this stage.
 """
 from __future__ import annotations
 
@@ -1419,6 +1450,13 @@ def _vlm_labels(vlm_fn: VlmClassifyFn, paths: list[str],
     The pipeline needs both halves from the runtime (SplitVlmClassifier) and more than
     one worker; anything else — an injected test classifier, a runtime without halves,
     vlm_workers=1 — takes the serial path, which is the pre-F101 loop verbatim.
+
+    F206: `paths` are not always the deep tier's, and an item is not always a label. The
+    two questions of the back half (the animal check, the rescue) come through here with
+    the same contract — one item per path, in the order given, an exception where the
+    model raised — because what they need is exactly what this function does and a second
+    copy of it would be a second place for the order to go wrong. What an item MEANS is
+    the caller's business: the tier reads a label, the askers read a raw answer.
     """
     split = vlm_fn if isinstance(vlm_fn, SplitVlmClassifier) else None
     if split is None or workers < 2:
@@ -2002,29 +2040,59 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
                     max_new_tokens: int) -> Callable[[str], str]:
     """One prompt over one frame, over an ALREADY LOADED runtime (naming.shared_vlm).
 
-    Deliberately the plain, serial path and not the split halves the deep junk tier uses:
-    these populations are a candidate list, not the whole collection, and the pipeline
-    machinery would cost more reading than it saves seconds. The decode goes through the
-    shared preview cache, Unicode/HEIC-safe, exactly as everywhere else here; a frame that
-    will not decode gets an empty answer, which parses to "not asked".
+    The decode goes through the shared preview cache, Unicode/HEIC-safe, exactly as
+    everywhere else here; a frame that will not decode gets an empty answer, which parses
+    to "not asked".
 
     Shared by the two questions this stage still asks a frame (the pet check, F130; the
     rescue, F140) because they differ in the prompt and the token budget and in nothing
     else — a second copy of the decode would be a second place for the cache key to go
     wrong.
+
+    F206: and it comes back with its HALVES when the runtime has them, exactly like
+    `vlm_classifier_from` above. This used to be "deliberately the plain, serial path",
+    on the argument that these populations are a candidate list rather than a whole
+    collection and the pipeline would cost more reading than it saves seconds. The
+    argument was measured out of date by the run of 2026-08-05: 4 281 frames through
+    these two questions at 0.42 frames/s against the deep tier's pipelined 1.4, i.e.
+    116 minutes a run. The halves are what `_vlm_labels` needs to overlap the CPU half
+    of one frame with the GPU half of the previous one, and it is the same machinery,
+    the same window and the same order guarantee the deep tier has run on since F101 —
+    a question whose prompt, token budget and input size are untouched by any of it.
     """
-    def ask(path: str) -> str:
+    def decode(path: str) -> Image.Image | None:
         try:
             st = os.stat(path)
         except OSError:
-            return ""
-        img = imaging.decode_rgb_preview(
+            return None  # unreadable — the caller answers with "not asked"
+        return imaging.decode_rgb_preview(
             path, st.st_mtime, st.st_size, max_edge=max_edge)
-        if img is None:
-            return ""
-        return describe([img], prompt, max_new_tokens)
 
-    return ask
+    split = describe if isinstance(describe, SplitVlm) else None
+    if split is None:
+        def ask(path: str) -> str:
+            img = decode(path)
+            if img is None:
+                return ""
+            return describe([img], prompt, max_new_tokens)
+
+        return ask
+
+    def prepare(path: str) -> PreparedFrame:
+        img = decode(path)
+        # An empty answer IS the answer here (both parsers read it as "not asked"), so a
+        # frame that never reaches the model carries it through the pipeline as a ready
+        # label — the GPU half then stays free of file-system branches, as in the tier.
+        if img is None:
+            return PreparedFrame(label="")
+        return PreparedFrame(inputs=split.prepare([img], prompt))
+
+    def answer(prepared: PreparedFrame) -> str:
+        if prepared.label is not None:
+            return prepared.label
+        return split.generate(prepared.inputs, max_new_tokens)
+
+    return SplitVlmClassifier(prepare=prepare, classify_prepared=answer)
 
 
 # --- F130: the pet check --------------------------------------------------------------
@@ -3288,7 +3356,7 @@ class _QualityPass:
     def __init__(self, conn: sqlite3.Connection, q: QualitySettings,
                  sharpness: SharpnessFn, source: str, ids: set[int],
                  now: str, stats: JunkStats,
-                 pet_ask: PetAskFn | None = None) -> None:
+                 pet_ask: PetAskFn | None = None, workers: int = 1) -> None:
         self._conn = conn
         self._q = q
         self._sharpness = sharpness
@@ -3299,6 +3367,10 @@ class _QualityPass:
         # F130: the pet check and its candidate list — a CLIP score above
         # `pet_candidate_threshold`, which is the one population this pass still selects.
         self._pet_ask = pet_ask
+        # F206: the preparation threads of that check — `vlm.workers`, the same knob and
+        # the same pool the deep tier uses. Defaulted to 1 (the serial path) so a caller
+        # that builds this pass by hand keeps the behaviour it had.
+        self._workers = workers
         # (file_id, path, label the cheap tier wrote) — the third field is what keeps
         # `stats.pets_found` the FINAL count when an answer moves the label.
         self._pet_candidates: list[tuple[int, str, str | None]] = []
@@ -3403,12 +3475,23 @@ class _QualityPass:
 
         The phase is CLASSIFY_PHASE_PETS_VLM — its own name since F205, with its own
         caption in all three languages. It shared CLASSIFY_PHASE_VLM with the deep tier
-        while the two cost the same per frame; measured, this one is serial and ~0.42
-        frames/s against that one's pipelined 1.4, and a shared name means the estimate
-        can only charge one of them at the other's rate. The candidate list is known
-        before the loop starts, so the bar reports a real (done, total) over it. The count
+        while the two cost the same per frame, and a shared name means the estimate can
+        only charge one of them at the other's rate. The candidate list is known before
+        the loop starts, so the bar reports a real (done, total) over it. The count
         reported is the list AFTER `_reclassified` has trimmed it, so the bar counts
         questions that will actually be asked.
+
+        F206: THE ANSWERS COME THROUGH `_vlm_labels`, i.e. through the machinery the deep
+        tier has used since F101 — `vlm.workers` threads decode and preprocess frames
+        while this thread runs the model and writes. That is the whole change here: the
+        0.42 frames/s the phase name above was measured at was this loop asking one frame
+        at a time while the card idled through every decode, 116 minutes a run over the
+        4 281 frames the two back-half questions see. Nothing about the question moves —
+        the same prompt, the same token budget, the same input size, one frame per call —
+        so no verdict may move either, and the order guarantee is the tier's own: answers
+        arrive in the CANDIDATE order (a FIFO of futures), not in the order the
+        preparations happen to finish, because an answer written against its neighbour's
+        file is worse than a slow pass.
         """
         if self._pet_ask is None or not self._pet_candidates:
             return
@@ -3419,15 +3502,23 @@ class _QualityPass:
         self._stats.pet_candidates = len(candidates)
         report.start(CLASSIFY_PHASE_PETS_VLM, len(candidates))
         report.count(CLASSIFY_PHASE_PETS_VLM, len(candidates))
-        with self._conn:
-            for i, (file_id, path, before) in enumerate(candidates):
-                try:
-                    answer = self._pet_ask(path)
-                except Exception as exc:  # noqa: BLE001 — the cheap tier must survive it
+        # closing(): the preparation threads live exactly as long as the pass, not until
+        # the garbage collector gets round to the generator holding them (F101).
+        answers = _vlm_labels(self._pet_ask, [path for _fid, path, _b in candidates],
+                              self._workers)
+        with closing(answers), self._conn:
+            for i, ((file_id, _path, before), item) in enumerate(
+                    zip(candidates, answers)):
+                if isinstance(item, BaseException):
+                    # A frame the model raised on keeps the label the CLIP threshold gave
+                    # it — the same contract this loop has always had, only the raising
+                    # moved into the generator.
                     _log.warning(
                         "junk: VLM-проверка животных не ответила по file_id=%s (%s) — "
-                        "оставляю метку по порогу CLIP", file_id, exc)
+                        "оставляю метку по порогу CLIP", file_id, item)
                     answer = ""
+                else:
+                    answer = item
                 seen = parse_pet_answer(answer)
                 if seen is not None:
                     # The same rule the fast half used, now with the model's word in hand.
@@ -3464,7 +3555,7 @@ class _JunkRescuePass:
 
     def __init__(self, conn: sqlite3.Connection, q: QualitySettings, model: str,
                  encoder: Callable[[], TextEncoder], ask: JunkAskFn | None,
-                 now: str, tier: str, stats: JunkStats) -> None:
+                 now: str, tier: str, stats: JunkStats, workers: int = 1) -> None:
         self._conn = conn
         self._q = q
         self._model = model
@@ -3473,6 +3564,10 @@ class _JunkRescuePass:
         self._now = now
         self._tier = tier
         self._stats = stats
+        # F206: the preparation threads of the question below — `vlm.workers`, the same
+        # knob the deep tier and the animal check use. Defaulted to 1 (the serial path)
+        # for a caller that builds this pass by hand.
+        self._workers = workers
 
     def _text_features(self) -> np.ndarray | None:
         """The prompts as a matrix of unit rows; None — the encoder could not be had.
@@ -3544,24 +3639,31 @@ class _JunkRescuePass:
         anyway (the source becomes `vlm`) so that a later reader can tell a frame the model
         confirmed from one it was never shown.
 
-        F205: the phase is CLASSIFY_PHASE_RESCUE_VLM, not the deep tier's name. One
-        question per candidate, asked one at a time — a different price from the pipelined
-        pass that shares the model with it (0.41-0.49 frames/s against 1.4), and a price
-        the estimate can only quote if the log files it separately.
+        F205: the phase is CLASSIFY_PHASE_RESCUE_VLM, not the deep tier's name — a price
+        of its own, which the estimate can only quote if the log files it separately.
+
+        F206: and the price is now the tier's, because the questions go through the tier's
+        own pipeline (`_vlm_labels`, see `_QualityPass.ask_pets` for the measurement that
+        ended the serial version of this loop). One question per candidate still, one
+        frame per call still, the answers still consumed in the candidate order and still
+        written from this thread inside this transaction — what changed is that the next
+        candidate is being decoded while the model answers about this one.
         """
         if self._ask is None:
             return
         report.start(CLASSIFY_PHASE_RESCUE_VLM, len(candidates))
         report.count(CLASSIFY_PHASE_RESCUE_VLM, len(candidates))
-        with self._conn:
-            for i, (file_id, path) in enumerate(candidates):
-                try:
-                    answer = self._ask(path)
-                except Exception as exc:  # noqa: BLE001 — one frame, not the stage
+        answers = _vlm_labels(self._ask, [path for _fid, path in candidates],
+                              self._workers)
+        with closing(answers), self._conn:
+            for i, ((file_id, _path), item) in enumerate(zip(candidates, answers)):
+                if isinstance(item, BaseException):
                     _log.warning(
                         "junk: VLM не ответила по кандидату file_id=%s (%s) — "
-                        "остаётся вердикт быстрого яруса", file_id, exc)
+                        "остаётся вердикт быстрого яруса", file_id, item)
                     answer = ""
+                else:
+                    answer = item
                 verdict = parse_junk_rescue_answer(answer)
                 if verdict is not None:
                     self._conn.execute(_MEDIA_CLASS_UPSERT,
@@ -3961,6 +4063,12 @@ def classify(
     label. A model that will not build, will not answer, or answers something nobody can
     read leaves every frame with the label `features.pet_threshold` gave it.
 
+    F206: this check and the rescue below run through the SAME pipeline as the deep tier
+    (`vlm.workers` preparation threads, `_vlm_labels`), which they did not until the
+    regression in the module docstring was measured. An injected asker without halves —
+    every mock in the suite — takes the serial path, exactly as an injected
+    `vlm_classifier` does, which is why no verdict test below is affected by it.
+
     F186: the keeper question (F132) is gone too — which frame of a near-duplicate group to
     keep, asked once per group. Measured blind over 111 groups it agreed with the owner on
     32% of them against 30.4% for a coin, so there was no cheaper answer to move to and
@@ -4253,14 +4361,14 @@ def classify(
             q.sharpness_max_edge,
             lazy_eye_landmarks(eye_landmarks_factory or insightface_eye_landmarks)
             if faces_known else None),
-        quality_source, quality_ids, now, stats, pet_ask)
+        quality_source, quality_ids, now, stats, pet_ask, cfg.vlm.workers)
     # F140: the encoder is a closure and not an object, so that a run whose rescue has
     # nothing to score never builds one — see _JunkRescuePass.
     rescue = _JunkRescuePass(
         conn, q, embed_model,
         (lambda: junk_text_encoder) if junk_text_encoder is not None
         else (lambda: (junk_text_encoder_factory or clip_text_encoder)(s)),
-        rescue_ask, now, active_tier, stats)
+        rescue_ask, now, active_tier, stats, cfg.vlm.workers)
     # F100: the phase channel of the callback, if it has one. The total is reported
     # right away, even if the stage is small/fast (#37); which phase the stage opens
     # with depends on the tier — a heuristics-only run classifies nothing, it only
