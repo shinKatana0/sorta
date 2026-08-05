@@ -1,11 +1,12 @@
 (function () {
   var I18N = window.I18N;
   var THEME_KEY = "sorta-ui-theme";
-  // F80: сколько кадров ленты может листать лайтбокс (SORTA_VIDEO_FRAMES). У
-  // короткого ролика кадров реально меньше — это выясняется по первому 404.
+  // F80: how many frames of the strip the lightbox may page through
+  // (SORTA_VIDEO_FRAMES). A short clip really has fewer — which is found out from the
+  // first 404.
   var VIDEO_FRAMES = window.VIDEO_FRAMES || 1;
 
-  // --- инлайн-SVG иконки (U1: без иконочных шрифтов/эмодзи) --------------
+  // --- inline SVG icons (U1: no icon fonts, no emoji) --------------------
   var ICONS = {
     folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
         'stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 ' +
@@ -47,7 +48,7 @@
     return el;
   }
 
-  // Кнопка с опциональной иконкой: variant — "primary"/"ghost"/"danger"/null.
+  // A button with an optional icon: variant is "primary"/"ghost"/"danger"/null.
   function makeBtn(variant, iconName, label, extraClass) {
     var btn = document.createElement("button");
     btn.type = "button";
@@ -57,7 +58,7 @@
     return btn;
   }
 
-  // Единый спокойный вид для пустых/загрузочных/ошибочных состояний вкладок.
+  // One quiet look for the empty, loading and failed states of every tab.
   function stateEl(kind, text) {
     var div = document.createElement("div");
     div.className = "state-msg state-" + kind;
@@ -365,10 +366,10 @@
 
   initSettings();
 
-  // Дерево по списку элементов — осталось для вкладки «Перемещения»: там приходит
-  // ОДИН батч (ограниченный по размеру), а не весь план коллекции, поэтому строить
-  // его из готового списка по-прежнему нормально. План города/людей/событий с F70
-  // ходит другим путём — через агрегат ниже.
+  // A tree built from a list of items — kept for the «Перемещения» tab: what arrives
+  // there is ONE batch (bounded in size) rather than the whole plan of the collection,
+  // so building it from a ready list is still fine. Since F70 the city/person/event
+  // plan goes another way — through the aggregate below.
   function countFiles(node) {
     var n = node.files.length;
     Object.keys(node.children).forEach(function (k) { n += countFiles(node.children[k]); });
@@ -390,8 +391,9 @@
     return root;
   }
 
-  // Ленивое построение узла: содержимое папки создаётся ТОЛЬКО при первом
-  // раскрытии <details> — строки со всеми <img> сразу подвешивали вкладку.
+  // A node is built lazily: the contents of a folder are created ONLY on the first
+  // expansion of its <details> — the rows with all their <img> at once used to hang
+  // the tab.
   function renderNode(name, node, depth, renderFilesFn) {
     var renderFn = renderFilesFn || renderFiles;
     var details = document.createElement("details");
@@ -410,10 +412,10 @@
     return details;
   }
 
-  // F70: дерево строится из АГРЕГАТА (папка -> количество), а не из списка файлов —
-  // сервер больше не отдаёт 26 тысяч элементов одним куском. Каждый узел знает
-  // суммарное количество файлов в своей ветке; лист (`category`) знает ключ, по
-  // которому у сервера запрашивается страница файлов.
+  // F70: the tree is built from an AGGREGATE (folder -> count) rather than from a list
+  // of files — the server no longer hands over 26 thousand items in one piece. Every
+  // node knows the total number of files in its branch; a leaf (`category`) knows the
+  // key a page of files is asked for by.
   function buildCategoryTree(categories) {
     var root = { count: 0, children: {}, category: null };
     categories.forEach(function (row) {
@@ -432,7 +434,7 @@
     return root;
   }
 
-  // --- удаление отдельного кадра (общий путь для обеих вкладок) --------
+  // --- deleting a single frame (the shared path for both tabs) ---------
 
   function deletePhoto(fileId, onSuccess) {
     var remember = document.getElementById("delete-remember").checked;
@@ -442,8 +444,8 @@
     });
   }
 
-  // Массовое удаление выбранного (общий путь _trash_files, что и одиночный).
-  // onSuccess получает список реально отправленных в корзину file_id.
+  // Bulk deletion of the selection (the same _trash_files path as the single one).
+  // onSuccess gets the list of file_ids that were really sent to the bin.
   function deletePhotos(fileIds, onSuccess) {
     postJson("/api/photos/trash", { file_ids: fileIds }).then(function (resp) {
       if (resp.trashed) {
@@ -477,9 +479,9 @@
     fn();
   }
 
-  // Переиспользуемый множественный выбор + «Удалить выбранное» для любого
-  // контейнера со строками, где есть чекбокс `.row-select` (value=file_id).
-  // Делегирование на контейнер — работает и с лениво построенными строками.
+  // Reusable multiple selection plus «Удалить выбранное» for any container of rows
+  // that carries a `.row-select` checkbox (value=file_id). The listener is delegated
+  // to the container — so it works with lazily built rows too.
   // F104: barId — the row the button lives in; it is SHOWN only while something is
   // selected. A permanently visible "Delete selected" next to "Apply" is a destructive
   // button one row away from the button that moves the whole collection; in the context
@@ -522,16 +524,17 @@
     refresh();
   }
 
-  // Единое поведение превью по всему UI: клик по миниатюре (Города/Дубли/
-  // Перемещения/События/Люди) открывает лайтбокс с крупным /preview, а не новую
-  // вкладку с сырым /photo. samples/index позволяют листать соседние кадры (для
-  // одиночных строк — [fileId]/0). thumbUrl опционален (по умолчанию /thumb/id).
-  // F70: раскрытая папка — это до PLAN_PAGE_SIZE строк, то есть столько же
-  // одновременных GET /thumb/<id>. Сервер ограничивает число параллельных декодов,
-  // но очередь запросов браузера ничем не ограничена. Два простых ограничения:
-  // (1) src ставится только когда картинка реально видна (IntersectionObserver);
-  // (2) одновременно грузится не больше THUMB_CONCURRENCY штук — остальные ждут в
-  // очереди. Слот освобождается по load/error, поэтому очередь не может застрять.
+  // One behaviour for previews across the whole UI: a click on a thumbnail («Города»,
+  // «Дубли», «Перемещения», «События», «Люди») opens the lightbox with a large
+  // /preview, not a new tab with the raw /photo. samples/index make the neighbouring
+  // frames pageable (for a single row — [fileId]/0). thumbUrl is optional (/thumb/id by
+  // default).
+  // F70: an expanded folder is up to PLAN_PAGE_SIZE rows, which is that many
+  // simultaneous GET /thumb/<id>. The server caps how many decodes run in parallel, but
+  // nothing caps the browser's own request queue. Two simple limits:
+  // (1) src is set only once the picture is really visible (IntersectionObserver);
+  // (2) no more than THUMB_CONCURRENCY load at a time — the rest wait in a queue. A
+  // slot is freed on load/error, so the queue cannot get stuck.
   var THUMB_CONCURRENCY = 6;
   var thumbQueue = [];
   var thumbActive = 0;
@@ -573,9 +576,9 @@
     thumbObserver.observe(img);
   }
 
-  // F80: у видео плитка получает значок — до этого ролик в сетке был неотличим от
-  // фото. Обёртка создаётся ТОЛЬКО для видео: у фото в ячейке остаётся тот же голый
-  // <img>, что и раньше, поэтому вёрстка фото-строк не меняется вовсе.
+  // F80: a video tile gets a mark — before this a clip in the grid was indistinguishable
+  // from a photo. The wrapper is created ONLY for a video: a photo keeps the same bare
+  // <img> in its cell as before, so the layout of photo rows does not change at all.
   function videoBadge() {
     var badge = document.createElement("span");
     badge.className = "thumb-video-badge";
@@ -602,15 +605,15 @@
     return wrap;
   }
 
-  // --- F77: ручные правки раскладки (не трогать / перенести в папку) -----
-  // Правка только помечает файл в БД: физически ничего не двигается до общей
-  // раскладки. Пометка приходит вместе со страницей плана (item.override), поэтому
-  // после перерисовки список остаётся размеченным.
+  // --- F77: manual corrections to the layout (leave alone / move to a folder) ---
+  // A correction only marks the file in the database: nothing moves physically until
+  // the layout itself runs. The mark arrives with the page of the plan (item.override),
+  // so the list is still marked after a redraw.
 
-  var PLAN_ID_PAGE_SIZE = 1000;  // серверный максимум limit для страницы плана
+  var PLAN_ID_PAGE_SIZE = 1000;  // the server's maximum limit for a page of the plan
 
-  // Строка помечается ДВУМЯ разными способами: исключённая (красная рамка) и
-  // перенесённая (синяя пунктирная) — это разные состояния, путать их нельзя.
+  // A row is marked in TWO different ways: excluded (a red border) and moved (a blue
+  // dashed one) — these are different states and must not be confused.
   function markOverrideRow(tr, action, target) {
     tr.classList.remove("override-exclude", "override-reassign", "override-photo");
     var old = tr.querySelector(".override-mark");
@@ -644,8 +647,8 @@
     if (meta) meta.appendChild(chip);
   }
 
-  // Пометить уже отрисованные строки внутри scope (контейнер/узел дерева) —
-  // «список обновляется без перезагрузки страницы».
+  // Mark the rows already drawn inside `scope` (a container or a node of the tree) —
+  // this is what "the list updates without reloading the page" means.
   function markRowsOverride(scope, fileIds, action, target) {
     var wanted = {};
     fileIds.forEach(function (id) { wanted[id] = true; });
@@ -675,8 +678,8 @@
     });
   }
 
-  // Все file_id папки — страницами у сервера, поэтому «не трогать папку» работает
-  // и для нераскрытой папки, и для папки больше одной страницы.
+  // Every file_id of a folder, in pages from the server, so «не трогать папку» works
+  // both for a folder that was never expanded and for one longer than a single page.
   function fetchCategoryIds(mode, category) {
     var ids = [];
     function step(offset) {
@@ -694,8 +697,9 @@
     return step(0);
   }
 
-  // Кнопка правки в самой строке: одиночный файл — частый случай, ради него не
-  // нужно идти в выделение. Метка/подпись кнопки переключаются по состоянию строки.
+  // The correction button in the row itself: a single file is the common case, and it
+  // does not deserve a trip through the selection. The mark and the caption of the
+  // button follow the state of the row.
   function overrideRowButton(tr, item) {
     var btn = makeBtn(null, null, I18N.override_exclude_button, "btn-sm override-row-btn");
     btn.addEventListener("click", function () {
@@ -707,8 +711,8 @@
     return btn;
   }
 
-  // Панель над деревом: правка применяется к ВЫДЕЛЕНИЮ (те же чекбоксы
-  // .row-select, что и «Удалить выбранное»); одиночный файл — выделение из одного.
+  // The panel above the tree: a correction applies to the SELECTION (the same
+  // .row-select checkboxes as «Удалить выбранное»); a single file is a selection of one.
   function wireOverrideControls(containerId) {
     var container = document.getElementById(containerId);
     var excludeBtn = document.getElementById("city-override-exclude-btn");
@@ -751,11 +755,12 @@
     refresh();
   }
 
-  // Список целей переноса = папки текущего плана из уже загруженного агрегата
-  // (отдельный эндпойнт не нужен). Перетаскивание плитки в узел дерева не
-  // реализуем: дерево ленивое, узел нераскрытой (и потому отсутствующей в DOM)
-  // папки не может быть целью drop — список даёт доступ ко ВСЕМ папкам раскладки,
-  // как и требует фича.
+  // The list of move targets = the folders of the current plan, taken from the aggregate
+  // that is already loaded (no endpoint of its own is needed). Dragging a tile onto a
+  // node of the tree is deliberately not implemented: the tree is lazy, and the node of
+  // a folder that was never expanded — and is therefore not in the DOM — cannot be a
+  // drop target. The list reaches EVERY folder of the layout, which is what the feature
+  // asks for.
   function fillOverrideTargets(categories) {
     var select = document.getElementById("city-override-target");
     var previous = select.value;
@@ -773,25 +778,25 @@
     select.value = previous;
   }
 
-  // --- F85c: место, назначенное человеком, — сразу на всю группу ---------
-  // У этих файлов не осталось ни одного сигнала: ни GPS, ни соседей по времени,
-  // ни имени папки. Место знает только владелец, поэтому задача не «угадать
-  // точнее», а дать назначить его ПАЧКОЙ — событию целиком или исходной папке
-  // целиком. Пишется отдельно от places (её geo перезаписывает целиком) и
-  // применяется при построении плана; на диске здесь ничего не двигается.
+  // --- F85c: a place a person assigns, to a whole group at once ---------
+  // These files have no signal left at all: no GPS, no neighbours in time, no folder
+  // name. Only the owner knows the place, so the task is not to "guess more precisely"
+  // but to let it be assigned IN BULK — to a whole event, or to a whole source folder.
+  // It is written apart from `places` (which geo rewrites wholesale) and applied while
+  // the plan is built; nothing moves on disk here.
 
-  var PLACE_SEARCH_DELAY = 250;  // мс: поиск идёт по нажатию клавиш, не по каждой
+  var PLACE_SEARCH_DELAY = 250;  // ms: the search follows typing, not every keystroke
 
-  // Язык интерфейса берём из <html lang>: он уже проставлен сервером, отдельного
-  // состояния для этого заводить незачем. (initLang() держит одноимённую локальную
-  // переменную — имя здесь другое намеренно.)
+  // The interface language is read off <html lang>: the server has already set it, and
+  // there is no reason to keep a second copy of it in state. (initLang() holds a local
+  // variable for the same thing — the name here is different on purpose.)
   function uiLang() {
     return document.documentElement.getAttribute("lang") || "en";
   }
 
-  // Поле выбора места. Сервер отвечает ТОЧНЫМИ совпадениями по локальной базе
-  // (та же пара city_ids_by_name/country_cc_by_name, что и у --where), поэтому
-  // список короткий и однозначный: одноимённые города различаются регионом.
+  // The place picker. The server answers with EXACT matches from the local base (the
+  // same city_ids_by_name/country_cc_by_name pair `--where` uses), so the list is short
+  // and unambiguous: cities that share a name are told apart by their region.
   function renderPlacePicker(container) {
     var input = document.createElement("input");
     input.type = "text";
@@ -855,9 +860,9 @@
                      { n: resp.affected });
       if (resp.skipped_gps) text += fmt(I18N.place_skipped_gps, { n: resp.skipped_gps });
       statusEl.textContent = text;
-      // Кадры с точными координатами не перезаписываются молча: камера знала
-      // место в момент съёмки лучше, чем память о поездке. Это отдельное решение,
-      // и спрашивают о нём ровно один раз.
+      // Frames with exact coordinates are not overwritten silently: the camera knew the
+      // place at the moment of the shot better than a memory of the trip does. That is a
+      // decision of its own, and it is asked about exactly once.
       if (resp.skipped_gps && !body.include_gps &&
           window.confirm(fmt(I18N.place_include_gps_confirm, { n: resp.skipped_gps }))) {
         body.include_gps = true;
@@ -869,8 +874,8 @@
     });
   }
 
-  // Одно действие на группу: подтверждение называет и место, и размер захвата —
-  // цена ошибки тем выше, чем крупнее группа.
+  // One action per group: the confirmation names both the place and how much it takes
+  // in — the bigger the group, the more a mistake costs.
   function assignPlace(picker, kind, selector, confirmKey, confirmVals, statusEl, onDone) {
     var chosen = picker.chosen();
     if (!chosen) {
@@ -892,9 +897,10 @@
 
   var cityPlacePicker = null;
 
-  // Кнопка в строке плана: место назначается ИСХОДНОЙ папке кадра целиком — по ней
-  // и видно, что кадры одной поездки лежат вместе. Строка с уже назначенным местом
-  // предлагает обратное действие, как и кнопка ручных правок рядом.
+  // The button in a plan row: the place is assigned to the whole SOURCE folder of the
+  // frame — which is where it can be seen that the frames of one trip lie together. A
+  // row that already has a place offers the reverse action, like the manual-correction
+  // button beside it.
   function placeRowButton(item) {
     var manual = item.place_confidence === "manual";
     var btn = makeBtn(null, "pin", manual ? I18N.place_clear_button
@@ -938,13 +944,14 @@
       tr.appendChild(tdThumb);
       var tdMeta = document.createElement("td");
       tdMeta.className = "plan-meta";
-      // Исходная папка идёт первой: по ней чаще всего и видно, верна ли догадка
-      // («Колизей» из папки «карелия» — очевидная ошибка). Полный путь — в тултипе.
+      // The source folder comes first: it is usually what shows whether the guess is
+      // right («Колизей» out of a folder called «карелия» is an obvious mistake). The
+      // full path is in the tooltip.
       tdMeta.textContent = [item.src_dir, item.date, item.geo, item.category]
           .filter(Boolean).join(" \u00b7 ");
       if (item.src_path) { tdMeta.title = item.src_path; }
-      // F85c: место, выбранное человеком, помечено отдельно — иначе его не отличить
-      // от выведенного программой, а это разные по надёжности вещи.
+      // F85c: a place chosen by a person is marked apart — otherwise it cannot be told
+      // from one the program inferred, and the two are not equally reliable.
       if (item.place_confidence === "manual") {
         var placeChip = document.createElement("span");
         placeChip.className = "chip chip-good place-manual";
@@ -962,16 +969,16 @@
       tdActions.appendChild(overrideRowButton(tr, item));
       tdActions.appendChild(placeRowButton(item));
       tr.appendChild(tdActions);
-      // F77: пометка из ответа плана — строка приходит уже размеченной.
+      // F77: the mark comes with the plan response — the row arrives already marked.
       markOverrideRow(tr, item.override || null, item.override_target || null);
       table.appendChild(tr);
     });
     return wrapTable(table);
   }
 
-  // F70: страница файлов одной папки. Первая грузится при раскрытии узла,
-  // следующие — по кнопке «Загрузить ещё»; `total` из ответа показывается как
-  // «показано N из M». DOM-узлы существуют только для реально загруженных строк.
+  // F70: a page of files of one folder. The first is loaded when the node is expanded,
+  // the next ones by the «Загрузить ещё» button; `total` from the response is shown as
+  // «показано N из M». DOM nodes exist only for the rows really loaded.
   var PLAN_PAGE_SIZE = 200;
 
   function renderCategoryFiles(mode, category) {
@@ -1014,18 +1021,18 @@
     return wrap;
   }
 
-  // Ленивое построение узла дерева: содержимое папки (страница файлов + дочерние
-  // папки) создаётся ТОЛЬКО при первом раскрытии <details>, и файлы при этом
-  // запрашиваются у сервера отдельным запросом — до раскрытия ни одного файла
-  // папки в браузере нет вообще.
+  // A node of the tree is built lazily: the contents of a folder (a page of files plus
+  // the child folders) are created ONLY on the first expansion of its <details>, and the
+  // files are asked of the server in a request of their own — before the expansion not a
+  // single file of that folder exists in the browser at all.
   function renderCategoryNode(mode, name, node) {
     var details = document.createElement("details");
     var summary = document.createElement("summary");
     summary.textContent = name + " (" + node.count + ")";
     if (node.category) {
-      // F77: «не трогать» на папку целиком — кнопка в заголовке категории.
-      // Клик внутри <summary> иначе раскрывает/сворачивает узел, поэтому событие
-      // до <details> не доходит.
+      // F77: «не трогать» for a whole folder — the button in the category heading. A
+      // click inside <summary> would otherwise expand or collapse the node, so the
+      // event is stopped before it reaches <details>.
       var folderBtn = makeBtn("danger", null, I18N.override_exclude_folder_button,
           "btn-sm override-folder-btn");
       folderBtn.addEventListener("click", function (e) {
@@ -1059,7 +1066,7 @@
     return details;
   }
 
-  // F43: счётчики последнего плана.
+  // F43: the counters of the last plan.
   // F104: the numbers of the confirmation itself now come from /api/sort/summary (it
   // also knows the volume and what is already in the destination); what stays here is
   // the one question the START button needs answered — is there anything to lay out at
@@ -1079,16 +1086,16 @@
     return select ? select.value : "city";
   }
 
-  // renderPlanTab: дерево папок плана режима (city/person/event) из агрегата —
-  // общий код, переиспользуемый всеми план-вкладками (U2).
+  // renderPlanTab: the folder tree of a mode's plan (city/person/event) built from the
+  // aggregate — shared code, reused by every plan tab (U2).
   function renderPlanTab(mode, containerId) {
     var container = document.getElementById(containerId);
     fetch("/api/plan?mode=" + encodeURIComponent(mode))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         var categories = data.categories || [];
-        // F77: помеченные «не трогать» остаются в списке, но НЕ переезжают —
-        // в подтверждении раскладки их считать нельзя.
+        // F77: the ones marked «не трогать» stay in the list but do NOT move — they
+        // must not be counted in the layout confirmation.
         planCount = (data.total || 0) - (data.excluded || 0);
         planLoaded = true;
         updateBusyControlsDisabled();
@@ -1171,7 +1178,7 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
-  // --- вкладки ---------------------------------------------------------
+  // --- the tabs --------------------------------------------------------
 
   var dupesLoaded = false;
   var reviewLoaded = false;
@@ -1191,8 +1198,8 @@
       document.getElementById("tab-btn-" + t).classList.toggle("active", t === name);
       document.getElementById("tab-" + t).classList.toggle("active", t === name);
     });
-    // #36: чекбокс «не спрашивать удаление» релевантен только там, где удаляют
-    // (Раскладка/Разбор) — на остальных вкладках это шум, прячем.
+    // #36: the «не спрашивать удаление» checkbox is only relevant where things are
+    // deleted («Раскладка», «Разбор») — on the other tabs it is noise, so it is hidden.
     document.getElementById("delete-remember-row").style.display =
         (name === "layout" || name === "review") ? "" : "none";
     if (name === "review" && !reviewLoaded) {
@@ -1208,9 +1215,9 @@
     // of "Overview" are — the person has just come back from the Review, and a warning
     // one decision out of date is the one that teaches people to ignore warnings.
     if (name === "layout") loadLayoutWarning();
-    // F108: обзор — единственная вкладка без флага «уже загружено». Его открывают
-    // ПОСЛЕ прогона, чтобы увидеть изменения, и устаревшая цифра здесь хуже
-    // отсутствующей — поэтому числа перезапрашиваются на каждом открытии.
+    // F108: the overview is the one tab without an "already loaded" flag. It is opened
+    // AFTER a run, to see what changed, and a stale number here is worse than a missing
+    // one — so the numbers are asked for again on every opening.
     if (name === "overview") loadOverview();
   }
 
@@ -1439,7 +1446,7 @@
     activateTab("slices");
   }
 
-  // --- F134: поиск словами в блоке «Срезы» -----------------------------------
+  // --- F134: searching by words inside the «Срезы» block ---------------------
   // The line F133 drew and left disabled. Everything here is arranged around one state
   // that is not a failure: an index nobody has computed yet. `/api/search` answers with
   // the state of the index on EVERY request — including the empty query this tab asks on
@@ -1449,7 +1456,7 @@
   // from a table that was never filled.
 
   var searchState = null;
-  var searchActive = false;   // результаты на экране -> панель среза занята поиском
+  var searchActive = false;   // results on screen -> the slice panel is held by search
 
   function searchStateText(state) {
     if (!state) return I18N.search_state_checking;
@@ -1967,10 +1974,11 @@
       });
   });
 
-  // F54: «Люди»/«События» скрыты по умолчанию (без мигания) и раскрываются
-  // по факту наличия данных в БД (вариант B, stateless) — фетч дешёвых
-  // EXISTS-проверок, вызывается при инициализации и после каждого прогона
-  // (refreshTabsAfterProcess), т.к. прогон мог впервые породить кластеры/события.
+  // F54: «Люди» and «События» are hidden by default (without a flash) and appear
+  // according to whether the database holds anything for them (variant B, stateless) —
+  // a fetch of cheap EXISTS checks, called at initialisation and after every run
+  // (refreshTabsAfterProcess), since a run may have produced the first clusters or
+  // events.
   // F133: these three are pinned slices rather than tabs now, and the rule has not
   // moved — there is no slice while the database has nothing to show in it.
   function applyTabVisibility() {
@@ -2063,10 +2071,10 @@
     if (e.target === this) toggleSettingsPanel(false);
   });
 
-  // --- вкладка «Обзор» (F108) --------------------------------------------
-  // Все числа приходят одним запросом /api/overview (простые агрегаты по индексу,
-  // без построения плана) и рисуются четырьмя карточками: коллекция, место,
-  // разбор, раскладка.
+  // --- the «Обзор» tab (F108) --------------------------------------------
+  // Every number arrives in one /api/overview request (plain aggregates over the index,
+  // with no plan built) and is drawn as four cards: the collection, the place, the
+  // review, the layout.
 
   // F145: the empty state draws the SAME rows with a dash where the number will be.
   // Before, it drew an invitation with a button instead — a block of a different height,
@@ -2142,8 +2150,8 @@
     return overviewLoading ? "" : text;
   }
 
-  // Числа читают глазами: 7 619 против 7619. toLocaleString берёт разделитель
-  // разрядов из локали браузера.
+  // Numbers are read by eye: 7 619 against 7619. toLocaleString takes the group
+  // separator from the browser's locale.
   function overviewNum(n) {
     return Number(n || 0).toLocaleString();
   }
@@ -2166,8 +2174,8 @@
     return el;
   }
 
-  // Число, у которого есть своя вкладка, само является переходом на неё. Ноль
-  // ссылкой не делаем: вести на заведомо пустую вкладку не за чем.
+  // A number that has a tab of its own IS the way to that tab. A zero is not made a
+  // link: there is no point leading anyone to a tab known to be empty.
   // F126: a review number leads to its SLICE, not just to the tab — the workspace has
   // four of them and landing on the wrong one is the same as landing nowhere.
   // F133: the same is now true of "Slices", where people, events, animals and the
@@ -2296,16 +2304,17 @@
   function overviewPlaceCard(data) {
     var p = data.place;
     var card = overviewCard(I18N.overview_group_place);
-    // Главное число группы: каждый такой кадр уедет в «_Без места» — это и есть
-    // качество будущей раскладки, поэтому доля в процентах стоит рядом.
+    // The main number of the group: every such frame will end up in «_Без места» —
+    // which IS the quality of the layout to come, so the share in percent stands next
+    // to it.
     card.appendChild(overviewRow(
         I18N.overview_no_place,
         overviewValue(overviewEmpty ? overviewStat(p.no_place)
                       : overviewStat(p.no_place) + " (" + p.no_place_percent + "%)"),
         true));
     p.confidence.forEach(function (row) {
-      // «unknown» — ровно те кадры, что уже названы строкой выше (правилом
-      // раскладки); второй раз их не повторяем.
+      // «unknown» is exactly the frames the row above has already named (by the layout
+      // rule); they are not repeated a second time.
       if (row.key === "unknown") return;
       card.appendChild(overviewRow(overviewDataText(overviewPlaceLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
@@ -2341,7 +2350,8 @@
       card.appendChild(overviewRow(overviewDataText(overviewTierLabel(row.key)),
                                    overviewValue(overviewStat(row.count))));
     });
-    // Прогонялся ли глубокий ярус — вопрос, который раньше решался запросом в БД.
+    // Whether the deep tier was ever run — a question that used to be settled by a
+    // query to the database.
     // F190: which is a fact about THIS collection, so the skeleton keeps the line and
     // leaves it unwritten rather than saying either of the two answers.
     card.appendChild(overviewNote(overviewDataText(
@@ -2381,7 +2391,7 @@
       card.appendChild(overviewRow(I18N.overview_layout_batches,
                                    overviewValue(overviewStat(lay.batches))));
     }
-    // Незакрытый батч — след прерванного прогона; о нём говорим явно.
+    // An unclosed batch is the trace of an interrupted run; it is said out loud.
     if (last.unfinished || lay.unfinished) {
       card.appendChild(overviewNote(I18N.overview_layout_unfinished, true));
     }
@@ -2452,15 +2462,15 @@
       });
   }
 
-  // --- вкладка «Обработать» (F36: запуск пайплайна из веба + polling) ----
+  // --- the «Обработать» tab (F36: the pipeline started from the web + polling) ----
 
-  // F57: чекбоксы deep/geo-online должны стартовать по факту config.yaml
-  // (cfg.naming.vlm_enabled / cfg.geo.provider), а не всегда пустыми — иначе
-  // сложно понять, что реально включено, и нельзя увидеть текущее состояние
-  // до первого клика. vlmAvailable — установлен ли пакет transformers;
-  // приглушённая пометка «VLM не установлен» показывается только когда
-  // чекбокс отмечен, но пакета нет (запрос VLM ≠ его реальный запуск —
-  // junk.classify штатно фолбэчит на CLIP).
+  // F57: the deep and geo-online checkboxes have to start from what config.yaml says
+  // (cfg.naming.vlm_enabled / cfg.geo.provider) rather than always empty — otherwise it
+  // is hard to tell what is actually enabled, and the current state cannot be seen
+  // before the first click. vlmAvailable says whether the transformers package is
+  // installed; the dimmed «VLM не установлен» note is shown only when the checkbox is
+  // ticked and the package is missing (asking for the VLM ≠ actually running it —
+  // junk.classify falls back to CLIP as a matter of course).
   var vlmAvailable = true;
 
   function updateVlmMissingWarning() {
@@ -2486,7 +2496,7 @@
         vlmAvailable = !!data.vlm_available;
         updateVlmMissingWarning();
         renderCosts();
-        updateStepLayout();  // сводка блока «Параметры запуска» — по фактическим галочкам
+        updateStepLayout();  // the «Параметры запуска» summary — from the actual ticks
       })
       .catch(function () {});
   }
@@ -2678,7 +2688,7 @@
   // than a block of blank price slots for as long as the two requests take.
   renderCosts();
 
-  // F64: баннер о CPU-профиле (обработка на процессоре — медленно для лиц/VLM).
+  // F64: the banner about the CPU profile (on the CPU, faces and the VLM are slow).
   fetch("/api/env").then(function (r) { return r.json(); })
     .then(function (data) {
       if (data && !data.gpu_profile) {
@@ -2693,11 +2703,11 @@
     return stage ? (I18N["process_stage_" + stage] || stage) : "";
   }
 
-  // Чипы-этапы (F41): done/now/pending по стадиям пайплайна — тот же порядок,
-  // что и сервер (_PIPELINE_STAGE_NAMES), только для отображения. F53/#39:
-  // faces/events opt-in — currentProcessStages фиксируется по чекбоксам в
-  // момент запуска (сервер фильтрует steps так же), иначе индексы чипов
-  // разъедутся со stage_index отфильтрованного прогона.
+  // The stage chips (F41): done/now/pending over the stages of the pipeline — the same
+  // order the server has (_PIPELINE_STAGE_NAMES), for display only. F53/#39: faces and
+  // events are opt-in, so currentProcessStages is fixed from the checkboxes at the
+  // moment of the start (the server filters `steps` the same way); otherwise the chip
+  // indices drift away from the stage_index of a filtered run.
   var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "classify", "faces", "events",
                             "junk", "phash"];
   var OPTIONAL_PROCESS_STAGES = { faces: true, events: true };
@@ -2719,12 +2729,13 @@
   // what the tick had just disabled for the duration of a run.
   var processRunning = false;
 
-  // Всё, что задаёт вход пайплайна, на время прогона недоступно: менять источник
-  // у уже идущей обработки бессмысленно, а диалог выбора папки ещё и открывает
-  // отдельное окно поверх работающего процесса. Галки шагов и ярусов — там же:
-  // параметры уходят на сервер один раз, в момент старта, поэтому снятая на
-  // середине прогона галка «лица» ничего не отменяет, а выглядит так, будто
-  // отменила — и это выясняется через час, когда лица всё-таки посчитались.
+  // Everything that defines the input of the pipeline is out of reach while a run is
+  // going: changing the source of processing already under way is meaningless, and the
+  // folder dialog additionally opens a window of its own over a working process. The
+  // step and tier ticks are there for the same reason: the parameters go to the server
+  // once, at the moment of the start, so the «лица» tick cleared halfway through a run
+  // cancels nothing while looking exactly as though it had — and that is found out an
+  // hour later, when the faces have been computed after all.
   function updateProcessInputsDisabled() {
     ["process-browse-btn", "process-source-dir", "process-excludes-btn",
      "process-deep-checkbox", "process-geo-online-checkbox",
@@ -2856,7 +2867,7 @@
     clustersLoaded = false;
     eventsLoaded = false;
     movesLoaded = false;
-    junkLoaded = false;  // F103: прогон junk-яруса меняет состав корзин
+    junkLoaded = false;  // F103: a junk-tier run changes what is in the buckets
     animalsLoaded = false;  // F123: the same run recomputes the animal verdicts
     faceLoaded = false;     // F152: a faces run is what turns the reason into numbers
     refreshPlan();
@@ -2874,8 +2885,8 @@
     if (document.getElementById("tab-slices").classList.contains("active")) {
       loadSlices();
     }
-    // F108: обзор перечитывается при каждом открытии, но если человек смотрит на
-    // него прямо сейчас — обновляем немедленно: прогон только что изменил числа.
+    // F108: the overview is re-read on every opening, but if a person is looking at it
+    // right now it is refreshed immediately: the run has just changed the numbers.
     if (document.getElementById("tab-overview").classList.contains("active")) {
       loadOverview();
     }
@@ -2930,7 +2941,7 @@
     processRunning = !!data.running;
     startBtn.disabled = processRunning;
     updateProcessInputsDisabled();
-    updateBusyControlsDisabled();  // раскладка и «начать заново» — пока идёт прогон
+    updateBusyControlsDisabled();  // layout and «начать заново» while a run is going
     adoptRememberedSource(data);
     cancelBtn.style.display = data.running ? "" : "none";
     cancelBtn.disabled = !!data.cancel_requested;
@@ -2941,15 +2952,15 @@
     renderProcessSummary(data);
     if (data.running) {
       if (data.cancel_requested) {
-        // отмена запрошена — показываем фидбэк, пока стадия прерывается/дорабатывает
+        // a cancel was asked for — feedback while the stage stops or finishes up
         bar.classList.add("indeterminate");
         bar.max = 1;
         bar.removeAttribute("value");
         statusEl.textContent = I18N.process_cancel_requested;
         return;
       }
-      // #37: total>0 -> определённый прогресс (заполняется); total<=0 (индексация,
-      // total неизвестен) -> бегущая indeterminate-полоса + «обработано X».
+      // #37: total>0 -> determinate progress (it fills); total<=0 (indexing, the total
+      // is not known) -> the running indeterminate stripe plus «обработано X».
       if (data.total > 0) {
         bar.classList.remove("indeterminate");
         bar.max = data.total;
@@ -2999,7 +3010,7 @@
     var input = document.getElementById("process-source-dir");
     var path = input.value.trim();
     if (!path) { window.alert(I18N.process_enter_path); return; }
-    // запуск = «настроено»: оба блока схлопываются, экран остаётся про прогресс
+    // starting means "configured": both blocks collapse, the screen is about progress
     stepSourceOpen = false;
     stepOptionsOpen = false;
     rememberSourceDir();
@@ -3035,10 +3046,10 @@
     });
   });
 
-  // Диалог появляется через секунду-две, а кнопка всё это время оставалась
-  // активной — каждый лишний клик открывал ещё один проводник. Блокируем на время
-  // запроса; сервер тоже отказывает во втором диалоге (см. _browse_for_folder),
-  // потому что вкладку можно открыть и вторую.
+  // The dialog appears a second or two later, and the button stayed active all that
+  // time — every extra click opened one more file explorer. It is disabled for the
+  // duration of the request; the server refuses a second dialog as well (see
+  // _browse_for_folder), because a second browser tab can always be opened.
   function browseIntoField(btn, apply) {
     if (btn.disabled) { return; }
     btn.disabled = true;
@@ -3055,15 +3066,16 @@
     });
   });
 
-  // --- F81: «не сканировать» + три блока первой вкладки ------------------
+  // --- F81: «не сканировать» and the three blocks of the first tab -------
 
-  // Путь помнится между открытиями страницы: этот экран открывают многократно, и
-  // вводить один и тот же источник каждый раз — ровно тот штраф, который фича
-  // убирает.
+  // The path is remembered between openings of the page: this screen is opened again
+  // and again, and typing the same source every time is exactly the penalty this
+  // feature removes.
   var SOURCE_DIR_KEY = "sorta.sourceDir";
-  // Что сейчас исключено под текущим источником — для схлопнутой строки блока
-  // «Источник». Два числа хранятся раздельно: «не сканировать» и «не раскладывать» —
-  // разные вещи. root пустой = про этот источник ещё не спрашивали.
+  // What is excluded under the current source right now — for the collapsed line of the
+  // «Источник» block. The two counts are kept apart, because «не сканировать» and
+  // «не раскладывать» are different things. An empty root = this source has not been
+  // asked about yet.
   var excludesInfo = { root: "", scan: [], count: 0, size: 0,
                        layout: [], layoutCount: 0 };
   var stepSourceOpen = false;
@@ -3110,14 +3122,15 @@
         (on.length ? on.join(", ") : I18N.step_options_summary_default);
   }
 
-  // Настроенный блок — одна строка с «изменить», ненастроенный раскрыт. Следующие
-  // блоки приглушены пояснением, но НЕ заблокированы: кнопка запуска доступна
-  // всегда, когда источник задан (визард штрафует каждый следующий заход).
-  // Кнопка шага — переключатель, а не «открыть»: открыл, посмотрел, ничего не менял
-  // — и складываешь обратно тем же местом, куда нажал. Сворачивание чисто визуальное
-  // и НИЧЕГО не отменяет: введённый путь и снятые галки остаются как есть (иначе это
-  // была бы «отмена», а она в шаге, который применяется сразу, только путает).
-  // Сворачивать нечего, пока источник не задан, — там кнопка скрыта.
+  // A configured block is one line with «изменить»; an unconfigured one stays open. The
+  // blocks after it are dimmed with an explanation but NOT locked: the run button is
+  // available whenever a source is set (a wizard punishes every visit after the first).
+  // The step button is a toggle rather than an "open": you open it, look, change
+  // nothing — and fold it back with the same spot you pressed. Collapsing is purely
+  // visual and cancels NOTHING: the path typed in and the ticks cleared stay as they
+  // are (otherwise it would be an «отмена», and in a step that applies immediately that
+  // only confuses).
+  // There is nothing to collapse while no source is set — there the button is hidden.
   function updateStepToggle(stepId, buttonId, open, canCollapse) {
     var step = document.getElementById(stepId);
     var button = document.getElementById(buttonId);
@@ -3167,11 +3180,11 @@
   }
 
   function sourceDirChanged() {
-    // Шаг НЕ схлопывается на выборе папки. Исключения относятся к конкретному корню
-    // и являются частью этого же шага, поэтому сворачивать его в момент, когда
-    // пользователь как раз собирается их отметить, — значит заставлять возвращаться
-    // назад через «изменить». Схлопнутым шаг стартует только при загрузке страницы с
-    // уже запомненным источником: там правда нечего делать.
+    // The step does NOT collapse when a folder is picked. The exclusions belong to that
+    // particular root and are part of this same step, so folding it exactly when the
+    // user is about to mark them means making them come back through «изменить». The
+    // step starts collapsed only when the page loads with a source already remembered:
+    // there, there really is nothing to do.
     stepSourceOpen = true;
     rememberSourceDir();
     loadExcludesInfo();
@@ -3179,9 +3192,9 @@
     updateStepLayout();
   }
 
-  // F82: три состояния узла — "" обрабатывать, "layout" не раскладывать, "scan" не
-  // сканировать. Одно поле на узел, поэтому «отмечено и то и другое» невозможно по
-  // построению: переключение на одно автоматически снимает другое.
+  // F82: the three states of a node — "" process it, "layout" do not lay it out, "scan"
+  // do not scan it. One field per node, so "both are ticked" is impossible by
+  // construction: switching to one takes the other off automatically.
   var TRI_STATES = ["", "layout", "scan"];
 
   function triText(state) {
@@ -3206,7 +3219,7 @@
     var marks = ul.querySelectorAll("button.tri-state");
     for (var i = 0; i < marks.length; i++) {
       setTriState(marks[i], state);
-      // исключённое поддерево не редактируется по частям: состояние родителя — состояние всего
+      // an excluded subtree is not edited piecemeal: the parent's state is the whole one's
       marks[i].disabled = !!state;
     }
   }
@@ -3251,8 +3264,8 @@
     container.textContent = "";
     var states = {};
     (data.skip_layout || []).forEach(function (rel) { states[rel] = "layout"; });
-    // «не сканировать» пишется вторым: при странном файле, где папка попала в оба
-    // раздела, сервер уже решил в пользу scan — дерево не должно спорить с ним
+    // «не сканировать» is written second: in a strange file where a folder landed in
+    // both sections the server has already decided for scan — the tree must not argue
     (data.skip_scan || []).forEach(function (rel) { states[rel] = "scan"; });
     var children = (data.tree && data.tree.children) || [];
     if (!children.length) {
@@ -3265,7 +3278,7 @@
     });
     container.appendChild(ul);
     if (data.truncated) {
-      // ответ ограничен — говорим об этом прямо, а не молча показываем часть дерева
+      // the answer was capped — say so outright, do not quietly show part of a tree
       var note = document.createElement("p");
       note.className = "process-toggle-hint";
       note.textContent = fmt(I18N.excludes_truncated, { limit: data.limit });
@@ -3274,7 +3287,7 @@
   }
 
   function collectExcludes() {
-    // только верхние отмеченные: потомки отмеченной папки заблокированы и не нужны
+    // only the topmost marked: the children of a marked folder are locked and not needed
     var result = { skip_scan: [], skip_layout: [] };
     var marks = document.getElementById("excludes-tree")
         .querySelectorAll("button.tri-state");
@@ -3287,8 +3300,9 @@
     return result;
   }
 
-  // Вынесено из обработчика кнопки: дерево показывается и по кнопке, и сразу после
-  // выбора папки — «выбрал источник, вижу его структуру» это один шаг, а не два.
+  // Taken out of the button handler: the tree is shown both by the button and right
+  // after a folder is picked — "I chose a source, I see what is in it" is one step,
+  // not two.
   function loadSourceTree(announce) {
     var src = currentSourceDir();
     if (!src) { if (announce) { window.alert(I18N.process_enter_path); } return; }
@@ -3344,8 +3358,8 @@
 
   document.getElementById("step-source-edit").addEventListener("click", function () {
     stepSourceOpen = !stepSourceOpen;
-    // Свернули источник — панель исключений уходит вместе с ним: она часть этого
-    // шага и висеть отдельно от него не должна.
+    // When the source is folded the exclusions panel goes with it: the panel is part of
+    // that step and must not hang around on its own.
     if (!stepSourceOpen) {
       document.getElementById("excludes-panel").style.display = "none";
     }
@@ -3380,15 +3394,16 @@
   })();
 
   document.getElementById("process-cancel-btn").addEventListener("click", function () {
-    this.disabled = true;  // мгновенный фидбэк, не ждём следующего polling-тика
+    this.disabled = true;  // instant feedback, without waiting for the next poll tick
     document.getElementById("process-status").textContent = I18N.process_cancel_requested;
     renderProcessPhase({});  // the phase caption is stale now, do not wait for a tick
     postJson("/api/process/cancel", {});
   });
 
-  // F93: сброс подтверждается своим диалогом, а не window.confirm — в нём живёт
-  // галочка «также очистить кэш геоданных». Галочка каждый раз сбрасывается: очистка
-  // кэша — разовое решение, а не режим, который тихо остаётся включённым.
+  // F93: the reset is confirmed by a dialog of its own rather than by window.confirm —
+  // the «также очистить кэш геоданных» checkbox lives in it. The checkbox is cleared
+  // every time: clearing the cache is a one-off decision, not a mode that quietly stays
+  // switched on.
   var resetDialogEl = document.getElementById("reset-dialog");
   var resetClearGeoEl = document.getElementById("reset-clear-geo-checkbox");
 
@@ -3404,7 +3419,7 @@
   document.getElementById("reset-dialog-cancel").addEventListener("click", closeResetDialog);
 
   resetDialogEl.addEventListener("click", function (e) {
-    if (e.target === resetDialogEl) closeResetDialog();  // клик по фону — отмена
+    if (e.target === resetDialogEl) closeResetDialog();  // a click on the backdrop cancels
   });
 
   document.getElementById("reset-dialog-ok").addEventListener("click", function () {
@@ -3502,10 +3517,11 @@
 
   pollProcessStatus();
 
-  // --- вкладка «Города»: apply раскладки (F43) ----------------------------
-  // Дерево-превью вкладки — уже dry-run; кнопка сразу открывает подтверждение
-  // (текст зависит от режима/dest), только потом POST /api/sort. Фон +
-  // прогресс — тот же паттерн polling, что и «Обработать» (F36) выше.
+  // --- the «Города» tab: applying the layout (F43) ------------------------
+  // The preview tree of the tab IS the dry run already; the button opens the
+  // confirmation straight away (its text depends on the mode and the destination) and
+  // only then POSTs /api/sort. Background plus progress — the same polling pattern as
+  // «Обработать» (F36) above.
 
   var SORT_POLL_MS = 1500;
   var sortPollTimer = null;
@@ -3566,24 +3582,26 @@
     sortDialogEl.hidden = true;
   }
 
-  // Раскладка во время прогона запрещена и на сервере (409 «process is running»
-  // под общим busy_lock), но кнопка до этого оставалась живой — про запрет
-  // узнавали кликом. Хуже другое: на середине прогона плана попросту нет.
-  // geo чистит places перед записью, junk ещё не заполнил media_class — то есть
-  // раскладка, начатая сейчас, разложила бы коллекцию по недостроенному индексу.
+  // A layout during a run is refused by the server too (409 "process is running" under
+  // the shared busy_lock), but until now the button stayed alive — the refusal was found
+  // out by clicking. The worse half: halfway through a run there simply is no plan. geo
+  // clears `places` before writing, junk has not filled media_class yet — so a layout
+  // started now would lay the collection out by a half-built index.
   var sortRunning = false;
 
-  // Кнопки, которые обязаны быть мертвы, пока занят ЛЮБОЙ из двух процессов
-  // (прогон пайплайна или раскладка). Сервер их и так отбивает 409 под общим
-  // busy_lock, но «Начать заново» сперва показывает страшное подтверждение и
-  // только потом ошибку, а раскладка на середине прогона разложила бы коллекцию
-  // по недостроенному индексу (places очищены, media_class ещё пуст).
-  // F94: очистки кэшей — там же: подтверждение с ценой действия ради ответа 409
-  // ничем не лучше, а превью на середине прогона пишет тот самый шаг.
-  // F97: откат — третий такой же процесс: он двигает файлы на диске, совмещать его
-  // с раскладкой или прогоном нельзя (сервер отбивает 409 под тем же busy_lock).
-  // undoAvailable/undoBatchInfo наполняет манифест «Перемещений» (applyUndoAvailability):
-  // кнопка отката жива только когда есть что откатывать, а диалог берёт числа оттуда же.
+  // The buttons that have to be dead while EITHER of the two processes is busy (a
+  // pipeline run or a layout). The server bounces them with 409 under the shared
+  // busy_lock anyway, but «Начать заново» shows its frightening confirmation first and
+  // the error only afterwards, and a layout halfway through a run would lay the
+  // collection out by a half-built index (`places` cleared, media_class still empty).
+  // F94: clearing the caches belongs here too — a confirmation that names the price of
+  // an action, in exchange for a 409, is no better, and a preview halfway through a run
+  // writes the very step that is running.
+  // F97: the roll back is a third process of the same kind: it moves files on disk, and
+  // it cannot be combined with a layout or a run (the server answers 409 under the same
+  // busy_lock). undoAvailable/undoBatchInfo are filled from the manifest of
+  // «Перемещения» (applyUndoAvailability): the roll-back button is alive only when there
+  // is something to roll back, and the dialog takes its numbers from the same place.
   var undoRunning = false;
   var undoAvailable = false;
   var undoBatchInfo = null;
@@ -3624,7 +3642,7 @@
     });
     busyRefreshers.forEach(function (fn) { fn(); });
     var undoBtn = document.getElementById("undo-btn");
-    // «Откатить» дополнительно требует батча в манифесте — см. applyUndoAvailability
+    // «Откатить» additionally needs a batch in the manifest — see applyUndoAvailability
     if (undoBtn) { undoBtn.disabled = busy || !undoAvailable; }
     // F104: an empty plan disables the start button and says WHY, instead of opening a
     // dialog full of zeroes. Until the plan has arrived the button is dead too, but
@@ -3667,7 +3685,7 @@
       return;
     }
     var r = data.result || {};
-    // F97: отменённый прогон обязан говорить «сколько из скольких», а не «готово».
+    // F97: a cancelled run has to say «сколько из скольких», not «готово».
     // F104: what stayed next to it is the HINT pointing at the "Moves" tab, not a roll
     // back button. The manifest that says WHAT exactly would be rolled back lives
     // there; rolling back from the plan screen is rolling back blind.
@@ -3699,7 +3717,7 @@
   }
 
   document.getElementById("sort-cancel-btn").addEventListener("click", function () {
-    this.disabled = true;  // мгновенный фидбэк, не ждём следующего polling-тика
+    this.disabled = true;  // instant feedback, without waiting for the next poll tick
     document.getElementById("sort-status").textContent = I18N.sort_cancel_requested;
     postJson("/api/sort/cancel", {});
   });
@@ -3752,7 +3770,7 @@
   document.getElementById("sort-dialog-cancel").addEventListener("click", closeSortDialog);
 
   sortDialogEl.addEventListener("click", function (e) {
-    if (e.target === sortDialogEl) closeSortDialog();  // клик по фону — отмена
+    if (e.target === sortDialogEl) closeSortDialog();  // a click on the backdrop cancels
   });
 
   document.getElementById("sort-dialog-ok").addEventListener("click", function () {
@@ -3766,8 +3784,8 @@
     });
   });
 
-  // Дефолт пути назначения = <источник>_sorted (сервер знает источник); только
-  // если пользователь ещё ничего не ввёл — свой ввод не затираем.
+  // The default destination path = <source>_sorted (the server knows the source), and
+  // only while the user has typed nothing — their own input is never overwritten.
   fetch("/api/sort/suggest-dest").then(function (r) { return r.json(); })
     .then(function (resp) {
       var input = document.getElementById("sort-dest");
@@ -3776,7 +3794,7 @@
 
   pollSortStatus();
 
-  // --- вкладка «Перемещения» (U5, read-only манифест sort --apply) -------
+  // --- the «Перемещения» tab (U5, the read-only manifest of sort --apply) ---
 
   var MOVE_STATUS_LABELS = {
     planned: I18N.status_planned, done: I18N.status_done, undone: I18N.status_undone,
@@ -3853,18 +3871,19 @@
       });
   }
 
-  // --- F97: откат последнего батча кнопкой (POST /api/undo) ----------------
-  // Кнопка живёт рядом с манифестом и откатывает ровно тот батч, который манифест
-  // показывает — селектора батчей нет намеренно: меньше способов ошибиться кнопкой,
-  // которая удаляет файлы. Вторая точка входа — панель результата после отменённой
-  // раскладки; эндпоинт и диалог у них общие.
+  // --- F97: rolling the last batch back with a button (POST /api/undo) -----
+  // The button lives next to the manifest and rolls back exactly the batch the manifest
+  // is showing — there is deliberately no batch selector: fewer ways to be wrong with a
+  // button that deletes files. The second way in is the result panel after a cancelled
+  // layout; the endpoint and the dialog are shared between them.
 
   var UNDO_POLL_MS = 1000;
   var undoPollTimer = null;
   var undoDialogEl = document.getElementById("undo-dialog");
 
-  // Строки, которые откат реально трогает: 'done' и хвост прерванного переноса
-  // ('planned' — журнал коммитится ДО операции, статус мог не успеть записаться).
+  // The rows a roll back really touches: 'done' and the tail of an interrupted move
+  // ('planned' — the journal is committed BEFORE the operation, so the status may not
+  // have made it to disk).
   function undoableCount(moves) {
     var n = 0;
     moves.forEach(function (m) {
@@ -3889,12 +3908,13 @@
   }
 
   function refreshUndoAvailability() {
-    movesLoaded = true;  // манифест перезагружаем прямо сейчас, повтор по клику не нужен
+    movesLoaded = true;  // the manifest is reloaded right now, no repeat on the click
     loadMoves();
   }
 
-  // Диалог называет операцию своими словами и числами из манифеста: без числа
-  // страшную кнопку не нажимают вообще, а эта кнопка удаляет файлы.
+  // The dialog names the operation in its own words and with the numbers of the
+  // manifest: without a number a frightening button is not pressed at all, and this
+  // button deletes files.
   function undoConfirmText() {
     if (!undoBatchInfo) return I18N.undo_nothing_to_undo;
     if (undoBatchInfo.operation === "move") {
@@ -3947,8 +3967,8 @@
         ? fmt(I18N.undo_cancelled_text, { n: r.undone || 0 })
         : fmt(I18N.undo_done_text,
               { n: r.undone || 0, m: r.missing || 0, f: r.failed || 0 });
-    // Битые копии называются поимённо: они остались лежать в результате и выглядят
-    // как обычные фото — молча их не удаляем и молча про них не забываем.
+    // Broken copies are named one by one: they are still lying in the result and look
+    // like ordinary photos — they are neither deleted silently nor silently forgotten.
     strayEl.textContent = (r.stray && r.stray.length)
         ? I18N.undo_stray_title + " " + r.stray.join(", ") : "";
     refreshUndoAvailability();
@@ -3968,7 +3988,7 @@
   document.getElementById("undo-dialog-cancel").addEventListener("click", closeUndoDialog);
 
   undoDialogEl.addEventListener("click", function (e) {
-    if (e.target === undoDialogEl) closeUndoDialog();  // клик по фону — отмена
+    if (e.target === undoDialogEl) closeUndoDialog();  // a click on the backdrop cancels
   });
 
   document.getElementById("undo-dialog-ok").addEventListener("click", function () {
@@ -3987,7 +4007,7 @@
   });
 
   document.getElementById("undo-cancel-btn").addEventListener("click", function () {
-    this.disabled = true;  // мгновенный фидбэк, не ждём следующего polling-тика
+    this.disabled = true;  // instant feedback, without waiting for the next poll tick
     document.getElementById("undo-status").textContent = I18N.undo_cancel_requested;
     postJson("/api/undo/cancel", {});
   });
@@ -3995,7 +4015,7 @@
   pollUndoStatus();
   refreshUndoAvailability();
 
-  // --- альбомы (F35): кнопка «Собрать в папку» на карточках Люди/События ---
+  // --- albums (F35): the «Собрать в папку» button on «Люди»/«События» cards ---
 
   // F145: the album button moves files, so it is dead while anything runs — and the
   // reason is written next to it, the same `.busy-hint` the static blocks carry.
@@ -4019,9 +4039,10 @@
     return select;
   }
 
-  // Поле пути назначения альбома + «Обзор…» (F60, тот же мотив, что и
-  // sort-dest/process-source-dir): дефолт = <источник>_sorted с сервера,
-  // префилл только если поле ещё пустое (свой ввод не затираем).
+  // The destination path field of an album plus «Обзор…» (F60, the same motive as
+  // sort-dest/process-source-dir): the default is <source>_sorted from the server, and
+  // it is prefilled only while the field is still empty — the user's own input is never
+  // overwritten.
   function appendAlbumDestControls(box) {
     var input = document.createElement("input");
     input.type = "text";
@@ -4064,10 +4085,10 @@
     return resp.error || "";
   }
 
-  // Превью (apply=false) -> подтверждение (текст зависит от режима, move явно
-  // предупреждает об изъятии из пула) -> apply=true. statusEl получает
-  // прогресс/результат; при успешном apply сбрасывается кэш вкладки
-  // «Перемещения», чтобы следующий заход её перезагрузил (F35 п.4).
+  // A preview (apply=false) -> the confirmation (its text depends on the mode; `move`
+  // warns outright that the frames leave the pool) -> apply=true. statusEl gets the
+  // progress and the result; on a successful apply the cache of the «Перемещения» tab is
+  // dropped, so the next visit reloads it (F35, item 4).
   //
   // F193: `fileIds` — the frames the person ticked, or null for the whole slice. The list
   // is read ONCE, at the click, and both requests carry the same one: a preview and an
@@ -4281,17 +4302,19 @@
     renderAlbumRow(opts);
   }
 
-  // --- лайтбокс (F42): один переиспользуемый оверлей поверх /photo/<id> ---
-  // Заполняется по клику (не N скрытых оверлеев). Клик по фону/Esc закрывает;
-  // стрелки ←/→ листают переданный список sample-кадров (опц., F42).
+  // --- the lightbox (F42): one reusable overlay over /photo/<id> ---------
+  // It is filled on the click (not N hidden overlays). A click on the backdrop or Esc
+  // closes it; the ←/→ arrows page through the list of sample frames it was given
+  // (optional, F42).
   //
-  // F80: у ВИДЕО те же стрелки листают кадры ОДНОГО ролика (/frame/<id>/<i>), а не
-  // соседние файлы: воспроизведения нет, и несколько кадров — единственный способ
-  // понять, что там снято. Для фото поведение не меняется ни на шаг: lightboxFrames
-  // остаётся нулём, кадр берётся всё тем же /preview/<id>.
+  // F80: for a VIDEO the same arrows page through the frames of ONE clip
+  // (/frame/<id>/<i>) rather than through the neighbouring files: there is no playback,
+  // and several frames are the only way to tell what was filmed. For a photo the
+  // behaviour does not move a step: lightboxFrames stays zero and the frame comes from
+  // the same /preview/<id> as ever.
   //
-  // Кадры тянутся лениво: src ставится ровно одному кадру, тому, что показан. Сетка
-  // плиток по-прежнему знает только /thumb — шесть кадров на плитку никто не грузит.
+  // Frames are pulled lazily: src is set on exactly one frame, the one being shown. The
+  // grid of tiles still knows only /thumb — nobody loads six frames per tile.
 
   var lightboxEl = document.getElementById("lightbox");
   var lightboxImg = document.getElementById("lightbox-img");
@@ -4300,7 +4323,7 @@
   var lightboxDots = document.getElementById("lightbox-dots");
   var lightboxSamples = null;
   var lightboxIndex = 0;
-  var lightboxFrames = 0;   // > 0 <=> открыто видео, столько кадров у ленты
+  var lightboxFrames = 0;   // > 0 <=> a video is open, and its strip has that many
   var lightboxFrame = 0;
 
   function renderLightboxDots() {
@@ -4331,7 +4354,7 @@
     lightboxIndex = index;
     loadLightboxOffer();
     if (lightboxFrames) { showLightboxFrame(0); return; }
-    // /preview — крупный ДЕКОДИРОВАННЫЙ JPEG (HEIC/RAW рендерятся), не сырой /photo
+    // /preview is a large DECODED JPEG (HEIC/RAW are rendered), not the raw /photo
     lightboxImg.src = "/preview/" + lightboxSamples[index];
   }
 
@@ -4492,9 +4515,9 @@
     restoreLightboxFrame();
   });
 
-  // Короткий ролик отдаёт меньше кадров, чем настроено, и недостающий индекс — это
-  // честный 404. Обрезаем ленту по первому промаху и возвращаемся на прошлый кадр:
-  // сервер не обязан заранее знать, сколько кадров вытащится из конкретного файла.
+  // A short clip yields fewer frames than were configured, and a missing index is an
+  // honest 404. The strip is cut at the first miss and the previous frame comes back:
+  // the server is not obliged to know in advance how many frames a given file will give.
   lightboxImg.addEventListener("error", function () {
     if (!lightboxFrames || lightboxFrame < 1) return;
     lightboxFrames = lightboxFrame;
@@ -4526,7 +4549,7 @@
     }
   });
 
-  // --- вкладка «Люди» (F31, управление кластерами лиц) --------------------
+  // --- the «Люди» tab (F31, managing the face clusters) ------------------
 
   var clustersById = {};
   var selectedForMerge = {};
@@ -4557,9 +4580,9 @@
 
     var thumbs = document.createElement("div");
     thumbs.className = "cluster-thumbs";
-    // Скелетон рисуется сразу (карточка отзывчива, пока идёт /thumb) —
-    // сама миниатюра грузится лениво и фоном; onload плавно проявляет её и
-    // снимает скелетон-заглушку (F42).
+    // The skeleton is drawn at once (the card is responsive while /thumb is in flight) —
+    // the thumbnail itself loads lazily and in the background; onload fades it in and
+    // takes the skeleton stub away (F42).
     c.samples.forEach(function (fileId, idx) {
       var skel = document.createElement("div");
       skel.className = "thumb-skel";
@@ -4679,7 +4702,7 @@
       .then(function (resp) { if (resp && resp.ok) loadClusters(); });
   });
 
-  // --- вкладка «События» (F35: список событий + «Собрать в папку») --------
+  // --- the «События» tab (F35: the event list plus «Собрать в папку») ----
 
   function renderEventCard(e) {
     var card = document.createElement("div");
@@ -4691,7 +4714,7 @@
         [e.started_at, e.ended_at].filter(Boolean).join(" \u2013 ");
     card.appendChild(meta);
 
-    // превью-кадры события (клик -> лайтбокс, стрелки листают кадры события)
+    // the preview frames of an event (click -> lightbox, arrows page through them)
     if (e.samples && e.samples.length) {
       var thumbs = document.createElement("div");
       thumbs.className = "event-thumbs";
@@ -4727,8 +4750,8 @@
     appendAlbumBusyHint(albumBox);
     card.appendChild(albumBox);
 
-    // F85c: событие — самая осязаемая группа, какая есть: это одна поездка, и место
-    // у неё одно. Назначение на всё событие целиком — одно действие вместо e.count.
+    // F85c: an event is the most tangible group there is: it is one trip, and it has one
+    // place. Assigning to the whole event is one action instead of e.count of them.
     var placeBox = document.createElement("div");
     placeBox.className = "place-controls";
     var picker = renderPlacePicker(placeBox);
@@ -4880,8 +4903,9 @@
   registerBusyRefresh(refreshJunkControls);
   junkSelection.onChange("junk-controls", refreshJunkControls);
 
-  // F133: корзины классификатора — это и есть закреплённые срезы «товары / скриншоты /
-  // документы»; отдельного ряда чипов больше нет, счётчики уезжают в ряд срезов.
+  // F133: the buckets of the classifier ARE the pinned slices «товары / скриншоты /
+  // документы»; there is no row of chips of their own any more, and the counters move
+  // into the row of slices.
   function renderJunkBuckets(buckets) {
     junkBucketCounts = buckets || [];
     renderSlicePins();
@@ -4905,8 +4929,8 @@
       card.appendChild(
           clickableThumb(item.file_id, [item.file_id], 0, item.thumb_url, item.video));
     } else {
-      // Документ: превью не строим вовсе — сервер не прислал ссылку, и запроса к
-      // /thumb здесь нет. Заглушка того же размера, чтобы сетка не разъезжалась.
+      // A document: no preview is built at all — the server sent no link, and there is
+      // no request to /thumb here. A stub of the same size, so the grid does not drift.
       var stub = document.createElement("div");
       stub.className = "junk-doc-box";
       stub.textContent = I18N.junk_document_no_preview;
@@ -4968,7 +4992,7 @@
     var items = data.items || [];
     items.forEach(function (it) { grid.appendChild(renderJunkCard(it)); });
     var shown = grid.querySelectorAll(".junk-card").length;
-    // Пустая корзина — внятное «здесь пусто», а не вечный спиннер.
+    // An empty bucket says «здесь пусто» plainly, instead of spinning forever.
     if (!shown) grid.appendChild(stateEl("empty", I18N.junk_empty));
     document.getElementById("junk-shown").textContent =
         shown ? fmt(I18N.junk_shown_label, { shown: shown, total: data.total }) : "";
@@ -5749,7 +5773,7 @@
     box.appendChild(note);
 
     var table = document.createElement("table");
-    // клик по кадру группы -> лайтбокс; стрелки листают кадры этого дубль-набора
+    // a click on a frame of the group -> the lightbox; the arrows page this dupe set
     var groupSamples = g.frames.map(function (fr) { return fr.file_id; });
     g.frames.forEach(function (f, frameIdx) {
       var tr = document.createElement("tr");
@@ -5773,9 +5797,9 @@
       var nameEl = document.createElement("span");
       nameEl.className = "thumb-name";
       nameEl.textContent = f.name;
-      // Как во вкладке «Города»: полный путь — в тултипе имени. У дублей имена
-      // совпадают по построению, поэтому единственное, чем кадры различаются на
-      // глаз, — это где они лежат.
+      // As in the «Города» tab: the full path is in the tooltip of the name. Duplicates
+      // have matching names by construction, so the one thing that tells the frames
+      // apart by eye is where they lie.
       nameEl.title = f.src_path ? f.src_path + "\\" + f.name : f.name;
       tdThumb.appendChild(nameEl);
       // F194: the badge names the RULE that put it there, and the server sets
@@ -5793,8 +5817,8 @@
       var tdMeta = document.createElement("td");
       var dims = f.width && f.height ? f.width + "×" + f.height : "?";
       var kb = Math.round((f.size || 0) / 1024) + " KB";
-      // Исходная папка первой, как в «Городах»: при выборе, какой из одинаковых
-      // кадров оставить, решает обычно именно она.
+      // The source folder first, as in «Города»: when choosing which of the identical
+      // frames to keep, it is usually what decides.
       tdMeta.textContent = [f.src_dir, dims, kb, actionLabel(f.action)]
           .filter(Boolean).join(" · ");
       if (f.src_path) { tdMeta.title = f.src_path; }

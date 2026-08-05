@@ -128,7 +128,7 @@ a { color: var(--accent); }
   .btn, .tab-btn, .top-btn, details > summary, .stage-chip, .thumb-skel img { transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease, transform .12s ease; }
 }
 
-/* --- таблицы -------------------------------------------------------- */
+/* --- tables --------------------------------------------------------- */
 .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; border-radius: var(--radius-md); border: 1px solid var(--line); }
 table { border-collapse: collapse; width: 100%; background: var(--surface); font-variant-numeric: tabular-nums; }
 td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -140,10 +140,10 @@ img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--radius-
 details { margin-left: var(--space-md); }
 summary { cursor: pointer; font-weight: 600; margin: var(--space-sm) 0; overflow-wrap: anywhere; list-style-position: outside; }
 details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% - 1rem); }
-/* F70: «показано N из M» под страницей файлов раскрытой папки. */
+/* F70: the «показано N из M» line under the file page of an expanded folder. */
 .plan-page-status { margin: 0 0 0.4rem var(--space-md); font-size: 0.8rem; color: var(--muted); }
 
-/* --- кнопки ----------------------------------------------------------- */
+/* --- buttons ---------------------------------------------------------- */
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
   font-family: var(--font-sans); font-size: 13px; font-weight: 500; line-height: 1;
@@ -167,7 +167,7 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
    three different levels. One line, one gap. */
 .plan-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-/* --- шапка / вордмарк --------------------------------------------------- */
+/* --- the header / the wordmark ------------------------------------------ */
 .header-bar { display: flex; align-items: center; justify-content: space-between;
       margin: 0 0 var(--space-lg) 0; gap: var(--space-md); flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: 8px; }
@@ -179,12 +179,13 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
 .lang-field svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
 .lang-select { padding: 6px 4px; cursor: pointer; border: none; background: transparent; color: var(--ink);
       font-family: var(--font-sans); font-size: 13px; }
-/* нативный option-попап в тёмной теме иначе белый со светлым текстом (плохой
-   контраст) — явные цвета по токенам темы + color-scheme выше делают его читаемым */
+/* the native option popup is otherwise white with light text in the dark theme (poor
+   contrast) — explicit colours from the theme tokens plus the color-scheme above make
+   it readable */
 .lang-select option { background: var(--surface); color: var(--ink); }
 .theme-toggle-btn svg { width: 15px; height: 15px; }
 
-/* --- вкладки ------------------------------------------------------------ */
+/* --- tabs --------------------------------------------------------------- */
 .tabs { display: flex; gap: 4px; margin-bottom: var(--space-lg); border-bottom: 1px solid var(--line);
       overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
 .tab-btn {
@@ -253,13 +254,13 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
 .cost-total-label { font-size: 0.85rem; color: var(--muted); }
 .cost-total-value { font-weight: 600; font-variant-numeric: tabular-nums; }
 
-/* --- общие карточки ------------------------------------------------------ */
+/* --- the shared cards ----------------------------------------------------- */
 .card { border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--space-md) var(--space-lg);
       margin-bottom: var(--space-md); background: var(--card); box-shadow: var(--shadow-sm); }
 .card.named { border-color: var(--accent-soft); border-width: 1.5px; }
 .card h3 { margin: 0 0 var(--space-sm) 0; font-size: 0.95rem; }
 
-/* --- бейджи / чипы -------------------------------------------------------- */
+/* --- badges / chips ------------------------------------------------------- */
 .badge { display: inline-flex; align-items: center; gap: 3px; color: var(--good); font-weight: 600;
       margin-left: 6px; font-size: 0.85em; }
 .badge svg { width: 12px; height: 12px; }
@@ -269,7 +270,7 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
 .chip-accent { background: var(--accent-soft); color: var(--accent); }
 .chip-danger { background: var(--danger-soft); color: var(--danger); }
 
-/* --- инпуты/селекты --------------------------------------------------- */
+/* --- inputs / selects ------------------------------------------------- */
 input[type="text"], select {
   font-family: var(--font-sans); font-size: 13px; color: var(--ink); background: var(--field);
   border: 1px solid var(--line); border-radius: var(--radius-md); padding: 7px 9px;
@@ -278,7 +279,7 @@ input[type="text"]:focus-visible, select:focus-visible { outline: 2px solid var(
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 label { cursor: pointer; }
 
-/* --- состояния: пусто/загрузка/ошибка ---------------------------------- */
+/* --- states: empty / loading / failed ---------------------------------- */
 .state-msg { display: flex; align-items: center; gap: 8px; padding: var(--space-md) var(--space-lg);
       border-radius: var(--radius-md); color: var(--muted); background: var(--chip); }
 .state-error { color: var(--danger); background: var(--danger-soft); }
@@ -359,12 +360,14 @@ label { cursor: pointer; }
 
 .event-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 var(--space-sm) 0; }
 .event-thumbs { display: flex; flex-wrap: wrap; gap: 3px; margin: 0 0 var(--space-sm) 0; }
-/* единый вид кликабельной миниатюры-превью (Города/Дубли/Перемещения/События) */
-/* фон-плейсхолдер виден, пока lazy-<img> не загрузился — отклик вместо «пусто» */
+/* one look for a clickable preview thumbnail («Города», «Дубли», «Перемещения», «События») */
+/* the placeholder background shows while the lazy <img> has not loaded — a response
+   rather than a blank hole */
 .clickable-thumb { cursor: zoom-in; background: var(--track); }
 .clickable-thumb:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
-/* F80: в сетке видео и фото были неотличимы. Значок «плёнки» поверх угла плитки —
-   обёртка появляется ТОЛЬКО у видео, у фото плитка остаётся голым <img>. */
+/* F80: in the grid a video and a photo were indistinguishable. A film mark over the
+   corner of the tile — the wrapper appears ONLY for a video, and for a photo the tile
+   stays a bare <img>. */
 .thumb-video { position: relative; display: inline-block; line-height: 0; }
 .thumb-video-badge { position: absolute; left: 3px; bottom: 3px; display: inline-flex;
       align-items: center; gap: 3px; padding: 1px 4px; border-radius: var(--radius-sm);
@@ -381,8 +384,8 @@ label { cursor: pointer; }
    stays here is what only this bucket has to say. */
 .junk-card.restored { outline: 2px solid var(--good); outline-offset: -2px;
       background: var(--good-soft); }
-/* Документ вместо превью получает нейтральную заглушку того же размера: сетка не
-   ломается, а содержимое паспорта не декодируется вообще. */
+/* A document gets a neutral stub of the same size instead of a preview: the grid does
+   not break, and the contents of a passport are not decoded at all. */
 .junk-doc-box { height: 110px; display: flex; align-items: center; justify-content: center;
       border-radius: var(--radius-sm); border: 1px dashed var(--line); background: var(--chip);
       color: var(--muted); font-size: 0.8rem; }
@@ -456,9 +459,10 @@ label { cursor: pointer; }
 .review-card.processed { border-style: dashed; border-color: var(--accent); }
 .review-card-processed { font-size: 0.75rem; color: var(--accent); cursor: help; }
 
-/* --- F108: вкладка «Обзор» ---------------------------------------------- */
-/* Четыре группы рядом, а не одна длинная простыня: вопрос «что с архивом»
-   распадается ровно на них, и ответ должен читаться без прокрутки. */
+/* --- F108: the «Обзор» tab ----------------------------------------------- */
+/* Four groups side by side rather than one long sheet: the question "what state is the
+   archive in" breaks down into exactly these four, and the answer has to be readable
+   without scrolling. */
 .overview-groups { display: grid; gap: var(--space-md);
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .overview-row { display: flex; align-items: baseline; justify-content: space-between;
@@ -466,11 +470,12 @@ label { cursor: pointer; }
 .overview-row:first-of-type { border-top: none; }
 .overview-label { color: var(--muted); font-size: 0.85rem; }
 .overview-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* Главное число группы (без места, файлов в индексе) — крупнее остальных строк. */
+/* The main number of a group (frames without a place, files in the index) — larger than
+   the rest of its rows. */
 .overview-row-main .overview-value { font-size: 1.15rem; }
 .overview-row-main .overview-label { color: var(--ink); font-weight: 500; }
-/* Число, у которого есть своя вкладка, само является переходом на неё: обзор без
-   переходов — отчёт, а нужен пульт. */
+/* A number that has a tab of its own IS the way to that tab: an overview with nothing to
+   follow is a report, and what is wanted here is a console. */
 .overview-value-link { font-family: var(--font-sans); font-size: inherit; font-weight: 600;
       font-variant-numeric: tabular-nums; color: var(--accent); background: none;
       border: none; padding: 0; cursor: pointer; text-decoration: underline;
@@ -480,7 +485,7 @@ label { cursor: pointer; }
       font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .overview-note { margin: var(--space-sm) 0 0 0; color: var(--muted); font-size: 0.8rem; }
 .overview-note-warn { color: var(--danger); }
-/* Строки-значения (путь назначения, дата) переносятся, в отличие от чисел. */
+/* Values that are text (the destination path, a date) wrap; numbers do not. */
 .overview-text { white-space: normal; word-break: break-word; font-weight: 500;
       text-align: right; }
 /* --- F190: the loading skeleton ----------------------------------------- */
@@ -502,18 +507,18 @@ label { cursor: pointer; }
 /* A note is a block: it would otherwise be a grey bar the full width of the card. */
 .overview-note.overview-blank { width: 60%; }
 .process-intro { max-width: 46rem; color: var(--muted); }
-/* F51: вертикальные группы (путь / каждый тумблер+hint / кнопки), а не один
-   плоский flex — там .process-toggle-hint с flex-basis:100% уезжал в конец
-   контейнера, после всех кнопок, оторвано от своего чекбокса. */
+/* F51: vertical groups (the path / each toggle with its hint / the buttons) rather than
+   one flat flex — there a .process-toggle-hint with flex-basis:100% drifted to the end
+   of the container, after every button, torn away from the checkbox it belongs to. */
 .process-controls { display: flex; flex-direction: column; gap: var(--space-sm);
       margin: var(--space-md) 0; max-width: 42rem; }
 .process-path-row { display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap; }
 .process-path-row input[type="text"] { flex: 1; min-width: 220px; padding: 8px 10px; }
 .process-option { display: flex; flex-direction: column; gap: 2px; }
-/* F81: три блока первой вкладки. Настроенный блок схлопывается в одну строку,
-   ненастроенный остаётся раскрытым; следующие блоки приглушены пояснением, но НЕ
-   заблокированы — экран открывают многократно, и визард наказывает каждый
-   следующий заход. */
+/* F81: the three blocks of the first tab. A block that is configured collapses to one
+   line, one that is not stays open; the blocks after it are dimmed with an explanation
+   but NOT locked — this screen is opened again and again, and a wizard punishes every
+   visit after the first. */
 .step { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface);
       padding: var(--space-md); display: flex; flex-direction: column; gap: var(--space-sm); }
 .step-head { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
@@ -522,9 +527,9 @@ label { cursor: pointer; }
 .step.collapsed .step-summary { display: inline; }
 .step.collapsed .step-body { display: none; }
 .step-edit-btn { display: none; padding: 3px 8px; font-size: 0.78rem; }
-/* Кнопка видна всегда, когда шаг МОЖНО свернуть (источник задан): в свёрнутом
-   виде она «изменить», в раскрытом — «свернуть». Раньше её показывал только
-   .collapsed, поэтому раскрытый шаг обратно не складывался. */
+/* The button shows whenever the step CAN be collapsed (a source is set): collapsed it
+   reads «изменить», expanded «свернуть». Only .collapsed used to show it, which is why
+   an expanded step could not be folded back. */
 .step.can-collapse .step-edit-btn { display: inline-flex; }
 .step-body { display: flex; flex-direction: column; gap: var(--space-sm); }
 .step-hint { display: none; font-size: 0.8rem; color: var(--muted); }
@@ -540,9 +545,10 @@ label { cursor: pointer; }
 .excludes-tree li { margin: 2px 0; }
 .excludes-row { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; }
 .excludes-meta { color: var(--muted); font-size: 0.78rem; }
-/* F82: три состояния узла. Значок + подпись прямо в кнопке — состояние должно
-   читаться взглядом по дереву, без наведения и без легенды под рукой; цвет —
-   вторая, а не единственная опора (те же две роли, что у строк плана в F77). */
+/* F82: the three states of a node. A mark and a caption inside the button itself — the
+   state has to be readable by running an eye down the tree, with no hovering and no
+   legend at hand; colour is the second support, not the only one (the same two roles
+   the plan rows have in F77). */
 .tri-state { font: inherit; font-size: 0.85rem; line-height: 1.2; cursor: pointer;
       padding: 1px 7px; border-radius: var(--radius-pill); border: 1px solid var(--line);
       background: var(--surface); color: var(--muted); white-space: nowrap; }
@@ -563,9 +569,9 @@ label { cursor: pointer; }
 .process-progress::-webkit-progress-bar { background: var(--track); border-radius: var(--radius-pill); }
 .process-progress::-webkit-progress-value { background: var(--accent); border-radius: var(--radius-pill); }
 .process-progress::-moz-progress-bar { background: var(--accent); border-radius: var(--radius-pill); }
-/* #37: total ещё неизвестен (индексация сканирует дерево) — вместо «0 из 0»
-   бегущая полоса «идёт работа». Определённый прогресс (total>0) заполняется как
-   обычно (::progress-value выше). */
+/* #37: the total is not known yet (indexing is still walking the tree) — instead of
+   «0 из 0» a running stripe that says work is happening. Determinate progress (total>0)
+   fills as usual (::progress-value above). */
 .process-progress.indeterminate { background-image: linear-gradient(90deg,
       var(--track) 0%, var(--accent-soft) 40%, var(--accent) 50%, var(--accent-soft) 60%, var(--track) 100%);
       background-size: 240% 100%; background-repeat: no-repeat; }
@@ -587,7 +593,7 @@ label { cursor: pointer; }
    percent (clustering) it is the only thing that says the run is alive. */
 .process-phase { margin: calc(-1 * var(--space-sm)) 0 var(--space-sm); font-size: 0.85rem;
       color: var(--muted); }
-/* F64: инфо-баннер о CPU-профиле (амбер, читается в обеих темах через --ink) */
+/* F64: the info banner about the CPU profile (amber, readable in both themes via --ink) */
 /* F94: the caches — a quiet block at the bottom of the tab. It is housekeeping, not a
    step of the run, so it looks like a card but is not numbered among the steps. */
 /* Width matches the three blocks above (.process-controls, capped at 42rem): this
@@ -635,17 +641,17 @@ label { cursor: pointer; }
 .stage-chip.now { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
 .stage-chip.failed { background: var(--danger-soft); color: var(--danger); border-color: transparent; font-weight: 600; }
 
-/* --- F77: ручные правки раскладки ------------------------------------- */
-/* Два РАЗНЫХ состояния строки, которые нельзя путать: «не трогать» — красная
-   рамка (предложение пользователя), «перенесено» — синяя пунктирная. Рамка на
-   строке, а не на превью: список плана — таблица, и обводка целой строки заметнее
-   при взгляде по сетке. */
+/* --- F77: manual corrections to the layout ---------------------------- */
+/* Two DIFFERENT states of a row that must not be confused: «не трогать» — a red border
+   (the user's own proposal), «перенесено» — a blue dashed one. The border is on the row
+   and not on the thumbnail: the plan list is a table, and an outline around a whole row
+   is what an eye running down a grid actually catches. */
 tr.override-exclude, tr.override-exclude:hover { outline: 2px solid var(--danger);
       outline-offset: -2px; background: var(--danger-soft); }
 tr.override-reassign, tr.override-reassign:hover { outline: 2px dashed var(--accent);
       outline-offset: -2px; background: var(--accent-soft); }
-/* F103: «возвращено в фото» — третье состояние, и оно не отрицательное: кадр
-   возвращается в обычную раскладку, поэтому зелёная рамка, а не красная. */
+/* F103: «возвращено в фото» — a third state, and not a negative one: the frame goes back
+   into the ordinary layout, so the border is green rather than red. */
 tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       outline-offset: -2px; background: var(--good-soft); }
 .override-mark { margin-left: var(--space-sm); }
@@ -655,7 +661,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .override-hint { flex-basis: 100%; font-size: 0.8rem; color: var(--muted); margin: 0; }
 .override-status { font-size: 0.8rem; color: var(--danger); }
 
-/* F85c: назначение места группе — та же панель, что и у ручных правок */
+/* F85c: assigning a place to a group — the same panel as the manual corrections */
 .place-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center;
       margin: 0 0 var(--space-md) 0; }
 .place-input { min-width: 200px; }
@@ -725,9 +731,9 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .sort-dialog-list { margin: 0 0 var(--space-md) 0; padding-left: var(--space-lg); }
 .sort-dialog-list li { margin-bottom: 4px; }
 
-/* --- F93: подтверждение сброса. window.confirm не умеет галочку, а галочка
-   «очистить кэш геоданных» обязана быть именно здесь: пользователь вспоминает про
-   кэш в момент «хочу переделать начисто», а не в настройках. --- */
+/* --- F93: the reset confirmation. window.confirm cannot carry a checkbox, and the
+   «очистить кэш геоданных» checkbox has to be exactly here: a person remembers the cache
+   at the moment of "I want to redo this from scratch", not in the settings. --- */
 .reset-dialog { position: fixed; inset: 0; z-index: 2100; display: flex; align-items: center;
       justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.86); }
 .reset-dialog[hidden] { display: none; }
@@ -737,7 +743,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
 .reset-dialog-actions { display: flex; gap: var(--space-sm); justify-content: flex-end;
       margin-top: var(--space-md); }
 
-/* --- лайтбокс (F42): один переиспользуемый оверлей для крупного просмотра --- */
+/* --- the lightbox (F42): one reusable overlay for looking at a frame large --- */
 .lightbox { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center;
       justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.86);
       cursor: zoom-out; }
@@ -746,7 +752,7 @@ tr.override-photo, tr.override-photo:hover { outline: 2px solid var(--good);
       object-fit: contain; cursor: default;
       border-radius: var(--radius-md); box-shadow: var(--shadow-lg); background: var(--surface); }
 
-/* --- F80: листалка кадров видео внутри лайтбокса (у фото скрыта) --- */
+/* --- F80: the frame pager of a video inside the lightbox (hidden for a photo) --- */
 .lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); cursor: pointer;
       display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;
       padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(10,14,22,.55); }
