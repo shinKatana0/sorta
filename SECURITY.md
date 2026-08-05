@@ -8,19 +8,15 @@ Sorta processes personal photos and videos — including, potentially, images of
 - **Local by default.** All machine‑learning models (face detection/embeddings,
   scene/landmark classification, text/OCR detection) run **on your machine**. Sorta
   does not upload your images.
-- **Opt‑in online providers only.** The only network features are explicitly enabled
-  in `config.yaml`:
-  - `geo.provider: online` — reverse geocoding via Nominatim/OSM. It sends **GPS
-    coordinates**, never images. Off by default (`offline` uses bundled data).
-  - `naming.provider: claude` — event naming via the Claude API. **This is the one
-    feature that does send images**: up to `naming.max_samples` (default 4) sample
-    photos from an event, so the model can describe what's happening in them. Off
-    by default (`template` generates names locally, no network; `local_vlm` also
-    sends sample images, but to a **local** endpoint you control, e.g. Ollama —
-    not a cloud service).
-  Keep these off for maximum privacy; `naming.provider: claude` is the only opt-in
-  that leaves your machine with actual photo content, and only the small event
-  samples you configured, not your whole library.
+- **No image ever leaves your machine — by construction, not by default.** There is
+  no code left in Sorta that sends a picture anywhere. The cloud event‑naming
+  provider (`naming.provider: claude`) was **removed** along with the upload it
+  performed, and a test refuses to let that string come back unnoticed. Event names
+  are produced by a local template or by a local VLM.
+- **One outbound path, and it carries coordinates.** `geo.provider: online` looks a
+  place up through Nominatim/OSM: it sends **rounded GPS coordinates**, never an
+  image, and the key says so in its name. Off by default — `offline` uses the
+  GeoNames data bundled with the package and needs no network at all.
 - **Originals are never modified.** Sorting moves/copies files and never rewrites
   EXIF. With `--copy`/`--link`, originals stay exactly where they are.
 - **Documents are collected locally.** Detected documents go to a local

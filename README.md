@@ -35,31 +35,42 @@ app**.
   re‑scan.
 - **Offline geolocation** (bundled GeoNames) with GPS + session inference; optional
   online Nominatim/OSM.
-- **Fast basic run by default:** `sorta run` / the UI **Process** button do city‑level
-  sorting + duplicate detection (index → geo → landmarks → classify → junk →
-  near‑dup hashes).
-  **Faces and events are opt‑in** (`--faces`/`--events`, or the matching checkboxes) —
+- **Fast basic run by default.** The full pipeline over ~38 000 files takes **67 minutes**;
+  turning the deep VLM tier on takes **272**, so it is **off by default** and named on the
+  run screen with what it costs. The deep tier buys one thing the fast one cannot produce
+  at all — the `product` class — and is incremental, so its price is paid once.
+- **Faces and events are opt‑in** (`--faces`/`--events`, or the matching checkboxes) —
   they're the slowest stages and not everyone needs them.
-- **Faces & people:** local detection + clustering (insightface), once enabled; name
-  and merge clusters, then sort or build per‑person albums.
-- **Events:** time‑gap + city clustering with localized names, once enabled; manual
-  events too.
+- **Faces & people:** local detection + clustering (insightface), once enabled; name and
+  merge clusters, then sort or build per‑person albums. **A name typed into the search box
+  finds that person** — including clusters you merged — as an exact selection rather than
+  a ranking.
+- **Search your collection in words** (multilingual CLIP), and **pin any query as a tab**
+  of its own. The built‑in slices are saved queries too, so a pinned one is not a lesser
+  kind of thing.
+- **Slices for what a photograph IS and what it turned out like:** people, children,
+  animals, screenshots, memes, documents, products, downloaded images, blurred, closed
+  eyes, low resolution.
+- **Every slice states what it measured.** A caption saying "the model calls these
+  on‑screen; about one in three is an ordinary photograph, check before deleting" is
+  worth more than a number pretending to be a verdict. Lists are **ranked, not
+  thresholded** — the product orders them and the person decides where to stop.
 - **Duplicates:** exact (blake3) and near‑duplicate (perceptual hash) with a
   batch‑review UI.
-- **Junk, documents & products:** screenshots/memes routed out; documents collected
-  into a `_Documents/` review folder (CLIP + text‑density), and — with the deep VLM
-  tier on — for‑sale product shots into `_Products/`.
-- **Albums:** collect a person/event slice into a named folder via **hardlinks**
-  (near‑zero extra space), copy, or move.
-- **Local web app** (`sorta ui`): process a folder, review the plan, resolve
-  duplicates, name people, and materialize sorts/albums — all in the browser. The
-  **Overview** tab states the collection's condition on one screen with clickable
-  numbers; **Utility frames** is where products/documents/screenshots/memes are
-  reviewed and sent back in bulk. The **People**/**Events** tabs only appear once
-  you've actually run those stages.
+- **Restore a soft frame** where it helps: measured on blind pairs, the model beats plain
+  enlargement on **small** frames (62% against 10%) and does nothing measurable above the
+  ceiling, so that is exactly where the action is offered.
+- **Albums:** collect any slice or query into a named folder via **hardlinks** (near‑zero
+  extra space), copy, or move — with a subset selection when you don't want all of it.
+- **Local web app** (`sorta ui`), five tabs arranged by what they do to your files rather
+  than by pipeline stage: **Overview** (the collection's condition on one screen),
+  **Review** (duplicates, blur, closed eyes), **Layout** (where things go and by what),
+  **Slices** (queries, pins and built‑ins), **Moves** (what the last batch did, and undo).
 - **Trilingual** UI and folder names: **ru / en / ja**.
-- **Safe by design:** dry‑run, journal + `undo`, blake3 verification, never
-  overwrites (suffix `_1`, `_2`).
+- **Nothing leaves the machine.** Every model runs locally; the only outbound path is
+  optional Nominatim, which receives rounded **coordinates** and never a photograph.
+- **Safe by design:** dry‑run, journal + `undo`, blake3 verification, never overwrites
+  (suffix `_1`, `_2`).
 
 ---
 
@@ -139,10 +150,11 @@ are in the [user guide](docs/guide/user-guide.en.md).
 - **Originals are never modified.** Sorting moves/copies files; EXIF is not rewritten.
 - **Dry‑run by default;** every operation is journaled before it runs; `sorta undo`
   reverses it.
-- **Local by default.** All ML runs on your machine. Online providers (Nominatim
-  geocoding: GPS coordinates only; Claude API event naming: a handful of sample
-  photos per event, only if you opt in) are off by default — see
-  [SECURITY.md](SECURITY.md) for exactly what each one sends.
+- **No image ever leaves your machine.** Not "off by default" — there is no code
+  left that sends one. The cloud event‑naming provider was removed together with its
+  upload, and a test keeps it from returning quietly. The single outbound path is
+  optional Nominatim geocoding, which receives **rounded coordinates** and never a
+  photograph — see [SECURITY.md](SECURITY.md).
 - **Documents** (passports, receipts, medical papers…) are collected into a local
   `_Documents/` review folder and processed only on your machine.
 - The web app binds to `127.0.0.1` only.

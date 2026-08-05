@@ -27,10 +27,13 @@ class TestPlanItemCarriesSource(unittest.TestCase):
         )
 
     def test_source_dir_and_full_path_are_exposed(self):
-        payload = ui._plan_item_to_json(self._item(r"D:/SORT/foto/рускеала/DSC04799.JPG"))
-        self.assertEqual(payload["src_dir"], "рускеала")
-        self.assertIn("рускеала", payload["src_path"])
-        self.assertNotIn("DSC04799.JPG", payload["src_path"])  # folder, not the file
+        # A hand-named folder in Cyrillic, which is the case this exists for: the source
+        # folder is what tells a person WHERE a frame came from when the place could not
+        # be resolved. Synthetic — never a path out of anybody's real archive.
+        payload = ui._plan_item_to_json(self._item(r"D:/Photos/отпуск/DSC00001.JPG"))
+        self.assertEqual(payload["src_dir"], "отпуск")
+        self.assertIn("отпуск", payload["src_path"])
+        self.assertNotIn("DSC00001.JPG", payload["src_path"])  # folder, not the file
 
     def test_rendered_row_shows_the_source_folder(self):
         html = ui._render_index_html("ru")
