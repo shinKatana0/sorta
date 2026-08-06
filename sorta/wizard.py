@@ -44,6 +44,11 @@ from . import i18n
 # instead of assumed.
 MANIFEST_NAME = "sorta-install.json"
 ENV_MANIFEST = "SORTA_INSTALL_MANIFEST"
+# Paths inside the manifest are written RELATIVE to it, and this key is where the
+# directory it was read from is remembered. The build cannot know where a person will
+# install the program, and rewriting a JSON file from an installer script to teach it
+# its own address is a step that can fail; a relative path cannot.
+MANIFEST_ROOT = "root"
 # How far up from the running interpreter to look for it: the install layout is
 # `{app}\env\Scripts\python.exe` and the manifest sits at `{app}\sorta-install.json`.
 _MANIFEST_LEVELS = 4
@@ -176,7 +181,22 @@ def load_manifest(explicit: str | Path | None = None) -> dict:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    payload.setdefault(MANIFEST_ROOT, str(path.parent))
+    return payload
+
+
+def manifest_path_of(manifest: dict, key: str) -> str | None:
+    """A path out of the manifest, resolved against the directory it was read from."""
+    value = manifest.get(key)
+    if not value:
+        return None
+    path = Path(str(value))
+    root = manifest.get(MANIFEST_ROOT)
+    if path.is_absolute() or not root:
+        return str(path)
+    return str(Path(str(root)) / path)
 
 
 def exiftool_state(manifest: dict, *,
@@ -199,12 +219,24 @@ def uv_binary(manifest: dict) -> str:
     profiles and our indexes, and a second resolver written for the installer would
     disagree with the first one inside a month (the boundary the brief draws).
     """
-    return str(manifest.get("uv") or shutil.which("uv") or "uv")
+    return manifest_path_of(manifest, "uv") or shutil.which("uv") or "uv"
 
 
 def python_binary(manifest: dict) -> str:
     """The interpreter of the installed environment — the one a tier is installed into."""
-    return str(manifest.get("python") or sys.executable)
+    return manifest_path_of(manifest, "python") or sys.executable
+
+
+def lib_directory(manifest: dict) -> str | None:
+    """Where the packages live: `{app}\\lib`, installed with `uv pip install --target`.
+
+    A plain directory tree and not a virtualenv, and that is the whole reason the payload
+    can simply be COPIED to wherever a person installs it: a venv records the absolute
+    path of the interpreter it was made from, and a `--target` tree records nothing at
+    all. `{app}\\python` finds it through one `.pth` file, and a tier added later has to
+    land in the same place — hence this being part of the install command below.
+    """
+    return manifest_path_of(manifest, "lib")
 
 
 def tier_requirements(tier: Tier, *, distribution: str = "sorta") -> tuple[str, ...]:
@@ -235,9 +267,12 @@ def tier_requirements(tier: Tier, *, distribution: str = "sorta") -> tuple[str, 
 
 
 def install_command(tier: Tier, requirements: Sequence[str], *,
-                    uv: str, python: str) -> list[str]:
+                    uv: str, python: str, target: str | None = None) -> list[str]:
     """The command that adds a tier: `uv pip install` into the installed environment."""
-    command = [uv, "pip", "install", "--python", python, *requirements]
+    command = [uv, "pip", "install", "--python", python]
+    if target:
+        command += ["--target", target]
+    command += list(requirements)
     if tier.index_url:
         # An EXTRA index: torch comes from the CUDA one, everything else stays on PyPI.
         command += ["--extra-index-url", tier.index_url]
@@ -356,6 +391,7 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
     """
     uv = uv_binary(manifest)
     python = python_binary(manifest)
+    target = lib_directory(manifest)
     for tier in accepted:
         requirements = tier_requirements(tier)
         if tier.extras and not requirements:
@@ -365,7 +401,8 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
         if requirements:
             say(i18n.cli_text(f"{_SETUP_PREFIX}installing", lang, name=tier.name(lang),
                               packages=" ".join(requirements)))
-            code = install(install_command(tier, requirements, uv=uv, python=python))
+            code = install(install_command(tier, requirements, uv=uv, python=python,
+                                           target=target))
             if code != 0:
                 outcome.failed.append(tier.name(lang))
                 say(i18n.cli_text(f"{_SETUP_PREFIX}install_failed", lang,
