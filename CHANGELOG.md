@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **An icon in the tray, for whoever installed Sorta with an installer** (F207). That
+  person does not keep a terminal open, and `sorta ui` prints its address to a console
+  and lives until **Ctrl+C** — so for an installed application the address is nowhere to
+  be read and there is nothing to press to close it. `sorta-tray` is a **second** entry
+  point that closes exactly those holes: a double-click on the icon (or **Open** in its
+  menu) opens `http://127.0.0.1:<port>/`, the tooltip carries the address so it can be
+  copied, and **Quit** closes the program. The icon is `favicon.ico` — the one the page
+  and the browser tab already show, because three different pictures of one program read
+  as three programs. It is a `gui-scripts` entry point: on Windows that is the difference
+  between a shortcut that opens a console window behind the browser and one that does
+  not. `sorta ui` from a terminal is unchanged, down to the line it prints.
+  **A run cannot be lost by clicking a menu item.** Quitting is `POST /api/quit` — the
+  very request the page's **Quit** button sends (F209) — so the protection is one rule
+  and not two implementations of it: while a run, a layout or a rollback is in flight the
+  server answers 409 `run_in_progress`, and the menu turns that into a **question**. Not
+  a warning followed by quitting anyway: a no leaves the pass counting and the server
+  serving, and only a yes sends the second request, the one that carries the
+  confirmation. Where no dialog can be drawn at all the answer is **no** — a machine
+  where nobody can be asked is not a machine where a five-hour pass gets interrupted.
+  **A shortcut clicked twice is a normal thing to do.** The second launch finds the port
+  taken, asks WHO has it (`/api/env`), and on recognising our own server just opens the
+  browser and leaves with a zero exit code; a port held by a stranger still gives a clear
+  message and a non-zero one. The question is asked **before** anything is bound, and
+  that is not belt-and-braces: `http.server` sets `SO_REUSEADDR`, and on Windows a second
+  bind to a *live* port SUCCEEDS — inferring "busy" from a failed bind would have let the
+  second launch quietly steal the port from the first.
+  **A machine without a tray keeps working.** No pystray, no indicator, no display — the
+  server starts anyway and prints the address exactly as `sorta ui` does; the icon is a
+  shortcut to the program, never a condition for it. `pystray` is therefore its own
+  `tray` extra rather than a base dependency: whoever installs sorta as a library or runs
+  it from a terminal does not need a windowing package. Menu captions are in the same
+  three languages as the rest of the interface, from the same catalog.
 - **The program can be closed from the interface** (F209). "Quit" was going to be a tray
   icon, and on Linux there may be no tray at all: GNOME removed it in 3.26, so on Ubuntu
   and Fedora it exists only through an extension somebody installs by hand. The

@@ -38,6 +38,13 @@ dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "pytest-cov>=5.0", "types-PyYAM
 # Without it the code lazily falls back to the fast tier (CLIP) — see the graceful
 # fallback in junk.py.
 vlm = ["transformers>=4.49,<4.52", "accelerate>=0.34", "qwen-vl-utils>=0.0.8"]
+# F207: the tray icon of the INSTALLED application. Opt-in for the same reason `vlm` is
+# — somebody who installs sorta as a library or runs it from a terminal has no use for
+# an indicator, and a windowing dependency in the base list would be paid for by every
+# headless install. Pillow is already a base dependency, so this adds exactly one
+# package. Without it `sorta-tray` still serves, just with no icon (see sorta/tray.py:
+# TrayUnavailable) — which is also what a Linux desktop with no indicator looks like.
+tray = ["pystray>=0.19"]
 # F55: install profiles for the hardware — exactly one of cpu/gpu (mutually
 # exclusive, see tool.uv.conflicts). `uv sync --extra cpu` — the default for other
 # machines without NVIDIA; `uv sync --extra gpu` — the current CUDA 13 (Blackwell
@@ -69,6 +76,13 @@ Repository = "https://github.com/shinKatana0/sorta"
 [project.scripts]
 sorta = "sorta.cli:main"
 
+# F207: the entry point of the tray icon — `gui-scripts` and not `scripts`, because on
+# Windows that is the difference between a shortcut that opens a console window behind
+# the browser and one that does not. The whole feature is for the person who never sees
+# a terminal; a launcher that pops one up would undo it.
+[project.gui-scripts]
+sorta-tray = "sorta.tray:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -82,8 +96,10 @@ packages = ["sorta"]
 # F182: the same statement for the frontend. `sorta/web/` is the page, its stylesheet
 # and its script; an installed CLI that ships without them cannot render a single
 # screen, which is the F65 failure again with a louder symptom.
+# F207 added the `.ico`: the tray reads it out of the installed package, so an install
+# that ships without it is an application with no icon — the F65/F182 failure once more.
 artifacts = ["sorta/data/geo/*.tsv", "sorta/web/*.html", "sorta/web/*.css",
-             "sorta/web/app/*.js"]
+             "sorta/web/app/*.js", "sorta/web/*.ico"]
 
 # F55: cpu/gpu — mutually exclusive install profiles (torch/onnxruntime for
 # different hardware). conflicts forces uv to resolve them in separate forks, which
