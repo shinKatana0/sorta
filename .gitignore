@@ -24,6 +24,11 @@
 !/config.example.yaml
 !/data/
 !/docs/
+# F216: this line was missing, and that is how F211's Inno script and packaging notes
+# were lost — `git add` skipped them without a word, the commit message describes files
+# that are not in the tree, and the suite has been failing at collection ever since. An
+# allowlist is only as good as its entries.
+!/packaging/
 !/pyproject.toml
 !/scripts/
 !/sorta/
