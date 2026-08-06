@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-06
+
+The first release measured on a genuinely cold run: **4 h 35 min** over 38 493 files
+(26 137 canonical) with everything enabled, on an empty database and an emptied preview
+cache. The previous figure was taken on a half-warm machine and understated what a first
+meeting with the tool costs.
+
 ### Added
 - **Files can be reassigned to a folder the plan does not have** (F203). The owner
   reported on 2026‑08‑05 that the layout would move selected frames **only into folders
