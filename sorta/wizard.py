@@ -50,7 +50,7 @@ ENV_MANIFEST = "SORTA_INSTALL_MANIFEST"
 # its own address is a step that can fail; a relative path cannot.
 MANIFEST_ROOT = "root"
 # How far up from the running interpreter to look for it: the install layout is
-# `{app}\env\Scripts\python.exe` and the manifest sits at `{app}\sorta-install.json`.
+# `{app}\python\python.exe` and the manifest sits at `{app}\sorta-install.json`.
 _MANIFEST_LEVELS = 4
 
 # What the person is told about metadata, by what the machine actually has. The third
@@ -333,7 +333,9 @@ def ask_console(question: str) -> bool:
 class Outcome:
     """What the wizard did, for the summary and for the exit code."""
 
-    added: list[str] = field(default_factory=list)
+    # `chosen` and not `installed`: a weights-only tier says yes to a download that
+    # happens on the first run of its stage, and nothing is installed at this moment.
+    chosen: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
 
@@ -414,17 +416,17 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
             say(i18n.cli_text(f"{_SETUP_PREFIX}weights_later", lang,
                               size=human_size(tier.download_mb, lang),
                               weights=", ".join(tier.weights)))
-        outcome.added.append(tier.name(lang))
+        outcome.chosen.append(tier.name(lang))
 
 
 def _summary(outcome: Outcome, lang: i18n.Lang, *, say: Callable[[str], None]) -> None:
     """The last screen: what happened, and that a no is not a dead end."""
-    if outcome.added:
-        say(i18n.cli_text(f"{_SETUP_PREFIX}added", lang, names=", ".join(outcome.added)))
+    if outcome.chosen:
+        say(i18n.cli_text(f"{_SETUP_PREFIX}added", lang, names=", ".join(outcome.chosen)))
     if outcome.skipped:
         say(i18n.cli_text(f"{_SETUP_PREFIX}skipped", lang,
                           names=", ".join(outcome.skipped)))
-    if not outcome.added:
+    if not outcome.chosen:
         # The whole point of the tiers, said out loud to the person who took none of
         # them: what is on this machine is a working product and not a stub.
         say(i18n.cli_text(f"{_SETUP_PREFIX}works_anyway", lang))

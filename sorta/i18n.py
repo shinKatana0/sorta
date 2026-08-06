@@ -767,10 +767,13 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "重み（{weights}、{size}）は、必要とするステージの初回実行時に"
               "ダウンロードされます。",
     },
+    # "Chosen" and not "installed": a tier whose whole cost is model weights installs
+    # nothing at this moment (the line above says when it downloads), and a summary
+    # claiming otherwise would be the small lie this wizard exists to avoid.
     "cli.setup.added": {
-        "ru": "Добавлено: {names}",
-        "en": "Added: {names}",
-        "ja": "追加しました: {names}",
+        "ru": "Выбрано: {names}",
+        "en": "Chosen: {names}",
+        "ja": "選択: {names}",
     },
     "cli.setup.skipped": {
         "ru": "Пропущено: {names}",
@@ -778,11 +781,11 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "スキップ: {names}",
     },
     "cli.setup.works_anyway": {
-        "ru": "Ничего не добавлено — и это нормально: базовый ярус разбирает коллекцию "
+        "ru": "Ничего не выбрано — и это нормально: базовый ярус разбирает коллекцию "
               "по городам, находит дубликаты и читает даты.",
-        "en": "Nothing was added, and that is fine: the base tier sorts the collection by "
-              "city, finds duplicates and reads dates.",
-        "ja": "何も追加していませんが、それで問題ありません: 基本ティアだけで都市別の"
+        "en": "Nothing was chosen, and that is fine: the base tier sorts the collection "
+              "by city, finds duplicates and reads dates.",
+        "ja": "何も選んでいませんが、それで問題ありません: 基本ティアだけで都市別の"
               "振り分け、重複の検出、日付の読み取りができます。",
     },
     "cli.setup.rerun": {
