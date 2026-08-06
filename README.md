@@ -37,10 +37,22 @@ app**.
   re‑scan.
 - **Offline geolocation** (bundled GeoNames) with GPS + session inference; optional
   online Nominatim/OSM.
-- **Fast basic run by default.** The full pipeline over ~38 000 files takes **67 minutes**;
-  turning the deep VLM tier on takes **272**, so it is **off by default** and named on the
-  run screen with what it costs. The deep tier buys one thing the fast one cannot produce
-  at all — the `product` class — and is incremental, so its price is paid once.
+- **Measured, on this machine, with everything switched on.** A first meeting with a
+  collection of **38 493 files** (26 137 canonical) cost **4 h 35 min** — empty database,
+  emptied preview cache, deep VLM tier included. Running it again over the same collection
+  cost **4 min 16 s**.
+
+  Read the second number precisely: that run had **four** new frames, so it is the price of
+  *checking that nothing changed*, not of adding photographs. New frames cost what they
+  always cost — the cheap tier, and about 0.7 s each in the deep one.
+
+  Most of the first number is the deep tier, which is **off by default** and priced on the
+  run screen before you start it. Without it the same collection is roughly an hour. The
+  deep tier buys one thing the fast one cannot produce at all — the `product` class — and
+  it is incremental, so its price is paid once.
+
+  Hardware: RTX 5090 laptop GPU. On a weaker card, or on CPU, expect the deep tier to cost
+  several times more; see *Running on a smaller card* below.
 - **Faces and events are opt‑in** (`--faces`/`--events`, or the matching checkboxes) —
   they're the slowest stages and not everyone needs them.
 - **Faces & people:** local detection + clustering (insightface), once enabled; name and

@@ -24,6 +24,11 @@
 !/config.example.yaml
 !/data/
 !/docs/
+# F211: the installer sources. Added AFTER they were written and silently lost —
+# a new top-level directory is invisible to `git add` under an allowlist, so the
+# feature merged without its Inno script and the worktree removal took the only
+# copy. Publishing something new means adding it here FIRST.
+!/packaging/
 !/pyproject.toml
 !/scripts/
 !/sorta/
