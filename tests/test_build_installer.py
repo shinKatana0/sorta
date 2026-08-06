@@ -308,14 +308,21 @@ class TestTheShortcutsAndTheAbsences(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, ISS_TEXT)
 
-    def test_the_uninstaller_takes_only_what_is_ours(self):
-        """Photographs, the index and an edited config are the person's — the only thing
-        deleted is the cache this program wrote."""
-        deletions = iss_section("UninstallDelete")
-        self.assertTrue(deletions)
-        for line in deletions:
-            with self.subTest(line=line):
-                self.assertIn("{localappdata}\\sorta", line)
+    def test_the_uninstaller_deletes_nothing_of_the_persons(self):
+        """Uninstalling a program is not a request to delete data.
+
+        This test used to say the opposite — that sweeping the preview cache was fine
+        because "we wrote it". Two things make that wrong. The run log sits in the same
+        directory and carries this machine's measurements, which cost a five-hour run to
+        replace. And the capability already exists where it belongs: the interface clears
+        the preview cache on the Process tab, with the size shown beside it — a
+        destructive default would duplicate it silently, at the one moment nobody is
+        watching.
+
+        Offering it as a question during uninstall would be fine. What this pins is only
+        that nothing goes without being asked.
+        """
+        self.assertEqual(iss_section("UninstallDelete"), [])
 
     def test_the_installer_needs_no_administrator(self):
         self.assertIn("PrivilegesRequired=lowest", ISS_TEXT)

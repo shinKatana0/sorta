@@ -500,14 +500,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "インタプリタ: {path}",
     },
     "cli.doctor.uv": {
-        "ru": "uv: {path}",
-        "en": "uv: {path}",
-        "ja": "uv: {path}",
+        "ru": "Менеджер окружения uv: {path}",
+        "en": "Environment manager uv: {path}",
+        "ja": "環境マネージャ uv: {path}",
     },
     "cli.doctor.uv_missing": {
-        "ru": "uv: не найден в PATH",
-        "en": "uv: not on PATH",
-        "ja": "uv: PATH にありません",
+        "ru": "Менеджер окружения uv: не найден в PATH",
+        "en": "Environment manager uv: not on PATH",
+        "ja": "環境マネージャ uv: PATH にありません",
     },
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
