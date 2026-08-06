@@ -321,9 +321,22 @@ def show_doctor(config_path: str) -> None:
 
 
 def say_console(text: str) -> None:
-    """Print — on a console that may not encode every character of the catalog."""
+    """Print — on a console that may not encode every character of the catalog.
+
+    The catalog is Russian, English and Japanese, and a Windows console still runs on a
+    legacy code page unless it is told otherwise (the installer starts this with
+    `-X utf8`, which is the real fix). Where it was not, a sentence with a character the
+    code page has no room for must still APPEAR — losing the line about exiftool because
+    of an em dash would be the worst way to fail.
+    """
     try:
         print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        try:
+            print(text.encode(encoding, "replace").decode(encoding, "replace"))
+        except (OSError, ValueError):
+            pass
     except (OSError, ValueError):  # a closed stream under a windowed launcher
         pass
 

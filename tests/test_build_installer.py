@@ -289,9 +289,16 @@ class TestTheShortcutsAndTheAbsences(unittest.TestCase):
         self.assertIn('WorkingDir: "{userappdata}\\sorta"', entry)
 
     def test_the_wizard_runs_once_at_the_end_of_the_installation(self):
-        entry = iss_entry("Run", "-m sorta.wizard")
+        entry = iss_entry("Run", "sorta.wizard")
         self.assertIn("postinstall", entry)
         self.assertIn("python.exe", entry)
+
+    def test_the_wizard_is_started_in_utf8(self):
+        """Its catalog is Russian, English and Japanese, and a Windows console runs on a
+        legacy code page unless it is told otherwise — `-X utf8` is that telling."""
+        for section in ("Run", "Icons"):
+            with self.subTest(section=section):
+                self.assertIn("-X utf8 -m sorta.wizard", iss_entry(section, "sorta.wizard"))
 
     def test_nothing_is_registered_to_start_with_the_system(self):
         """A boundary of the brief: a program that starts with the machine is the

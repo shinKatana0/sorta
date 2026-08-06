@@ -116,6 +116,28 @@ class TestRefusingEverything(unittest.TestCase):
             with self.subTest(tier=tier.key):
                 self.assertIn(tier.without("en"), self.screen.said)
 
+    def test_a_line_a_legacy_console_cannot_encode_still_appears(self):
+        """The catalog has em dashes and Japanese; a cp866 console has neither. Losing
+        the sentence about exiftool to an encoding is not an option, so it degrades to
+        replacement characters instead of to silence."""
+        printed: list[str] = []
+
+        def print_once(text: str) -> None:
+            if not printed:
+                printed.append(text)
+                raise UnicodeEncodeError("cp866", "—", 0, 1, "no room")
+            printed.append(text)
+
+        with mock.patch("builtins.print", side_effect=print_once):
+            with mock.patch.object(wizard.sys, "stdout", mock.Mock(encoding="cp866")):
+                wizard.say_console("dates — from HEIC")
+        self.assertEqual(len(printed), 2)
+        self.assertIn("dates", printed[1])
+
+    def test_a_stream_that_is_not_there_at_all_is_survived(self):
+        with mock.patch("builtins.print", side_effect=OSError("closed")):
+            wizard.say_console("anything")
+
     def test_a_question_nobody_answers_is_a_no(self):
         """Enter, EOF, a closed stdin: the wizard may not start a 7 GB download on any
         of them."""
