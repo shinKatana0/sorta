@@ -345,6 +345,10 @@ _BODIES: dict[str, object] = {
     "/api/settings": {"vlm.workers": 3},
     "/api/sort": {"dest": None, "mode": "move"},
     "/api/undo": {},
+    # F209: without `confirm` — the body the button sends first, and the one this case is
+    # about. Confirmed, the same route DOES close the program mid-run, which is the
+    # decision it asks the person to make; see tests/test_quit_from_the_interface.py.
+    "/api/quit": {},
 }
 
 

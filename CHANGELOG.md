@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The program can be closed from the interface** (F209). "Quit" was going to be a tray
+  icon, and on Linux there may be no tray at all: GNOME removed it in 3.26, so on Ubuntu
+  and Fedora it exists only through an extension somebody installs by hand. The
+  possibility was simply in the wrong place — **an action in the interface works
+  everywhere the product works**, and it is checkable by an ordinary route test, which the
+  behaviour of an icon in somebody else's desktop is not. A tray icon becomes a thin
+  shortcut to it on the systems that have one, not a second implementation. **Quit** sits
+  in the top-right corner of the page — visible, and away from the buttons pressed all day
+  — and `POST /api/quit` stops the server the **Ctrl+C** way: `httpd.shutdown()`, then the
+  server socket and the index connection are closed and the process leaves through its own
+  `main`. No `os._exit`, and the **answer goes out before anything stops**, because a
+  severed connection reads as a crash rather than as a program closing. The terminal is
+  unchanged, and `Ctrl+C` now closes the database connection on the same path.
+  What the feature is mostly about is the **run**: a pass over a real collection counts for
+  up to five hours, and losing it to one press would be the worst thing this could do. So
+  while a run, a layout or a rollback is in flight the route **refuses** — 409 with the
+  reason `run_in_progress` and the name of what is going, exactly as every writing route
+  refuses while busy — and closes nothing. Only a second request carrying
+  `{"confirm": true}` closes the program, and it interrupts the work through the very flag
+  `/api/process/cancel` already sets rather than inventing a second way to stop one. The
+  refusal is the **server's**, not the page's: a dialog the interface draws forbids
+  nothing, and a request sent past the interface meets the same 409.
+
 ## [0.4.0] - 2026-08-06
 
 The first release measured on a genuinely cold run: **4 h 35 min** over 38 493 files

@@ -33,8 +33,18 @@ a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8 4.14 1.7 1.7 0 0 0 9 2.58V2a2 2 0 1 
 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H22a2 2 0 1 1 0 4h-.09
 a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="settings-toggle-label">{{settings_open_button}}</span></button>
+<button type="button" id="quit-btn" class="btn btn-ghost quit-btn" title="{{quit_title}}">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"/>
+<path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg>
+<span>{{quit_button}}</span></button>
 </div>
 </div>
+<div id="quit-done" class="quit-done" hidden><div class="quit-done-box">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+     stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"/>
+<path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg>
+<p>{{quit_done}}</p></div></div>
 <div class="tabs" role="tablist">
 <button type="button" class="tab-btn active" id="tab-btn-overview">{{tab_overview}}</button>
 <button type="button" class="tab-btn" id="tab-btn-review">{{tab_review}}</button>

@@ -2958,4 +2958,63 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "settings_close_button": {
         "ru": "Закрыть", "en": "Close", "ja": "閉じる",
     },
+    # F209: closing the program. The captions live in the header rather than beside the
+    # run controls: this is pressed once a day, and next to the buttons pressed all day
+    # it would be pressed by accident.
+    "quit_button": {
+        "ru": "Завершить работу", "en": "Quit", "ja": "終了する",
+    },
+    # The tooltip says what closes: the button ends the PROGRAM, not the tab it is
+    # pressed in, and the two are one click apart in a browser.
+    "quit_title": {
+        "ru": "Завершить работу Sorta — программа закроется, файлы останутся на месте",
+        "en": "Quit Sorta — the program closes, your files stay where they are",
+        "ja": "Sorta を終了します。プログラムは閉じますが、ファイルはそのまま残ります",
+    },
+    # The refusal the server sends while something is running, asked back as a question.
+    # It names what would be lost — a pass over a real collection counts for hours, and
+    # "are you sure?" is not enough to make that decision on.
+    "quit_running_confirm": {
+        "ru": "Идёт обработка. Если завершить работу сейчас, она будет прервана и "
+              "посчитанное за этот прогон придётся считать заново. Прервать и выйти?",
+        "en": "A run is in progress. Quitting now interrupts it, and what this run has "
+              "counted will have to be counted again. Interrupt it and quit?",
+        "ja": "処理の実行中です。ここで終了すると処理は中断され、この実行で計算した"
+              "内容はやり直しになります。中断して終了しますか？",
+    },
+    "quit_sort_running_confirm": {
+        "ru": "Идёт раскладка. Если завершить работу сейчас, она будет прервана — "
+              "перенесённые файлы останутся на новых местах, журнал позволит откатить "
+              "их при следующем запуске. Прервать и выйти?",
+        "en": "A layout is in progress. Quitting now interrupts it — the files already "
+              "transferred stay where they were put, and the journal can roll them back "
+              "on the next start. Interrupt it and quit?",
+        "ja": "振り分けの実行中です。ここで終了すると中断され、すでに移動したファイルは"
+              "移動先に残ります（次回の起動時に履歴から元に戻せます）。中断して終了しますか？",
+    },
+    "quit_undo_running_confirm": {
+        "ru": "Идёт откат перемещений. Если завершить работу сейчас, он будет прерван — "
+              "часть файлов останется на новых местах, откат можно продолжить при "
+              "следующем запуске. Прервать и выйти?",
+        "en": "A rollback is in progress. Quitting now interrupts it — some files stay "
+              "where they were put, and the rollback can be continued on the next start. "
+              "Interrupt it and quit?",
+        "ja": "移動の巻き戻しを実行中です。ここで終了すると中断され、一部のファイルは"
+              "移動先に残ります（次回の起動時に続けられます）。中断して終了しますか？",
+    },
+    # What the page says once the answer has come back: the server is gone, so nothing
+    # else on this tab will work again — say so instead of leaving a dead page.
+    "quit_done": {
+        "ru": "Sorta закрыта. Эту вкладку можно закрыть; чтобы начать заново, "
+              "запустите «sorta ui».",
+        "en": "Sorta has been closed. You can close this tab; run «sorta ui» to start "
+              "again.",
+        "ja": "Sorta を終了しました。このタブは閉じてかまいません。もう一度使うには "
+              "「sorta ui」を実行してください。",
+    },
+    "quit_failed": {
+        "ru": "Не удалось завершить работу — программа продолжает работать.",
+        "en": "Could not quit — the program is still running.",
+        "ja": "終了できませんでした。プログラムは動作を続けています。",
+    },
 }

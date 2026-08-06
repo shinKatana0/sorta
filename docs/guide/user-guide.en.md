@@ -465,7 +465,10 @@ Settings do not change mid‑run: while a run is in progress the column says so 
 you to wait for it to finish.
 
 The server binds to `127.0.0.1` only (not reachable from the network). Stop it with
-`Ctrl+C`.
+**Quit** in the top-right corner of the page, or with `Ctrl+C` in the terminal it was
+started from — both close it the same way. If a run, a layout or a rollback is in
+progress, **Quit** does not close anything: it says what is going on and asks whether to
+interrupt it, and only your answer closes the program.
 
 ---
 
