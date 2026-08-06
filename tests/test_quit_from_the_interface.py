@@ -23,6 +23,7 @@ What is pinned here:
 from __future__ import annotations
 
 import json
+import re
 import socket
 import sqlite3
 import tempfile
@@ -428,6 +429,22 @@ class TestTheCaptions(unittest.TestCase):
         header = html[html.index('class="header-bar"'):html.index('class="tabs"')]
         self.assertIn('id="quit-btn"', header)
         self.assertIn(ui._UI_STRINGS["quit_button"]["ru"], header)
+
+    def test_every_thing_that_can_be_running_has_a_question_of_its_own(self):
+        """The vocabulary of the answer and the questions the page asks are one list.
+
+        A fourth long operation added tomorrow would come back in `running` with no
+        caption behind it, and the page would fall through to "could not quit" — which
+        is the one wrong thing to say about a refusal that was protecting the work.
+        """
+        html = ui._render_index_html("ru")
+        block = html[html.index("var QUIT_CONFIRM = {"):]
+        block = block[:block.index("};")]
+        mapping = dict(re.findall(r'(\w+): "(quit_\w+)"', block))
+        self.assertEqual(set(mapping), set(ui.QUIT_RUNNING_NAMES))
+        for name, key in sorted(mapping.items()):
+            with self.subTest(running=name):
+                self.assertEqual(set(ui._UI_STRINGS[key]), {"ru", "en", "ja"})
 
     def test_the_page_asks_before_it_confirms(self):
         """The client sends `confirm` only after the person answered the question the
