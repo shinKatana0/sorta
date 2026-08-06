@@ -587,6 +587,81 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "sorta ui: {url} (Ctrl+C to stop)",
         "ja": "sorta ui: {url}（停止は Ctrl+C）",
     },
+    # F207: the tray icon (`sorta-tray`). Everything a person who never opens a terminal
+    # ever sees of this program's start-up and exit: two menu items, the address in the
+    # tooltip, and the question that stands between one click and a five-hour run. The
+    # questions are three whole sentences and not one sentence with the name of the
+    # operation pasted into it — «идёт прогон» and «идёт раскладка» decline differently,
+    # and gluing fragments is a guaranteed bad translation in all three languages.
+    "cli.tray.open": {
+        "ru": "Открыть",
+        "en": "Open",
+        "ja": "開く",
+    },
+    "cli.tray.quit": {
+        "ru": "Выйти",
+        "en": "Quit",
+        "ja": "終了",
+    },
+    "cli.tray.tooltip": {
+        "ru": "Sorta — фотоколлекция: {url}",
+        "en": "Sorta — photo collection: {url}",
+        "ja": "Sorta — 写真コレクション: {url}",
+    },
+    "cli.tray.serving": {
+        "ru": "sorta: {url} (значок в трее: «Открыть» / «Выйти»)",
+        "en": "sorta: {url} (tray icon: Open / Quit)",
+        "ja": "sorta: {url}（トレイアイコン: 開く / 終了）",
+    },
+    "cli.tray.no_icon": {
+        "ru": "sorta: значка в трее не будет ({reason}); программа работает как обычно",
+        "en": "sorta: there will be no tray icon ({reason}); the program runs as usual",
+        "ja": "sorta: トレイアイコンは表示されません（{reason}）。"
+              "プログラムは通常どおり動作します",
+    },
+    "cli.tray.already_running": {
+        "ru": "sorta уже запущена — открываю {url}",
+        "en": "sorta is already running — opening {url}",
+        "ja": "sorta は既に起動しています — {url} を開きます",
+    },
+    "cli.tray.port_busy": {
+        "ru": "sorta: порт {port} занят другой программой — "
+              "запустите с другим портом: --port",
+        "en": "sorta: port {port} is held by another program — start it on a different "
+              "one: --port",
+        "ja": "sorta: ポート {port} は別のプログラムが使用しています — "
+              "別のポートで起動してください: --port",
+    },
+    "cli.tray.quit_title": {
+        "ru": "Выход из Sorta",
+        "en": "Quit Sorta",
+        "ja": "Sorta を終了",
+    },
+    "cli.tray.quit_process": {
+        "ru": "Идёт прогон — он может считать часами. Прервать его и выйти?",
+        "en": "A run is going — it can count for hours. Interrupt it and quit?",
+        "ja": "処理が実行中です（数時間かかることがあります）。中断して終了しますか？",
+    },
+    "cli.tray.quit_sort": {
+        "ru": "Идёт раскладка файлов. Прервать её и выйти?",
+        "en": "A layout of the files is going. Interrupt it and quit?",
+        "ja": "ファイルの振り分けが実行中です。中断して終了しますか？",
+    },
+    "cli.tray.quit_undo": {
+        "ru": "Идёт откат перемещений. Прервать его и выйти?",
+        "en": "A rollback of the moves is going. Interrupt it and quit?",
+        "ja": "移動の取り消しが実行中です。中断して終了しますか？",
+    },
+    "cli.tray.quit_running": {
+        "ru": "Сейчас идёт длительная операция. Прервать её и выйти?",
+        "en": "A long operation is going. Interrupt it and quit?",
+        "ja": "長時間の処理が実行中です。中断して終了しますか？",
+    },
+    "cli.tray.quit_failed": {
+        "ru": "sorta: не удалось завершить программу (ответ {status})",
+        "en": "sorta: could not close the program (answer {status})",
+        "ja": "sorta: プログラムを終了できませんでした（応答 {status}）",
+    },
     "cli.album.empty": {
         "ru": "срез пуст, ничего не выгружено",
         "en": "the slice is empty, nothing exported",
