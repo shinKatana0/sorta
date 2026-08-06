@@ -75,6 +75,12 @@ Repository = "https://github.com/shinKatana0/sorta"
 
 [project.scripts]
 sorta = "sorta.cli:main"
+# F211: the first-run wizard of the Windows installer. A `scripts` entry point and not a
+# `gui-scripts` one, unlike `sorta-tray` below, because this one is a CONVERSATION: it
+# prints what `sorta doctor` found and asks about each tier, so it needs the console the
+# tray icon exists to avoid. The installer runs it once at the end of the installation;
+# running it again later is how a tier that was refused gets added.
+sorta-setup = "sorta.wizard:main"
 
 # F207: the entry point of the tray icon — `gui-scripts` and not `scripts`, because on
 # Windows that is the difference between a shortcut that opens a console window behind
