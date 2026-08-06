@@ -82,6 +82,10 @@ class Tier:
     download_mb: int = 0
     optional: bool = True
     index_url: str | None = None
+    # For a tier that REPLACES what the base one installed rather than adding to it.
+    # Without it the CUDA profile is a no-op: `torch>=2.10.0` is already satisfied by the
+    # CPU wheel sitting there, so a resolver has nothing to do and the card stays idle.
+    reinstall: bool = False
 
     def name(self, lang: i18n.Lang) -> str:
         return i18n.cli_text(f"{_SETUP_PREFIX}tier.{self.key}.name", lang)
@@ -106,7 +110,13 @@ TIERS: tuple[Tier, ...] = (
     Tier("base", extras=("cpu", "tray"), optional=False),
     Tier("faces", weights=("buffalo_l",), download_mb=400),
     Tier("search", weights=("ViT-L-14", "XLM-RoBERTa"), download_mb=3000),
-    Tier("gpu", extras=("gpu",), download_mb=2500, index_url=PYTORCH_CU130_INDEX),
+    # The one tier that replaces rather than adds: the CUDA builds of torch and
+    # onnxruntime take the place of the CPU ones the installer carried. `onnxruntime` and
+    # `onnxruntime-gpu` unpack into the SAME directory (the F76 trap), and here that works
+    # in our favour — the GPU build is written last — but it is exactly why the wizard
+    # ends by pointing at `sorta doctor`, which is the thing that can tell.
+    Tier("gpu", extras=("gpu",), download_mb=2500, index_url=PYTORCH_CU130_INDEX,
+         reinstall=True),
     Tier("deep", extras=("vlm",), weights=("Qwen2.5-VL-3B",), download_mb=7000),
 )
 
@@ -274,6 +284,8 @@ def install_command(tier: Tier, requirements: Sequence[str], *,
     command = [uv, "pip", "install", "--python", python]
     if target:
         command += ["--target", target]
+    if tier.reinstall:
+        command.append("--reinstall")
     command += list(requirements)
     if tier.index_url:
         # An EXTRA index: torch comes from the CUDA one, everything else stays on PyPI.

@@ -173,6 +173,22 @@ class TestAcceptingATier(unittest.TestCase):
                      / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn(f'url = "{wizard.PYTORCH_CU130_INDEX}"', pyproject)
 
+    def test_the_cuda_profile_replaces_the_cpu_one_instead_of_adding_to_it(self):
+        """Without `--reinstall` this tier is a no-op: `torch>=2.10.0` is already
+        satisfied by the CPU wheel the installer carried, so nothing would be fetched and
+        the card would stay idle with the wizard reporting success."""
+        command = wizard.install_command(wizard.TIERS_BY_KEY["gpu"], ["torch>=2.10.0"],
+                                         uv="uv", python="python.exe")
+        self.assertIn("--reinstall", command)
+        self.assertLess(command.index("--reinstall"), command.index("torch>=2.10.0"))
+
+    def test_a_tier_that_only_adds_packages_is_not_reinstalled(self):
+        self.assertFalse(wizard.TIERS_BY_KEY["deep"].reinstall)
+        self.assertNotIn("--reinstall",
+                         wizard.install_command(wizard.TIERS_BY_KEY["deep"],
+                                                ["transformers"], uv="uv",
+                                                python="python.exe"))
+
     def test_a_tier_without_an_index_gets_no_flag(self):
         command = wizard.install_command(wizard.TIERS_BY_KEY["deep"], ["transformers"],
                                          uv="uv", python="python.exe")
