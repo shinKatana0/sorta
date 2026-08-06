@@ -375,6 +375,27 @@ class TestAMachineWithoutATray(TrayProgramTestBase):
         self.assertEqual(status, 200, payload)
         self.assert_program_ended()
 
+    def test_a_backend_that_dies_after_the_icon_was_built_is_survived_too(self):
+        """A Linux backend that only finds out at run time that there is no indicator
+        raises with the server already up. The program keeps serving without it."""
+        class _DyingIcon:
+            def __init__(self, on_open, on_quit):
+                self.on_quit = on_quit
+
+            def run(self):
+                raise RuntimeError("no indicator to attach to")
+
+            def stop(self):
+                pass
+
+        self.start_program(
+            icon_factory=lambda port, lang, *, on_open, on_quit: _DyingIcon(on_open,
+                                                                           on_quit))
+        self.assert_still_serving()
+        status, payload = tray.request_quit(self.port)
+        self.assertEqual(status, 200, payload)
+        self.assert_program_ended()
+
     def test_a_missing_library_is_reported_as_no_tray_and_not_as_a_crash(self):
         with mock.patch.dict("sys.modules", {"pystray": None}):
             with self.assertRaises(tray.TrayUnavailable):
@@ -546,6 +567,19 @@ class TestTheAnswersToQuitAreReadCorrectly(unittest.TestCase):
     def test_a_confirmed_quit_the_server_refuses_anyway_is_a_failure(self):
         answers = [(409, {"reason": ui.QUIT_RUN_IN_PROGRESS, "running": "process"}),
                    (409, {"reason": ui.QUIT_RUN_IN_PROGRESS, "running": "process"})]
+        with mock.patch.object(tray, "request_quit", side_effect=answers):
+            self.assertFalse(tray.quit_program(8756, "en", ask=lambda t, q: True))
+
+    def test_a_socket_that_refuses_is_an_answer_and_not_a_traceback(self):
+        """The menu item runs on the tray library's loop — nothing here may throw at
+        it, and "the server is already gone" is the ordinary way for that to happen."""
+        with mock.patch.object(tray, "request_quit",
+                               side_effect=ConnectionRefusedError("gone")):
+            self.assertFalse(tray.quit_program(8756, "en", ask=lambda t, q: True))
+
+    def test_a_socket_that_dies_between_the_question_and_the_confirmation(self):
+        answers = [(409, {"reason": ui.QUIT_RUN_IN_PROGRESS, "running": "process"}),
+                   ConnectionResetError("gone")]
         with mock.patch.object(tray, "request_quit", side_effect=answers):
             self.assertFalse(tray.quit_program(8756, "en", ask=lambda t, q: True))
 

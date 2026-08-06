@@ -221,7 +221,14 @@ def quit_program(port: int, lang: i18n.Lang, *,
     A no leaves the run and the server exactly as they were: the refusal never touched
     the cancel flag.
     """
-    status, payload = request_quit(port)
+    # A menu callback runs on the tray library's own loop, so nothing here may throw at
+    # it: a socket that refuses (the server is already gone, say) is an answer like any
+    # other and is reported as one.
+    try:
+        status, payload = request_quit(port)
+    except OSError as exc:
+        _say(i18n.cli_text("cli.tray.quit_failed", lang, status=exc), error=True)
+        return False
     if status == HTTPStatus.OK:
         return True
     if status != HTTPStatus.CONFLICT or payload.get("reason") != ui.QUIT_RUN_IN_PROGRESS:
@@ -230,7 +237,11 @@ def quit_program(port: int, lang: i18n.Lang, *,
     if not ask(i18n.cli_text("cli.tray.quit_title", lang),
                quit_question(payload.get("running"), lang)):
         return False
-    status, _payload = request_quit(port, confirm=True)
+    try:
+        status, _payload = request_quit(port, confirm=True)
+    except OSError as exc:
+        _say(i18n.cli_text("cli.tray.quit_failed", lang, status=exc), error=True)
+        return False
     if status != HTTPStatus.OK:
         _say(i18n.cli_text("cli.tray.quit_failed", lang, status=status), error=True)
         return False
@@ -355,7 +366,16 @@ def _serve_until_closed(port: int, lang: i18n.Lang, url: str, serving: threading
     _say(i18n.cli_text("cli.tray.serving", lang, url=url))
     threading.Thread(target=_stop_icon_when_the_server_stops,
                      args=(serving, icon), daemon=True).start()
-    icon.run()
+    try:
+        icon.run()
+    except Exception as exc:
+        # Not the same failure as the one above, and it has to be survived just as
+        # thoroughly: a Linux backend that only finds out at run time that there is no
+        # indicator to attach to raises HERE, with the server already serving. The
+        # `join` below is what keeps that from becoming an exit — the program carries
+        # on without the icon, which is requirement 4.
+        _say(i18n.cli_text("cli.tray.no_icon", lang, reason=exc))
+        _say(i18n.cli_text("cli.ui.serving", lang, url=url))
     serving.join()
 
 
