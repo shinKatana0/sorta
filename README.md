@@ -163,6 +163,7 @@ cp config.example.yaml config.yaml      # set `sources` and `language`
 
 # Easiest: the web app
 sorta ui                                # http://127.0.0.1:8756 → Process a folder → review
+sorta-tray                              # ...the same, with an icon in the tray (extra: tray)
 
 # Or the CLI
 sorta index /path/to/photos             # scan
@@ -172,6 +173,12 @@ sorta sort --by city --dest /path/to/sorted            # dry-run plan (CSV + HTM
 sorta sort --by city --dest /path/to/sorted --copy --apply   # apply (copy = non-destructive)
 sorta undo                              # reverse the last batch if needed
 ```
+
+`sorta-tray` (F207) is the same web app with an icon in the notification area — for a
+Sorta started from a shortcut rather than from a terminal. Double-click the icon or pick
+**Open** to open the window, **Quit** to close the program (it asks first if a run is
+going). Add the `tray` extra for it (`…sorta[gpu,tray]`); without the extra, or on a
+desktop that has no tray, it still serves — just with no icon.
 
 > **`uv tool install` has no `--extra` flag** — the extra belongs in the quoted
 > package spec, as above. Installed without it, you silently get the **CPU** profile
