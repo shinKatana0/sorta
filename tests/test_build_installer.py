@@ -74,6 +74,33 @@ class TestTheCommands(unittest.TestCase):
         self.assertIn(builder.PYTHON_VERSION, command)
         self.assertIn("--install-dir", command)
 
+    def test_the_build_machine_gets_no_shim_and_no_registry_entry(self):
+        """A payload is staged, not installed: nothing here may point the build machine's
+        PATH or registry into `dist/`."""
+        command = builder.python_install_command("uv", Path("dist/payload/python"))
+        self.assertIn("--no-bin", command)
+        self.assertIn("--no-registry", command)
+
+    def test_the_versioned_directory_uv_writes_is_lifted_to_one_fixed_path(self):
+        """`python\\python.exe` is named by the manifest, the .pth and two shortcuts —
+        a path with a patch version in it would have to be rewritten in all four."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "python"
+            staged = root / "cpython-3.13.1-windows-x86_64-none"
+            (staged / "Lib" / "site-packages").mkdir(parents=True)
+            (staged / "python.exe").write_bytes(b"")
+            self.assertEqual(builder.flatten_python_install(root), root / "python.exe")
+            self.assertTrue((root / "python.exe").is_file())
+            self.assertTrue((root / "Lib" / "site-packages").is_dir())
+            self.assertFalse(staged.exists())
+            # ...and doing it twice changes nothing.
+            self.assertEqual(builder.flatten_python_install(root), root / "python.exe")
+
+    def test_an_install_directory_with_no_interpreter_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                builder.flatten_python_install(Path(tmp))
+
     def test_the_base_tier_is_installed_as_a_target_tree_with_its_extras(self):
         command = builder.base_install_command("uv", Path("py/python.exe"), Path("lib"))
         self.assertEqual(command[:4], ["uv", "pip", "install", "--python"])

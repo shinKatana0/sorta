@@ -132,8 +132,36 @@ def unaccounted_extras(pyproject_text: str) -> tuple[set[str], set[str]]:
 
 def python_install_command(uv: str, destination: Path,
                            version: str = PYTHON_VERSION) -> list[str]:
-    """Fetch the standalone CPython that ships inside the payload."""
-    return [uv, "python", "install", "--install-dir", str(destination), version]
+    """Fetch the standalone CPython that ships inside the payload.
+
+    `--no-bin` and `--no-registry` because this is a PAYLOAD and not an installation:
+    the build machine must not end up with a shim on its PATH or an entry in its registry
+    pointing into `dist/`.
+    """
+    return [uv, "python", "install", "--install-dir", str(destination),
+            "--no-bin", "--no-registry", version]
+
+
+def flatten_python_install(install_dir: Path) -> Path:
+    """Lift uv's versioned directory up one level, and return the interpreter.
+
+    `uv python install --install-dir X` writes `X/cpython-3.13.x-windows-x86_64-none/`,
+    and the payload needs ONE fixed path: the manifest, the `.pth` and the shortcuts all
+    name `python\\python.exe`, and a path with a patch version in it would have to be
+    rewritten by three different files on every upgrade.
+    """
+    direct = install_dir / "python.exe"
+    if direct.is_file():
+        return direct
+    staged = [child for child in sorted(install_dir.iterdir())
+              if child.is_dir() and (child / "python.exe").is_file()]
+    if len(staged) != 1:
+        raise SystemExit(f"expected exactly one python installation in {install_dir}, "
+                         f"found {[child.name for child in staged]}")
+    for item in list(staged[0].iterdir()):
+        shutil.move(str(item), str(install_dir / item.name))
+    staged[0].rmdir()
+    return direct
 
 
 def base_install_command(uv: str, python: Path, target: Path,
@@ -338,6 +366,8 @@ def build(args: argparse.Namespace) -> int:
         if not args.dry_run and PAYLOAD.exists():
             shutil.rmtree(PAYLOAD)
         builder.run(python_install_command(uv, PAYLOAD / PAYLOAD_PYTHON))
+        if not args.dry_run:
+            flatten_python_install(PAYLOAD / PAYLOAD_PYTHON)
         builder.run(base_install_command(uv, PAYLOAD / PAYLOAD_PYTHON_EXE,
                                          PAYLOAD / PAYLOAD_LIB))
         builder.write(PAYLOAD / PAYLOAD_PYTHON / "Lib" / "site-packages" / PTH_NAME,

@@ -744,11 +744,11 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     "cli.setup.install_failed": {
         "ru": "Не удалось установить {name} (код {status}). Программа работает как "
-              "раньше; запустите sorta-setup ещё раз, чтобы повторить.",
+              "раньше; запустите настройку ещё раз, чтобы повторить.",
         "en": "Could not install {name} (exit code {status}). The program works as "
-              "before; run sorta-setup again to retry.",
+              "before; run the setup again to retry.",
         "ja": "{name} をインストールできませんでした（終了コード {status}）。"
-              "プログラムはこれまでどおり動作します。やり直すには sorta-setup を"
+              "プログラムはこれまでどおり動作します。やり直すにはセットアップを"
               "再実行してください。",
     },
     "cli.setup.no_metadata": {
@@ -786,9 +786,12 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "振り分け、重複の検出、日付の読み取りができます。",
     },
     "cli.setup.rerun": {
-        "ru": "Любой ярус можно доустановить позже — запустите sorta-setup ещё раз.",
-        "en": "Any tier can be added later — run sorta-setup again.",
-        "ja": "どのティアも後から追加できます — sorta-setup をもう一度実行してください。",
+        "ru": "Любой ярус можно доустановить позже: пункт «Sorta setup» в меню «Пуск» "
+              "(или команда sorta-setup).",
+        "en": "Any tier can be added later: the Sorta setup item of the Start menu (or "
+              "the sorta-setup command).",
+        "ja": "どのティアも後から追加できます: スタートメニューの「Sorta setup」"
+              "（またはコマンド sorta-setup）。",
     },
     "cli.setup.doctor_hint": {
         "ru": "`sorta doctor` показывает, чем установка оказалась на самом деле.",
