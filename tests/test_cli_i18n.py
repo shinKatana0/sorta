@@ -23,6 +23,16 @@ from sorta.db import connect
 _LANGS = ("ru", "en", "ja")
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 
+# F216: the tier block of `doctor`, fixed so that the golden output is about the words
+# and not about which models happen to be cached on the machine running the suite. One
+# tier of each state: in place, packages in place with the weights still to come, and
+# not installed at all.
+DOCTOR_TIERS = [
+    cli.TierState("base"),
+    cli.TierState("faces", missing_weights=("buffalo_l",)),
+    cli.TierState("deep", missing_packages=("transformers",)),
+]
+
 
 def command_callback(app, name: str):
     """The function typer registered for `sorta <name>` (F114: the commands are built
@@ -243,9 +253,13 @@ class _Env:
         # so a shadowed PATH shows up at once rather than nine minutes later in a red
         # gate. Both are pinned here: this test is about the WORDS, and a real path would
         # turn it into a statement about whichever machine happened to run it.
+        # F216: the same for the tier block below them — the machine running the suite
+        # has whatever it has, so the three states are fixed here and it is the SENTENCES
+        # that are under test.
         health = SimpleNamespace(summary="health", available=True)
         with patch.object(cli, "gpu_health", lambda: health), \
                 patch.object(cli, "geo_data_health", lambda: health), \
+                patch.object(cli, "tier_states", lambda: DOCTOR_TIERS), \
                 patch.object(cli, "default_log_path", lambda: "run.log"), \
                 patch.object(cli.sys, "executable", "python.exe"), \
                 patch.object(cli.shutil, "which", lambda _name: "uv.exe"), \
@@ -410,6 +424,12 @@ class TestRussianOutputIsUnchanged(_EnvCase):
         self.assertEqual(
             got["doctor"],
             f"Интерпретатор: python.exe\nМенеджер окружения uv: uv.exe\n"
+            f"Ярусы установки:\n"
+            f"  Базовый ярус: на месте\n"
+            f"  Лица: пакеты на месте, модели (buffalo_l, 400 МБ) скачаются при первом "
+            f"запуске стадии\n"
+            f"  Глубокий ярус (VLM): не установлен (нет: transformers)\n"
+            f"  Доустановить ярус: sorta-setup (пункт «Sorta setup» в меню «Пуск»).\n"
             f"health\nhealth\nЛог прогона: run.log\n"
             f"Кэш превью: {self.env.previews} (ОТКЛЮЧЁН)\n")
         self.assertEqual(got["stub"], "'step' будет реализована в следующей фазе: doc\n2")

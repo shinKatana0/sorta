@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover — a sandbox/CI without typer, see _arg
 else:
     _TYPER_AVAILABLE = True
 
-from . import __version__, imaging
+from . import __version__, imaging, wizard
 from .config import Config, configure_logging, load_config
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
@@ -55,6 +55,7 @@ from .junk import (
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
+from .offline import hf_cache_dir
 from .progress import progress_task
 from .runlog import default_log_path, log_environment, observe, stage_timer
 from .search import (
@@ -676,6 +677,167 @@ def _stub(name: str, doc: str, lang: Lang):
 # interface — which is also what keeps them callable from the argparse fallback.
 
 
+# --- F216: which tiers this machine actually has ----------------------------
+# `doctor` is the check screen the wizard calls (F211) and the command a person is
+# pointed at when something is missing — and it answered everything about the install
+# except what the install is MADE of. The installer ships one tier and offers four, so
+# "which of them are here" is the first question both a person and the installer
+# workflow have, and answering it used to mean reading a directory listing.
+#
+# A tier is two halves that fail differently, and they are reported apart for the same
+# reason the wizard says "chosen" rather than "installed": the PACKAGES `uv` put into
+# `{app}\lib`, and the model WEIGHTS the stage downloads on the first run that needs
+# them. A tier whose packages are in place and whose 400 MB are not is neither
+# installed nor missing, and there is a sentence for exactly that state.
+
+_INSIGHTFACE_MODELS = Path.home() / ".insightface" / "models"
+
+# What a weight is CALLED once it is on disk. The catalog names them the way a person
+# reads them (`ViT-L-14`); what lands in a cache is whatever the loader asked the hub
+# for, and the two are not the same string — open_clip fetches the openai weights of
+# ViT-L-14 as `timm/vit_large_patch14_clip_224.openai`. Deliberately a substring match
+# on the cache entries and not a manifest: this answers "has this been downloaded",
+# which is a question about disk, and a wrong revision still degrades the way it did
+# before (the loader raises and names the opt-out). A weight named by `wizard.TIERS`
+# and missing from here fails the suite, the way the extras do.
+_WEIGHT_MARKERS: dict[str, tuple[str, ...]] = {
+    "buffalo_l": ("buffalo_l",),
+    "ViT-L-14": ("vit-l-14", "vit_large_patch14_clip_224"),
+    "XLM-RoBERTa": ("xlm-roberta",),
+    "Qwen2.5-VL-3B": ("qwen2.5-vl-3b",),
+}
+
+# How many names of a long list are printed before it turns into a count. The gpu tier
+# names eight packages, and a `doctor` line that wraps three times is one nobody reads.
+_MISSING_SHOWN = 4
+
+
+@dataclasses.dataclass(frozen=True)
+class TierState:
+    """One tier, as this machine has it: what is missing, by name."""
+
+    key: str
+    missing_packages: tuple[str, ...] = ()
+    missing_weights: tuple[str, ...] = ()
+
+    @property
+    def ready(self) -> bool:
+        return not self.missing_packages and not self.missing_weights
+
+
+def _distribution_name(requirement: str) -> str:
+    """`onnxruntime>=1.27.0` -> `onnxruntime` — the name a package is installed under."""
+    name = requirement.strip()
+    for separator in " <>=!~;[(":
+        name = name.split(separator)[0]
+    return name.strip()
+
+
+def _package_present(name: str) -> bool:
+    """Is that distribution installed? Metadata, not an import.
+
+    Not `importlib.import_module`: the module a distribution provides is frequently not
+    its name (`onnxruntime-gpu` imports as `onnxruntime`, the CUDA runtime packages as
+    nothing at all), and importing torch to find out whether torch is there costs 4.5 s
+    on a command whose whole job is to answer quickly.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return bool(version(name))
+    except PackageNotFoundError:
+        return False
+    except Exception:  # noqa: BLE001 — unreadable metadata is an answer, not a crash
+        return False
+
+
+def _normalized(text: str) -> str:
+    return text.lower().replace("_", "-")
+
+
+def _weights_cached(name: str, *, insightface: Path | None = None,
+                    hub: Path | None = None) -> bool:
+    """Are that model's files already on this disk?
+
+    Two caches, because the two families of weights are downloaded by different
+    libraries: insightface keeps buffalo_l in `~/.insightface/models/<name>`, and
+    everything else in the catalog comes through huggingface_hub, which names a model
+    `models--<org>--<repo>`.
+    """
+    models = _INSIGHTFACE_MODELS if insightface is None else insightface
+    folder = models / name
+    try:
+        if folder.is_dir() and any(folder.iterdir()):
+            return True
+    except OSError:
+        pass
+    markers = tuple(_normalized(marker) for marker in _WEIGHT_MARKERS.get(name, (name,)))
+    try:
+        entries = [_normalized(child.name)
+                   for child in (hf_cache_dir() if hub is None else hub).iterdir()]
+    except OSError:  # no cache directory at all — nothing has been downloaded yet
+        return False
+    return any(marker in entry for entry in entries for marker in markers)
+
+
+def tier_states(*, package_present: Callable[[str], bool] = _package_present,
+                weights_cached: Callable[[str], bool] = _weights_cached
+                ) -> list[TierState]:
+    """Every tier of the catalog, with what this machine is missing of it.
+
+    The requirements come from `wizard.tier_requirements`, i.e. off the metadata the
+    build put into the wheel from `pyproject.toml` — so a version bound edited in the
+    project reaches this without anything being copied by hand. When there is no
+    metadata to read at all (a source directory that was never installed), a tier with
+    extras is reported as missing them by extra name rather than as present: nothing
+    was verified, and saying "in place" about that would be the failure this whole
+    feature is against.
+    """
+    states: list[TierState] = []
+    for tier in wizard.TIERS:
+        requirements = wizard.tier_requirements(tier)
+        if tier.extras and not requirements:
+            missing_packages = tuple(f"extra:{extra}" for extra in tier.extras)
+        else:
+            missing_packages = tuple(
+                name for name in map(_distribution_name, requirements)
+                if not package_present(name))
+        states.append(TierState(
+            key=tier.key,
+            missing_packages=missing_packages,
+            missing_weights=tuple(name for name in tier.weights
+                                  if not weights_cached(name)),
+        ))
+    return states
+
+
+def _some_of(names: tuple[str, ...], limit: int = _MISSING_SHOWN) -> str:
+    """A list of names for one line: the first few, then how many were left out."""
+    if len(names) <= limit:
+        return ", ".join(names)
+    return ", ".join(names[:limit]) + f", +{len(names) - limit}"
+
+
+def _doctor_tier_lines(lang: Lang, states: list[TierState]) -> list[str]:
+    """The tier block of `doctor` — one line per tier, and a way out if one is missing."""
+    lines = [_t("cli.doctor.tiers", lang)]
+    for state in states:
+        tier = wizard.TIERS_BY_KEY[state.key]
+        name = tier.name(lang)
+        if state.missing_packages:
+            lines.append(_t("cli.doctor.tier_absent", lang, name=name,
+                            missing=_some_of(state.missing_packages)))
+        elif state.missing_weights:
+            lines.append(_t("cli.doctor.tier_weights", lang, name=name,
+                            weights=_some_of(state.missing_weights),
+                            size=wizard.human_size(tier.download_mb, lang)))
+        else:
+            lines.append(_t("cli.doctor.tier_ready", lang, name=name))
+    if not all(state.ready for state in states):
+        lines.append(_t("cli.doctor.tier_hint", lang))
+    return lines
+
+
 def _cmd_doctor(config_path: str) -> None:
     """F112: `--config` is here only to know the output language — the command still
     works without a readable config (`_lang_of` falls back to the default), it just
@@ -691,6 +853,11 @@ def _cmd_doctor(config_path: str) -> None:
     uv_path = shutil.which("uv")
     print(_t("cli.doctor.uv", lang, path=uv_path) if uv_path
           else _t("cli.doctor.uv_missing", lang))
+    # F216: ...and what the install is made of. The installer ships one tier and offers
+    # four, so both the person who installed it by hand and the workflow that installs
+    # it on a clean machine ask this first.
+    for line in _doctor_tier_lines(lang, tier_states()):
+        print(line)
     print(gpu_health().summary)
     # F65: the geo base failing to load is invisible at runtime (every coordinate just
     # resolves to an empty place), so the doctor has to state it outright.
