@@ -261,8 +261,11 @@ class TestCancellationThroughProgress(ClusterProgressTestCase):
                 raise _Boom()
 
         cb.phase = rec.phase  # type: ignore[attr-defined]
+        # `force` because since F212 a second call over an unchanged set of faces does
+        # not reach the write phase at all — and this case is about what happens when it
+        # does. The cancellation is the subject here, not the skip.
         with self.assertRaises(_Boom):
-            cluster_faces(self.cfg, self.conn, progress=cb)
+            cluster_faces(self.cfg, self.conn, progress=cb, force=True)
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) FROM face_clusters").fetchone()[0],
             before)

@@ -121,6 +121,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # gets the column with the table from executescript below.
     if 14 <= version <= 27:  # v28: manual_places.region_geonameid (F202 — a region place)
         conn.execute("ALTER TABLE manual_places ADD COLUMN region_geonameid INTEGER")
+    # v29 (cluster_state, F212) — a new table, created by executescript below. An upgraded
+    # database has no row in it, which reads as "never clustered": the first run after the
+    # upgrade clusters exactly as it always did and writes the fingerprint on the way out.
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

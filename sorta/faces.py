@@ -1,6 +1,7 @@
 """F3 (Phase 3): faces.
 
-Contract: reads files (path, dup_of IS NULL), writes ONLY into faces and face_clusters.
+Contract: reads files (path, dup_of IS NULL), writes ONLY into faces, face_clusters and
+cluster_state (F212 — the one row saying what the current clusters are an answer to).
 - embedding: a BLOB of 512 float32 little-endian (ArcFace), see docs/ARCHITECTURE.md §3.
 - A faces row with bbox='[]' and an empty embedding is the marker "file processed, no faces"
   (incrementality without a schema change).
@@ -25,6 +26,7 @@ economy must not be able to turn into lost faces.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -34,6 +36,7 @@ import sys
 import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Callable, Iterator
@@ -130,6 +133,10 @@ class ClusterStats:
     noise: int = 0
     labels_kept: int = 0      # clusters that inherited a label on recomputation
     malformed: int = 0        # embeddings of the wrong length — excluded, cluster_id=NULL
+    # F212: the clusters were left as they were, because nothing that decides them had
+    # moved. The numbers above then describe the clusters ALREADY in the base rather than
+    # ones this run produced — see _stored_cluster_stats.
+    skipped: bool = False
 
 
 # --- Detection + embeddings ------------------------------------------------
@@ -957,9 +964,156 @@ def _inherit_labels(
     return inherited
 
 
+# --- F212: not clustering when there is nothing to cluster -----------------
+#
+# `detect_and_cluster` always called `cluster_faces`, and `cluster_faces` always ran
+# HDBSCAN over every embedding in the base. On the reference collection that is 24 477
+# faces and 171.9 s — 67% of a repeat run in which detection had exactly four new frames to
+# look at. Two thirds of the run went on recomputing an answer that could not have changed.
+#
+# The device is the project's own and already carries three features: an answer stored next
+# to a digest of the QUESTION (`frame_quality.source`, `landmark_checks.model`,
+# `group_keeper.source`). A changed question no longer matches the stored digest, so it
+# invalidates the answer by itself — there is no "clear the cache" step anybody can forget,
+# and no stored state that can look fresh while what produced it has moved.
+#
+# This is not a speed-up of the first run: there the clustering is needed and honestly
+# costs its seconds. It is the second run that stops paying for the first one's work.
+
+# Raised BY HAND when the code that decides the partition changes meaning — the same rule
+# the prompt fingerprints follow, and the one part of the question no digest can read off
+# the database. Bumping it re-clusters every collection once, which is the point: whoever
+# changes how faces are split must not have to explain why nobody's clusters moved.
+CLUSTER_ALGO_VERSION = 1
+
+# The prefix of the stored marker, `<algorithm>#<digest>` — which splitting the clusters
+# came out of, kept spelled out so a stored row can be read by eye.
+_CLUSTER_ALGO = "hdbscan"
+
+
+def _face_set_digest(conn: sqlite3.Connection) -> str:
+    """A digest of the SET OF FACES the clustering would read — a hash of their sorted ids.
+
+    `COUNT(*)` alone would not do: deleting one face and adding another leaves the counter
+    where it was, and the clusters would silently keep describing a collection that no
+    longer exists. The brief's other candidate — `COUNT(*)`, `MAX(id)` and `SUM(id)`
+    together — survives that swap as well and costs the same, because either way SQLite
+    scans the table (`bbox` is not indexed and `id` is the rowid). The hash is taken
+    because it needs no argument about which combinations of three aggregates can be made
+    to agree by accident: it changes if and only if the set of ids changes.
+
+    WHAT IT DOES NOT CATCH is the CONTENT of an embedding. A row that keeps its id and gets
+    a different vector is invisible here, and that is a reachable state rather than a
+    theoretical one: `_write_hits` deletes a file's rows and inserts new ones, and SQLite
+    hands a deleted rowid straight back when it sat at the end of the table (the effect
+    `tests/test_faces_rescan.py` already documents). A `--rescan` can therefore rebuild the
+    very same id set over different vectors — which is why a rescan FORCES the
+    recomputation instead of asking this question at all.
+
+    The population is the one `_read_face_rows` reads: real faces, without the
+    "processed, no faces" markers, which take no part in clustering.
+    """
+    digest = hashlib.sha1()
+    for row in conn.execute(
+        "SELECT id FROM faces WHERE bbox != ? ORDER BY id", (_NO_FACES_BBOX,)
+    ):
+        digest.update(f"{row['id']}\n".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _cluster_fingerprint(conn: sqlite3.Connection, s: FacesSettings) -> str:
+    """Everything that decides the clusters, in one string compared for equality.
+
+    Three things decide them and all three are in here:
+
+    * the set of faces (`_face_set_digest`);
+    * the thresholds the splitting reads — `min_cluster_size` and `max_distance`, which
+      `_hdbscan_labels` turns into min_samples and the selection epsilon. Someone who
+      changes a threshold in the config and sees the same clusters would conclude the
+      setting does nothing, and that is a worse outcome than a slow run;
+    * `CLUSTER_ALGO_VERSION`, for what no digest can see — the splitting code itself.
+
+    `det_threshold` and `min_face_px` are deliberately OUT. They decide which faces get
+    WRITTEN, not how the written ones are split, and their effect reaches clustering as a
+    changed set of faces — after the rescan that is the only thing which applies them.
+
+    One string and one comparison, because the question is "is everything that decides
+    these clusters still what it was": a marker that matches in part is not a match at all
+    (the F120 rule — a mismatch means RECOMPUTE, never use).
+    """
+    payload = "\n".join([
+        f"algo={CLUSTER_ALGO_VERSION}",
+        f"min_cluster_size={s.min_cluster_size}",
+        f"max_distance={s.max_distance!r}",
+        f"faces={_face_set_digest(conn)}",
+    ])
+    return f"{_CLUSTER_ALGO}#{hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _stored_fingerprint(conn: sqlite3.Connection) -> str | None:
+    """What the last full clustering was an answer to, or None if there has not been one.
+
+    None is also what a database from before this table says (the migration adds it empty),
+    and it means CLUSTER — never "up to date".
+    """
+    row = conn.execute("SELECT fingerprint FROM cluster_state WHERE id = 1").fetchone()
+    return None if row is None else str(row["fingerprint"])
+
+
+def _remember_clustering(conn: sqlite3.Connection, fingerprint: str) -> None:
+    """Record what the clusters just written answer. Called INSIDE the write transaction.
+
+    Inside it on purpose: the marker and the clusters it describes must become visible
+    together, or a Ctrl+C between them would leave a base whose fingerprint promises
+    clusters that were never written.
+    """
+    conn.execute(
+        "INSERT INTO cluster_state (id, fingerprint, updated_at) VALUES (1, ?, ?)"
+        " ON CONFLICT(id) DO UPDATE SET fingerprint = excluded.fingerprint,"
+        " updated_at = excluded.updated_at",
+        (fingerprint, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+    )
+
+
+def _stored_cluster_stats(conn: sqlite3.Connection) -> ClusterStats:
+    """The numbers of a skipped run — read off the clusters that are already in the base.
+
+    A skipped run still has to report something, and the honest report is the state of the
+    clusters it left alone. Every field is the same quantity the recomputing path would
+    have produced for this base: `clusters` counts the groups faces actually sit in (a
+    manual merge sets `merged_into` and moves no face, so it does not change the count a
+    recomputation would report), `labels_kept` counts named clusters that are nobody's
+    merge source, and `noise` excludes the malformed rows, which the recomputing path
+    counts separately rather than as noise.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS faces,"
+        " SUM(CASE WHEN LENGTH(embedding) != ? THEN 1 ELSE 0 END) AS malformed,"
+        " SUM(CASE WHEN cluster_id IS NULL THEN 1 ELSE 0 END) AS unclustered"
+        " FROM faces WHERE bbox != ?",
+        (EMBED_DIM * 4, _NO_FACES_BBOX),
+    ).fetchone()
+    clusters = conn.execute(
+        "SELECT COUNT(DISTINCT cluster_id) FROM faces WHERE cluster_id IS NOT NULL"
+    ).fetchone()[0]
+    labels = conn.execute(
+        "SELECT COUNT(*) FROM face_clusters WHERE label IS NOT NULL AND merged_into IS NULL"
+    ).fetchone()[0]
+    malformed = int(row["malformed"] or 0)
+    return ClusterStats(
+        faces=int(row["faces"] or 0),
+        clusters=int(clusters or 0),
+        noise=int(row["unclustered"] or 0) - malformed,
+        labels_kept=int(labels or 0),
+        malformed=malformed,
+        skipped=True,
+    )
+
+
 def cluster_faces(cfg: Config, conn: sqlite3.Connection,
                   progress: ProgressCB | None = None,
-                  inherit_from: ClusterSnapshot | None = None) -> ClusterStats:
+                  inherit_from: ClusterSnapshot | None = None,
+                  force: bool = False) -> ClusterStats:
     """Full recomputation of clusters over all embeddings, preserving labels.
 
     F84: `progress` is the same `(done, total|None)` callback the other stages take —
@@ -972,14 +1126,32 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection,
     F89: `inherit_from` is a `ClusterSnapshot` taken before a rescan. Without it
     labels are inherited by face id, as always; with it — by file id, because a
     rescan gave every face a new id and the face-wise intersection would be empty.
+
+    F212: and it does not recompute at all when nothing that decides the clusters has
+    moved. `_cluster_fingerprint` is the question the clusters in the base are an answer
+    to — the set of faces, the thresholds, the version of the splitting code — and when it
+    still matches the stored one the clusters are left exactly where they are and
+    `ClusterStats.skipped` says so. Recomputation is unconditional in all three cases where
+    it has to be: `force` (`sorta faces --rescan`), a fingerprint that does not match, and
+    no fingerprint at all (a first clustering, or a database from before this existed).
+
+    `inherit_from` forces it too, and for a reason of its own: a snapshot is taken only
+    before a rescan, and a rescan deletes and re-inserts the faces rows — SQLite can hand
+    back the same ids over DIFFERENT vectors, which the fingerprint cannot see. The one
+    thing a caller must not do is take a snapshot and then expect this to skip.
     """
     s = _settings(cfg)
+    fingerprint = _cluster_fingerprint(conn, s)
+    if not force and inherit_from is None and _stored_fingerprint(conn) == fingerprint:
+        return _stored_cluster_stats(conn)
+
     report = _PhaseProgress(progress)
     rows = _read_face_rows(conn, report)
     stats = ClusterStats(faces=len(rows))
     if not rows:
         with conn:
             conn.execute("DELETE FROM face_clusters")
+            _remember_clustering(conn, fingerprint)
         return stats
 
     expected_len = EMBED_DIM * 4
@@ -996,6 +1168,7 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection,
         with conn:
             conn.execute("UPDATE faces SET cluster_id = NULL")
             conn.execute("DELETE FROM face_clusters")
+            _remember_clustering(conn, fingerprint)
         return stats
 
     report.start(CLUSTER_PHASE_CLUSTER, None)  # unmeasurable: one blocking call
@@ -1056,6 +1229,7 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection,
             if label is not None:
                 stats.labels_kept += 1
             report.step(written)
+        _remember_clustering(conn, fingerprint)
     stats.clusters = len(groups)
     stats.noise = int((labels < 0).sum())
     return stats
@@ -1078,11 +1252,18 @@ def detect_and_cluster(
     random ones). This is the only place that pairs the rescan with the snapshot the
     labels are carried across on, so it is the entry point to use — the halves called
     separately with rescan=True would drop every name.
+
+    F212: the clustering half is now allowed to do nothing. It recomputes when the set of
+    faces or the clustering settings have moved, and on a repeat run over a collection with
+    no new frames it leaves the clusters — and the names on them — exactly where they are.
+    `rescan` still recomputes unconditionally: the vectors under the faces are new even
+    when their ids are not.
     """
     snapshot = snapshot_clusters(conn) if rescan else None
     face_stats = detect_faces(cfg, conn, progress=progress, analyzer=analyzer,
                               rescan=rescan, limit=limit)
-    return face_stats, cluster_faces(cfg, conn, progress=progress, inherit_from=snapshot)
+    return face_stats, cluster_faces(cfg, conn, progress=progress, inherit_from=snapshot,
+                                     force=rescan)
 
 
 # --- Manual operations on clusters -----------------------------------------

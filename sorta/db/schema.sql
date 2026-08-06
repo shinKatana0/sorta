@@ -1,6 +1,6 @@
 -- Sorta: index schema.
 PRAGMA journal_mode = WAL;
-PRAGMA user_version = 28;
+PRAGMA user_version = 29;
 
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -62,6 +62,34 @@ CREATE TABLE IF NOT EXISTS face_clusters (
 );
 CREATE INDEX IF NOT EXISTS idx_faces_file ON faces(file_id);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
+
+-- v29 (F212): what the clusters in `face_clusters` are an answer TO — so that a run with
+-- nothing new to cluster can tell that they are still the answer and leave them alone.
+--
+-- Clustering is a WHOLE-COLLECTION operation: HDBSCAN reads every embedding and returns a
+-- partition of all of them, so there is nothing per-file to mark and exactly one fact to
+-- store. Hence one row, pinned by `CHECK (id = 1)` — a second row would mean two answers
+-- to a question that has one.
+--
+-- `fingerprint` is `hdbscan#<digest>`, the device `frame_quality.source` and
+-- `landmark_checks.model` already use: the answer is kept next to a digest of the QUESTION,
+-- so a changed question invalidates the answer by itself and nobody has to remember to
+-- empty a table by hand. What goes into the digest is `faces._cluster_fingerprint` —
+-- the set of faces, the thresholds that decide the partition, and a version constant that
+-- is raised by hand when the splitting code changes meaning.
+--
+-- A missing row means "never clustered, or a database from before this table": the run
+-- clusters, exactly as every run did before. It is never read as "up to date".
+--
+-- NOT a cache of the clusters themselves: the clusters live in `face_clusters` and
+-- `faces.cluster_id` as they always have. This row only says whether recomputing them
+-- would produce anything new. Manual work on clusters (a name, a merge, a split) moves
+-- none of the inputs, so it does not touch this row and cannot be undone by it.
+CREATE TABLE IF NOT EXISTS cluster_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1), -- one clustering, one row
+    fingerprint TEXT NOT NULL,             -- hdbscan#<digest> — see faces._cluster_fingerprint
+    updated_at TEXT NOT NULL
+);
 
 -- Phase 4 (owner: F4-events)
 CREATE TABLE IF NOT EXISTS events (
