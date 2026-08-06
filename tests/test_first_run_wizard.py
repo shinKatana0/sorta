@@ -271,7 +271,10 @@ class TestTheManifestTheInstallerLeft(unittest.TestCase):
     def test_the_environment_names_it_for_the_wizard_the_installer_starts(self):
         path = self._write(json.dumps({"exiftool": "exiftool.exe"}))
         with mock.patch.dict("os.environ", {wizard.ENV_MANIFEST: str(path)}):
-            self.assertEqual(wizard.load_manifest(), {"exiftool": "exiftool.exe"})
+            manifest = wizard.load_manifest()
+        self.assertEqual(manifest["exiftool"], "exiftool.exe")
+        # Where it was read from, so the relative paths in it can be resolved.
+        self.assertEqual(manifest[wizard.MANIFEST_ROOT], str(self.root))
 
     def test_a_broken_manifest_is_an_empty_one_and_not_a_crash(self):
         path = self._write("{not json")

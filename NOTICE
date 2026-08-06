@@ -1,9 +1,10 @@
 Sorta — third-party data attribution
 =====================================
 
-This project bundles and/or queries geographic data from third parties.
+This project bundles and/or queries geographic data from third parties, and
+the Windows installer additionally bundles one third-party program (§3).
 Sorta's own source code is MIT-licensed (see LICENSE); the notices below
-cover only the data, not the code.
+cover only the data and that program, not the code.
 
 1. GeoNames (bundled, offline reverse geocoding)
 -------------------------------------------------
@@ -37,3 +38,21 @@ policy: https://operations.osmfoundation.org/policies/nominatim/
 
 This feature is opt-in and off by default; see SECURITY.md for the
 full privacy discussion.
+
+3. ExifTool (bundled by the Windows installer only)
+------------------------------------------------------
+The Windows installer (F211, `packaging/windows/`) ships the ExifTool
+Windows executable by Phil Harvey (https://exiftool.org/) inside its
+payload, so that dates, GPS and orientation are read from HEIC, RAW and
+video without a second thing to install. It is not part of the Python
+package: a `uv tool install` of Sorta expects exiftool on PATH, as before.
+
+ExifTool is free software released under the same terms as Perl itself —
+the Perl Artistic License or the GNU General Public License:
+
+  ExifTool © Phil Harvey (https://exiftool.org/), Perl Artistic / GPL.
+
+The version bundled by a given build is recorded in that build's
+`sorta-install.json`; the build refuses to ship silently without it
+(`--no-exiftool` builds the Pillow-fallback variant on purpose, and the
+first-run wizard then says which formats will not be read).

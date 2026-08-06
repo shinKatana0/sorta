@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A Windows installer, in tiers rather than one 15 GB file** (F211). `uv tool install`
+  is not something a person with a shoebox of photographs should have to know about, and
+  the obstacle was never the packaging — it was the weights: torch with the CUDA wheels,
+  Qwen2.5‑VL‑3B, ViT‑L‑14, XLM‑RoBERTa and buffalo_l add up to a 12–15 GB download that
+  nobody installs. The product is already built in tiers, so the INSTALL lies on the same
+  ones. **The installer carries the base tier whole** — index, EXIF, geo, duplicates,
+  sorting by city — and works with no network afterwards; the base tier is what does the
+  main job in an hour (67 minutes measured against 272 with the deep tier). Everything
+  heavier is offered once, by name and by price, and **refusing all of it leaves a working
+  product**: faces (~400 MB), search by words (~3 GB), NVIDIA/CUDA 13 (~2.5 GB), the deep
+  VLM tier (~7 GB). That is the difference between an honest install and a trimmed one —
+  no button is left on screen that does nothing.
+  **The check screen is `sorta doctor`.** It is written, it already answers what was found
+  and what is missing, so the wizard (`sorta-setup`, a third entry point) calls it instead
+  of growing a second one that would disagree with it by the next release. Its strings are
+  in the same catalog and the same three languages as the rest of the interface.
+  **One dependency mechanism, not two.** Inside the payload are a standalone CPython and
+  `uv` — the resolver that already knows our extras, our mutually exclusive cpu/gpu
+  profiles and our CUDA index — and a tier added later goes through that same `uv`. The
+  packages are installed as a `uv pip install --target` tree rather than a virtualenv,
+  which is what lets the payload be built here and copied to somebody else's disk: a venv
+  records the absolute path of the interpreter it was made from, a target tree records
+  nothing. The tier list is paired with the extras of `pyproject.toml` by a watchdog test
+  (the F115 trick): an extra added to the project and forgotten in the installer fails the
+  gate, and the build refuses to produce a file.
+  **The default profile is put in place, not asked about**: `config.example.yaml` itself is
+  copied to `%APPDATA%\sorta\config.yaml` — the file, not a second copy of its defaults —
+  and never over one somebody has edited. The shortcut runs `pythonw -m sorta.tray`, so
+  the web app opens with a tray icon and no console window anywhere, which is what F207 was
+  for. **No autostart**: a program that starts with the machine is the owner's decision.
+  **exiftool is bundled** (~25 MB, free licence, attributed in `NOTICE`), because a base
+  tier that cannot read the dates and GPS of an iPhone library is the trimmed install the
+  tiers exist to avoid; `--no-exiftool` builds the Pillow‑fallback variant instead, and the
+  wizard then SAYS which formats will not be read rather than leaving a person to wonder.
+  **The release is unsigned** (owner's decision, 2026‑08‑06), so the README, the guides and
+  the packaging notes warn about the SmartScreen screen BEFORE the download and publish a
+  `sha256` beside the file: a silent red screen reads as "this program is dangerous", a
+  warned one as "the author has no certificate". Signing is a separate, opt‑in build step
+  (`--sign`), so a certificate will plug in without the build being rewritten around it.
 - **An icon in the tray, for whoever installed Sorta with an installer** (F207). That
   person does not keep a terminal open, and `sorta ui` prints its address to a console
   and lives until **Ctrl+C** — so for an installed application the address is nowhere to

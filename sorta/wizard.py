@@ -192,11 +192,13 @@ def manifest_path_of(manifest: dict, key: str) -> str | None:
     value = manifest.get(key)
     if not value:
         return None
-    path = Path(str(value))
+    text = str(value)
     root = manifest.get(MANIFEST_ROOT)
-    if path.is_absolute() or not root:
-        return str(path)
-    return str(Path(str(root)) / path)
+    # An absolute path is returned WORD FOR WORD: it was written by somebody who knew
+    # where the thing is, and normalising it here would only make it harder to recognise.
+    if Path(text).is_absolute() or not root:
+        return text
+    return str(Path(str(root)) / text)
 
 
 def exiftool_state(manifest: dict, *,

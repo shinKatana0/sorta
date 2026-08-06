@@ -215,7 +215,25 @@ def directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def build_manifest(version: str, *, exiftool: bool, payload: Path = PAYLOAD,
+def exiftool_version(binary: Path | None) -> str | None:
+    """`exiftool -ver`, or None if it cannot be asked.
+
+    Bundling a binary means owing an update to whoever installed it, and an obligation
+    nobody can see the state of is not one that gets met — so the version travels in the
+    manifest (NOTICE §3 promises exactly this).
+    """
+    if binary is None:
+        return None
+    try:
+        completed = subprocess.run([str(binary), "-ver"], capture_output=True, text=True,
+                                   timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (completed.stdout or "").strip() or None
+
+
+def build_manifest(version: str, *, exiftool: bool, tool_version: str | None = None,
+                   payload: Path = PAYLOAD,
                    python_version: str = PYTHON_VERSION) -> dict:
     """What the installer leaves next to the program for the wizard to read.
 
@@ -233,6 +251,7 @@ def build_manifest(version: str, *, exiftool: bool, payload: Path = PAYLOAD,
         # sentence or another by this value, so a build without the binary cannot leave
         # a person guessing why HEIC has no dates.
         "exiftool": str(PAYLOAD_EXIFTOOL) if exiftool else None,
+        "exiftool_version": tool_version,
         "tiers": tier_summary(),
         "payload_bytes": directory_size(payload),
     }
@@ -327,7 +346,9 @@ def build(args: argparse.Namespace) -> int:
         for source, destination in payload_plan(exiftool):
             builder.copy(source, PAYLOAD / destination)
 
-    manifest = build_manifest(version, exiftool=exiftool is not None)
+    manifest = build_manifest(version, exiftool=exiftool is not None,
+                              tool_version=None if args.dry_run
+                              else exiftool_version(exiftool))
     builder.write(PAYLOAD / wizard.MANIFEST_NAME,
                   json.dumps(manifest, indent=2, ensure_ascii=False))
 

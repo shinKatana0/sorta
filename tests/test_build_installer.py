@@ -157,6 +157,14 @@ class TestThePayloadAndItsManifest(unittest.TestCase):
         plan = builder.payload_plan(Path("C:/tools/exiftool.exe"))
         self.assertIn((Path("C:/tools/exiftool.exe"), builder.PAYLOAD_EXIFTOOL), plan)
 
+    def test_the_bundled_version_travels_so_the_update_debt_is_visible(self):
+        """NOTICE §3 promises it: bundling a binary means owing an update to whoever
+        installed it, and an obligation nobody can see the state of is not one that
+        gets met."""
+        manifest = builder.build_manifest("1.2.3", exiftool=True, tool_version="13.10")
+        self.assertEqual(manifest["exiftool_version"], "13.10")
+        self.assertIsNone(builder.exiftool_version(None))
+
     def test_the_manifest_records_the_exiftool_decision_either_way(self):
         bundled = builder.build_manifest("1.2.3", exiftool=True)
         self.assertEqual(bundled["exiftool"], str(builder.PAYLOAD_EXIFTOOL))
