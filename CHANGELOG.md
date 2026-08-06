@@ -30,6 +30,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refusal is the **server's**, not the page's: a dialog the interface draws forbids
   nothing, and a request sent past the interface meets the same 409.
 
+### Changed
+- **Faces are not re-clustered when there is nothing to re-cluster** (F212). Not "faces
+  got faster": the first run still clusters and still honestly costs its seconds. What
+  changed is the SECOND one. The repeat run measured on 2026‑08‑06 took **4 min 16 s**, of
+  which `faces` was **171.9 s — 67% of everything**, while detection had exactly **four**
+  new frames to look at: `detect_and_cluster` always called `cluster_faces`, and HDBSCAN
+  always read all **24 477** faces, new ones or not. Two thirds of a repeat run went on
+  recomputing an answer that could not have changed. The stage now keeps the **fingerprint
+  of the question** its clusters are an answer to (`cluster_state`, schema **v29**) — the
+  device `frame_quality.source` and `landmark_checks.model` already use, where a changed
+  question invalidates the stored answer by itself and nobody has to clear anything by
+  hand. The fingerprint covers the **set of faces** (a hash of their ids, not a counter:
+  deleting one face and adding another leaves a counter exactly where it was), the
+  **thresholds that decide the partition** (`min_cluster_size`, `max_distance` — moving a
+  threshold in the config and seeing no effect would be worse than a slow run) and a
+  **version constant** raised by hand when the splitting code changes meaning. Clustering
+  still happens unconditionally on `sorta faces --rescan`, on any mismatch, and when there
+  is no fingerprint at all — a first run, or a database from before this existed. Manual
+  work on clusters is deliberately **not** an input: a name, a merge and a split change
+  the clusters and not the set of faces, so they leave the fingerprint alone and cannot be
+  undone by a recomputation they triggered themselves. No incremental clustering and no
+  partial recompute: half a set of rebuilt clusters is worse than all or none.
+
 ## [0.4.0] - 2026-08-06
 
 The first release measured on a genuinely cold run: **4 h 35 min** over 38 493 files

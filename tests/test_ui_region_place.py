@@ -26,6 +26,7 @@ What the tests pin:
 """
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 import urllib.parse
@@ -400,7 +401,22 @@ class TestTheMigration(unittest.TestCase):
 
     def test_the_column_is_added_to_a_database_that_predates_it(self):
         version = self._old_database()
-        self.assertEqual(version, db.SCHEMA_VERSION - 1)
+        # NOT `SCHEMA_VERSION - 1`. That asserts how many versions arrived AFTER this
+        # one -- a statement about the future, which went stale the first time the schema
+        # moved on (at v29) while nothing about the migration under test had changed.
+        # `schema_history.roll_back_before` warns against precisely this in its own
+        # docstring: "instead of a number that has to be looked up, and that stops being
+        # true the moment the schema moves on". The test looked one up anyway.
+        #
+        # What this test is about: the database PREDATES the column, and connecting adds
+        # it. Both claims survive any later version.
+        self.assertLess(version, db.SCHEMA_VERSION)
+        raw = sqlite3.connect(self.path)
+        try:
+            before = {r[1] for r in raw.execute("PRAGMA table_info(manual_places)")}
+        finally:
+            raw.close()
+        self.assertNotIn("region_geonameid", before)
         conn = db.connect(self.path)
         try:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(manual_places)")}
