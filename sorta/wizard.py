@@ -288,8 +288,10 @@ def install_command(tier: Tier, requirements: Sequence[str], *,
         command.append("--reinstall")
     command += list(requirements)
     if tier.index_url:
-        # An EXTRA index: torch comes from the CUDA one, everything else stays on PyPI.
-        command += ["--extra-index-url", tier.index_url]
+        # An ADDITIONAL index, the way `[[tool.uv.index]]` of pyproject.toml states it:
+        # torch comes from the CUDA one, everything else stays on PyPI. (`--index` and
+        # not the deprecated `--extra-index-url`.)
+        command += ["--index", tier.index_url]
     return command
 
 

@@ -186,7 +186,7 @@ class TestAcceptingATier(unittest.TestCase):
         tier = wizard.TIERS_BY_KEY["gpu"]
         command = wizard.install_command(tier, ["torch>=2.10.0"], uv="uv",
                                          python="python.exe")
-        self.assertEqual(command[-2:], ["--extra-index-url", wizard.PYTORCH_CU130_INDEX])
+        self.assertEqual(command[-2:], ["--index", wizard.PYTORCH_CU130_INDEX])
 
     def test_the_index_is_the_one_the_project_resolves_with(self):
         """A second URL written here would resolve a different torch than `uv sync`
@@ -214,7 +214,7 @@ class TestAcceptingATier(unittest.TestCase):
     def test_a_tier_without_an_index_gets_no_flag(self):
         command = wizard.install_command(wizard.TIERS_BY_KEY["deep"], ["transformers"],
                                          uv="uv", python="python.exe")
-        self.assertNotIn("--extra-index-url", command)
+        self.assertNotIn("--index", command)
 
 
 class TestWhenAnInstallFails(unittest.TestCase):
