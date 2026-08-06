@@ -489,6 +489,26 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "--geo は offline か online でなければなりません",
     },
     # doctor
+    # F211: which interpreter and which `uv` this run is using. A shadowed PATH is
+    # otherwise found nine minutes later, in a red gate, and reads as somebody else's
+    # mistake — an installed copy putting its own python first is exactly how that
+    # happens (and it already happened once, F87, with a system python that had no
+    # ruff and no pytest).
+    "cli.doctor.python": {
+        "ru": "Интерпретатор: {path}",
+        "en": "Interpreter: {path}",
+        "ja": "インタプリタ: {path}",
+    },
+    "cli.doctor.uv": {
+        "ru": "uv: {path}",
+        "en": "uv: {path}",
+        "ja": "uv: {path}",
+    },
+    "cli.doctor.uv_missing": {
+        "ru": "uv: не найден в PATH",
+        "en": "uv: not on PATH",
+        "ja": "uv: PATH にありません",
+    },
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
         "en": "Run log: {path}",
