@@ -341,6 +341,13 @@ class TestQuittingWithNothingRunning(TrayProgramTestBase):
             with self.subTest(suffix=suffix):
                 self.assertFalse(leftover.exists(), f"{leftover.name} остался на диске")
 
+    def test_open_opens_the_window_at_the_address_the_server_is_on(self):
+        """The other half of what the icon is for: `sorta ui` printed the address to a
+        console this person does not have, and this is where it went instead."""
+        with mock.patch.object(tray.webbrowser, "open") as opened:
+            self.icon.on_open()
+        opened.assert_called_once_with(f"{self.base_url}/")
+
     def test_the_page_can_still_close_the_program_and_the_icon_follows(self):
         """The menu is not the only way out (F209). Whichever way the server goes, the
         icon may not outlive it."""
@@ -550,6 +557,87 @@ class TestTheCaptions(unittest.TestCase):
         self.assertGreaterEqual(len(used), 10)  # the catalog is actually wired up
         for key in sorted(used):
             self.assertIn(key, i18n._CLI_STRINGS, key)
+
+
+class _FakePystray:
+    """Just enough of pystray to see WHAT `build_icon` builds.
+
+    The real library is an optional extra and needs a notification area to attach to;
+    the shape of the menu — two items, which of them a double-click fires, where each
+    one leads — is a property of this module and is checkable without either.
+    """
+
+    class MenuItem:
+        def __init__(self, text, action, default=False):
+            self.text, self.action, self.default = text, action, default
+
+    class Menu:
+        def __init__(self, *items):
+            self.items = items
+
+    class Icon:
+        def __init__(self, name, icon=None, title=None, menu=None):
+            self.name, self.icon, self.title, self.menu = name, icon, title, menu
+
+
+class TestWhatTheIconIsBuiltFrom(unittest.TestCase):
+    """The menu the tray library is handed: two items and no third one."""
+
+    def setUp(self):
+        self.opened = 0
+        self.quits = 0
+        with mock.patch.dict("sys.modules", {"pystray": _FakePystray}):
+            self.icon = tray.build_icon(8756, "ru",
+                                        on_open=self._open, on_quit=self._quit)
+        self.items = list(self.icon.menu.items)
+
+    def _open(self):
+        self.opened += 1
+
+    def _quit(self):
+        self.quits += 1
+
+    def test_the_menu_is_open_and_quit_and_nothing_else(self):
+        """The boundary of the feature, as a list: no runs, no progress, no autostart."""
+        self.assertEqual([item.text for item in self.items],
+                         [i18n.cli_text("cli.tray.open", "ru"),
+                          i18n.cli_text("cli.tray.quit", "ru")])
+
+    def test_open_is_the_default_item_so_a_double_click_opens_the_window(self):
+        self.assertTrue(self.items[0].default)
+        self.assertFalse(self.items[1].default)
+
+    def test_each_item_leads_where_it_says(self):
+        self.items[0].action(self.icon, self.items[0])
+        self.assertEqual((self.opened, self.quits), (1, 0))
+        self.items[1].action(self.icon, self.items[1])
+        self.assertEqual((self.opened, self.quits), (1, 1))
+
+    def test_the_tooltip_is_the_address(self):
+        self.assertEqual(self.icon.title,
+                         i18n.cli_text("cli.tray.tooltip", "ru",
+                                       url="http://127.0.0.1:8756/"))
+        self.assertIn("http://127.0.0.1:8756/", self.icon.title)
+
+    def test_the_picture_is_the_one_the_browser_tab_shows(self):
+        """`sorta/web/favicon.ico`, not a second drawing of the same program."""
+        self.assertTrue(tray.ICON_PATH.is_file(), tray.ICON_PATH)
+        self.assertEqual(tray.ICON_PATH.name, "favicon.ico")
+        self.assertEqual(self.icon.icon.mode, "RGBA")
+
+    def test_the_icon_ships_inside_the_package(self):
+        """F65/F182 again: a file the installed application reads has to be in the
+        wheel, and the build lists it explicitly so no ignore rule can drop it."""
+        pyproject = (Path(tray.__file__).resolve().parent.parent
+                     / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('"sorta/web/*.ico"', pyproject)
+
+    def test_the_real_factory_is_the_one_start_uses(self):
+        """The tests inject a stand-in; the program must not."""
+        import inspect
+        self.assertIs(
+            inspect.signature(tray.start).parameters["icon_factory"].default,
+            tray.build_icon)
 
 
 class TestTheAnswersToQuitAreReadCorrectly(unittest.TestCase):
