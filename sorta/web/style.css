@@ -184,6 +184,21 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
    it readable */
 .lang-select option { background: var(--surface); color: var(--ink); }
 .theme-toggle-btn svg { width: 15px; height: 15px; }
+/* F209: "Quit" sits in the header — visible, and away from the buttons pressed all day.
+   Muted until it is hovered: it is reached for once a day, and it must not read as one
+   of the actions on the page. */
+.quit-btn svg { width: 15px; height: 15px; }
+.quit-btn { color: var(--muted); }
+.quit-btn:hover { color: var(--danger); }
+/* What the page turns into once the server has gone: nothing else on it works any more,
+   and a dead page that still looks alive is what a crash looks like. */
+.quit-done { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center;
+      justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.86); }
+.quit-done[hidden] { display: none; }
+.quit-done-box { display: flex; flex-direction: column; align-items: center; gap: var(--space-md);
+      max-width: 46ch; padding: var(--space-xl); text-align: center; color: var(--ink);
+      background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.quit-done-box svg { width: 28px; height: 28px; color: var(--muted); }
 
 /* --- tabs --------------------------------------------------------------- */
 .tabs { display: flex; gap: 4px; margin-bottom: var(--space-lg); border-bottom: 1px solid var(--line);

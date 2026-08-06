@@ -394,6 +394,28 @@ touches no file. Nothing here ranks anything or loads a model — a pin saves wo
 empty says WHICH empty it is (`not_run`, and then the panel links to the run screen, or
 `none_found`), because a bare zero reads as a claim about somebody's photographs.
 
+(27) `POST /api/quit` (F209, the "Quit" button in the header) — closing the program
+from the interface. It lives there rather than in a tray icon because the interface is
+what works everywhere the product works: GNOME removed the tray in 3.26, so on Ubuntu
+and Fedora an icon exists only through an extension the person installs by hand. A tray
+is a shortcut to this route on the systems that have one, not a second implementation.
+The stop is the Ctrl+C one and not a new one: `httpd.shutdown()` ends `serve_forever`,
+and `serve`'s own `finally` then closes the server socket (the port is free for the next
+start) and the connection this server read the index through. No `os._exit` — nothing
+about the exit is skipped. The answer is written BEFORE anything stops, and the shutdown
+runs on a thread of its own because `shutdown()` blocks until the serve loop has
+returned: a person who pressed "Quit" has to see the program closing rather than a
+severed connection, which reads as a crash.
+A RUN is what this route mostly exists to protect. A pass over a real collection counts
+for up to five hours, and losing it to one press would be the worst thing this feature
+could do — so while `/api/process`, `/api/sort` or `/api/undo` is in flight the route
+answers 409 with the reason `run_in_progress` and stops NOTHING, exactly like every
+other writing route refuses while busy (F145). Only a second request carrying
+`{"confirm": true}` closes the program, and it interrupts the run through the very flag
+`/api/process/cancel` sets rather than inventing a second way to stop one. The refusal
+is the server's and not the page's, per F133: a dialog the interface draws forbids
+nothing, and a request sent past the interface would close the program all the same.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -684,6 +706,11 @@ _BUSY_SELF_GUARDED_ROUTES = frozenset({
     "/api/process", "/api/process/rerun-optional", "/api/process/reset",
     "/api/cache/clear", "/api/config/language", "/api/settings",
     "/api/sort", "/api/undo",
+    # F209: it writes nothing, and it is here for the strongest version of the reason
+    # this table exists — a five-hour run is lost by closing the program on top of it.
+    # It checks the state itself because it is the one route that may proceed anyway:
+    # with `confirm` the answer is not a refusal but an interruption.
+    "/api/quit",
 })
 _BUSY_GUARDED_ROUTES = frozenset({
     # Marks and choices in the index...
@@ -750,6 +777,16 @@ _POST_REFUSAL_DETAIL = {
     REFUSED_CONTENT_TYPE: f"POST requires Content-Type: {_JSON_MEDIA_TYPE}",
     REFUSED_ORIGIN: "POST is served only to a page of this server",
 }
+
+
+# F209: why `/api/quit` refused. A code and not a sentence, like every other refusal
+# here — the interface turns it into the question it asks, and a caller past the
+# interface can read what happened without parsing prose.
+QUIT_RUN_IN_PROGRESS = "run_in_progress"
+# The three long operations, by the name the answer carries. Which one it is decides the
+# sentence on screen: "a run is going" and "a layout is going" are one refusal to this
+# server and two different things to lose.
+QUIT_RUNNING_NAMES = ("process", "sort", "undo")
 
 
 def _media_type(raw: str | None) -> str:
@@ -987,6 +1024,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_undo_start()
             elif path == "/api/undo/cancel":
                 self._handle_undo_cancel()
+            elif path == "/api/quit":
+                self._handle_quit()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1819,6 +1858,70 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             undo_state.request_cancel()
             self._send_json({"ok": True})
 
+        # --- F209: closing the program from the page it is served on -----------------
+
+        def _running_now(self) -> str | None:
+            """Which of the three long operations is in flight — by name, or None.
+
+            `_anything_running` answers the busy guard's question, which is a yes/no;
+            this one answers the person's. What they are about to lose has a name, and
+            the question the interface asks has to use it.
+            """
+            if process_state.snapshot()["running"]:
+                return "process"
+            if sort_state.snapshot()["running"]:
+                return "sort"
+            if undo_state.snapshot()["running"]:
+                return "undo"
+            return None
+
+        def _handle_quit(self) -> None:
+            # The body carries the confirmation and nothing else. Absent/garbage -> no
+            # confirmation: the branch that interrupts a run is entered on purpose or not
+            # at all (the rule `/api/process/reset` applies to `clear_geo`).
+            #
+            # `is True` rather than the `bool(...)` the other bodies are read with, and
+            # this is the one place worth the difference: every truthy value would make
+            # `{"confirm": "no"}` end a five-hour pass. The contract is the literal JSON
+            # `true`, which is what the page sends; anything else gets the 409 and the
+            # question, which costs a client one more request and loses nothing.
+            payload = self._read_json_body()
+            confirm = isinstance(payload, dict) and payload.get("confirm") is True
+            running = self._running_now()
+            if running is not None and not confirm:
+                self._send_json({"error": "already running",
+                                 "reason": QUIT_RUN_IN_PROGRESS, "running": running},
+                                status=HTTPStatus.CONFLICT)
+                return
+            # The existing flag, not a second way to stop a run: this is what
+            # `/api/process/cancel` and its two siblings set, and the engines read it
+            # where they already read it. The three are mutually exclusive, so exactly
+            # one of these branches is the one in flight.
+            if running == "process":
+                process_state.request_cancel()
+            elif running == "sort":
+                sort_state.request_cancel()
+            elif running == "undo":
+                undo_state.request_cancel()
+            self._send_json({"ok": True, "quitting": True, "cancelled": running})
+            self._stop_server()
+
+        def _stop_server(self) -> None:
+            """End `serve_forever` — on a thread of its own, after the answer is out.
+
+            `shutdown()` blocks until the serve loop has returned, and this handler is
+            running ON one of that server's threads: calling it here would hold the reply
+            hostage to the very thing it is announcing. The answer above is already
+            written (the handler's `wfile` is unbuffered), so the socket carries it while
+            the loop winds down.
+
+            Nothing is killed. `serve` closes the server and the index connection in its
+            own `finally` and returns to `cli`, exactly as it does on Ctrl+C — a run
+            thread is a daemon and dies with the process either way, which is why the
+            confirmation above is where the decision is made and not here.
+            """
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
         def _serve_thumb(self, raw_id: str) -> None:
             file_id = _parse_file_id(raw_id)
             path = self._resolve(raw_id)
@@ -1927,11 +2030,16 @@ def build_server(cfg: Config, conn: sqlite3.Connection, *,
 def serve(cfg: Config, conn: sqlite3.Connection, *,
          port: int = DEFAULT_PORT, open_browser: bool = True,
          config_path: str | Path | None = None) -> None:
-    """Start the local read-only plan server and block until Ctrl+C.
+    """Start the local read-only plan server and block until Ctrl+C or `POST /api/quit`.
 
     127.0.0.1 only. A busy port -> RuntimeError with a clear message (the caller
     cli.py decides how to show it to the user). `config_path` is threaded to the
     server so the folder-language selector can persist into config.yaml.
+
+    F209: the two ways out end in the same `finally`, because they are the same exit —
+    the button asks `serve_forever` to return, which is what Ctrl+C does. `conn` is
+    closed here rather than left to the interpreter: the connection belongs to the thread
+    that called this, and after this returns nobody is going to read the index through it.
     """
     log_environment()  # F69: one environment header per server start
     warn_if_geo_data_missing()  # F65: an unreadable geo base empties every place
@@ -1949,3 +2057,4 @@ def serve(cfg: Config, conn: sqlite3.Connection, *,
         pass
     finally:
         httpd.server_close()
+        conn.close()

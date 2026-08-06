@@ -246,6 +246,56 @@
 
   initLang();
 
+  // --- F209: "Quit" — closing the program from the page ----------------------
+  //
+  // The button is a thin thing on purpose: the decision is the SERVER's. A first
+  // request asks to close; while a run, a layout or a rollback is in flight the server
+  // answers 409 with the name of what is going, and only then does this ask the person
+  // — with the second request carrying `confirm` and interrupting that work. The
+  // interface never guesses the state and never hides the button: a request sent past
+  // this page would meet exactly the same refusal (F133).
+  var QUIT_CONFIRM = {
+    process: "quit_running_confirm",
+    sort: "quit_sort_running_confirm",
+    undo: "quit_undo_running_confirm",
+  };
+
+  function quitDone() {
+    // The server is gone: polling, thumbnails and every button on this page are dead
+    // from here on, so the page says so instead of quietly failing at everything.
+    var box = document.getElementById("quit-done");
+    if (box) box.hidden = false;
+  }
+
+  function requestQuit(confirmed, btn) {
+    return postJson("/api/quit", { confirm: !!confirmed }).then(function (resp) {
+      if (resp && resp.ok) { quitDone(); return; }
+      var key = QUIT_CONFIRM[resp && resp.running];
+      if (resp && resp.reason === "run_in_progress" && key) {
+        btn.disabled = false;
+        if (!window.confirm(I18N[key])) return;
+        return requestQuit(true, btn);
+      }
+      btn.disabled = false;
+      window.alert(I18N.quit_failed);
+    }).catch(function () {
+      // The connection dying as the server closes is the ANSWER arriving late, not a
+      // failure: `fetch` cannot tell those apart, and the page is finished either way.
+      quitDone();
+    });
+  }
+
+  function initQuit() {
+    var btn = document.getElementById("quit-btn");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      requestQuit(false, btn);
+    });
+  }
+
+  initQuit();
+
   // F65: the "Folder language" selector (Cities tab) — the OUTPUT language of
   // folders/names, separate from the interface language. Reads the current value
   // from /api/config, and on change persists it (POST /api/config/language) and
