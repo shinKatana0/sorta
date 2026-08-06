@@ -149,6 +149,27 @@ RAM/VRAM notes, in the [user guide](docs/guide/user-guide.en.md#2-requirements).
 
 ## Quick start
 
+### Windows: the installer (no `uv`, no terminal)
+
+`sorta-<version>-setup.exe` on the [releases page](https://github.com/shinKatana0/sorta/releases/latest)
+carries the **base tier** whole and works with no network afterwards: index, EXIF, geo,
+duplicates and sorting by city. Its shortcut opens the web app with an icon in the tray
+and no console window. The heavier tiers — faces (~400 MB), search by words (~3 GB),
+NVIDIA/CUDA 13 (~2.5 GB), the deep VLM tier (~7 GB) — are offered once by the first‑run
+wizard (`sorta-setup`, re‑runnable at any time), and **saying no to all of them leaves a
+working product**, not a stub.
+
+> ⚠️ **The installer is not signed**, so Windows SmartScreen greets it with "Windows
+> protected your PC". Click **More info** → **Run anyway**. The release page publishes a
+> `sha256` beside the file — check it with `Get-FileHash sorta-<version>-setup.exe` if you
+> would rather look before running. A code‑signing certificate is on the owner's list, not
+> in this release; see
+> [packaging/windows/README.md](packaging/windows/README.md) for how the installer is
+> built.
+
+Everything below is the developer/CLI path — it is unchanged, and it is not what the
+installer does.
+
 ```bash
 # Install once — pick ONE of these. The extra goes INSIDE the package spec and
 # selects your hardware profile (`cpu` and `gpu` are mutually exclusive).

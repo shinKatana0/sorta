@@ -489,6 +489,26 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "--geo は offline か online でなければなりません",
     },
     # doctor
+    # F211: which interpreter and which `uv` this run is using. A shadowed PATH is
+    # otherwise found nine minutes later, in a red gate, and reads as somebody else's
+    # mistake — an installed copy putting its own python first is exactly how that
+    # happens (and it already happened once, F87, with a system python that had no
+    # ruff and no pytest).
+    "cli.doctor.python": {
+        "ru": "Интерпретатор: {path}",
+        "en": "Interpreter: {path}",
+        "ja": "インタプリタ: {path}",
+    },
+    "cli.doctor.uv": {
+        "ru": "Менеджер окружения uv: {path}",
+        "en": "Environment manager uv: {path}",
+        "ja": "環境マネージャ uv: {path}",
+    },
+    "cli.doctor.uv_missing": {
+        "ru": "Менеджер окружения uv: не найден в PATH",
+        "en": "Environment manager uv: not on PATH",
+        "ja": "環境マネージャ uv: PATH にありません",
+    },
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
         "en": "Run log: {path}",
@@ -661,6 +681,241 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "sorta: не удалось завершить программу (ответ {status})",
         "en": "sorta: could not close the program (answer {status})",
         "ja": "sorta: プログラムを終了できませんでした（応答 {status}）",
+    },
+    # F211: the first-run wizard of the Windows installer (`sorta-setup`). Everything a
+    # person who never opens a terminal is asked at install time, and the one place the
+    # tiers are described in words: what each one costs to download, what it buys, and —
+    # the half that is usually left out — what stays unavailable after a no. Refusing is
+    # a normal answer here, so the "without" line of every tier has to be a fact about a
+    # working program rather than a warning about a broken one.
+    "cli.setup.title": {
+        "ru": "Sorta — первая настройка",
+        "en": "Sorta — first-run setup",
+        "ja": "Sorta — 初回セットアップ",
+    },
+    "cli.setup.checking": {
+        "ru": "Что уже есть на этой машине (sorta doctor):",
+        "en": "What is already on this machine (sorta doctor):",
+        "ja": "このマシンに既にあるもの（sorta doctor）:",
+    },
+    "cli.setup.exiftool_bundled": {
+        "ru": "exiftool идёт в комплекте — даты, GPS и ориентация читаются из HEIC, RAW "
+              "и видео сразу.",
+        "en": "exiftool ships with the program — dates, GPS and orientation are read "
+              "from HEIC, RAW and video right away.",
+        "ja": "exiftool は同梱です — HEIC・RAW・動画から日付、GPS、向きをそのまま"
+              "読み取ります。",
+    },
+    "cli.setup.exiftool_on_path": {
+        "ru": "exiftool найден в системе — HEIC, RAW и видео читаются полностью.",
+        "en": "exiftool was found on this machine — HEIC, RAW and video are read in full.",
+        "ja": "exiftool がこのマシンで見つかりました — HEIC・RAW・動画を完全に"
+              "読み取れます。",
+    },
+    "cli.setup.exiftool_absent": {
+        "ru": "exiftool не найден: метаданные читает Pillow, а это только "
+              "JPEG/PNG/TIFF/WEBP. У HEIC, RAW и видео не будет ни даты, ни GPS. "
+              "Поставьте exiftool (winget install OliverBetz.ExifTool) и запустите "
+              "настройку снова.",
+        "en": "exiftool was not found: metadata is read by Pillow, which means "
+              "JPEG/PNG/TIFF/WEBP only. HEIC, RAW and video will have neither a date nor "
+              "GPS. Install exiftool (winget install OliverBetz.ExifTool) and run the "
+              "setup again.",
+        "ja": "exiftool が見つかりません: メタデータは Pillow が読み取るため、"
+              "JPEG/PNG/TIFF/WEBP のみになります。HEIC・RAW・動画は日付も GPS も"
+              "得られません。exiftool（winget install OliverBetz.ExifTool）を入れてから"
+              "セットアップをやり直してください。",
+    },
+    "cli.setup.base_ready": {
+        "ru": "Базовый ярус уже установлен и работает без сети: индекс, EXIF, гео, "
+              "дубликаты, раскладка по городам.",
+        "en": "The base tier is installed and works with no network: index, EXIF, geo, "
+              "duplicates, sorting by city.",
+        "ja": "基本ティアはインストール済みで、ネットワークなしで動作します: "
+              "インデックス、EXIF、位置情報、重複、都市別の振り分け。",
+    },
+    "cli.setup.tiers_intro": {
+        "ru": "Дальше — необязательные ярусы. Отказ здесь нормальный ответ: то, что уже "
+              "стоит, — работающая программа, а не обрубок.",
+        "en": "The tiers below are optional. Refusing is a normal answer: what is already "
+              "installed is a working program, not a stub.",
+        "ja": "以下のティアは任意です。断るのも普通の答えです: 既にあるものだけで、"
+              "削られた製品ではなく動く製品になります。",
+    },
+    "cli.setup.offer": {
+        "ru": "{name}: {size} загрузки. {benefit}",
+        "en": "{name}: {size} to download. {benefit}",
+        "ja": "{name}: ダウンロード {size}。{benefit}",
+    },
+    "cli.setup.question": {
+        "ru": "Доустановить? [y/N]",
+        "en": "Add it? [y/N]",
+        "ja": "追加しますか？ [y/N]",
+    },
+    "cli.setup.refused": {
+        "ru": "Пропущено. {without}",
+        "en": "Skipped. {without}",
+        "ja": "スキップしました。{without}",
+    },
+    "cli.setup.installing": {
+        "ru": "Устанавливаю {name}: {packages}",
+        "en": "Installing {name}: {packages}",
+        "ja": "{name} をインストールしています: {packages}",
+    },
+    "cli.setup.install_failed": {
+        "ru": "Не удалось установить {name} (код {status}). Программа работает как "
+              "раньше; запустите настройку ещё раз, чтобы повторить.",
+        "en": "Could not install {name} (exit code {status}). The program works as "
+              "before; run the setup again to retry.",
+        "ja": "{name} をインストールできませんでした（終了コード {status}）。"
+              "プログラムはこれまでどおり動作します。やり直すにはセットアップを"
+              "再実行してください。",
+    },
+    "cli.setup.no_metadata": {
+        "ru": "Не удалось узнать состав яруса {name} — нет метаданных пакета. Ярус не "
+              "добавлен, остальное работает.",
+        "en": "Could not read what the {name} tier consists of — the package metadata is "
+              "missing. The tier was not added; everything else works.",
+        "ja": "{name} ティアの構成を読み取れませんでした（パッケージのメタデータが"
+              "ありません）。このティアは追加していませんが、他は動作します。",
+    },
+    "cli.setup.weights_later": {
+        "ru": "Веса ({weights}), {size}, скачаются при первом запуске стадии, которой "
+              "они нужны.",
+        "en": "The weights ({weights}), {size}, download the first time the stage that "
+              "needs them runs.",
+        "ja": "重み（{weights}、{size}）は、必要とするステージの初回実行時に"
+              "ダウンロードされます。",
+    },
+    # "Chosen" and not "installed": a tier whose whole cost is model weights installs
+    # nothing at this moment (the line above says when it downloads), and a summary
+    # claiming otherwise would be the small lie this wizard exists to avoid.
+    "cli.setup.added": {
+        "ru": "Выбрано: {names}",
+        "en": "Chosen: {names}",
+        "ja": "選択: {names}",
+    },
+    "cli.setup.skipped": {
+        "ru": "Пропущено: {names}",
+        "en": "Skipped: {names}",
+        "ja": "スキップ: {names}",
+    },
+    "cli.setup.works_anyway": {
+        "ru": "Ничего не выбрано — и это нормально: базовый ярус разбирает коллекцию "
+              "по городам, находит дубликаты и читает даты.",
+        "en": "Nothing was chosen, and that is fine: the base tier sorts the collection "
+              "by city, finds duplicates and reads dates.",
+        "ja": "何も選んでいませんが、それで問題ありません: 基本ティアだけで都市別の"
+              "振り分け、重複の検出、日付の読み取りができます。",
+    },
+    "cli.setup.rerun": {
+        "ru": "Любой ярус можно доустановить позже: пункт «Sorta setup» в меню «Пуск» "
+              "(или команда sorta-setup).",
+        "en": "Any tier can be added later: the Sorta setup item of the Start menu (or "
+              "the sorta-setup command).",
+        "ja": "どのティアも後から追加できます: スタートメニューの「Sorta setup」"
+              "（またはコマンド sorta-setup）。",
+    },
+    "cli.setup.doctor_hint": {
+        "ru": "`sorta doctor` показывает, чем установка оказалась на самом деле.",
+        "en": "`sorta doctor` prints what the install actually became.",
+        "ja": "`sorta doctor` は実際のインストール内容を表示します。",
+    },
+    "cli.setup.size_mb": {
+        "ru": "{mb} МБ",
+        "en": "{mb} MB",
+        "ja": "{mb} MB",
+    },
+    "cli.setup.size_gb": {
+        "ru": "{gb} ГБ",
+        "en": "{gb} GB",
+        "ja": "{gb} GB",
+    },
+    "cli.setup.tier.base.name": {
+        "ru": "Базовый ярус",
+        "en": "Base tier",
+        "ja": "基本ティア",
+    },
+    "cli.setup.tier.base.benefit": {
+        "ru": "Индекс, EXIF, гео, дубликаты, раскладка по городам — без сети.",
+        "en": "Index, EXIF, geo, duplicates, sorting by city — with no network.",
+        "ja": "インデックス、EXIF、位置情報、重複、都市別の振り分け — ネットワーク不要。",
+    },
+    "cli.setup.tier.faces.name": {
+        "ru": "Лица",
+        "en": "Faces",
+        "ja": "顔",
+    },
+    "cli.setup.tier.faces.benefit": {
+        "ru": "Сортировка по людям: поиск лиц, кластеры, альбом на человека.",
+        "en": "Sorting by people: face detection, clusters, an album per person.",
+        "ja": "人物別の振り分け: 顔検出、クラスタ、人ごとのアルバム。",
+    },
+    "cli.setup.tier.faces.without": {
+        "ru": "Разбор по людям останется недоступен; всё остальное работает.",
+        "en": "Sorting by people stays unavailable; everything else works.",
+        "ja": "人物別の振り分けは使えませんが、他はすべて動作します。",
+    },
+    "cli.setup.tier.search.name": {
+        "ru": "Поиск словами",
+        "en": "Search by words",
+        "ja": "言葉による検索",
+    },
+    "cli.setup.tier.search.benefit": {
+        "ru": "Запрос словами по коллекции и закреплённые срезы — на трёх языках.",
+        "en": "Ask the collection in words, and pin a query as a slice — in three "
+              "languages.",
+        "ja": "コレクションを言葉で検索し、クエリをスライスとして固定できます（3言語）。",
+    },
+    "cli.setup.tier.search.without": {
+        "ru": "Поиск словами скажет, что индекса нет, вместо выдачи; срезы по лицам и "
+              "классам работают.",
+        "en": "Search by words says it has no index instead of returning a ranking; the "
+              "face and class slices work.",
+        "ja": "言葉による検索は結果の代わりに索引がないと伝えます。顔やクラスの"
+              "スライスは動作します。",
+    },
+    "cli.setup.tier.gpu.name": {
+        "ru": "Ускорение на NVIDIA (CUDA 13)",
+        "en": "NVIDIA acceleration (CUDA 13)",
+        "ja": "NVIDIA アクセラレーション（CUDA 13）",
+    },
+    "cli.setup.tier.gpu.benefit": {
+        "ru": "Меняет процессорный профиль на CUDA-сборки torch и onnxruntime — нужна "
+              "видеокарта NVIDIA с драйвером CUDA 13.",
+        "en": "Replaces the CPU profile with the CUDA builds of torch and onnxruntime — "
+              "needs an NVIDIA card with a CUDA 13 driver.",
+        "ja": "CPU プロファイルを torch と onnxruntime の CUDA ビルドに置き換えます — "
+              "CUDA 13 ドライバの NVIDIA カードが必要です。",
+    },
+    "cli.setup.tier.gpu.without": {
+        "ru": "Стадии с моделями останутся на процессоре: они работают, но на большой "
+              "коллекции это часы.",
+        "en": "The model stages stay on the processor: they work, but on a large "
+              "collection that means hours.",
+        "ja": "モデルを使うステージは CPU のままです: 動作はしますが、大きな"
+              "コレクションでは数時間かかります。",
+    },
+    "cli.setup.tier.deep.name": {
+        "ru": "Глубокий ярус (VLM)",
+        "en": "Deep tier (VLM)",
+        "ja": "ディープティア（VLM）",
+    },
+    "cli.setup.tier.deep.benefit": {
+        "ru": "Находит товары и спасает экранное; прогон становится вчетверо длиннее "
+              "(67 минут против 272) и нужна карта на 24 ГБ.",
+        "en": "Finds products and rescues on-screen frames; a run takes four times as "
+              "long (67 minutes against 272) and it wants a 24 GB card.",
+        "ja": "商品を見つけ、画面写りのコマを救います。実行時間は約4倍（67分に対し"
+              "272分）になり、24 GB のカードが必要です。",
+    },
+    "cli.setup.tier.deep.without": {
+        "ru": "Класс «товар» просто не появится, папка товаров останется пустой; "
+              "остальные классы считает быстрый ярус.",
+        "en": "The product class simply never appears and the products folder stays "
+              "empty; the other classes come from the fast tier.",
+        "ja": "「商品」クラスは現れず、商品フォルダは空のままです。他のクラスは"
+              "高速ティアが判定します。",
     },
     "cli.album.empty": {
         "ru": "срез пуст, ничего не выгружено",

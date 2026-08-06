@@ -255,6 +255,44 @@ the CPU `onnxruntime` right back in. Run it inside the environment Sorta is inst
 into (your activated project venv), then re‑run `sorta doctor` and confirm that
 `CUDAExecutionProvider` is back in the list.
 
+### 3.7 The Windows installer, and its tiers
+
+Everything above needs `uv` and a terminal. `sorta-<version>-setup.exe` on the releases
+page needs neither: it carries the **base tier** whole, installs per user (no
+administrator rights), and works with no network afterwards — index, EXIF, geo,
+duplicates, sorting by city. `exiftool` is bundled, so HEIC/RAW/video dates and GPS are
+read straight away.
+
+> ⚠️ **The installer is not signed.** Windows SmartScreen will say "Windows protected
+> your PC" — click **More info** → **Run anyway**. This is what an absent code‑signing
+> certificate looks like, not a verdict about the file. The release page publishes a
+> `sha256` beside the installer; `Get-FileHash sorta-<version>-setup.exe` prints the same
+> value if you want to compare before running it.
+
+What it puts where:
+
+| what | where |
+|---|---|
+| the program (interpreter, packages, `uv`, exiftool) | `%LOCALAPPDATA%\Programs\Sorta` |
+| your settings | `%APPDATA%\sorta\config.yaml` — a copy of `config.example.yaml`, and **never** overwritten by a reinstall |
+| the shortcut | starts `sorta-tray` (§6) — the web app with a tray icon and no console |
+| run log, preview cache | `%LOCALAPPDATA%\sorta\...`, exactly as for any other install |
+
+Right after installing, the wizard (`sorta-setup`) prints what `sorta doctor` found and
+offers the heavier tiers one by one, with what each one costs to download:
+
+| tier | download | what it adds | without it |
+|---|---|---|---|
+| faces | ~400 MB | buffalo_l: face detection, clusters, per‑person albums | sorting by people is unavailable; everything else works |
+| search by words | ~3 GB | ViT‑L‑14 + XLM‑RoBERTa: `sorta search`, pinned slices | search says it has no index; the face and class slices work |
+| NVIDIA (CUDA 13) | ~2.5 GB | the `gpu` profile — the CUDA builds of torch/onnxruntime | the model stages stay on the CPU: they work, but slowly |
+| deep tier (VLM) | ~7 GB | the `vlm` extra + Qwen2.5‑VL‑3B: the `product` class, on‑screen rescue | the `product` class never appears; the fast tier answers the rest |
+
+**Saying no to all of them is a normal answer** — what you have then is a working product,
+not a trimmed one. Any tier can be added later: run **Sorta setup** from the Start menu
+(or `sorta-setup`) again. Model weights are downloaded by the stage that needs them on its
+first run, which is why the tiers are priced in this table rather than in the installer.
+
 ---
 
 ## 4. Configuration

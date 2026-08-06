@@ -239,10 +239,16 @@ class _Env:
         return seen[0]
 
     def _doctor(self, cfg: str) -> str:
+        # F211: `doctor` opens by naming the interpreter and the `uv` it is running with,
+        # so a shadowed PATH shows up at once rather than nine minutes later in a red
+        # gate. Both are pinned here: this test is about the WORDS, and a real path would
+        # turn it into a statement about whichever machine happened to run it.
         health = SimpleNamespace(summary="health", available=True)
         with patch.object(cli, "gpu_health", lambda: health), \
                 patch.object(cli, "geo_data_health", lambda: health), \
                 patch.object(cli, "default_log_path", lambda: "run.log"), \
+                patch.object(cli.sys, "executable", "python.exe"), \
+                patch.object(cli.shutil, "which", lambda _name: "uv.exe"), \
                 patch("sorta.imaging.preview_cache_enabled", lambda: False):
             return self._cap(lambda: cli._cmd_doctor(cfg))
 
@@ -403,6 +409,7 @@ class TestRussianOutputIsUnchanged(_EnvCase):
                          f"Кэш превью удалён: {self.env.previews}\n")
         self.assertEqual(
             got["doctor"],
+            f"Интерпретатор: python.exe\nМенеджер окружения uv: uv.exe\n"
             f"health\nhealth\nЛог прогона: run.log\n"
             f"Кэш превью: {self.env.previews} (ОТКЛЮЧЁН)\n")
         self.assertEqual(got["stub"], "'step' будет реализована в следующей фазе: doc\n2")

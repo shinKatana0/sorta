@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -683,6 +684,13 @@ def _cmd_doctor(config_path: str) -> None:
     writes them.
     """
     lang = _lang_of(config_path)
+    # F211: name the environment BEFORE the health lines. An installed copy ships its
+    # own python and its own `uv`, and a shadowed PATH turns every later line into a
+    # statement about the wrong installation.
+    print(_t("cli.doctor.python", lang, path=sys.executable))
+    uv_path = shutil.which("uv")
+    print(_t("cli.doctor.uv", lang, path=uv_path) if uv_path
+          else _t("cli.doctor.uv_missing", lang))
     print(gpu_health().summary)
     # F65: the geo base failing to load is invisible at runtime (every coordinate just
     # resolves to an empty place), so the doctor has to state it outright.
