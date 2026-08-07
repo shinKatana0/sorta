@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Uninstalling can leave nothing behind — and it asks first** (F224). The owner cleaned
+  a virtual machine for a repeat test on 2026-08-07 and measured what `unins000.exe` had
+  left on it: **10.7 GB of model weights** in caches named after nobody
+  (`~/.cache/huggingface/hub` — 1.71 GB of CLIP ViT-L-14, 1.46 GB of the multilingual
+  pair, 7.52 GB of the VLM tier; `~/.insightface/models` — 0.4 GB of buffalo_l) and
+  **8.0 GB of Sorta's own data** in `%APPDATA%\sorta` and `%LOCALAPPDATA%\sorta`. Not one
+  of those folders carries the word *sorta* in a place a person would look.
+  **The uninstaller now states both numbers and offers them as two separate ticks, both
+  empty by default.** The cost of a mistake differs between them — settings and an index
+  are somebody's work, weights are a download — so they are named apart, and neither is
+  decided for anybody: a silent uninstall (`/VERYSILENT`, which is what the installer
+  workflow runs) asks nobody and therefore deletes nothing. Photographs are never touched
+  under any tick.
+  **The missing half was the weights, and it is one command, not a third one.**
+  `sorta cache --clear` and `sorta reset` could already remove everything Sorta keeps of
+  its own; the gigabytes nobody could reach are the models. So `sorta cache` grew
+  `--models` (paths and sizes, deleting nothing) and `--clear-models` (the same list, then
+  a question whose default is no) — under `cache` because that is what weights are: files
+  that come back by themselves on the first run that needs them. `reset` erases the
+  opposite of that. The uninstaller **calls that command** instead of repeating it, the
+  way the wizard calls `sorta doctor` (F211), so the rule is covered by ordinary tests —
+  and whoever installed from a checkout, and has no uninstaller at all, gets the same job
+  done by the same command in the same three languages.
+  **Why it is not one line of `Remove-Item`:** those caches are shared with every other
+  program built on huggingface_hub or insightface, so only the models the tier catalog
+  names are removed, one directory at a time, and a stranger's weights beside them are
+  left untouched. Links are removed **as links** — on the owner's machine
+  `~/.insightface/models/buffalo_l` is a junction, and `shutil.rmtree` would walk through
+  it and empty the real directory somewhere else — and a model found *behind* a link is
+  reported and not touched at all. The size stated before the deletion is the number of
+  bytes it returns: a link counts as zero, because removing it frees nothing. All of it
+  is proven on a real junction (`mklink /J`), not on a stub.
 - **The catalog names a tier by what it does, not by what is inside it** (F223). One line
   of the install catalog read `Tier("search", weights=("ViT-L-14", "XLM-RoBERTa"),
   download_mb=3000)` — two models glued into one 3.0 GB question called **"Search by

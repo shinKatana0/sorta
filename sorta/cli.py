@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover — a sandbox/CI without typer, see _arg
 else:
     _TYPER_AVAILABLE = True
 
-from . import __version__, imaging, tiers, wizard
+from . import __version__, imaging, tiers, weights, wizard
 from .config import Config, configure_logging, load_config, skipped_stage_notes
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
@@ -955,8 +955,59 @@ def _cmd_doctor(config_path: str) -> None:
         print(line)
 
 
+def _cache_models(lang: Lang, *, clear: bool,
+                  confirm: Callable[[str], None] | None) -> None:
+    """F224: the model weights of the tier catalog, as this disk holds them.
+
+    The list is printed BEFORE the question in both modes — «frees 1.9 GB» is an answer,
+    «clear the cache» is a riddle — and the question itself is injected the way
+    `_cmd_reset` injects it: it belongs to typer, and this function has to stay callable
+    where typer is not installed. None means nothing is asked, which is what `--yes`
+    does and the only way the Windows uninstaller can call it.
+    """
+    found = weights.downloaded()
+    if not found:
+        print(_t("cli.cache.models_none", lang))
+        return
+    print(_t("cli.cache.models_header", lang))
+    for entry in found:
+        if entry.behind is not None:
+            print(_t("cli.cache.models_behind_link", lang, weight=entry.weight,
+                     path=entry.path, link=entry.behind))
+        elif entry.link:
+            print(_t("cli.cache.models_link", lang, weight=entry.weight,
+                     path=entry.path))
+        else:
+            print(_t("cli.cache.models_entry", lang, weight=entry.weight,
+                     path=entry.path, size_gb=entry.size / 1e9))
+    total = weights.total_bytes(found)
+    print(_t("cli.cache.models_total", lang, size_gb=total / 1e9))
+    if not clear:
+        return
+    if confirm is not None:
+        confirm(_t("cli.cache.models_confirm", lang, size_gb=total / 1e9))
+    result = weights.remove(found)
+    print(_t("cli.cache.models_cleared", lang, n=len(result.removed),
+             size_gb=result.freed / 1e9))
+    for entry in result.kept:
+        print(_t("cli.cache.models_kept", lang, link=entry.behind, path=entry.path))
+    for path, error in result.failed:
+        print(_t("cli.cache.models_failed", lang, path=path, error=error))
+
+
 def _cmd_cache(config_path: str, *, clear: bool = False, clear_geo: bool = False,
-               preview_max_gb: float | None = None) -> None:
+               preview_max_gb: float | None = None, models: bool = False,
+               clear_models: bool = False,
+               confirm: Callable[[str], None] | None = None) -> None:
+    # F224: the models are answered for BEFORE the config is loaded, and on purpose.
+    # Nothing about a weight in a shared cache depends on config.yaml, while the person
+    # this branch exists for is the one who is removing the program — quite possibly
+    # with their settings already deleted, and always with the uninstaller running from
+    # a directory nobody chose.
+    if models or clear_models:
+        _cache_models(_lang_of(config_path), clear=clear_models, confirm=confirm)
+        if not (clear or clear_geo):
+            return  # ...and `--clear`/`--clear-geo` alongside it still do their half
     # F127: the ceiling for this run, without editing `imaging.preview_cache_max_gb`.
     # The env variable IS the override: imaging.py is a leaf module the pool workers
     # call with a path and nothing else, so the config file seeds these variables and
@@ -1281,13 +1332,26 @@ def build_app(lang: Lang) -> typer.Typer:
         clear: bool = typer.Option(False, "--clear", help=h("cli.help.cache.clear")),
         clear_geo: bool = typer.Option(
             False, "--clear-geo", help=h("cli.help.cache.clear_geo")),
+        # F224: the model weights, listed and — after a question with "no" as its
+        # default — removed. Here rather than under `reset` because they are a cache in
+        # the only sense that matters: they come back by themselves, and nothing a
+        # person decided is lost with them.
+        models: bool = typer.Option(
+            False, "--models", help=h("cli.help.cache.models")),
+        clear_models: bool = typer.Option(
+            False, "--clear-models", help=h("cli.help.cache.clear_models")),
+        yes: bool = typer.Option(False, "--yes", "-y", help=h("cli.help.cache.yes")),
         preview_max_gb: float = typer.Option(
             None, "--preview-max-gb", min=0,
             help=h("cli.help.cache.preview_max_gb")),
         config: str = cfg_opt,
     ):
+        def ask(text: str) -> None:
+            typer.confirm(text, abort=True)  # aborts the command on "no"
+
         _cmd_cache(config, clear=clear, clear_geo=clear_geo,
-                   preview_max_gb=preview_max_gb)
+                   preview_max_gb=preview_max_gb, models=models,
+                   clear_models=clear_models, confirm=None if yes else ask)
 
     @app.command(help=h("cli.help.ui"))
     def ui(port: int = typer.Option(8756, "--port", help=h("cli.help.ui.port")),

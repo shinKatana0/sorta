@@ -327,5 +327,44 @@ The things above, plus everything the workflow cannot judge:
    single download.
 8. Run **Sorta setup** again and accept one tier; the refusal in step 3 must not have
    been final.
-9. Uninstall, and check that `%APPDATA%\sorta\config.yaml`, the run log and the preview
-   cache are still there — uninstalling a program is not a request to delete data.
+9. Uninstall and **answer nothing** on the page described below: `%APPDATA%\sorta\config.yaml`,
+   the run log, the preview cache and the downloaded weights all have to be still there —
+   uninstalling a program is not a request to delete data.
+10. Uninstall again (after reinstalling) with **both ticks set**, and check the four
+    places by hand: `%APPDATA%\sorta`, `%LOCALAPPDATA%\sorta`,
+    `~\.cache\huggingface\hub` and `~\.insightface\models`. The first two are gone; the
+    other two still exist and still hold whatever was in them that is not ours. Your
+    photographs, and the folders they were sorted into, are untouched.
+
+## The uninstall page asks, and calls the command (F224)
+
+Uninstalling used to leave gigabytes nobody could find, because not one of the folders
+carries the word *sorta* where a person looks. The owner measured it on 2026-08-07:
+10.7 GB of model weights and 8.0 GB of data survived `unins000.exe`.
+
+The uninstaller now states both numbers and offers them as **two separate ticks, both
+empty**. Three things about the shape of that, each of them a way it could have been
+worse than the problem:
+
+- **The models half calls `sorta cache --clear-models --yes`** instead of deleting
+  anything itself. That rule is the dangerous one — `~\.cache\huggingface` and
+  `~\.insightface` are shared with every other program on those libraries, and
+  `~\.insightface\models\buffalo_l` is a junction on the owner's machine, which
+  `shutil.rmtree` walks straight through on Windows. Living in `sorta/weights.py` it is
+  covered by ordinary tests, including one on a real junction; repeated in Pascal it
+  would be covered by nothing. Same reason the wizard calls `sorta doctor` (F211).
+- **The data half is this script's own work**, and only that half: those two directories
+  are the ones its own `[Dirs]` section created, they are ours by name, and no shared
+  cache is inside them. It still refuses to delete one that is a reparse point.
+- **A silent uninstall deletes nothing.** `/VERYSILENT` has nobody to ask, and the
+  workflow at step 2 above uninstalls exactly that way — a runner whose disk is quietly
+  cleaned out is not a test result, it is a surprise.
+
+The sizes on the page come from the program itself (`sorta.weights.report()`), so the
+number a person reads and the number that disappears are computed once. If the report
+cannot be produced — a broken payload, no interpreter — the page is not shown at all and
+nothing is removed: a tick with no number on it is the "clear the cache" riddle again.
+
+Whoever installed from a checkout has no uninstaller at all; for them the same command
+**is** the feature, with its own question, its own sizes and its three languages
+(user guide §20a).
