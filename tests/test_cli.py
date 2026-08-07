@@ -175,8 +175,13 @@ class TestRunDeepGeoOverride(unittest.TestCase):
 
 class TestRunOptionalStages(unittest.TestCase):
     """F53/#39: `--faces`/`--events` — opt-in steps, default off. The base run builds
-    only index/geo/landmarks/junk/phash; faces/events are added independently of each
-    other by flags."""
+    only index/geo/junk/phash; faces/events are added independently of each other by
+    flags.
+
+    F222: `--landmarks` is the third of them, and the stage left the base run — it had no
+    switch of any kind, downloaded 1.6 GB on a fresh machine and produced 0.55% of the
+    places of the owner's collection. Unlike the other two it has a config key behind it,
+    so the flag is an override in both directions rather than the only way in."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -214,19 +219,35 @@ class TestRunOptionalStages(unittest.TestCase):
             cli._pipeline_steps = original  # type: ignore[assignment]
         return calls, out
 
-    def test_no_flags_skips_faces_and_events(self):
+    def test_no_flags_skips_faces_events_and_landmarks(self):
         calls, out = self._run_and_capture_calls()
-        self.assertEqual(calls, ["index", "geo", "landmarks", "junk", "phash"])
-        self.assertIn("[этап 1/5] index", out)
-        self.assertIn("[этап 5/5] phash", out)
+        self.assertEqual(calls, ["index", "geo", "junk", "phash"])
+        self.assertIn("[этап 1/4] index", out)
+        self.assertIn("[этап 4/4] phash", out)
 
     def test_faces_true_adds_faces_only(self):
         calls, _out = self._run_and_capture_calls(faces=True)
-        self.assertEqual(calls, ["index", "geo", "landmarks", "faces", "junk", "phash"])
+        self.assertEqual(calls, ["index", "geo", "faces", "junk", "phash"])
 
     def test_events_true_adds_events_only(self):
         calls, _out = self._run_and_capture_calls(events=True)
-        self.assertEqual(calls, ["index", "geo", "landmarks", "events", "junk", "phash"])
+        self.assertEqual(calls, ["index", "geo", "events", "junk", "phash"])
+
+    def test_the_landmark_flag_adds_the_stage_the_config_left_out(self):
+        calls, _out = self._run_and_capture_calls(landmarks=True)
+        self.assertEqual(calls, ["index", "geo", "landmarks", "junk", "phash"])
+
+    def test_a_config_that_asks_for_it_runs_it_without_any_flag(self):
+        """The owner's regression: config.yaml with the stage on keeps working, with no
+        edit by hand."""
+        self.cfg_path.write_text(
+            self.cfg_path.read_text(encoding="utf-8") + "features:\n  landmarks: true\n",
+            encoding="utf-8")
+        calls, _out = self._run_and_capture_calls()
+        self.assertIn("landmarks", calls)
+        # ...and the flag can still take it back for one run.
+        calls, _out = self._run_and_capture_calls(landmarks=False)
+        self.assertNotIn("landmarks", calls)
 
     def test_src_overrides_config_sources(self):
         # F59: --src overrides config sources for this run.
@@ -251,9 +272,14 @@ class TestRunOptionalStages(unittest.TestCase):
 
     def test_faces_and_events_true_adds_both(self):
         calls, out = self._run_and_capture_calls(faces=True, events=True)
+        self.assertEqual(calls, ["index", "geo", "faces", "events", "junk", "phash"])
+        self.assertIn("[этап 1/6] index", out)
+        self.assertIn("[этап 6/6] phash", out)
+
+    def test_all_three_flags_build_the_whole_pipeline(self):
+        calls, out = self._run_and_capture_calls(faces=True, events=True, landmarks=True)
         self.assertEqual(
             calls, ["index", "geo", "landmarks", "faces", "events", "junk", "phash"])
-        self.assertIn("[этап 1/7] index", out)
         self.assertIn("[этап 7/7] phash", out)
 
 

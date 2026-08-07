@@ -109,6 +109,20 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="cost-name">{{costs_base_label}}</span>
 <span class="cost-always">{{costs_always}}</span>
 <span class="cost-price" data-cost="base"></span>
+<span id="process-classify-tier-note" class="process-toggle-hint process-toggle-warn" style="display:none"></span>
+</div>
+<div class="cost-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-landmarks-checkbox"> {{process_landmarks_label}}</label>
+<span class="cost-price" data-cost="landmarks"></span>
+<span class="process-toggle-hint cost-hint">{{process_landmarks_hint}}</span>
+<span id="process-landmarks-tier-note" class="process-toggle-hint process-toggle-warn" style="display:none"></span>
+<span class="cost-child" id="process-landmarks-verify-row">
+<label class="process-toggle-label"><input type="checkbox" id="process-landmarks-verify-checkbox"> {{process_landmarks_verify_label}}</label>
+<span class="cost-price" data-cost="landmarks_verify"></span>
+<span class="process-toggle-hint cost-hint">{{process_landmarks_verify_hint}}</span>
+<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
+<span class="process-toggle-hint cost-hint landmarks-off-hint" style="display:none">{{process_needs_landmarks_hint}}</span>
+</span>
 </div>
 <div class="cost-row">
 <label class="process-toggle-label"><input type="checkbox" id="process-faces-checkbox"> {{process_faces_label}}</label>
@@ -125,6 +139,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <label class="process-toggle-label"><input type="checkbox" id="process-pets-checkbox"> {{process_pets_label}}</label>
 <span class="cost-price" data-cost="pets"></span>
 <span class="process-toggle-hint cost-hint">{{process_pets_hint}}</span>
+<span id="process-pets-tier-note" class="process-toggle-hint process-toggle-warn" style="display:none"></span>
 <span class="cost-child" id="process-pets-verify-row" style="display:none">
 <label class="process-toggle-label"><input type="checkbox" id="process-pets-verify-checkbox"> {{process_pets_verify_label}}</label>
 <span class="cost-price" data-cost="pets_verify"></span>
@@ -149,12 +164,6 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="process-toggle-hint cost-hint">{{process_junk_rescue_hint}}</span>
 <span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
 </span>
-<span class="cost-child" id="process-landmarks-verify-row">
-<label class="process-toggle-label"><input type="checkbox" id="process-landmarks-verify-checkbox"> {{process_landmarks_verify_label}}</label>
-<span class="cost-price" data-cost="landmarks_verify"></span>
-<span class="process-toggle-hint cost-hint">{{process_landmarks_verify_hint}}</span>
-<span class="process-toggle-hint cost-hint vlm-off-hint" style="display:none">{{process_needs_deep_hint}}</span>
-</span>
 </div>
 </div>
 </div>
@@ -169,6 +178,10 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span class="cost-total-label">{{costs_total_label}}</span>
 <span class="cost-total-value" id="process-budget-value"></span>
 </div>
+<div class="download-block" id="process-download">
+<span class="download-total" id="process-download-total"></span>
+<span class="process-toggle-hint" id="process-download-list"></span>
+</div>
 <div class="process-actions">
 <button type="button" id="process-start-btn" class="btn btn-primary">{{process_start_button}}</button>
 <button type="button" id="process-cancel-btn" class="btn btn-ghost process-cancel-btn" style="display:none">{{process_cancel_button}}</button>
@@ -179,6 +192,7 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 </div>
 <progress id="process-progress" class="process-progress" max="0" value="0" style="display:none"></progress>
 <div id="process-phase" class="process-phase" style="display:none"></div>
+<div id="process-download-status" class="process-phase" style="display:none"></div>
 <div id="process-stages" class="stage-summary" style="display:none">
 <button type="button" id="process-stages-toggle" class="stage-summary-head" aria-expanded="false" aria-controls="process-stages-list" title="{{process_stages_toggle}}">
 <span id="process-stages-current" class="stage-summary-current"></span>

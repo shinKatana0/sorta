@@ -185,6 +185,40 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "ほぼ無料です。すでに実行中の CLIP パスに相乗りするため（別の長い"
               "ステップではありません）、「動物」タブとアルバムが追加されます。",
     },
+    # F222: the stage that never had a tick. It ran on every run, fetched 1.6 GB the
+    # first time and produced 143 of the 26 137 places of the owner's collection — 0.55%,
+    # practically one trip. The caption says what it gives and what it costs, because a
+    # box that is cleared by default has to be worth ticking on purpose.
+    "process_landmarks_label": {
+        "ru": "Узнавать места по виду", "en": "Recognise places by sight",
+        "ja": "見た目で場所を判定",
+    },
+    "process_landmarks_hint": {
+        "ru": "CLIP смотрит кадры без координат и предлагает достопримечательность. "
+              "На коллекции владельца это дало 143 места из 26 137 (0,55%) и почти всё "
+              "— одна поездка; кадры без GPS обычно спасают соседние снимки и время. "
+              "Первый запуск скачивает 1,6 ГБ весов.",
+        "en": "CLIP looks at the frames with no coordinates and proposes a landmark. On "
+              "the owner's collection that produced 143 places out of 26 137 (0.55%), "
+              "and nearly all of one trip; frames with no GPS are usually rescued by "
+              "their neighbours and their timestamps instead. The first run downloads "
+              "1.6 GB of weights.",
+        "ja": "座標のないコマを CLIP が見て、名所を提案します。所有者のコレクション"
+              "では 26 137 件中 143 件（0.55%）で、ほぼ 1 回の旅行分でした。GPS のない"
+              "コマは通常、近くのコマと時刻から救われます。初回実行時に重み 1.6 GB を"
+              "ダウンロードします。",
+    },
+    # F222 §7: the landmark check is a question ABOUT the landmark stage, so it goes dead
+    # with it — a subordinate of a stage that is not in the run is one more control that
+    # does nothing, which is exactly what F211 forbids.
+    "process_needs_landmarks_hint": {
+        "ru": "Работает только вместе с «Узнавать места по виду» — без этой стадии "
+              "проверять нечего.",
+        "en": "Works only together with “Recognise places by sight” — without that stage "
+              "there is nothing to check.",
+        "ja": "「見た目で場所を判定」と併用したときのみ動作します。そのステージが"
+              "なければ確認する対象がありません。",
+    },
     "process_events_hint": {
         "ru": "Группировка в поездки/события по времени и месту (нужен geo); "
               "для раскладки/альбомов по событиям.",
@@ -335,6 +369,63 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "CLIP が名所を提案し、モデルがそのコマの場所を答え、一致した提案だけが"
               "先へ進みます。誤った都市は都市なしより悪いため、モデルが裏づけない提案は"
               "コマを別の都市へ移さず、場所なしのままにします。",
+    },
+    # --- F222: what this run will download, said above the button ---------------------
+    # F217 hung a note on two checkboxes; this is the sum, over the lines that will
+    # actually run — the ones with no checkbox included, because those are the ones
+    # nobody could have been warned about. The person it is written for cleared the
+    # "set it up at the end" box in the installer and starts a run without opening
+    # anything else: this block is the only place they can learn that 1.6 GB is coming.
+    "download_title": {
+        "ru": "Этот прогон скачает {size}",
+        "en": "This run will download {size}",
+        "ja": "この実行では {size} をダウンロードします",
+    },
+    # One line per model, with what it is for — a size with no purpose next to it is a
+    # number a person can only accept or abandon the run over.
+    "download_line": {
+        "ru": "{weights} — {size}, для: {parts}",
+        "en": "{weights} — {size}, for: {parts}",
+        "ja": "{weights} — {size}、対象: {parts}",
+    },
+    "download_none": {
+        "ru": "Ничего скачивать не нужно: все нужные модели уже на диске.",
+        "en": "Nothing to download: every model this run needs is already on disk.",
+        "ja": "ダウンロードは不要です: この実行に必要なモデルはすべてディスク上に"
+              "あります。",
+    },
+    # The stages nobody ticks, named in the summary the way the run screen names them
+    # everywhere else. Without this line the sum reads as belonging to the checkboxes
+    # alone, and the 1.6 GB of the classification is exactly what it does not belong to.
+    "download_always_part": {
+        "ru": "классификация кадров (без галочки)",
+        "en": "frame classification (no checkbox)",
+        "ja": "コマの分類（チェックなし）",
+    },
+    # F222 §3: while it is coming down. 1.6 GB with nothing on screen is
+    # indistinguishable from a hang — the report this feature comes from says "it hung on
+    # landmarks", and nothing had hung. How much has arrived is known to the download
+    # library and not to us; a named model and a size beat a silent hour.
+    "download_running": {
+        "ru": "Скачивается модель для этапа «{stage}»: {weights} ({size}). "
+              "Это первый раз, дальше она берётся с диска.",
+        "en": "Downloading the model for the “{stage}” stage: {weights} ({size}). "
+              "This is the first time; after that it is read from disk.",
+        "ja": "「{stage}」ステージ用のモデルをダウンロード中: {weights}（{size}）。"
+              "初回のみで、以降はディスクから読み込まれます。",
+    },
+    # F222 §6b: the tier is absent, so the option cannot do anything at all — and an
+    # option that cannot act is a control that does nothing, which F211 forbids in as
+    # many words. It goes dead, with the reason and the way out beside it (the wizard's
+    # own line, `tier_add_hint`), and the SAVED value stays visible: somebody who ticked
+    # this a month ago and then cleared a cache must not find their setting quietly gone.
+    "tier_unavailable_note": {
+        "ru": "Пункт недоступен, пока ярус не добавлен. Сохранённая настройка цела — "
+              "прогон идёт на быстром ярусе.",
+        "en": "The option is unavailable until the tier is added. The saved setting is "
+              "kept — the run goes through on the fast tier.",
+        "ja": "ティアが追加されるまでこの項目は使用できません。保存された設定はその"
+              "ままで、実行は高速ティアで行われます。",
     },
     # F145: said next to every option that asks the SAME model the "Deep analysis"
     # checkbox loads. With the checkbox clear each of them costs nothing and does
@@ -3121,6 +3212,15 @@ def _tier_strings() -> dict[str, dict[str, str]]:
         },
         "tier_add_hint": {lang: _doctor_line(tiers._tier_hint_key(), lang)
                           for lang in _TIER_LANGS},
+        # F222: the two size templates, so the browser can print a sum it computed
+        # itself — the download of a run is the sizes of the models it is missing added
+        # up, and which those are depends on the checkboxes. Generated from the wizard's
+        # own catalog for the same reason as everything else here: a second spelling of
+        # "3.0 GB" would be a second answer about the same file.
+        "tier_size_mb": {lang: i18n.cli_text("cli.setup.size_mb", lang, mb="{mb}")
+                         for lang in _TIER_LANGS},
+        "tier_size_gb": {lang: i18n.cli_text("cli.setup.size_gb", lang, gb="{gb}")
+                         for lang in _TIER_LANGS},
     }
     for tier in wizard.TIERS:
         strings[f"tier_name_{tier.key}"] = {lang: tier.name(lang) for lang in _TIER_LANGS}

@@ -2564,6 +2564,16 @@
   // one either — they have to read it while deciding, which is the whole difference from
   // the warning that used to live here.
   var tierStates = {};
+  // F222: the same answer, per LINE of the run screen. F217 paired an option with a tier
+  // by eye, and the pairing it produced was "the checkbox whose caption looks like a tier
+  // name" — so animals, landmarks and the classification, which all raise the same CLIP
+  // ViT-L-14 out of a tier called "Search by words", got no note at all. The server now
+  // derives the pairing from the WEIGHTS a line loads, and sends it here.
+  var partStates = {};
+  // What one still-missing model weighs, so the summary below can add up a run instead
+  // of quoting a tier price per line (three lines needing the same file would otherwise
+  // promise three times its size).
+  var weightSizes = {};
 
   // The sentence one tier gets, or "" for a tier that is in place — a screen that lists
   // what is already there is a screen nobody reads. `absentExtra` is what a MISSING tier
@@ -2584,17 +2594,62 @@
         .filter(Boolean).join(" ");
   }
 
-  function setTierNote(elementId, key, absentExtra) {
+  // The note of one LINE: every tier that line needs, in the catalog's order. A line
+  // whose tier cannot be added from here (its packages are absent) also says that the
+  // control is dead and the saved setting is intact — F222 §6b, which reverses the F217
+  // "explain, do not forbid" for the one case where the action is impossible rather than
+  // merely unwise.
+  function partNote(key, absentExtra) {
+    var info = partStates[key];
+    if (!info) return "";
+    var notes = (info.tiers || []).map(function (tier) {
+      return tierNote(tier, absentExtra);
+    }).filter(Boolean);
+    if (info.available === false) notes.push(I18N.tier_unavailable_note);
+    return notes.join(" ");
+  }
+
+  function setPartNote(elementId, key, absentExtra) {
     var el = document.getElementById(elementId);
     if (!el) return;
-    var text = tierNote(key, absentExtra);
+    var text = partNote(key, absentExtra);
     el.textContent = text;
     el.style.display = text ? "" : "none";
   }
 
   function updateTierNotes() {
-    setTierNote("process-faces-tier-note", "faces", "");
-    setTierNote("process-deep-tier-note", "deep", I18N.process_deep_falls_back);
+    setPartNote("process-faces-tier-note", "faces", "");
+    setPartNote("process-deep-tier-note", "deep", I18N.process_deep_falls_back);
+    // F222: the three that had no note. `classify` is the one with no checkbox either —
+    // its note stands on the line of the work that always runs, which is the only place
+    // a person can meet it before the download starts.
+    setPartNote("process-landmarks-tier-note", "landmarks", "");
+    setPartNote("process-pets-tier-note", "pets", "");
+    setPartNote("process-classify-tier-note", "classify", "");
+    updateOptionAvailability();
+    renderDownloadPlan();
+  }
+
+  // F222 §6b: a tier that is not installed is not a slow option, it is no option — the
+  // box would change nothing whatever it is set to, and "a control on screen that does
+  // nothing" is what F211 forbids in as many words. So it goes dead, with the reason and
+  // the way out beside it (see `partNote`), and the SAVED value stays visible: somebody
+  // who ticked deep analysis a month ago and then wiped a cache must not find the setting
+  // silently cleared. Nothing here writes `.checked`.
+  function partAvailable(key) {
+    var info = partStates[key];
+    return !info || info.available !== false;
+  }
+
+  function updateOptionAvailability() {
+    Object.keys(partStates).forEach(function (key) {
+      var el = document.getElementById("process-" + key.replace(/_/g, "-") + "-checkbox");
+      if (!el) return;
+      // The run itself is the other reason a control is dead — whichever applies, the
+      // box must not come back to life on the next status tick.
+      el.disabled = processRunning || !partAvailable(key);
+    });
+    updateVlmSubordinatesDisabled();
   }
 
   function applyProcessDefaults() {
@@ -2607,6 +2662,11 @@
         document.getElementById("process-products-checkbox").checked = !!data.products;
         document.getElementById("process-geo-online-checkbox").checked = !!data.geo_online;
         document.getElementById("process-pets-checkbox").checked = !!data.pets;
+        // F222: the landmark stage starts from `features.landmarks` — false in a fresh
+        // config, and whatever the file says in one that switched it on. This is also the
+        // half of §6b that matters: the value shown is the SAVED one even when the tier
+        // behind the option is missing and the box is dead.
+        document.getElementById("process-landmarks-checkbox").checked = !!data.landmarks;
         // F138: the one that moved here out of the settings column starts from the
         // config exactly as deep/pets do — the file is where it lives, this screen is
         // where one run overrides it. (F186 retired the other three of that set.)
@@ -2650,6 +2710,10 @@
   // on this screen.
   var COST_ROWS = [
     { key: "base", always: true },
+    // F222: the landmark stage, which used to be part of the line above — inside the
+    // "always" price, with no way to decline it. Split out with its own seconds so the
+    // sum describes the run that will happen.
+    { key: "landmarks", id: "process-landmarks-checkbox" },
     { key: "faces", id: "process-faces-checkbox" },
     { key: "events", id: "process-events-checkbox" },
     { key: "pets", id: "process-pets-checkbox" },
@@ -2661,7 +2725,10 @@
     // of a band the server counts out of this index, so they are priced exactly like the
     // rest — a dash where the index has never run them, never a zero.
     { key: "junk_rescue", id: "process-junk-rescue-checkbox", vlm: true },
-    { key: "landmarks_verify", id: "process-landmarks-verify-checkbox", vlm: true }
+    // F222: two parents, and both have to hold — the model may be raised (`vlm`) and the
+    // stage it checks has to be in the run (`parent`).
+    { key: "landmarks_verify", id: "process-landmarks-verify-checkbox", vlm: true,
+      parent: "process-landmarks-checkbox" }
   ];
 
   // --- F145: "Deep analysis (VLM)" is the master switch ----------------------
@@ -2692,19 +2759,50 @@
                              "process-junk-rescue-checkbox",
                              "process-landmarks-verify-checkbox"];
 
+  // F222 §6: the master switch is on only when a run would ACT on it. With the deep tier
+  // missing the box may still be ticked — the setting is the person's and it is kept —
+  // but `junk.classify` will fall back to the fast tier, so the estimate has to price the
+  // run that will happen. Before this, ticking a box for an absent tier promised hours of
+  // VLM time where there would be minutes.
   function vlmMasterOn() {
-    return document.getElementById("process-deep-checkbox").checked;
+    return document.getElementById("process-deep-checkbox").checked
+        && partAvailable("deep");
+  }
+
+  // F222 §7: the landmark check is a question about the landmark stage. With that stage
+  // out of the run there is nothing to check, so the subordinate goes dead with it —
+  // otherwise it is one more control that does nothing.
+  function landmarksStageOn() {
+    return document.getElementById("process-landmarks-checkbox").checked;
+  }
+
+  function subordinateOff(id) {
+    if (id === "process-landmarks-verify-checkbox" && !landmarksStageOn()) return true;
+    return !vlmMasterOn();
   }
 
   function updateVlmSubordinatesDisabled() {
     var off = !vlmMasterOn();
     VLM_SUBORDINATE_IDS.forEach(function (id) {
       var el = document.getElementById(id);
-      if (el) { el.disabled = off || processRunning; }
+      if (el) { el.disabled = subordinateOff(id) || processRunning; }
     });
     document.querySelectorAll(".vlm-off-hint").forEach(function (el) {
       el.style.display = off ? "" : "none";
     });
+    document.querySelectorAll(".landmarks-off-hint").forEach(function (el) {
+      el.style.display = landmarksStageOn() ? "none" : "";
+    });
+  }
+
+  // Will this line do any work at all, whatever its own box says? Two ways it will not:
+  // the master switch that permits the model is off (F145, and F222 counts a missing tier
+  // as off — see `vlmMasterOn`), or the stage it is a question about is not in the run
+  // (F222 §7). Both mean zero rather than a dash: a dash is "this index cannot tell".
+  function rowRuns(row) {
+    if (row.vlm && !vlmMasterOn()) return false;
+    if (row.parent && !document.getElementById(row.parent).checked) return false;
+    return true;
   }
 
   // The seconds behind one line, or null when this index cannot say.
@@ -2716,7 +2814,7 @@
     // F145: a subordinate line costs nothing with the master off, whatever the box next
     // to it says — that IS the run, and a dash here would mean "unknown" rather than
     // "free".
-    if (row.vlm && !vlmMasterOn()) return 0;
+    if (!rowRuns(row)) return 0;
     if (!costEstimate) return null;
     var value = costEstimate[row.key];
     return (typeof value === "number") ? value : null;
@@ -2727,7 +2825,7 @@
   // not run has no rate to have a pedigree.
   function costSource(row) {
     if (!costSources) return null;
-    if (row.vlm && !vlmMasterOn()) return null;
+    if (!rowRuns(row)) return null;
     return costSources[row.key] || null;
   }
 
@@ -2757,7 +2855,6 @@
     var unknown = false;
     var measured = false;
     var byDefault = false;
-    var vlmOff = !vlmMasterOn();
     COST_ROWS.forEach(function (row) {
       var seconds = costSeconds(row);
       var cell = document.querySelector('[data-cost="' + row.key + '"]');
@@ -2768,7 +2865,7 @@
         // F161: and the master switch says the other zero — the one that means "this
         // line has no work of its own", not "this line will not run".
         cell.textContent = row.master ? I18N.costs_permission_only
-            : (row.vlm && vlmOff) ? I18N.costs_off : formatCost(seconds);
+            : !rowRuns(row) ? I18N.costs_off : formatCost(seconds);
       }
       if (!costRowEnabled(row)) return;
       if (seconds === null) { unknown = true; return; }
@@ -2783,6 +2880,9 @@
       value.textContent = fmt(I18N.costs_total_at_least, { time: formatCost(total) });
     } else value.textContent = formatCost(total);
     renderCostSource(measured, byDefault);
+    // The download summary follows the same ticks as the prices above it: a box cleared
+    // here takes its model out of the sum, and one ticked puts it back.
+    renderDownloadPlan();
   }
 
   function renderCostSource(measured, byDefault) {
@@ -2795,6 +2895,89 @@
     } else if (byDefault) {
       note.textContent = I18N.costs_source_default;
     } else note.textContent = "";  // nothing priced yet — nothing to have a pedigree
+  }
+
+  // --- F222: what this run will download, before the button --------------------
+  //
+  // The report: "why did it get in at all, when I ticked almost nothing in the setup?"
+  // The answer was that landmarks, the classification and the near-duplicates had no
+  // tick — and the first two fetch 1.6 GB between them on a fresh machine, silently. So
+  // the sum stands above the button, over the lines that WILL run, with the ones nobody
+  // ticks included, and every model says what it is for.
+  //
+  // Summed by MODEL and not by line: landmarks, the animals and the classification raise
+  // the same ViT-L-14, and three lines quoting its size would promise three downloads of
+  // one file.
+  var DOWNLOAD_PART_LABELS = {
+    landmarks: "process_landmarks_label",
+    faces: "process_faces_label",
+    pets: "process_pets_label",
+    deep: "process_deep_label",
+    products: "process_products_label",
+    pets_verify: "process_pets_verify_label",
+    junk_rescue: "process_junk_rescue_label",
+    landmarks_verify: "process_landmarks_verify_label",
+    classify: "download_always_part"
+  };
+
+  function downloadSize(mb) {
+    if (mb < 1000) return fmt(I18N.tier_size_mb, { mb: mb });
+    return fmt(I18N.tier_size_gb, { gb: (mb / 1000).toFixed(1) });
+  }
+
+  // Which lines this run will actually walk: the ones with no checkbox always, the rest
+  // by the same rule the price above them is computed with, so the two cannot disagree.
+  function partWillRun(key) {
+    var info = partStates[key];
+    if (!info) return false;
+    if (info.always) return true;
+    var row = null;
+    COST_ROWS.forEach(function (candidate) {
+      if (candidate.key === key) row = candidate;
+    });
+    if (!row) {
+      var box = document.getElementById("process-" + key.replace(/_/g, "-") + "-checkbox");
+      return !!box && box.checked;
+    }
+    return costRowEnabled(row) && rowRuns(row);
+  }
+
+  function renderDownloadPlan() {
+    var totalEl = document.getElementById("process-download-total");
+    var listEl = document.getElementById("process-download-list");
+    if (!totalEl || !listEl) return;
+    // Before the first answer arrives nothing is claimed. "Nothing to download" is a
+    // statement, and this screen may not make it while it is still asking.
+    if (!Object.keys(partStates).length) {
+      totalEl.textContent = "";
+      listEl.textContent = "";
+      return;
+    }
+    var forWhat = {};   // model -> the lines that want it
+    Object.keys(partStates).forEach(function (key) {
+      if (!partWillRun(key)) return;
+      (partStates[key].missing || []).forEach(function (weight) {
+        if (!forWhat[weight]) forWhat[weight] = [];
+        var label = I18N[DOWNLOAD_PART_LABELS[key]];
+        if (label) forWhat[weight].push(label);
+      });
+    });
+    var models = Object.keys(forWhat);
+    var total = 0;
+    models.forEach(function (weight) { total += weightSizes[weight] || 0; });
+    if (!models.length) {
+      totalEl.textContent = I18N.download_none;
+      listEl.textContent = "";
+      return;
+    }
+    totalEl.textContent = fmt(I18N.download_title, { size: downloadSize(total) });
+    listEl.textContent = models.map(function (weight) {
+      return fmt(I18N.download_line, {
+        weights: weight,
+        size: downloadSize(weightSizes[weight] || 0),
+        parts: forWhat[weight].join(", ")
+      });
+    }).join(" · ");
   }
 
   function loadCostEstimate() {
@@ -2814,6 +2997,7 @@
   ["process-faces-checkbox", "process-events-checkbox", "process-pets-checkbox",
    "process-pets-verify-checkbox", "process-deep-checkbox",
    "process-products-checkbox", "process-junk-rescue-checkbox",
+   "process-landmarks-checkbox",
    "process-landmarks-verify-checkbox"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", renderCosts);
   });
@@ -2827,15 +3011,31 @@
   // the CPU profile is the right install and the banner was sending 2.5 GB of CUDA
   // wheels to someone with nothing to run them on. The same request brings the state of
   // every install tier, so the notes under the checkboxes come from one probe.
-  fetch("/api/env").then(function (r) { return r.json(); })
-    .then(function (data) {
-      if (!data) return;
-      if (data.gpu_present && !data.gpu_profile) {
-        document.getElementById("env-cpu-warning").style.display = "";
-      }
-      tierStates = data.tiers || {};
-      updateTierNotes();
-    }).catch(function () {});
+  function loadEnv() {
+    return fetch("/api/env").then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data) return;
+        if (data.gpu_present && !data.gpu_profile) {
+          document.getElementById("env-cpu-warning").style.display = "";
+        }
+        tierStates = data.tiers || {};
+        partStates = data.parts || {};
+        weightSizes = data.weights || {};
+        updateTierNotes();
+      }).catch(function () {});
+  }
+
+  loadEnv();
+
+  // F222 §6b: "the tier appears -> the option becomes available by itself, without
+  // restarting the application". A person told to run `sorta-setup` does it in another
+  // window and comes back to this page; re-reading the state on a slow tick is the whole
+  // mechanism. Deliberately slow — the answer is three cheap probes but it is asked for
+  // as long as the page is open, and nothing here changes twice a minute.
+  var ENV_REFRESH_MS = 30000;
+  window.setInterval(function () {
+    if (!processRunning) loadEnv();
+  }, ENV_REFRESH_MS);
 
   var PROCESS_POLL_MS = 1500;
   var processPollTimer = null;
@@ -2851,11 +3051,14 @@
   // indices drift away from the stage_index of a filtered run.
   var ALL_PROCESS_STAGES = ["index", "geo", "landmarks", "classify", "faces", "events",
                             "junk", "phash"];
-  var OPTIONAL_PROCESS_STAGES = { faces: true, events: true };
+  // F222: `landmarks` joined the opt-in ones, so the chip row has to filter it out the
+  // same way — otherwise the numbering drifts from the stage_index of a filtered run,
+  // which is the bug F53 left behind the first time.
+  var OPTIONAL_PROCESS_STAGES = { faces: true, events: true, landmarks: true };
   var currentProcessStages = ALL_PROCESS_STAGES.slice();
 
-  function filterProcessStages(faces, events) {
-    var enabled = { faces: faces, events: events };
+  function filterProcessStages(faces, events, landmarks) {
+    var enabled = { faces: faces, events: events, landmarks: landmarks };
     return ALL_PROCESS_STAGES.filter(function (name) {
       return !OPTIONAL_PROCESS_STAGES[name] || enabled[name];
     });
@@ -2878,17 +3081,18 @@
   // cancels nothing while looking exactly as though it had — and that is found out an
   // hour later, when the faces have been computed after all.
   function updateProcessInputsDisabled() {
-    ["process-browse-btn", "process-source-dir", "process-excludes-btn",
-     "process-deep-checkbox", "process-geo-online-checkbox",
-     "process-faces-checkbox", "process-events-checkbox",
-     "process-pets-checkbox"].forEach(function (id) {
+    ["process-browse-btn", "process-source-dir",
+     "process-excludes-btn"].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { el.disabled = processRunning; }
     });
     // F145: the options under the master switch have two reasons to be dead and one
     // place that applies both — listing them here as well would re-enable, on the next
     // status tick, boxes the cleared checkbox had just switched off.
-    updateVlmSubordinatesDisabled();
+    // F222: and the ticks themselves moved into `updateOptionAvailability` for that same
+    // reason — a missing tier is a third reason to be dead, and a status tick that only
+    // knew about the run would have brought those boxes back every 1.5 seconds.
+    updateOptionAvailability();
   }
 
   // F191: the stage row is one line, not one chip per stage. Nine chips ran wider than
@@ -3093,6 +3297,27 @@
     box.style.display = "";
   }
 
+  // F222 §3: the download, while it is happening. 1.6 GB with nothing on screen reads as
+  // a hang — the report this feature comes from says "it hung on landmarks", and nothing
+  // had hung. How much has arrived is known to the download library and not to us, so
+  // this line states what we do know: which model, for which stage, how big, and that it
+  // happens once. A named model beats a silent hour.
+  function renderDownloadStatus(data) {
+    var box = document.getElementById("process-download-status");
+    var info = data.download;
+    if (!info || !(info.weights || []).length) {
+      box.textContent = "";
+      box.style.display = "none";
+      return;
+    }
+    box.textContent = fmt(I18N.download_running, {
+      stage: processStageLabel(info.stage),
+      weights: info.weights.join(", "),
+      size: downloadSize(info.mb || 0)
+    });
+    box.style.display = "";
+  }
+
   function renderProcessStatus(data) {
     var startBtn = document.getElementById("process-start-btn");
     var cancelBtn = document.getElementById("process-cancel-btn");
@@ -3109,6 +3334,7 @@
     if (!data.running) bar.classList.remove("indeterminate");
     renderStages(data);
     renderProcessPhase(data);
+    renderDownloadStatus(data);
     renderProcessSummary(data);
     renderDeepFallback(data);
     if (data.running) {
@@ -3189,10 +3415,13 @@
     // the file. `pets_verify` needs `pets` — the row is hidden without it — so it is
     // sent as false rather than as a check the junk stage would refuse anyway.
     var petsVerify = pets && document.getElementById("process-pets-verify-checkbox").checked;
-    currentProcessStages = filterProcessStages(faces, events);
+    // F222: the landmark stage travels like faces and events — explicitly, so an unticked
+    // box forces it off for this run whatever config.yaml says (the F57 rule).
+    var landmarks = document.getElementById("process-landmarks-checkbox").checked;
+    currentProcessStages = filterProcessStages(faces, events, landmarks);
     postJson("/api/process", {
       source_dir: path, deep: deep, geo_online: geoOnline, faces: faces, events: events,
-      pets: pets, pets_verify: petsVerify,
+      landmarks: landmarks, pets: pets, pets_verify: petsVerify,
       // F161: sent explicitly like the four above — an unticked box has to force the
       // deep tier OFF for this run, which is the whole point of giving it a line.
       products: document.getElementById("process-products-checkbox").checked,
@@ -3200,8 +3429,10 @@
       // travel: a box cleared here turns off what config.yaml switched on, for this run
       // and no longer, and the file is not touched either way.
       junk_rescue: document.getElementById("process-junk-rescue-checkbox").checked,
-      landmarks_verify:
-          document.getElementById("process-landmarks-verify-checkbox").checked,
+      // F222 §7: a check of a stage that is not in the run is not sent as a wish — it
+      // would sit in the log as a question nobody could ask.
+      landmarks_verify: landmarks
+          && document.getElementById("process-landmarks-verify-checkbox").checked,
     }).then(function (resp) {
       if (resp && resp.error) {
         document.getElementById("process-status").textContent =
@@ -3280,6 +3511,7 @@
      ["process-geo-online-checkbox", I18N.process_geo_online_label],
      ["process-faces-checkbox", I18N.process_faces_label],
      ["process-events-checkbox", I18N.process_events_label],
+     ["process-landmarks-checkbox", I18N.process_landmarks_label],
      ["process-pets-checkbox", I18N.process_pets_label],
      ["process-pets-verify-checkbox", I18N.process_pets_verify_label],
      ["process-junk-rescue-checkbox", I18N.process_junk_rescue_label],

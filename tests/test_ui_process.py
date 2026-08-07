@@ -164,7 +164,9 @@ class TestProcessStartAndProgress(ProcessTestBase):
              "error", "error_stage", "finished", "cancel_requested", "source_dir",
              "stage_stats", "phase", "phase_elapsed",
              # F217: the deep tier was asked for, and whether anything came of it.
-             "deep_requested", "deep_ran"},
+             "deep_requested", "deep_ran",
+             # F222: the model this run is fetching right now — null between downloads.
+             "download"},
         )
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])
@@ -176,7 +178,8 @@ class TestProcessStartAndProgress(ProcessTestBase):
         self.patch_fast_stages()
         self.start_server()
         status, resp = self.post(
-            "/api/process", {"source_dir": str(self.src_dir), "faces": True, "events": True})
+            "/api/process", {"source_dir": str(self.src_dir), "faces": True,
+                             "events": True, "landmarks": True})
         self.assertEqual(status, 200)
         self.assertTrue(resp.get("ok"))
 
@@ -616,9 +619,13 @@ class TestProcessTogglesValidation(ProcessTestBase):
 
 class TestProcessOptionalStages(ProcessTestBase):
     """F53/#39: faces/events — opt-in steps, default off, independent of each other
-    and of deep/geo_online; the filtering is reflected in stage_total."""
+    and of deep/geo_online; the filtering is reflected in stage_total.
 
-    def test_default_skips_faces_and_events(self):
+    F222: `landmarks` is the third of them. It used to run in every one of these cases,
+    which is the defect — a stage nobody chose, fetching 1.6 GB on a fresh machine for
+    0.55% of the places of the owner's collection."""
+
+    def test_default_skips_faces_events_and_landmarks(self):
         self.patch_fast_stages()
         self.start_server()
         status, _resp = self.post("/api/process", {"source_dir": str(self.src_dir)})
@@ -627,9 +634,22 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
+            ["index", "assign_duplicates", "geo", "classify", "junk", "phash"])
+        # index/geo/classify/junk/phash
+        self.assertEqual(final["stage_total"], 5)
+
+    def test_landmarks_true_adds_landmarks_only(self):
+        self.patch_fast_stages()
+        self.start_server()
+        status, _resp = self.post(
+            "/api/process", {"source_dir": str(self.src_dir), "landmarks": True})
+        self.assertEqual(status, 200)
+        final = _poll_until(self.status, lambda d: d["finished"])
+        self.assertIsNone(final["error"])
+        self.assertEqual(
+            self.calls,
             ["index", "assign_duplicates", "geo", "landmarks", "classify", "junk",
              "phash"])
-        # index/geo/landmarks/classify/junk/phash
         self.assertEqual(final["stage_total"], 6)
 
     def test_faces_true_adds_faces_only(self):
@@ -642,9 +662,8 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "classify", "faces",
-             "junk", "phash"])
-        self.assertEqual(final["stage_total"], 7)
+            ["index", "assign_duplicates", "geo", "classify", "faces", "junk", "phash"])
+        self.assertEqual(final["stage_total"], 6)
 
     def test_events_true_adds_events_only(self):
         self.patch_fast_stages()
@@ -656,9 +675,9 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "classify", "events",
+            ["index", "assign_duplicates", "geo", "classify", "events",
              "name_events", "junk", "phash"])
-        self.assertEqual(final["stage_total"], 7)
+        self.assertEqual(final["stage_total"], 6)
 
     def test_faces_and_events_true_adds_both(self):
         self.patch_fast_stages()
@@ -671,9 +690,9 @@ class TestProcessOptionalStages(ProcessTestBase):
         self.assertIsNone(final["error"])
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "classify", "faces",
+            ["index", "assign_duplicates", "geo", "classify", "faces",
              "events", "name_events", "junk", "phash"])
-        self.assertEqual(final["stage_total"], 8)
+        self.assertEqual(final["stage_total"], 7)
 
 
 class TestProcessOptionalStagesHtml(ProcessTestBase):
@@ -728,9 +747,11 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         # F217 took `vlm_available` out: it answered "is transformers importable", which
         # is one half of one install tier read a second way — and /api/env now carries the
         # state of every tier from the probe `sorta doctor` uses.
+        # F222 added `landmarks`: the stage got a checkbox, and the checkbox starts
+        # from `features.landmarks` the way every other one starts from its key.
         self.assertEqual(set(data.keys()),
                          {"deep", "products", "geo_online", "pets", "pets_verify",
-                          "junk_rescue", "landmarks_verify"})
+                          "junk_rescue", "landmarks", "landmarks_verify"})
         self.assertFalse(data["deep"])
         self.assertTrue(data["products"])
         self.assertFalse(data["geo_online"])
@@ -828,8 +849,11 @@ class TestTierNoteHtml(ProcessTestBase):
         html = body.decode("utf-8")
         self.assertIn('id="process-deep-tier-note"', html)
         self.assertIn('id="process-faces-tier-note"', html)
-        self.assertIn("setTierNote(\"process-deep-tier-note\", \"deep\"", html)
-        self.assertIn("setTierNote(\"process-faces-tier-note\", \"faces\"", html)
+        # F222: the notes are set per LINE of the run screen rather than per option
+        # named after a tier — which is how landmarks, the animals and the
+        # classification came to have none.
+        self.assertIn("setPartNote(\"process-deep-tier-note\", \"deep\"", html)
+        self.assertIn("setPartNote(\"process-faces-tier-note\", \"faces\"", html)
 
     def test_the_command_for_a_source_checkout_is_gone_from_the_screen(self):
         """`uv sync --extra vlm` is a command for a checkout of the sources, and the
