@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A run says what it will download, before it starts — and the landmark stage is a
+  choice** (F222). Somebody installed the program, chose almost nothing in the wizard,
+  pressed the button and watched the run go `index → geo → landmarks → verdicts`, hang on
+  the landmarks and die on the verdicts with `<urlopen error [SSL:
+  CERTIFICATE_VERIFY_FAILED] …>`. Their question was the right one: *why did that get in
+  at all, when I ticked almost nothing?* Because those stages had no tick. Only `faces`
+  and `events` were ever optional; landmarks, the classification and the near-duplicates
+  ran always, fetched their weights silently, and F217's tier notes could not help —
+  a note hangs on an option, and they had none.
+  **The landmark stage is now off by default, with a checkbox to bring it back**, and the
+  numbers are the whole argument. On the owner's collection of 26 137 frames it produced
+  **143 places — 0.55%, practically one trip** — for **1.6 GB of CLIP weights and 4.3
+  minutes of every run**. 45.3% of those frames have no GPS, but what rescues them is
+  `session_inferred` and `trip_inferred` (4 052 places between them): neighbours and
+  clocks, which need no model at all. The classification stays on, and that is the same
+  argument with the sign reversed — without the verdicts every file is "a photograph",
+  and 1 652 screenshots, 863 documents, 188 memes and 2 534 product shots ride into the
+  city folders among the photographs.
+  **Before the run, the screen states the download.** Not "a tier is missing" next to a
+  checkbox — the sum, over the lines that will actually run, **with the ones nobody ticks
+  included**: today that is the classification and its silent 1.6 GB. The numbers come
+  from the one probe `sorta doctor` reads, so the summary, the notes and the doctor cannot
+  disagree about the same machine.
+  **The pairing "option → weights" is derived instead of guessed.** F217 gave notes to
+  exactly two options, and they turn out to be the two whose caption resembles a tier name;
+  the animals, the landmarks and the classification all raise the same ViT-L-14 out of a
+  tier called "Search by words", so all three had nothing. Each line of the run screen now
+  names the weights it raises, the tier follows from the catalog, and **a checkbox missing
+  from that table fails the suite** — the next one will not be found by a user.
+  **While it downloads it says so, and when it will not it says why**: which model, for
+  which stage, how big, and that it happens once. How much has arrived is the download
+  library's to know; a named model and a size still beat a silent hour.
+  **A tier that is not installed makes its checkbox unavailable** rather than ineffective,
+  with the reason and the way out (`sorta-setup`) beside it — that reverses F217's
+  "explain, do not forbid" for the one case where the action is impossible rather than
+  unwise. The saved setting is shown, never replaced: somebody who ticked deep analysis a
+  month ago and then wiped a cache keeps their answer, the run goes through on the fast
+  tier and says so. The tier appearing re-enables the box without restarting anything.
+  **The estimate follows.** A missing tier no longer buys hours of promised VLM time on a
+  run that will spend minutes, and the landmark minutes came out of the "always" line
+  into one of their own.
+  **The owner's regression is a test, not a promise**: a database with `visual` places in
+  it, a run with the stage switched off, and the places still there, byte for byte —
+  the stage only ever writes where geo gave up (`confidence = 'unknown'`), and a
+  `config.yaml` that switches it on keeps working with no edit by hand.
 - **macOS gets asked for its accelerator, and the machines that work today are not
   touched** (F214). On Apple Silicon `torch.cuda.is_available()` is False, so an M3 Max
   ran every stage on its processor — MPS was never requested, CoreML was never requested,

@@ -690,7 +690,7 @@ new/changed files):
 |---|---|---|---|
 | Index | `sorta index [dir]` | always | Scan files, read EXIF/dates, compute blake3 hashes, mark exact duplicates. |
 | Geo | `sorta geo` | always | Resolve each file's place from GPS; infer place for GPS‑less files from time‑adjacent neighbours, then from the whole trip when its GPS frames agree on the city and surround the file in time (offline GeoNames, or online Nominatim if enabled). |
-| Landmarks | `sorta landmarks` | always | Visual place guess for GPS‑less scenes, conservative threshold — fills in city for e.g. an indoor landmark photo with no GPS. |
+| Landmarks | `sorta landmarks` | **opt‑in** (`--landmarks`, or `features.landmarks`) | Visual place guess for GPS‑less scenes, conservative threshold — fills in city for e.g. an indoor landmark photo with no GPS. Off by default since F222: 143 places out of 26,137 frames (0.55%) for 1.6 GB of weights and ~4.3 min a run, see §24. |
 | Classify | `sorta classify` | always | Decide what each photo IS: `photo` / `screenshot` / `meme` / `document` / `product` (heuristics + CLIP + text‑density). The `product` class (an item photographed for sale) comes from the deep VLM tier only — the fast tier never produces it, see §14. Runs **before** faces so that the faces stage does not look for people in screenshots and receipts; a photo with no verdict yet is detected as usual. |
 | Faces | `sorta faces` | **opt‑in** (`--faces`) | Detect faces (insightface), compute embeddings, cluster people (HDBSCAN). The slowest stage; skipped unless you ask for it. |
 | Events | `sorta events` | **opt‑in** (`--events`) | Group photos into events by time gaps + city; name them by date + city. Independent of faces — enable either, both, or neither. |
@@ -703,6 +703,11 @@ written to `config.yaml`):
 ```
 --faces / --no-faces       Run face detection + clustering this run (default: off)
 --events / --no-events     Build events this run (default: off)
+--landmarks / --no-landmarks
+                           Recognise places by sight this run (CLIP over the
+                            landmark list). Default: from config.yaml
+                            (features.landmarks — off), so this flag moves it
+                            in both directions.
 --deep / --no-deep         Use the deep VLM classification tier for junk this run
                             (needs `uv sync --extra vlm`; gracefully falls back to
                             the fast CLIP tier without it). Default: from config.yaml
@@ -1709,6 +1714,7 @@ selects it keeps working: the run says the provider is gone, lists `template` / 
 
 | Key | Default | What it does |
 |---|---|---|
+| `features.landmarks` | `false` | Whether to run the **landmark stage** — CLIP over the bundled list of famous places, for the frames geo left without one. **Off by default since F222**, and the numbers are the argument: on a 26,137-frame collection it produced 143 places (0.55%, practically a single trip) for 1.6 GB of CLIP weights on the first run and ~4.3 minutes of every run after it. 45.3% of those frames have no GPS, but what rescues them is `session_inferred` and `trip_inferred` — 4,052 places between them, from neighbours and timestamps, with no model involved. With it `true` the stage is byte-for-byte the one that always ran; switching it off never touches the `visual` places a previous run already found, because the stage only selects rows geo left as `unknown`. Per run: `--landmarks` / `--no-landmarks`, or the “Recognise places by sight” checkbox on the run screen. |
 | `features.pets` | `false` | Whether to look for animals. That is a question about an OBJECT in the frame, so it is asked of CLIP rather than the VLM: through the model it would have cost 4.3 hours over the collection, through the CLIP pass that already runs it costs minutes. |
 | `features.pet_threshold` | `0.7` | The confidence threshold. **Measured** on 320 hand-labelled frames, sampled by score band and weighted back to the collection: at `0.7` it marks 805 frames at 92% precision and 54% recall; `0.6` marked 895 at 89% and 58%. Raising it further buys nothing — `0.85` has the same precision for nine points less recall. The scores are stored, so a different threshold needs no new pass. |
 | `features.pets_verify` | `false` | Whether to **check each candidate with the local VLM** before the animal label is written: one question with three answers — a live animal, a picture of one (a drawing, a plush toy, a print, a statue), or no animal. It needs `features.pets` (it verifies what CLIP found, it does not search by itself) and it uses the same weights as the rest of the `vlm:` section, not a second model. The reason is that the errors left at 92% precision are the ones no threshold removes: CLIP compares a picture to a text as a whole and cannot tell a cat from a picture of a cat. The answer outranks the score — a frame scored 0.95 and answered "plush toy" is not an animal — while a frame the model could not answer about, or never reached, keeps exactly the label `features.pet_threshold` gives it. With this off a run is unchanged in every respect. |
