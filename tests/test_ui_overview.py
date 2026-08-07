@@ -591,9 +591,21 @@ _PROBE_JS = r"""
 // the server. Prints the three trees as JSON.
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[2], "utf8");
-const start = src.indexOf("var overviewEmpty = false;");
-const end = src.indexOf("var vlmAvailable = true;");
-if (start < 0 || end < 0) throw new Error("the overview region is not where it was");
+// The region is delimited by the SECTION HEADERS around it, not by a statement inside
+// the next section. The previous end marker was `var vlmAvailable = true;`, and F217
+// deleted that variable for a good reason — one boolean "is transformers installed"
+// became the three-state tier note — which broke these three tests without touching
+// anything they check. A declaration is somebody's implementation detail and is fair
+// game for the next feature; a section header is a boundary, and moving one is a
+// deliberate act.
+const START = "var overviewEmpty = false;";
+const END = "// --- the «Обработать» tab";
+const start = src.indexOf(START);
+const end = src.indexOf(END);
+// Say WHICH marker went missing. "the region is not where it was" cost a full gate run
+// to turn back into "the end marker is gone".
+if (start < 0) throw new Error("the overview region does not start: no " + START);
+if (end < 0) throw new Error("the overview region does not end: no " + END);
 
 function El(tag) {
   this.tagName = tag; this.className = ""; this._text = ""; this.children = [];
