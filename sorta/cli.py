@@ -350,7 +350,6 @@ def _cmd_faces(config_path: str, rescan: bool = False, limit: int | None = None)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
     conn = connect(cfg.database)
-    _announce_stage_download(cfg, "faces")
     title = _t("cli.progress.faces_rescan" if rescan else "cli.progress.faces", lang)
     with progress_task(title, phase_labels=_cluster_phase_labels(lang)) as cb:
         face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb,
@@ -451,7 +450,11 @@ def _cmd_events(config_path: str) -> None:
 #
 # Both halves live where the model is BUILT rather than where the stage is called: a
 # stage with nothing to do (no unknown places, no new frames) never reaches the factory
-# and must not announce a download that will not happen.
+# and must not announce a download that will not happen. That is also why `faces` has no
+# sentence here: its model is raised inside `sorta/faces.py`, there is no factory in this
+# file to hang one on, and announcing it a stage early would claim a download an
+# incremental run does not make. What that stage gets instead is a line in the summary of
+# the run screen, where its 400 MB is stated before anything starts.
 
 
 def _build_clip(cfg, stage: str) -> Classifier:
@@ -473,19 +476,6 @@ def _build_clip(cfg, stage: str) -> Classifier:
             raise
         _log.exception("не удалось скачать веса для стадии %r", stage)
         raise SystemExit(tiers.download_failure(stage, pending, lang, exc)) from exc
-
-
-def _announce_stage_download(cfg, stage: str) -> None:
-    """Say that a stage is about to fetch weights we do not build ourselves (faces).
-
-    `faces` raises its model inside `sorta/faces.py`, so there is no factory here to hang
-    the sentence on — and the stage runs for tens of minutes, which is exactly the shape
-    of silence this feature is against. Said before the stage rather than at the download
-    itself: less precise, and still the difference between a progress line and a hang.
-    """
-    pending = tiers.stage_downloads(stage)
-    if pending:
-        print(tiers.download_notice(stage, pending, _lang(cfg)))
 
 
 class _LazySharedClassifier:
@@ -583,7 +573,6 @@ def _pipeline_steps() -> list[tuple[str, object]]:
             _lang(cfg))
 
     def _faces(cfg, conn, cb) -> str:
-        _announce_stage_download(cfg, "faces")
         face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb)
         return _summarize_faces(face_stats, cl_stats, _lang(cfg))
 

@@ -42,7 +42,11 @@ from ..naming import name_events, naming_settings
 from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
-from ..tiers import TierState, tier_states
+from ..i18n import Lang, normalize_lang
+from ..tiers import (
+    PartState, TierState, download_failure, run_parts, stage_downloads, tier_states,
+    weights_size_mb,
+)
 from .common import _ProgressCB, _connect, _log
 from .layout import PlanCache
 from .review import _db_fingerprint
@@ -66,7 +70,12 @@ _PIPELINE_STAGE_NAMES = ("index", "geo", "landmarks", "classify", "faces", "even
 # checkboxes, default off. `_pipeline_steps()` still builds the FULL list (see the
 # assert above by _PIPELINE_STAGE_NAMES) — filtering is up to the caller
 # (`_run_pipeline`), with the same name list as `cli._OPTIONAL_STAGES`.
-_OPTIONAL_STAGES = ("faces", "events")
+#
+# F222: `landmarks` joins them. It had no checkbox at all, which is what the whole
+# feature is about — a stage nobody chose, downloading 1.6 GB and producing 0.55% of the
+# places of the owner's collection. Same mechanism as the other two, deliberately: a
+# second way to skip a stage is a second way to get it wrong.
+_OPTIONAL_STAGES = ("landmarks", "faces", "events")
 
 # F135: with one button the run always walks the whole pipeline, and a stage that
 # skipped everything looks exactly like a stage that did nothing. A step may report
@@ -93,6 +102,17 @@ def _stage_stats(stats: object, processed: tuple[str, ...], skipped: str) -> _St
             return None
         values.append(value)
     return {"processed": sum(values[:-1]), "skipped": values[-1]}
+
+
+class _DownloadRefused(RuntimeError):
+    """F222: the weights would not come down, said in words.
+
+    A distinct class so that the message travelling to the browser is known to be the
+    finished sentence and not something to be dressed up a second time. What a person got
+    before it existed was `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` in the
+    red box of the run screen — no stage, no model, no size, and nothing to do about it.
+    The traceback still goes to the log.
+    """
 
 
 class _LazyClassifierHolder:
@@ -132,7 +152,14 @@ class _LazyClassifierHolder:
         return list(features_of(paths))
 
 
-def _pipeline_steps() -> list[tuple[str, _StageFn]]:
+def _download_language(cfg: Config) -> Lang:
+    """The language the download sentences are written in — the configured one."""
+    return normalize_lang(getattr(cfg, "language", None))
+
+
+def _pipeline_steps(
+        notify: Callable[[str | None, tuple[str, ...]], None] | None = None
+        ) -> list[tuple[str, _StageFn]]:
     """Processing steps in dependency order — the same as `cli._pipeline_steps`, plus
     `phash` last (canonically from cli _pipeline_steps).
     A fresh holder per call — a separate run does not share the CLIP classifier with
@@ -142,14 +169,41 @@ def _pipeline_steps() -> list[tuple[str, _StageFn]]:
     can separate new work from what it recognised as already done — `index` (unchanged
     files) and `junk` (the F68 incremental skip). The rest return None: inventing a
     zero for a stage that does not count skips would claim something untrue.
+
+    F222: `notify` is called with (stage, weights) when the CLIP model is about to be
+    downloaded and with (None, ()) when the attempt is over. It hangs on the FACTORY and
+    not on the stage: a run with no unknown places and no new frames never builds a
+    classifier, and announcing a download there would be a sentence about nothing. The
+    caller turns it into the line the run screen shows — 1.6 GB with no line at all is
+    indistinguishable from a hang, which is exactly what the owner reported.
     """
     holder: dict[str, _LazyClassifierHolder] = {}
+    # Which stage asked last: three of them share one classifier (F19) and whichever
+    # arrives first pays for the download, so the sentence has to name that one.
+    asked_by = {"stage": "landmarks"}
 
-    def _clip(cfg: Config) -> _LazyClassifierHolder:
+    def _build(cfg: Config) -> Classifier:
+        stage = asked_by["stage"]
+        pending = stage_downloads(stage)
+        if pending and notify is not None:
+            notify(stage, pending)
+        try:
+            return clip_classifier(naming_settings(cfg))
+        except Exception as exc:
+            if not pending:
+                raise  # already on disk: this failed for some other reason, say so as-is
+            _log.exception("sorta ui: не удалось скачать веса для этапа %r", stage)
+            raise _DownloadRefused(download_failure(
+                stage, pending, _download_language(cfg), exc)) from exc
+        finally:
+            if pending and notify is not None:
+                notify(None, ())
+
+    def _clip(cfg: Config, stage: str) -> _LazyClassifierHolder:
+        asked_by["stage"] = stage
         clf = holder.get("clip")
         if clf is None:
-            clf = holder["clip"] = _LazyClassifierHolder(
-                lambda: clip_classifier(naming_settings(cfg)))
+            clf = holder["clip"] = _LazyClassifierHolder(lambda: _build(cfg))
         return clf
 
     def _index(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
@@ -164,7 +218,7 @@ def _pipeline_steps() -> list[tuple[str, _StageFn]]:
         return None
 
     def _landmarks(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
-        detect_landmarks(cfg, conn, classifier=_clip(cfg), progress=cb)
+        detect_landmarks(cfg, conn, classifier=_clip(cfg, "landmarks"), progress=cb)
         return None
 
     def _faces(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
@@ -177,12 +231,12 @@ def _pipeline_steps() -> list[tuple[str, _StageFn]]:
         return None
 
     def _classify(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
-        stats = classify_junk(cfg, conn, classifier=_clip(cfg), verdicts_only=True,
-                              progress=cb)
+        stats = classify_junk(cfg, conn, classifier=_clip(cfg, "classify"),
+                              verdicts_only=True, progress=cb)
         return _stage_stats(stats, ("processed",), "skipped_incremental")
 
     def _junk(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
-        stats = classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb)
+        stats = classify_junk(cfg, conn, classifier=_clip(cfg, "junk"), progress=cb)
         return _stage_stats(stats, ("processed",), "skipped_incremental")
 
     def _phash(cfg: Config, conn: sqlite3.Connection, cb: _ProgressCB) -> _StageStats:
@@ -247,6 +301,13 @@ class _ProcessState:
         # could not be answered; see `_deep_tier_ran`.
         self.deep_requested = False
         self.deep_ran: bool | None = None
+        # F222: the model this run is fetching right now, or None between downloads.
+        # 1.6 GB with nothing on screen reads as a hang — the owner's report says
+        # "it hung on landmarks", and nothing had hung. How much has arrived is known to
+        # the download library and not to us; what is stated here is what we do know, and
+        # a named model beats a silent hour.
+        self.download_stage: str | None = None
+        self.download_weights: tuple[str, ...] = ()
 
     def try_start(self, source_dir: str) -> bool:
         """True and switches to running if nothing is going now; otherwise False (409)."""
@@ -280,6 +341,12 @@ class _ProcessState:
         """F217: whether the deep tier actually handled anything (None — unknown)."""
         with self._lock:
             self.deep_ran = ran
+
+    def set_download(self, stage: str | None, weights: tuple[str, ...] = ()) -> None:
+        """F222: a model is being fetched for `stage` — or, with None, is not any more."""
+        with self._lock:
+            self.download_stage = stage if weights else None
+            self.download_weights = weights
 
     def set_stage_stats(self, name: str, stats: dict[str, int]) -> None:
         """F135: what the finished stage `name` processed and what it skipped."""
@@ -367,6 +434,13 @@ class _ProcessState:
                 # one — the state the log used to be the only witness of.
                 "deep_requested": self.deep_requested,
                 "deep_ran": self.deep_ran,
+                # F222: what is coming down the wire, while it is coming. Null between
+                # downloads and on a run that needs none — the screen draws nothing then,
+                # rather than a bar about a finished download.
+                "download": ({"stage": self.download_stage,
+                              "weights": list(self.download_weights),
+                              "mb": weights_size_mb(self.download_weights)}
+                             if self.download_weights else None),
             }
 
 
@@ -638,6 +712,11 @@ def _process_defaults_payload(cfg: Config) -> dict:
         "deep": bool(cfg.naming.vlm_enabled),
         "products": bool(cfg.vlm.products),
         "geo_online": cfg.geo.provider == "online",
+        # F222: the landmark stage, which is off in a fresh config and stays exactly what
+        # the file says in one that switched it on. The checkbox showing the saved value
+        # is the whole point: a person who enabled it a month ago must not find it
+        # silently cleared.
+        "landmarks": bool(cfg.features.landmarks),
         "pets": bool(cfg.features.pets),
         "pets_verify": bool(cfg.features.pets_verify),
         "junk_rescue": bool(cfg.features.junk_rescue),
@@ -686,7 +765,16 @@ _SEC_PER_FACES_FRAME = 17 * 60 / 19757
 #
 # This is the DEFAULT — what the screen quotes before it has ever seen a run. A real
 # measurement out of the run log replaces it, and the screen says which of the two it used.
-_SEC_PER_BASE_FRAME = 8.8 * 60 / 26135
+#
+# F222 took landmarks OUT of this line, because the stage now has a checkbox and a line
+# of its own. Leaving it in would break the rule the whole block is written under: the
+# price shown has to be the price of the run that will happen, and a run with the stage
+# cleared does not spend those minutes. The split is the same measured run — index 5.3 +
+# phash 0.7 + geo 2.4 s is the ~6.0 minutes below, landmarks the 2.8 that used to hide
+# inside it. (The owner's run of 2026-08-07 spent 4.3 minutes there; both are real runs
+# over different collections, and the machine's own measurement replaces either.)
+_SEC_PER_BASE_FRAME = 6.0 * 60 / 26135
+_SEC_PER_LANDMARKS_FRAME = 2.8 * 60 / 26135
 # events: a grouping pass over rows the DB already holds — under a minute there, and it
 # is scaled per frame for the same reason as the others rather than pinned at "fast".
 _SEC_PER_EVENTS_FRAME = 15.0 / 19757
@@ -719,8 +807,11 @@ _RATE_FIXED = "fixed"
 # `estimate:` because the log could not tell its seconds from the per-frame ones. It is not
 # asked any more, so nothing quotes a price for it.
 _RATE_UNITS: dict[str, tuple[str, ...]] = {
-    "base": tuple(measurement_unit(stage)
-                  for stage in ("index", "geo", "landmarks", "phash")),
+    # F222: `landmarks` moved out of here into a line of its own — see
+    # `_SEC_PER_LANDMARKS_FRAME`. A log written before the split holds all four units, so
+    # nothing has to be re-measured for either line to read `measured`.
+    "base": tuple(measurement_unit(stage) for stage in ("index", "geo", "phash")),
+    "landmarks": (measurement_unit("landmarks"),),
     "faces": (measurement_unit("faces"),),
     "events": (measurement_unit("events"),),
     "vlm_verdict": (measurement_unit(VERDICTS_STAGE, CLASSIFY_PHASE_VLM),),
@@ -729,6 +820,7 @@ _RATE_UNITS: dict[str, tuple[str, ...]] = {
 }
 _DEFAULT_RATES: dict[str, float] = {
     "base": _SEC_PER_BASE_FRAME,
+    "landmarks": _SEC_PER_LANDMARKS_FRAME,
     "faces": _SEC_PER_FACES_FRAME,
     "events": _SEC_PER_EVENTS_FRAME,
     "vlm_verdict": _SEC_PER_VLM_FRAME,
@@ -882,6 +974,11 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
         max_age_days=float(cfg.estimate.measurement_max_age_days)))
     counts: dict[str, int | None] = {
         "base": _positive_or_none(photos),
+        # F222: the stage that used to hide inside `base`. Priced over the same frames —
+        # what it walks is the place-less subset, but that subset is not knowable before
+        # geo has run on the frames this run will add, and quoting the whole collection
+        # is the direction that warns rather than the one that breaks a promise.
+        "landmarks": _positive_or_none(photos),
         "faces": _positive_or_none(photos),
         "events": _positive_or_none(photos),
         "pets": _positive_or_none(photos),
@@ -898,6 +995,7 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
     }
     per_line: dict[str, _Rate] = {
         "base": rates["base"],
+        "landmarks": rates["landmarks"],
         "faces": rates["faces"],
         "events": rates["events"],
         "pets": _Rate(0.0, _RATE_FIXED),
@@ -1011,6 +1109,52 @@ def _gpu_present() -> bool:
         return _gpu_present_cache["answer"]
 
 
+# --- F222: what THIS run will download, before the button is pressed ----------
+#
+# F217 put a note next to two checkboxes. It could not do more, because a note hangs on
+# an OPTION and the stages that download the most had none: the classification pulls
+# 1.6 GB of CLIP on a fresh machine and there is no tick in front of it, by decision —
+# without the verdicts, screenshots, documents and product shots ride into the city
+# folders among the photographs.
+#
+# So the screen states the sum before the run, over the lines that WILL run, the ones
+# without a checkbox included. The numbers come from `tiers.run_parts`, i.e. from the one
+# probe `sorta doctor` and the F217 notes read — a second copy would answer differently
+# inside a release, which is the failure F211 and F217 both exist against.
+
+
+def _parts_payload(parts: list[PartState] | None = None) -> dict[str, dict]:
+    """Every line of the run: which tiers it needs, and what it would download.
+
+    `missing` is per WEIGHT rather than per tier so the browser can add up a run without
+    counting a shared model twice — landmarks, the animals and the classification all
+    raise the same ViT-L-14, and three lines quoting 1.6 GB each would promise 4.8 GB of
+    downloads for one file.
+    """
+    return {
+        part.key: {
+            "tiers": list(part.tiers),
+            "weights": list(part.weights),
+            "missing": list(part.missing),
+            "mb": part.download_mb,
+            "always": not part.optional,
+            # F222 §6b: the tier is not installable from here and not installed. The
+            # checkbox goes dead rather than lying, and the note beside it says why.
+            "available": part.available,
+        }
+        for part in (run_parts() if parts is None else parts)
+    }
+
+
+def _weights_payload(parts: list[PartState] | None = None) -> dict[str, int]:
+    """What each model that is still missing weighs — the megabytes of the summary."""
+    sizes: dict[str, int] = {}
+    for part in (run_parts() if parts is None else parts):
+        for name in part.missing:
+            sizes[name] = weights_size_mb((name,))
+    return sizes
+
+
 def _env_payload() -> dict:
     """F64: the environment for the UI banner. `gpu_profile` — whether the GPU profile
     is installed (the nvidia-* packages exist only in the `gpu` extra; `find_spec`
@@ -1027,11 +1171,20 @@ def _env_payload() -> dict:
 
     `tiers` is the same answer `sorta doctor` gives, from the same probe, so the run
     screen can say next to a checkbox that the tier behind it is not installed.
+
+    F222: `parts` and `weights` come out of that SAME reading — one `tier_states()` call
+    feeds the notes, the per-option availability and the download summary, so the three
+    cannot disagree about the same machine. The route stays a GET that reads and changes
+    nothing; installing is still the wizard's job and nobody else's.
     """
+    states = tier_states()
+    parts = run_parts(states)
     return {
         "gpu_profile": importlib.util.find_spec("nvidia") is not None,
         "gpu_present": _gpu_present(),
-        "tiers": _tiers_payload(),
+        "tiers": _tiers_payload(states),
+        "parts": _parts_payload(parts),
+        "weights": _weights_payload(parts),
     }
 
 
@@ -1135,6 +1288,11 @@ class _RunOptions:
     geo_online: bool = False
     faces: bool = False
     events: bool = False
+    # F222: an opt-in STAGE like the two above, and False by default for the same reason
+    # — an unticked box has to force it off (the F57 rule). The config key behind it
+    # (`features.landmarks`) is what the checkbox STARTS from, through
+    # `/api/process/defaults`, exactly as `deep` starts from `naming.vlm_enabled`.
+    landmarks: bool = False
     pets: bool = False
     pets_verify: bool | None = None
     junk_rescue: bool | None = None
@@ -1143,7 +1301,8 @@ class _RunOptions:
 
 def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None:
     """Parse `{"source_dir": str, "deep": bool=False, "geo_online": bool=False,
-    "faces": bool=False, "events": bool=False, "pets": bool=False,
+    "faces": bool=False, "events": bool=False, "landmarks": bool=False,
+    "pets": bool=False,
     "products": bool?, "pets_verify": bool?, "junk_rescue": bool?,
     "landmarks_verify": bool?}`
     (F50/#34: opt-in VLM tier / online geo for THIS run, without editing config.yaml;
@@ -1152,7 +1311,9 @@ def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None
     override on the junk stage, `features.pets`; F138: the same third shape for
     `features.pets_verify`. F186 retired the other three of that set — `vlm.quality`,
     the scope select and `dedup.keeper_vlm` — with the questions behind them. F204:
-    `junk_rescue` and `landmarks_verify`, the same shape over `features`.)
+    `junk_rescue` and `landmarks_verify`, the same shape over `features`. F222:
+    `landmarks` — a STAGE of the F53 kind, not a setting, and the first of those with a
+    config key behind it.)
     None -> invalid: not dict / `source_dir` not a string or empty after strip / a flag
     given but not bool."""
     if not isinstance(payload, dict):
@@ -1161,7 +1322,7 @@ def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None
     if not isinstance(source_dir, str) or not source_dir.strip():
         return None
     flags: dict[str, object] = {}
-    for key in ("deep", "geo_online", "faces", "events", "pets"):
+    for key in ("deep", "geo_online", "faces", "events", "landmarks", "pets"):
         value = payload.get(key, False)
         if not isinstance(value, bool):
             return None
@@ -1207,7 +1368,11 @@ def _run_cfg(cfg: Config, source_dir: str | None, opts: _RunOptions) -> Config:
     naming = dataclasses.replace(cfg.naming, vlm_enabled=opts.deep)
     geo = dataclasses.replace(cfg.geo,
                               provider="online" if opts.geo_online else "offline")
-    features = dataclasses.replace(cfg.features, pets=opts.pets)
+    # F222: `landmarks` decides a STAGE and is applied here as well, so that anything
+    # reading the config of this run (the stage's own settings, a log line) sees the run
+    # that is actually happening rather than what the file asks for.
+    features = dataclasses.replace(cfg.features, pets=opts.pets,
+                                   landmarks=opts.landmarks)
     if opts.pets_verify is not None:
         features = dataclasses.replace(features, pets_verify=opts.pets_verify)
     # F204: the two that had no interface. Applied here and nowhere else — the thresholds
@@ -1247,9 +1412,12 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     quietly took cfg (the F57 bug). The server cfg/config.yaml is not re-read or
     mutated — the override lives only in this run's run_cfg.
 
-    `faces`/`events` (F53/#39) — opt-in steps, default off: without the checkboxes the
-    run builds only `index/geo/landmarks/junk/phash`, the heaviest steps are skipped.
-    `stage_total`/the "stage i/N" numbering are computed from the actual filtered list.
+    `faces`/`events`/`landmarks` (F53/#39, F222) — opt-in steps, default off: without the
+    checkboxes the run builds only `index/geo/classify/junk/phash`, the heaviest steps are
+    skipped. `stage_total`/the "stage i/N" numbering are computed from the actual filtered
+    list. Skipping `landmarks` takes nothing away from a database that already has its
+    `visual` places: the stage only ever WRITES places for rows geo left as 'unknown', so
+    a run without it leaves those rows exactly as the last run left them.
 
     `pets` (F123) — the same kind of override as `deep`, on `features.pets`, and NOT a
     stage: animals are three extra prompts inside the CLIP call the `junk` stage makes
@@ -1299,7 +1467,11 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     error_stage: str | None = None
     try:
         run_cfg = _run_cfg(cfg, source_dir, opts)
-        enabled_optional = {"faces": opts.faces, "events": opts.events}
+        enabled_optional = {"faces": opts.faces, "events": opts.events,
+                            "landmarks": opts.landmarks}
+        # F222: the download line of the run screen, fed from the factory that does the
+        # downloading — see `_pipeline_steps`.
+        steps_of = _pipeline_steps(state.set_download)
         if only_optional:
             # F63: re-run the selected — faces/events by flags + junk with deep
             # (reclassification with the VLM). The order from _pipeline_steps is kept.
@@ -1308,9 +1480,9 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
             rerun = {name for name in _OPTIONAL_STAGES if enabled_optional[name]}
             if opts.deep or opts.pets:
                 rerun.add("junk")
-            steps = [(name, fn) for name, fn in _pipeline_steps() if name in rerun]
+            steps = [(name, fn) for name, fn in steps_of if name in rerun]
         else:
-            steps = [(name, fn) for name, fn in _pipeline_steps()
+            steps = [(name, fn) for name, fn in steps_of
                      if name not in _OPTIONAL_STAGES or enabled_optional[name]]
         state.set_stage_total(len(steps))
         completed = True
