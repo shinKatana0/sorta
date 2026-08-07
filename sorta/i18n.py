@@ -509,6 +509,41 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Environment manager uv: not on PATH",
         "ja": "環境マネージャ uv: PATH にありません",
     },
+    # F216: which tiers are actually on this machine. `doctor` is the check screen the
+    # wizard calls and the one command a person is pointed at when something is missing,
+    # and it described everything about the install except what the install is MADE of.
+    # A tier is two halves that fail differently — the packages `uv` put in `{app}\lib`
+    # and the model weights the stage fetches on its first run — so there are three
+    # answers and not two: the middle one is a tier whose packages are in place and whose
+    # 400 MB have not been downloaded yet.
+    "cli.doctor.tiers": {
+        "ru": "Ярусы установки:",
+        "en": "Installed tiers:",
+        "ja": "インストール済みティア:",
+    },
+    "cli.doctor.tier_ready": {
+        "ru": "  {name}: на месте",
+        "en": "  {name}: in place",
+        "ja": "  {name}: 利用可能",
+    },
+    "cli.doctor.tier_weights": {
+        "ru": "  {name}: пакеты на месте, модели ({weights}, {size}) скачаются при "
+              "первом запуске стадии",
+        "en": "  {name}: packages in place, the models ({weights}, {size}) download on "
+              "the first run of the stage",
+        "ja": "  {name}: パッケージは配置済み、モデル（{weights}、{size}）は"
+              "ステージの初回実行時にダウンロードされます",
+    },
+    "cli.doctor.tier_absent": {
+        "ru": "  {name}: не установлен (нет: {missing})",
+        "en": "  {name}: not installed (missing: {missing})",
+        "ja": "  {name}: 未インストール（不足: {missing}）",
+    },
+    "cli.doctor.tier_hint": {
+        "ru": "  Доустановить ярус: sorta-setup (пункт «Sorta setup» в меню «Пуск»).",
+        "en": "  To add a tier: sorta-setup (the Sorta setup item of the Start menu).",
+        "ja": "  ティアの追加: sorta-setup（スタートメニューの「Sorta setup」）。",
+    },
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
         "en": "Run log: {path}",
