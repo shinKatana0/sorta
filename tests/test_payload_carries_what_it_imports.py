@@ -303,10 +303,11 @@ class TestTheRuntimeTravelsAndIsRecorded(unittest.TestCase):
         self.assertEqual(builder.PAYLOAD_PYTHON_EXE.parent, builder.PAYLOAD_PYTHON)
 
     def test_a_plan_without_a_runtime_directory_is_the_plan_it_always_was(self):
-        destinations = {str(destination) for _source, destination
+        destinations = {destination.as_posix() for _source, destination
                         in builder.payload_plan(None)}
         self.assertEqual(destinations,
-                         {"config.example.yaml", "LICENSE", "NOTICE", "favicon.ico"})
+                         {"config.example.yaml", "LICENSE", "NOTICE", "favicon.ico",
+                          "python/Lib/site-packages/sitecustomize.py"})
 
     def test_the_manifest_names_the_version_of_the_runtime(self):
         """The same obligation exiftool's version travels for: a library bundled without

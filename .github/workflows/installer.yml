@@ -100,6 +100,37 @@ jobs:
             '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", "/LOG=$log"
           if (-not (Test-Path -LiteralPath $dir)) { throw "nothing was installed into $dir" }
 
+      - name: The trust the interpreter uses points inside the installation
+        # F221. Read this for exactly what it is: a check of the WIRING, not a check of
+        # TLS. This runner's root certificate store is populated, so every download below
+        # would succeed even with the payload pointing at nothing — which is precisely how
+        # the defect survived a build machine, this workflow and a release. What can be
+        # checked here is that `sitecustomize.py` was found by the installed interpreter,
+        # that it resolved its relative path against THIS installation and not against the
+        # machine that built the payload, and that the file it names exists.
+        #
+        # The behaviour — that an empty root store is no obstacle — is checked in the
+        # suite (tests/test_payload_carries_its_trust.py) and, last, by hand in a clean
+        # virtual machine, step 6 of the checklist in packaging/windows/README.md.
+        run: |
+          # Without this line an unset SORTA_APP_DIR would make the comparison below
+          # `-like "*"`, and a check that passes no matter what is worse than no check.
+          if (-not $env:SORTA_APP_DIR) { throw 'SORTA_APP_DIR is unset' }
+          $python = Join-Path $env:SORTA_APP_DIR 'python\python.exe'
+          $bundle = & $python -c "import os,sys; sys.stdout.write(os.environ.get('SSL_CERT_FILE',''))"
+          if (-not $bundle) { throw 'SSL_CERT_FILE is unset — the payload sitecustomize did not run' }
+          Write-Host "SSL_CERT_FILE=$bundle"
+          if ($bundle -notlike "$env:SORTA_APP_DIR*") {
+            throw "SSL_CERT_FILE points outside the installation ($env:SORTA_APP_DIR)"
+          }
+          if (-not (Test-Path -LiteralPath $bundle)) { throw "$bundle does not exist" }
+          # The same file requests and huggingface_hub already used, and not a second set:
+          # one bundle for all three download paths is the point of the feature.
+          $certifi = & $python -c "import certifi,sys; sys.stdout.write(certifi.where())"
+          if ((Resolve-Path -LiteralPath $certifi).Path -ne (Resolve-Path -LiteralPath $bundle).Path) {
+            throw "certifi says $certifi, the environment says $bundle"
+          }
+
       - name: Make the installed program do work
         # The base tier needs no model and no card — it is disk, EXIF and SQLite — so
         # this runs on a bare runner. The script checks what the commands SAY: a stage
@@ -172,7 +203,9 @@ jobs:
             '  installed program indexes, counts and deduplicates real files;',
             '- one tier (`faces`, ~400 MB) downloads for real and `doctor` reports it;',
             '- every DLL and PYD of the payload imports only names the payload carries',
-            '  or Windows provides (F218 — checked in the build step, before compiling).',
+            '  or Windows provides (F218 — checked in the build step, before compiling);',
+            '- the installed interpreter points SSL_CERT_FILE at the certifi set inside',
+            '  the installation, at the file `certifi.where()` names (F221 — the WIRING).',
             '',
             '### NOT proven here',
             '- **the deep tier** (`deep`, Qwen2.5-VL-3B, ~7 GB) — it fits neither the',
@@ -188,7 +221,11 @@ jobs:
             '- **a machine without the Visual C++ Redistributable** — this one is a',
             '  developer image and has it, so nothing here can tell whether the three',
             '  libraries the payload now carries are the ones doing the work. That is a',
-            '  clean virtual machine, by hand, and it stays human.'
+            '  clean virtual machine, by hand, and it stays human;',
+            '- **a machine whose root certificate store Windows has not filled in** —',
+            '  the 400 MB above downloaded, which says this runner trusts the internet',
+            '  and nothing about a clean machine. What an empty root store does is',
+            '  checked in the suite; the machine itself stays human (F221).'
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: Keep the installer and the install log

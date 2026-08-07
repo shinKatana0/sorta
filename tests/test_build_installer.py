@@ -62,6 +62,8 @@ def _link_directory(target: Path, link: Path) -> bool:
     except (OSError, NotImplementedError):
         return False
     return True
+
+
 ISS_TEXT = _ISS.read_text(encoding="utf-8")
 
 
@@ -236,9 +238,13 @@ class TestThePayloadAndItsManifest(unittest.TestCase):
 
     def test_the_static_files_include_the_licence_and_the_icon(self):
         plan = builder.payload_plan(None)
-        destinations = {str(destination) for _source, destination in plan}
+        destinations = {destination.as_posix() for _source, destination in plan}
         self.assertEqual(destinations,
-                         {"config.example.yaml", "LICENSE", "NOTICE", "favicon.ico"})
+                         {"config.example.yaml", "LICENSE", "NOTICE", "favicon.ico",
+                          # F221: the file that points the shipped interpreter at the
+                          # certifi set travelling in lib\ — see
+                          # tests/test_payload_carries_its_trust.py.
+                          "python/Lib/site-packages/sitecustomize.py"})
         for source, _destination in plan:
             with self.subTest(source=source.name):
                 self.assertTrue(source.is_file(), source)
