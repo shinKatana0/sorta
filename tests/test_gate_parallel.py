@@ -23,6 +23,7 @@ answer it.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import re
@@ -137,6 +138,17 @@ def child_env() -> dict[str, str]:
     return env
 
 
+def pytest_args(cmd: list[str]) -> list[str]:
+    """Everything after the `pytest` token — `python -m pytest` has a `-m` of its own,
+    and searching the whole command line for one finds the interpreter's."""
+    return cmd[cmd.index("pytest") + 1:]
+
+
+def marker_expression(cmd: list[str]) -> str | None:
+    args = pytest_args(cmd)
+    return args[args.index("-m") + 1] if "-m" in args else None
+
+
 def total_percent(report: str) -> int:
     match = re.search(r"^TOTAL.*?(\d+)%", report, re.MULTILINE)
     assert match, f"no TOTAL line in:\n{report}"
@@ -186,7 +198,7 @@ class TestCoverageIsMeasuredOnTheSum(unittest.TestCase):
         self.project.erase()
         run = self.project.pytest("--cov-fail-under=0")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        return self.project.report("--cov-fail-under=0").stdout
+        return self.project.report("--fail-under=0").stdout
 
     def two_passes(self) -> subprocess.CompletedProcess[str]:
         """The gate's own sequence: erase, parallel half, serial half, one verdict."""
@@ -270,10 +282,11 @@ class TestTheGateChecksTheThresholdOnce(unittest.TestCase):
 
     def test_one_pass_is_parallel_and_the_other_is_not(self):
         parallel, serial = self.pytest_steps()
-        self.assertEqual(parallel[parallel.index("-n") + 1], "auto")
-        self.assertEqual(parallel[parallel.index("-m") + 1], "not serial")
-        self.assertNotIn("-n", serial)
-        self.assertEqual(serial[serial.index("-m") + 1], "serial")
+        args = pytest_args(parallel)
+        self.assertEqual(args[args.index("-n") + 1], "auto")
+        self.assertEqual(marker_expression(parallel), "not serial")
+        self.assertNotIn("-n", pytest_args(serial))
+        self.assertEqual(marker_expression(serial), "serial")
 
     def test_the_run_reports_how_long_it_took(self):
         """The number in the docstring was wrong by threefold because nobody saw it."""
@@ -319,7 +332,7 @@ class TestTheFastGateStillDoesNotRunTheSuite(unittest.TestCase):
         """Exit code 5 is "nothing collected" — a real answer for a half that may be
         empty, and a confusing red gate if it were treated like a failing test."""
         def refuse(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
-            empty = "-m" in cmd and cmd[cmd.index("-m") + 1] == "serial"
+            empty = "pytest" in cmd and marker_expression(cmd) == "serial"
             return subprocess.CompletedProcess(cmd, 5 if empty else 0)
 
         with mock.patch.object(self.check.subprocess, "run", side_effect=refuse):
@@ -327,7 +340,7 @@ class TestTheFastGateStillDoesNotRunTheSuite(unittest.TestCase):
 
     def test_a_failing_parallel_half_still_stops_the_gate(self):
         def refuse(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
-            failed = "-m" in cmd and cmd[cmd.index("-m") + 1] == "not serial"
+            failed = "pytest" in cmd and marker_expression(cmd) == "not serial"
             return subprocess.CompletedProcess(cmd, 1 if failed else 0)
 
         with mock.patch.object(self.check.subprocess, "run", side_effect=refuse):
@@ -356,9 +369,29 @@ class TestEverySerialMarkerCarriesAReason(unittest.TestCase):
             cursor -= 1
         return " ".join(collected).strip()
 
+    def is_serial(self, node: ast.expr) -> bool:
+        target = node.func if isinstance(node, ast.Call) else node
+        return (isinstance(target, ast.Attribute) and target.attr == "serial"
+                and isinstance(target.value, ast.Attribute) and target.value.attr == "mark")
+
     def marked_lines(self, source: str) -> list[int]:
-        return [number for number, line in enumerate(source.splitlines())
-                if "pytest.mark.serial" in line and not line.lstrip().startswith("#")]
+        """0-based lines carrying a real `serial` marker.
+
+        Parsed, not grepped: this very module keeps a mini test suite in a string
+        literal, and a grep would read the marker inside it as one of ours.
+        """
+        found: list[int] = []
+        for node in ast.walk(ast.parse(source)):
+            for decorator in getattr(node, "decorator_list", []):
+                if self.is_serial(decorator):
+                    found.append(decorator.lineno - 1)
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "pytestmark"
+                    for target in node.targets):
+                values = (node.value.elts if isinstance(node.value, ast.List | ast.Tuple)
+                          else [node.value])
+                found.extend(value.lineno - 1 for value in values if self.is_serial(value))
+        return sorted(found)
 
     def test_the_guard_catches_a_marker_with_no_reason(self):
         bare = "@pytest.mark.serial\ndef test_thing():\n    pass\n"

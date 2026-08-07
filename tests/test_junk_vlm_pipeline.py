@@ -18,6 +18,7 @@ import time
 import unittest
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from sorta import config as config_mod
@@ -445,6 +446,10 @@ class TestPipelineSpeedup(unittest.TestCase):
         finally:
             col.close()
 
+    # serial: asserts on ELAPSED TIME (4 preparation threads beat 1) — same class as
+    # the OCR pipeline's speedup test, and the parallel half is the loaded machine that
+    # makes such a ratio a coin flip rather than a statement about the code.
+    @pytest.mark.serial
     def test_four_workers_beat_one(self):
         frames, delay = 6 * WORKERS, 0.02  # ~0.48 s serial, ~0.12 s on 4 workers
         serial = self.elapsed(1, frames, delay)

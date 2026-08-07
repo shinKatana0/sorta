@@ -100,10 +100,19 @@ _COVERAGE = ["--cov=sorta", "--cov-append", "--cov-report="]
 # `[tool.coverage.report].fail_under` out of ITS exit code without touching that value.
 _NO_VERDICT = ["--cov-fail-under=0"]
 
+# `loadfile` and not xdist's default `load` (which hands out one test at a time). The
+# suite has modules whose tests share process state on purpose — a module-level
+# `default_rng` in tests/test_faces_rescan.py, so what a test draws depends on how many
+# draws the tests above it made. Splitting such a file across workers changes the data a
+# test sees and flips its verdict; keeping the file whole reproduces exactly the order
+# it had in one process. That is what makes `-n 0` and `-n auto` agree, which is the
+# property the gate is FOR. Per-file granularity still saturates 24 cores: 224 files.
+_DISTRIBUTION = ["-n", "auto", "--dist", "loadfile"]
+
 SLOW_CHECKS = [
     (
         "pytest (parallel half)",
-        [sys.executable, "-m", "pytest", "-n", "auto", "-m", "not serial",
+        [sys.executable, "-m", "pytest", *_DISTRIBUTION, "-m", "not serial",
          *_COVERAGE, *_NO_VERDICT],
     ),
     (

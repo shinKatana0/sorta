@@ -11,6 +11,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+import pytest
+
 from sorta import dedup, imaging
 from sorta.config import Config, IndexConfig
 from sorta.db import connect
@@ -114,6 +116,11 @@ class TestPhashThroughPreview(PhashPreviewTestCase):
 class TestPreviewSpeedupBench(PhashPreviewTestCase):
     """F67 acceptance: a warm cache makes the pHash pass an order faster."""
 
+    # serial: asserts on ELAPSED TIME (a warm cache is 10x a cold one) and decodes 200
+    # 12-megapixel JPEGs to do it. Skipped in the gate, so it costs the serial half
+    # nothing — but whoever sets SORTA_BENCH=1 must not have it timed under 23 other
+    # workers, which is the one condition guaranteed to make the ratio meaningless.
+    @pytest.mark.serial
     @unittest.skipUnless(_BENCH, "acceptance benchmark — run with SORTA_BENCH=1")
     def test_second_pass_is_at_least_ten_times_faster(self):
         files = []
