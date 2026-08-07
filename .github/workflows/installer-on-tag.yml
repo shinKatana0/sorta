@@ -1,0 +1,19 @@
+name: installer (release gate)
+
+# F216 — a release does not go out without the installer having been built, installed
+# and made to work.
+#
+# This exists as a separate file for one reason of GitHub's making: within a single
+# `push` trigger the `tags` and `paths` filters are ANDed, so `installer.yml`, which
+# filters on paths so that it does not run on every commit, can never match a tag push.
+# Splitting the trigger off is the documented way out, and it keeps the process itself
+# in one place — there is no second copy of the build here, only a call.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  installer:
+    uses: ./.github/workflows/installer.yml

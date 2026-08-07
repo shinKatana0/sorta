@@ -1,0 +1,177 @@
+name: installer
+
+# F216 — the installer is proven by installing it.
+#
+# F211 closed the manifest, the payload plan and the wizard's logic, and every one of
+# those is checkable from a checkout. None of them answers the only question that
+# matters about an installer: does it build, does it install, and does the program work
+# afterwards. Nobody had ever run it.
+#
+# Deliberately NOT part of `check.yml`. Compiling a payload, installing it and pulling
+# 400 MB of model weights takes minutes; the ordinary gate runs on every commit and has
+# to stay fast, while the installer is touched rarely.
+
+on:
+  # Only when something that shapes the installer moves.
+  push:
+    branches: ['**']
+    paths:
+      - 'packaging/**'
+      - 'scripts/build_installer.py'
+      - 'sorta/wizard.py'
+      - '.github/workflows/installer.yml'
+  # By hand, for the times somebody wants the artifact.
+  workflow_dispatch:
+  # And on a tag, through `installer-on-tag.yml` — a release does not go out without
+  # this check. It is a second file because GitHub ANDs the `tags` and `paths` filters
+  # of one `push` trigger, so a tag would silently match nothing here.
+  workflow_call:
+
+jobs:
+  build-and-prove:
+    name: build it, install it, make it work
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        # The default on a Windows runner already, but every step below is PowerShell
+        # on purpose and none of it would survive being read as cmd.
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        # Same pinned SHA as check.yml (c771a70 = v9.0.0).
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Install Inno Setup and exiftool
+        # exiftool is bundled INTO the payload, so it has to be on this machine before
+        # the build: `build_installer.py` refuses to guess, and building the
+        # Pillow-fallback variant here would prove a different installer than the one
+        # that ships.
+        run: |
+          choco install innosetup --no-progress --yes
+          choco install exiftool --no-progress --yes
+          # Chocolatey does not put the compiler on PATH, and shutil.which is how the
+          # build script looks for it.
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files (x86)\Inno Setup 6'
+
+      - name: Build the payload and compile the installer
+        run: uv run --extra cpu python scripts/build_installer.py
+
+      - name: Install it silently, per-user, without administrator
+        # `PrivilegesRequired=lowest` in the .iss is a claim; running the installer as
+        # an ordinary user with /VERYSILENT is the check of it. /VERYSILENT also
+        # exercises the `skipifsilent` flag on the postinstall wizard — without it the
+        # install would hang here on an `input()` with no keyboard behind it.
+        run: |
+          $setup = Get-ChildItem dist\windows\sorta-*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw 'the build produced no installer' }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Sorta'
+          "SORTA_APP_DIR=$dir" | Add-Content -Path $env:GITHUB_ENV
+          Write-Host "installing $($setup.Name) ($([math]::Round($setup.Length / 1MB)) MB) into $dir"
+          $log = Join-Path $env:RUNNER_TEMP 'install.log'
+          Start-Process -FilePath $setup.FullName -Wait -ArgumentList `
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", "/LOG=$log"
+          if (-not (Test-Path -LiteralPath $dir)) { throw "nothing was installed into $dir" }
+
+      - name: Make the installed program do work
+        # The base tier needs no model and no card — it is disk, EXIF and SQLite — so
+        # this runs on a bare runner. The script checks what the commands SAY: a stage
+        # that found nothing exits zero exactly like one that found everything.
+        run: ./packaging/windows/verify_install.ps1 -InstallDir "$env:SORTA_APP_DIR"
+
+      - name: Add one tier for real — faces, ~400 MB
+        # The point is the MECHANISM, and for `faces` the mechanism is the weights half
+        # of it: the tier declares no extras, so there is nothing for `uv` to resolve
+        # and the 400 MB arrive when the stage first asks for them. The packages half is
+        # the same code path the payload itself was built with (`uv pip install
+        # --target` into lib\), and the two tiers that would exercise it here are
+        # exactly the two that do not fit on a runner.
+        run: |
+          $python = Join-Path $env:SORTA_APP_DIR 'python\python.exe'
+          Push-Location (Join-Path $env:APPDATA 'sorta')
+          try {
+            & $python -X utf8 -m sorta.wizard --tiers faces
+            if ($LASTEXITCODE -ne 0) { throw "the wizard refused the faces tier ($LASTEXITCODE)" }
+            # This is what actually downloads buffalo_l, and it is also the proof that
+            # onnxruntime came along in the base tier: without it the stage cannot start.
+            & $python -X utf8 -m sorta.cli faces
+            if ($LASTEXITCODE -ne 0) { throw "sorta faces failed ($LASTEXITCODE)" }
+          } finally { Pop-Location }
+          $weights = Join-Path $env:USERPROFILE '.insightface\models\buffalo_l'
+          if (-not (Test-Path -LiteralPath $weights)) { throw "no weights at $weights" }
+          $mb = [math]::Round(((Get-ChildItem $weights -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB)
+          Write-Host "buffalo_l on disk: $mb MB"
+          if ($mb -lt 100) { throw "buffalo_l is only $mb MB — that is not the model" }
+
+      - name: doctor now reports the tier as present
+        # The loop closes on the command a person is actually pointed at: the tier was
+        # absent before the step above and has to be named in place after it. Reading it
+        # back through `doctor` rather than off the disk is the point — that is the
+        # answer anybody installing by hand will get.
+        run: |
+          $python = Join-Path $env:SORTA_APP_DIR 'python\python.exe'
+          Push-Location (Join-Path $env:APPDATA 'sorta')
+          try { $out = & $python -X utf8 -m sorta.cli doctor 2>&1 | Out-String } finally { Pop-Location }
+          Write-Host $out
+          if ($out -notmatch 'Installed tiers:') { throw 'doctor does not name the tiers' }
+          if ($out -match 'faces[^\r\n]*not installed') { throw 'doctor still calls faces absent' }
+
+      - name: The check has to be able to go red
+        # A step that passes no matter what is worse than no step: it hands out
+        # confidence while checking nothing. We have caught this before — F182 had a
+        # patch that missed its target, so the real CLIP weights were built inside a
+        # test written to build none, and every visible assertion still passed.
+        #
+        # So: run the same verification against a directory where nothing is installed.
+        # The step is green only when the check came back RED.
+        run: |
+          $empty = Join-Path $env:RUNNER_TEMP 'empty-install'
+          New-Item -ItemType Directory -Path $empty -Force | Out-Null
+          ./packaging/windows/verify_install.ps1 -InstallDir $empty
+          $code = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($code -eq 0) {
+            throw 'verify_install.ps1 passed against an empty directory — it proves nothing'
+          }
+          Write-Host "the check failed as it should (exit $code)"
+
+      - name: What this workflow does NOT prove
+        # Named out loud, because a green tick is read as wide as it is left undefined.
+        if: always()
+        run: |
+          @(
+            '### Proven',
+            '- the installer builds, installs per-user with no administrator, and the',
+            '  installed program indexes, counts and deduplicates real files;',
+            '- one tier (`faces`, ~400 MB) downloads for real and `doctor` reports it.',
+            '',
+            '### NOT proven here',
+            '- **the deep tier** (`deep`, Qwen2.5-VL-3B, ~7 GB) — it fits neither the',
+            '  disk nor the time of a runner, and nothing below it is downloaded either;',
+            '- **the gpu tier** (~2.5 GB of CUDA wheels) — a runner has no card, so the',
+            '  packages could install and still tell us nothing about whether they run;',
+            '- **the tray icon** — a runner has no desktop. That the module starts, that',
+            '  the icon is built from two items and that a dead backend still leaves the',
+            '  app running are covered by F207 against a fake backend. That a person SEES',
+            '  the icon is the last metre, and it stays human;',
+            '- **the signature** — this installer ships unsigned on purpose (owner, ',
+            '  2026-08-06), so SmartScreen behaviour is not exercised.'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Keep the installer and the install log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sorta-installer
+          path: |
+            dist/windows/sorta-*-setup.exe
+            dist/windows/sorta-*-setup.exe.sha256
+            ${{ runner.temp }}/install.log
+          if-no-files-found: warn
+          retention-days: 14
