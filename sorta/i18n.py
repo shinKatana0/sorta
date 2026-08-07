@@ -739,6 +739,73 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Geo cache (geo_cache): {n} entries",
         "ja": "位置情報キャッシュ (geo_cache): {n} 件",
     },
+    # F224: the model weights — the gigabytes in caches that carry nobody's name. The
+    # list is printed BEFORE the question in every mode, because «frees 1.9 GB» is an
+    # answer and «clear the cache» is a riddle.
+    "cli.cache.models_header": {
+        "ru": "Скачанные модели (по каталогу ярусов):",
+        "en": "Downloaded models (from the tier catalog):",
+        "ja": "ダウンロード済みモデル（ティアカタログより）:",
+    },
+    "cli.cache.models_entry": {
+        "ru": "  {weight}: {path} — {size_gb:.2f} ГБ",
+        "en": "  {weight}: {path} — {size_gb:.2f} GB",
+        "ja": "  {weight}: {path} — {size_gb:.2f} GB",
+    },
+    # A junction/symlink goes away as a link, so the target keeps its bytes and this
+    # line says so before anybody agrees to anything.
+    "cli.cache.models_link": {
+        "ru": "  {weight}: {path} — ссылка; удалится сама ссылка, "
+              "то, на что она указывает, останется",
+        "en": "  {weight}: {path} — a link; the link itself is removed, "
+              "whatever it points at stays",
+        "ja": "  {weight}: {path} — リンクです。リンク自体は削除されますが、"
+              "リンク先はそのまま残ります",
+    },
+    "cli.cache.models_behind_link": {
+        "ru": "  {weight}: {path} — за ссылкой {link}; это чужое хранилище, "
+              "не трогаем",
+        "en": "  {weight}: {path} — behind the link {link}; that is somebody else's "
+              "store, left alone",
+        "ja": "  {weight}: {path} — リンク {link} の先にあります。"
+              "他者の保管場所なので手を触れません",
+    },
+    "cli.cache.models_total": {
+        "ru": "Освободится: {size_gb:.2f} ГБ",
+        "en": "Would free: {size_gb:.2f} GB",
+        "ja": "解放される容量: {size_gb:.2f} GB",
+    },
+    "cli.cache.models_none": {
+        "ru": "Скачанных моделей на диске нет.",
+        "en": "No downloaded models on this disk.",
+        "ja": "このディスクにダウンロード済みモデルはありません。",
+    },
+    "cli.cache.models_confirm": {
+        "ru": "Удалить эти модели и освободить {size_gb:.2f} ГБ? Фотографии, индекс и "
+              "настройки не тронутся; веса скачаются заново при первом же прогоне, "
+              "которому они понадобятся",
+        "en": "Remove these models and free {size_gb:.2f} GB? Photographs, the index "
+              "and the settings are not touched; the weights are downloaded again by "
+              "the first run that needs them",
+        "ja": "これらのモデルを削除して {size_gb:.2f} GB を解放しますか？ 写真・"
+              "インデックス・設定には手を触れません。重みは必要になった最初の実行で"
+              "再びダウンロードされます",
+    },
+    "cli.cache.models_cleared": {
+        "ru": "Удалено моделей: {n}; освобождено {size_gb:.2f} ГБ",
+        "en": "Models removed: {n}; {size_gb:.2f} GB freed",
+        "ja": "削除したモデル: {n} 件、解放した容量 {size_gb:.2f} GB",
+    },
+    "cli.cache.models_kept": {
+        "ru": "Оставлено (за ссылкой {link}): {path}",
+        "en": "Left alone (behind the link {link}): {path}",
+        "ja": "そのまま残しました（リンク {link} の先）: {path}",
+    },
+    "cli.cache.models_failed": {
+        "ru": "Не удалось удалить {path}: {error}",
+        "en": "Could not remove {path}: {error}",
+        "ja": "{path} を削除できませんでした: {error}",
+    },
     # F118: the plan summary and the warnings around it are printed by sorter.py, which
     # F112 never reached — it localized cli.py and left this file writing Russian
     # whatever `language:` said. The command echo itself (`sort --by city --apply`) is
@@ -1562,6 +1629,33 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "`sorta geo` with provider: online goes to the network again",
         "ja": "オンラインジオコーダの応答キャッシュ (F93) を削除します。"
               "provider: online の場合、次の `sorta geo` は再びネットワークに接続します",
+    },
+    # F224: the models are reached through `cache` and not through `reset`, because a
+    # cache is what they are — derived files that come back by themselves on the next
+    # run that needs them. `reset` erases the opposite of that (names of people, the
+    # decisions about duplicates), which nothing can download again.
+    "cli.help.cache.models": {
+        "ru": "Показать скачанные веса моделей: пути и размеры, ничего не удаляя",
+        "en": "Show the downloaded model weights — paths and sizes, deleting nothing",
+        "ja": "ダウンロード済みモデルの重みを表示します（パスとサイズ、削除はしません）",
+    },
+    "cli.help.cache.clear_models": {
+        "ru": "Удалить скачанные веса моделей после подтверждения: только модели из "
+              "каталога ярусов, чужие файлы в тех же кэшах и цели ссылок не тронутся",
+        "en": "Remove the downloaded model weights after a confirmation: only the "
+              "models of the tier catalog — other files in the same caches and the "
+              "targets of links are left alone",
+        "ja": "確認のうえダウンロード済みモデルの重みを削除します。削除するのは"
+              "ティアカタログのモデルだけで、同じキャッシュ内の他のファイルや"
+              "リンク先には手を触れません",
+    },
+    "cli.help.cache.yes": {
+        "ru": "Не спрашивать про --clear-models (согласие уже получено — так эту "
+              "команду зовёт деинсталлятор Windows)",
+        "en": "Do not ask about --clear-models (the consent has already been given — "
+              "this is how the Windows uninstaller calls the command)",
+        "ja": "--clear-models について確認しません（同意は取得済み — "
+              "Windows のアンインストーラはこの形で呼び出します）",
     },
     "cli.help.cache.preview_max_gb": {
         "ru": "Потолок кэша превью в ГБ на этот прогон "

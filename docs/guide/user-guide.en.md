@@ -1296,11 +1296,15 @@ sorta reset [--yes|-y] [--clear-geo]
 sorta ui [--port 8756]            Local web app (Overview / Review / Layout / Slices / Moves)
 sorta doctor                      Environment check: torch/onnxruntime, GPU, geo data,
                                   log path, preview cache path (§3.5)
-sorta cache [--clear] [--clear-geo] [--preview-max-gb N]
+sorta cache [--clear] [--clear-geo] [--models] [--clear-models] [-y|--yes]
+            [--preview-max-gb N]
                                   Caches: preview size or deletion (§18); --clear-geo
                                   drops the cached online-geo answers, --preview-max-gb
                                   sets the cache ceiling for this invocation
-                                  (0 = no ceiling)
+                                  (0 = no ceiling); --models lists the downloaded model
+                                  weights with their sizes and --clear-models removes
+                                  them after a question, --yes answers it in advance
+                                  (§20a)
 sorta --install-completion        Install shell completion for `sorta`
 sorta --show-completion           Print the completion script without installing it
 ```
@@ -1545,6 +1549,66 @@ left alone, so the first download still works.
 
 Note that face detection (insightface/`buffalo_l`) keeps its own cache in
 `~/.insightface/models` and is not affected by these variables.
+
+---
+
+## 20a. Removing Sorta, and what it leaves behind
+
+Uninstalling the program removes the program. Everything else it put on the disk stays
+until you say otherwise, and it is worth knowing where, because none of the folders is
+named after Sorta:
+
+| What | Where | Roughly |
+|---|---|---|
+| Your work | `%APPDATA%\sorta` — `config.yaml`, `sorta.db` | tens of MB |
+| Logs and previews | `%LOCALAPPDATA%\sorta` (`~/.cache/sorta` elsewhere) | ≈150 KB per photo |
+| Model weights | `~/.cache/huggingface/hub` | 1.6 GB (CLIP), 1.4 GB (multilingual), 7 GB (VLM) |
+| Model weights | `~/.insightface/models` | 0.4 GB (`buffalo_l`) |
+
+**The Windows uninstaller asks.** It states what each of those two groups weighs on
+*this* machine and offers them as two separate ticks, **both empty by default** —
+uninstalling a program is not a request to delete somebody's data. A silent uninstall
+(`/VERYSILENT`) has nobody to ask and therefore deletes nothing. Your photographs are
+never touched under any tick: Sorta only ever moved them, and the folders they were
+moved into are yours.
+
+**Anyone who installed from a checkout has no uninstaller**, so the same job is done by
+the commands:
+
+```bash
+sorta cache --models          # what is downloaded, path by path, with sizes
+sorta cache --clear-models    # remove it, after a question with "no" as its default
+sorta cache --clear           # the preview cache (§18)
+sorta reset                   # the index — names of people, events, duplicate decisions
+```
+
+`sorta cache --models` prints something like:
+
+```
+Downloaded models (from the tier catalog):
+  buffalo_l: C:\Users\you\.insightface\models\buffalo_l — 0.33 GB
+  ViT-L-14: C:\Users\you\.cache\huggingface\hub\models--timm--vit_large_patch14_clip_224.openai — 1.71 GB
+Would free: 2.04 GB
+```
+
+Three rules that make this safe to run on a machine that is not only yours:
+
+- **only the models Sorta's own tier catalog names** are removed, one directory at a
+  time. `~/.cache/huggingface` and `~/.insightface` are shared with every other program
+  built on the same libraries, and anything else in them is left exactly as it was;
+- **links are removed as links.** If one of those directories is a junction or a symlink
+  — a perfectly normal way to keep 10 GB of weights on another drive — the link goes and
+  the target stays. A model found *behind* a link is reported and not touched at all,
+  because what is behind it belongs to whoever put it there;
+- **the size is stated before the deletion**, and it is the size that is actually freed:
+  a link counts as nothing, because removing it frees nothing.
+
+The weights come back by themselves: the first run that needs one downloads it again
+(§20). That is the difference between this and `sorta reset` — nothing you decided is
+lost here, only time and bandwidth.
+
+`--yes` skips the question. It exists for the uninstaller, which has already asked, and
+`-y` is its short form.
 
 ---
 
