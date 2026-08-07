@@ -24,10 +24,10 @@
 !/config.example.yaml
 !/data/
 !/docs/
-# F216: this line was missing, and that is how F211's Inno script and packaging notes
-# were lost — `git add` skipped them without a word, the commit message describes files
-# that are not in the tree, and the suite has been failing at collection ever since. An
-# allowlist is only as good as its entries.
+# F211: the installer sources. Added AFTER they were written and silently lost —
+# a new top-level directory is invisible to `git add` under an allowlist, so the
+# feature merged without its Inno script and the worktree removal took the only
+# copy. Publishing something new means adding it here FIRST.
 !/packaging/
 !/pyproject.toml
 !/scripts/
