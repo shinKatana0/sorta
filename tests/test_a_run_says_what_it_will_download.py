@@ -120,6 +120,23 @@ class TestTheOptionToWeightsTableIsDerivedAndGuarded(unittest.TestCase):
     def test_the_classification_weighs_what_the_report_says(self):
         self.assertEqual(tiers.weights_size_mb(("ViT-L-14",)), 1600)
 
+    def test_every_weight_a_line_names_is_carried_by_some_tier(self):
+        """A part naming a model nobody installs would have no note and no way out — the
+        F217 defect with the pairing done right and the catalog wrong."""
+        for part in tiers.RUN_PARTS:
+            for weight in part.weights:
+                with self.subTest(part=part.key, weight=weight):
+                    self.assertIsNotNone(tiers.weight_tier(weight))
+
+    def test_every_stage_that_downloads_names_a_known_model(self):
+        """The other half of the table — the one the run-time sentences are built from.
+        A stage naming a model the catalog does not know would quote a size of zero."""
+        for stage, weights in tiers.STAGE_WEIGHTS.items():
+            for weight in weights:
+                with self.subTest(stage=stage, weight=weight):
+                    self.assertIn(weight, tiers._WEIGHT_MB)
+                    self.assertIsNotNone(tiers.weight_tier(weight))
+
 
 class TestWhatThisRunWillDownload(unittest.TestCase):
     """§2: the summary counts the stages nobody was asked about."""
