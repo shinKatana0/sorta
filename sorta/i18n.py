@@ -1019,19 +1019,29 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Search by words",
         "ja": "言葉による検索",
     },
+    # F222: this tier carries the CLIP weights, and the landmark stage raises the same
+    # file — so the stage is NAMED here rather than given a fifth tier of its own for one
+    # 1.6 GB model that is already in the catalog. Somebody who wants places recognised by
+    # sight has to be able to find the component that gives them; a person reading
+    # "Search by words" would never guess it.
     "cli.setup.tier.search.benefit": {
-        "ru": "Запрос словами по коллекции и закреплённые срезы — на трёх языках.",
+        "ru": "Запрос словами по коллекции и закреплённые срезы — на трёх языках. Те же "
+              "веса нужны стадии «Узнавать места по виду» (галочка на экране запуска).",
         "en": "Ask the collection in words, and pin a query as a slice — in three "
-              "languages.",
-        "ja": "コレクションを言葉で検索し、クエリをスライスとして固定できます（3言語）。",
+              "languages. The same weights are what the “Recognise places by sight” "
+              "stage needs (a checkbox on the run screen).",
+        "ja": "コレクションを言葉で検索し、クエリをスライスとして固定できます（3言語）。"
+              "同じ重みは「見た目で場所を判定」ステージ（実行画面のチェック）にも"
+              "使われます。",
     },
     "cli.setup.tier.search.without": {
-        "ru": "Поиск словами скажет, что индекса нет, вместо выдачи; срезы по лицам и "
-              "классам работают.",
-        "en": "Search by words says it has no index instead of returning a ranking; the "
-              "face and class slices work.",
-        "ja": "言葉による検索は結果の代わりに索引がないと伝えます。顔やクラスの"
-              "スライスは動作します。",
+        "ru": "Поиск словами скажет, что индекса нет, вместо выдачи; узнавать места по "
+              "виду тоже не выйдет. Срезы по лицам и классам работают.",
+        "en": "Search by words says it has no index instead of returning a ranking, and "
+              "places cannot be recognised by sight either; the face and class slices "
+              "work.",
+        "ja": "言葉による検索は結果の代わりに索引がないと伝え、見た目による場所の判定も"
+              "できません。顔やクラスのスライスは動作します。",
     },
     "cli.setup.tier.gpu.name": {
         "ru": "Ускорение на NVIDIA (CUDA 13)",
