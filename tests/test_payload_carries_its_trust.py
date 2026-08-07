@@ -333,5 +333,35 @@ class TestTheBuildRefusesAPayloadWithoutTrust(unittest.TestCase):
             self.assertEqual(code, 1)
 
 
+class TestItIsWrittenDownWhereSomebodyBlockedWouldLook(unittest.TestCase):
+    """The prose half, which is load-bearing here: somebody hitting this today needs the
+    one-line unblock, and somebody reading the green tick tomorrow needs to know how far
+    it goes."""
+
+    def setUp(self):
+        self.readme = (_ROOT / "packaging" / "windows" / "README.md").read_text(
+            encoding="utf-8")
+
+    def test_the_readme_names_the_failure_and_the_mechanism(self):
+        for needle in ("CERTIFICATE_VERIFY_FAILED", "sitecustomize", "certifi",
+                       "SSL_CERT_FILE"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.readme)
+
+    def test_the_immediate_workaround_is_there_to_be_copied(self):
+        """It unblocks an installation that already has the defect, and it is spelled out
+        rather than described — a workaround somebody has to reconstruct is not one."""
+        self.assertIn('$env:SSL_CERT_FILE = "$env:LOCALAPPDATA\\Programs\\Sorta'
+                      '\\lib\\certifi\\cacert.pem"', self.readme)
+
+    def test_the_workflow_step_is_named_as_wiring_rather_than_as_a_test_of_tls(self):
+        workflow = (_ROOT / ".github" / "workflows" / "installer.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("SSL_CERT_FILE", workflow)
+        # A runner is not a clean machine, and a green tick is read as wide as it is left
+        # undefined — F216's own lesson, applied to F216's own workflow.
+        self.assertRegex(workflow, r"(?i)root certificate store Windows has not filled")
+
+
 if __name__ == "__main__":
     unittest.main()
