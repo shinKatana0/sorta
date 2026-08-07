@@ -162,7 +162,9 @@ class TestProcessStartAndProgress(ProcessTestBase):
             set(data.keys()),
             {"running", "stage", "stage_index", "stage_total", "done", "total",
              "error", "error_stage", "finished", "cancel_requested", "source_dir",
-             "stage_stats", "phase", "phase_elapsed"},
+             "stage_stats", "phase", "phase_elapsed",
+             # F217: the deep tier was asked for, and whether anything came of it.
+             "deep_requested", "deep_ran"},
         )
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])
@@ -422,7 +424,9 @@ class TestProcessTogglesHtml(ProcessTestBase):
         self.assertIn('id="process-deep-checkbox"', html)
         self.assertIn('id="process-geo-online-checkbox"', html)
         self.assertIn("Deep analysis (VLM)", html)
-        self.assertIn("uv sync --extra vlm", html)
+        # F217: the hint names the install tier now — `uv sync --extra vlm` was a command
+        # for a checkout of the sources, which the person reading this screen has not got.
+        self.assertIn("“Deep tier (VLM)” install tier", html)
         self.assertIn("Online geo", html)
         self.assertIn("GPS coordinates", html)
 
@@ -432,7 +436,7 @@ class TestProcessTogglesHtml(ProcessTestBase):
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
         self.assertIn("Deep analysis (VLM)", html)
-        self.assertIn("uv sync --extra vlm", html)
+        self.assertIn("“Deep tier (VLM)” install tier", html)
         self.assertIn("Online geo (more accurate abroad)", html)
         self.assertIn("GPS coordinates", html)
 
@@ -721,9 +725,12 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         # `junk_rescue` (which moved 181 of the owner's photographs into the screenshot
         # bin on one run) and `landmarks_verify`. The screen was already PRICING
         # junk_rescue in the run estimate while never showing it.
+        # F217 took `vlm_available` out: it answered "is transformers importable", which
+        # is one half of one install tier read a second way — and /api/env now carries the
+        # state of every tier from the probe `sorta doctor` uses.
         self.assertEqual(set(data.keys()),
                          {"deep", "products", "geo_online", "pets", "pets_verify",
-                          "junk_rescue", "landmarks_verify", "vlm_available"})
+                          "junk_rescue", "landmarks_verify"})
         self.assertFalse(data["deep"])
         self.assertTrue(data["products"])
         self.assertFalse(data["geo_online"])
@@ -738,20 +745,6 @@ class TestProcessDefaultsEndpoint(ProcessTestBase):
         data = json.loads(body)
         self.assertTrue(data["deep"])
         self.assertTrue(data["geo_online"])
-
-    def test_vlm_available_true_when_transformers_importable(self):
-        with mock.patch.object(ui.importlib.util, "find_spec", return_value=object()):
-            self.start_server()
-            _status, body, _ctype = self.get("/api/process/defaults")
-        data = json.loads(body)
-        self.assertTrue(data["vlm_available"])
-
-    def test_vlm_available_false_when_transformers_missing(self):
-        with mock.patch.object(ui.importlib.util, "find_spec", return_value=None):
-            self.start_server()
-            _status, body, _ctype = self.get("/api/process/defaults")
-        data = json.loads(body)
-        self.assertFalse(data["vlm_available"])
 
 
 class TestProcessDefaultsInitJs(ProcessTestBase):
@@ -820,42 +813,40 @@ class TestTheRetiredControlsLeftNoStubs(ProcessTestBase):
                 self.assertIn(element_id, html)
 
 
-class TestVlmMissingWarningHtml(ProcessTestBase):
-    """F57: a muted "VLM not installed" note next to the deep checkbox — shown only
-    when the checkbox is checked and vlm_available=false; i18n×3."""
+class TestTierNoteHtml(ProcessTestBase):
+    """F217: the note that replaced the F57 "VLM not installed" warning.
 
-    def test_markup_and_default_text_present(self):
+    It changed in three ways, and each of them is why the feature exists: it is written
+    by the script from the tier probe instead of standing in the markup, it appears
+    without the checkbox being ticked (the person it is for never ticks it), and it names
+    a way out that works on an installed copy. The wording itself is tested where the
+    probe is — here it is only the wiring."""
+
+    def test_the_note_is_an_empty_slot_the_script_fills(self):
         self.start_server()
         _status, body, _ctype = self.get("/")
         html = body.decode("utf-8")
-        self.assertIn('id="process-deep-vlm-missing"', html)
-        self.assertIn('style="display:none"', html)
-        self.assertIn("VLM is not installed", html)
-        self.assertIn("uv sync --extra vlm", html)
+        self.assertIn('id="process-deep-tier-note"', html)
+        self.assertIn('id="process-faces-tier-note"', html)
+        self.assertIn("setTierNote(\"process-deep-tier-note\", \"deep\"", html)
+        self.assertIn("setTierNote(\"process-faces-tier-note\", \"faces\"", html)
 
-    def test_en_text_present(self):
-        self.cfg.raw = {"language": "en"}
-        self.start_server()
-        _status, body, _ctype = self.get("/")
-        html = body.decode("utf-8")
-        self.assertIn("VLM is not installed", html)
-        self.assertIn("uv sync --extra vlm", html)
+    def test_the_command_for_a_source_checkout_is_gone_from_the_screen(self):
+        """`uv sync --extra vlm` is a command for a checkout of the sources, and the
+        person reading this screen installed a program. It was in two places next to this
+        checkbox — the note and the hint of the master switch — and neither of them could
+        be followed."""
+        for lang in ("ru", "en", "ja"):
+            with self.subTest(lang=lang):
+                self.cfg.raw = {"language": lang}
+                self.start_server()
+                _status, body, _ctype = self.get("/")
+                self.assertNotIn("uv sync --extra vlm", body.decode("utf-8"))
+                self.tearDown()
+                self.setUp()
 
-    def test_ja_text_present(self):
-        self.cfg.raw = {"language": "ja"}
-        self.start_server()
-        _status, body, _ctype = self.get("/")
-        html = body.decode("utf-8")
-        self.assertIn("VLM がインストールされていません", html)
-
-    def test_toggle_js_wires_change_listener_to_warning(self):
-        self.start_server()
-        _status, body, _ctype = self.get("/")
-        html = body.decode("utf-8")
-        self.assertIn("updateVlmMissingWarning", html)
-        self.assertIn(
-            'document.getElementById("process-deep-checkbox")\n'
-            '      .addEventListener("change", updateVlmMissingWarning)', html)
+    def test_the_retired_note_is_not_in_the_catalog_any_more(self):
+        self.assertNotIn("process_deep_vlm_missing", ui._UI_STRINGS)
 
 
 if __name__ == "__main__":

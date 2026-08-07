@@ -2549,16 +2549,52 @@
   // F57: the deep and geo-online checkboxes have to start from what config.yaml says
   // (cfg.naming.vlm_enabled / cfg.geo.provider) rather than always empty — otherwise it
   // is hard to tell what is actually enabled, and the current state cannot be seen
-  // before the first click. vlmAvailable says whether the transformers package is
-  // installed; the dimmed «VLM не установлен» note is shown only when the checkbox is
-  // ticked and the package is missing (asking for the VLM ≠ actually running it —
-  // junk.classify falls back to CLIP as a matter of course).
-  var vlmAvailable = true;
+  // before the first click.
 
-  function updateVlmMissingWarning() {
-    var checked = document.getElementById("process-deep-checkbox").checked;
-    document.getElementById("process-deep-vlm-missing").style.display =
-        (checked && !vlmAvailable) ? "" : "none";
+  // --- F217: the install tier behind an option, named where the option is ------
+  //
+  // The state comes from /api/env, which reads the probe `sorta doctor` reads — one
+  // answer, not a second reading of it. Three states and not two, because two of the
+  // four tiers install no packages at all: their weights are downloaded by the stage on
+  // its first run, and telling a person that «Лица» is "not installed" would send them to
+  // the wizard for something that happens by itself.
+  //
+  // The note does NOT wait for the checkbox to be ticked. The person this is written for
+  // cleared the "set it up at the end" box in the installer and would never tick this
+  // one either — they have to read it while deciding, which is the whole difference from
+  // the warning that used to live here.
+  var tierStates = {};
+
+  // The sentence one tier gets, or "" for a tier that is in place — a screen that lists
+  // what is already there is a screen nobody reads. `absentExtra` is what a MISSING tier
+  // costs on this particular option (the deep one falls back to CLIP); the way out is
+  // the wizard's own line, the same one `sorta doctor` prints.
+  function tierNote(key, absentExtra) {
+    var info = tierStates[key];
+    if (!info || info.state === "ready") return "";
+    var name = I18N["tier_name_" + key] || key;
+    if (info.state === "weights") {
+      return fmt(I18N.tier_weights_note, {
+        name: name,
+        weights: (info.missing || []).join(", "),
+        size: I18N["tier_size_" + key] || ""
+      });
+    }
+    return [fmt(I18N.tier_absent_note, { name: name }), absentExtra, I18N.tier_add_hint]
+        .filter(Boolean).join(" ");
+  }
+
+  function setTierNote(elementId, key, absentExtra) {
+    var el = document.getElementById(elementId);
+    if (!el) return;
+    var text = tierNote(key, absentExtra);
+    el.textContent = text;
+    el.style.display = text ? "" : "none";
+  }
+
+  function updateTierNotes() {
+    setTierNote("process-faces-tier-note", "faces", "");
+    setTierNote("process-deep-tier-note", "deep", I18N.process_deep_falls_back);
   }
 
   function applyProcessDefaults() {
@@ -2581,8 +2617,6 @@
         document.getElementById("process-junk-rescue-checkbox").checked = !!data.junk_rescue;
         document.getElementById("process-landmarks-verify-checkbox").checked =
             !!data.landmarks_verify;
-        vlmAvailable = !!data.vlm_available;
-        updateVlmMissingWarning();
         renderCosts();
         updateStepLayout();  // the «Параметры запуска» summary — from the actual ticks
       })
@@ -2777,8 +2811,6 @@
 
   applyProcessDefaults();
   loadCostEstimate();
-  document.getElementById("process-deep-checkbox")
-      .addEventListener("change", updateVlmMissingWarning);
   ["process-faces-checkbox", "process-events-checkbox", "process-pets-checkbox",
    "process-pets-verify-checkbox", "process-deep-checkbox",
    "process-products-checkbox", "process-junk-rescue-checkbox",
@@ -2790,11 +2822,19 @@
   renderCosts();
 
   // F64: the banner about the CPU profile (on the CPU, faces and the VLM are slow).
+  // F217: shown only to a machine that HAS an NVIDIA card. `gpu_profile` answers "are
+  // the nvidia-* packages installed", which is not the same question — without a card
+  // the CPU profile is the right install and the banner was sending 2.5 GB of CUDA
+  // wheels to someone with nothing to run them on. The same request brings the state of
+  // every install tier, so the notes under the checkboxes come from one probe.
   fetch("/api/env").then(function (r) { return r.json(); })
     .then(function (data) {
-      if (data && !data.gpu_profile) {
+      if (!data) return;
+      if (data.gpu_present && !data.gpu_profile) {
         document.getElementById("env-cpu-warning").style.display = "";
       }
+      tierStates = data.tiers || {};
+      updateTierNotes();
     }).catch(function () {});
 
   var PROCESS_POLL_MS = 1500;
@@ -3034,6 +3074,25 @@
     });
   }
 
+  // F217: the run was given the deep tier and went through on the fast one. The fall
+  // back is silent by design — junk.py catches the whole classifier build so that a
+  // missing package cannot kill a four-hour run — which left the person who ticked the
+  // box with a finished run, an unchanged collection and the reason in a log file. The
+  // same probe says WHY, and the same way out follows it.
+  function renderDeepFallback(data) {
+    var box = document.getElementById("process-deep-fallback");
+    var fellBack = !!data.finished && !data.error && !data.cancel_requested
+        && !!data.deep_requested && data.deep_ran === false;
+    if (!fellBack) {
+      box.textContent = "";
+      box.style.display = "none";
+      return;
+    }
+    box.textContent = "⚠ " + [I18N.process_deep_fell_back, tierNote("deep", "")]
+        .filter(Boolean).join(" ");
+    box.style.display = "";
+  }
+
   function renderProcessStatus(data) {
     var startBtn = document.getElementById("process-start-btn");
     var cancelBtn = document.getElementById("process-cancel-btn");
@@ -3051,6 +3110,7 @@
     renderStages(data);
     renderProcessPhase(data);
     renderProcessSummary(data);
+    renderDeepFallback(data);
     if (data.running) {
       if (data.cancel_requested) {
         // a cancel was asked for — feedback while the stage stops or finishes up

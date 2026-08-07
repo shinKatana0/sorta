@@ -56,7 +56,6 @@ from .junk import (
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
-from .offline import hf_cache_dir
 from .progress import progress_task
 from .runlog import default_log_path, log_environment, observe, stage_timer
 from .search import (
@@ -69,6 +68,18 @@ from .search import (
 )
 from .sorter import SELECTORLESS_ALBUM_KINDS, plan_album, plan_and_sort
 from .sorter import undo as undo_batch
+# F217: the tier probe, which used to be defined here — see the block above
+# `_MISSING_SHOWN`. `_WEIGHT_MARKERS`, `_distribution_name` and `_weights_cached` are the
+# parts of it the suite reads through this module; noqa because ruff cannot see that a
+# re-export is a use.
+from .tiers import (  # noqa: F401
+    TierState,
+    _distribution_name,
+    _tier_hint_key,
+    _WEIGHT_MARKERS,
+    _weights_cached,
+    tier_states,
+)
 
 
 def _configure_runtime() -> None:
@@ -685,131 +696,17 @@ def _stub(name: str, doc: str, lang: Lang):
 # "which of them are here" is the first question both a person and the installer
 # workflow have, and answering it used to mean reading a directory listing.
 #
-# A tier is two halves that fail differently, and they are reported apart for the same
-# reason the wizard says "chosen" rather than "installed": the PACKAGES `uv` put into
-# `{app}\lib`, and the model WEIGHTS the stage downloads on the first run that needs
-# them. A tier whose packages are in place and whose 400 MB are not is neither
-# installed nor missing, and there is a sentence for exactly that state.
-
-_INSIGHTFACE_MODELS = Path.home() / ".insightface" / "models"
-
-# What a weight is CALLED once it is on disk. The catalog names them the way a person
-# reads them (`ViT-L-14`); what lands in a cache is whatever the loader asked the hub
-# for, and the two are not the same string — open_clip fetches the openai weights of
-# ViT-L-14 as `timm/vit_large_patch14_clip_224.openai`. Deliberately a substring match
-# on the cache entries and not a manifest: this answers "has this been downloaded",
-# which is a question about disk, and a wrong revision still degrades the way it did
-# before (the loader raises and names the opt-out). A weight named by `wizard.TIERS`
-# and missing from here fails the suite, the way the extras do.
-_WEIGHT_MARKERS: dict[str, tuple[str, ...]] = {
-    "buffalo_l": ("buffalo_l",),
-    "ViT-L-14": ("vit-l-14", "vit_large_patch14_clip_224"),
-    "XLM-RoBERTa": ("xlm-roberta",),
-    "Qwen2.5-VL-3B": ("qwen2.5-vl-3b",),
-}
+# F217 moved the probe itself into `sorta/tiers.py`: the web app says the same thing
+# next to the checkbox a person ticks, and it cannot import this module (typer, numpy
+# and every stage come with it, and `sorta/ui/` avoids the cycle on purpose). What is
+# imported below is the probe, unchanged — a second implementation of it would disagree
+# with this one within a release, which is the F211 precedent this whole area is built
+# on. The three names nothing here calls are re-exported for the same reason `doctor`
+# reads them: they are the probe's own parts, and the suite checks them where they are.
 
 # How many names of a long list are printed before it turns into a count. The gpu tier
 # names eight packages, and a `doctor` line that wraps three times is one nobody reads.
 _MISSING_SHOWN = 4
-
-
-@dataclasses.dataclass(frozen=True)
-class TierState:
-    """One tier, as this machine has it: what is missing, by name."""
-
-    key: str
-    missing_packages: tuple[str, ...] = ()
-    missing_weights: tuple[str, ...] = ()
-
-    @property
-    def ready(self) -> bool:
-        return not self.missing_packages and not self.missing_weights
-
-
-def _distribution_name(requirement: str) -> str:
-    """`onnxruntime>=1.27.0` -> `onnxruntime` — the name a package is installed under."""
-    name = requirement.strip()
-    for separator in " <>=!~;[(":
-        name = name.split(separator)[0]
-    return name.strip()
-
-
-def _package_present(name: str) -> bool:
-    """Is that distribution installed? Metadata, not an import.
-
-    Not `importlib.import_module`: the module a distribution provides is frequently not
-    its name (`onnxruntime-gpu` imports as `onnxruntime`, the CUDA runtime packages as
-    nothing at all), and importing torch to find out whether torch is there costs 4.5 s
-    on a command whose whole job is to answer quickly.
-    """
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        return bool(version(name))
-    except PackageNotFoundError:
-        return False
-    except Exception:  # noqa: BLE001 — unreadable metadata is an answer, not a crash
-        return False
-
-
-def _normalized(text: str) -> str:
-    return text.lower().replace("_", "-")
-
-
-def _weights_cached(name: str, *, insightface: Path | None = None,
-                    hub: Path | None = None) -> bool:
-    """Are that model's files already on this disk?
-
-    Two caches, because the two families of weights are downloaded by different
-    libraries: insightface keeps buffalo_l in `~/.insightface/models/<name>`, and
-    everything else in the catalog comes through huggingface_hub, which names a model
-    `models--<org>--<repo>`.
-    """
-    models = _INSIGHTFACE_MODELS if insightface is None else insightface
-    folder = models / name
-    try:
-        if folder.is_dir() and any(folder.iterdir()):
-            return True
-    except OSError:
-        pass
-    markers = tuple(_normalized(marker) for marker in _WEIGHT_MARKERS.get(name, (name,)))
-    try:
-        entries = [_normalized(child.name)
-                   for child in (hf_cache_dir() if hub is None else hub).iterdir()]
-    except OSError:  # no cache directory at all — nothing has been downloaded yet
-        return False
-    return any(marker in entry for entry in entries for marker in markers)
-
-
-def tier_states(*, package_present: Callable[[str], bool] = _package_present,
-                weights_cached: Callable[[str], bool] = _weights_cached
-                ) -> list[TierState]:
-    """Every tier of the catalog, with what this machine is missing of it.
-
-    The requirements come from `wizard.tier_requirements`, i.e. off the metadata the
-    build put into the wheel from `pyproject.toml` — so a version bound edited in the
-    project reaches this without anything being copied by hand. When there is no
-    metadata to read at all (a source directory that was never installed), a tier with
-    extras is reported as missing them by extra name rather than as present: nothing
-    was verified, and saying "in place" about that would be the failure this whole
-    feature is against.
-    """
-    states: list[TierState] = []
-    for tier in wizard.TIERS:
-        requirements = wizard.tier_requirements(tier)
-        if tier.extras and not requirements:
-            missing_packages = tuple(f"extra:{extra}" for extra in tier.extras)
-        else:
-            missing_packages = tuple(
-                name for name in map(_distribution_name, requirements)
-                if not package_present(name))
-        states.append(TierState(
-            key=tier.key,
-            missing_packages=missing_packages,
-            missing_weights=tuple(name for name in tier.weights
-                                  if not weights_cached(name)),
-        ))
-    return states
 
 
 # --- F213: what `uv tool install` leaves broken on a clean machine ----------
@@ -848,16 +745,6 @@ _EXIFTOOL_HINTS = {
     "darwin": "cli.doctor.exiftool_macos",
 }
 _EXIFTOOL_HINT_DEFAULT = "cli.doctor.exiftool_linux"
-
-
-def _tier_hint_key(os_name: str = os.name) -> str:
-    """How to add a tier, named the way it exists on this machine.
-
-    The Start menu belongs to the Windows installer and to nothing else: a machine that
-    got Sorta from `uv tool install` has no such entry, and sending its owner to look for
-    one is exactly the kind of line this feature exists to remove.
-    """
-    return "cli.doctor.tier_hint" if os_name == "nt" else "cli.doctor.tier_hint_posix"
 
 
 def _exiftool_hint_key(platform: str = sys.platform) -> str:

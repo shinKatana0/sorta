@@ -7,8 +7,15 @@ caption, and those merges are additive and small.
 
 `_t` resolves a key against it; that lives in `page.py`, next to the template the
 strings are substituted into.
+
+F217 added a second, smaller half at the bottom of the file: the captions of the install
+tiers, which are not written here but READ from the catalog `sorta-setup` and
+`sorta doctor` answer from. A caption about a tier that this file spelled out by hand
+would be the second copy the feature exists to remove.
 """
 from __future__ import annotations
+
+from .. import i18n, tiers, wizard
 
 
 # F133: the tabs are named after what a person DOES, not after the code that computed
@@ -61,16 +68,21 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # price. Leaving "slower" on the master would price the same hours twice and leave
     # the one thing this switch really decides — whether a model may be raised at all —
     # unsaid.
+    # F217: the hint used to end in `uv sync --extra vlm`, a command for a checkout of the
+    # sources — and the person reading it installed the program with an installer and has
+    # no sources. The requirement itself is still stated, because it is true and it is
+    # what explains the automatic fall back; WHICH tier is missing and how to add it is
+    # said underneath, by the note that knows the answer for this machine.
     "process_deep_hint": {
         "ru": "Разрешает поднимать модель. Сам по себе не считает ничего: время "
-              "показано у строк под ним. Нужен `uv sync --extra vlm` (иначе "
-              "автоматический откат на быстрый анализ).",
+              "показано у строк под ним. Нужен ярус установки «Глубокий ярус (VLM)» "
+              "(без него — автоматический откат на быстрый анализ).",
         "en": "Permission to load the model. It computes nothing by itself — the time "
-              "is on the lines below it. Requires `uv sync --extra vlm` (otherwise "
-              "falls back to the fast tier automatically).",
+              "is on the lines below it. Requires the “Deep tier (VLM)” install tier "
+              "(without it the run falls back to the fast tier automatically).",
         "ja": "モデルの読み込みを許可します。これ自体は何も計算しません（所要時間は"
-              "下の各項目に表示されます）。`uv sync --extra vlm` が必要です"
-              "（なければ自動的に高速分析にフォールバックします）。",
+              "下の各項目に表示されます）。インストールティア「ディープティア（VLM）」が"
+              "必要です（なければ自動的に高速分析にフォールバックします）。",
     },
     # F161: the effect that used to be the master switch's own, given its name back. It
     # is deliberately named after what it PRODUCES and not after how: "deep analysis" is
@@ -93,13 +105,41 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "売るために撮った写真を、思い出の写真と切り分けます。この項目がなければ"
               "商品は少ないのではなく、ゼロです。",
     },
-    "process_deep_vlm_missing": {
-        "ru": "VLM не установлен — будет использован быстрый ярус (CLIP). "
-              "Доустановите: `uv sync --extra vlm`.",
-        "en": "VLM is not installed — the fast tier (CLIP) will be used instead. "
-              "Install it: `uv sync --extra vlm`.",
-        "ja": "VLM がインストールされていません。代わりに高速ティア（CLIP）が"
-              "使用されます。インストール: `uv sync --extra vlm`。",
+    # F217: what this checkbox does when the tier behind it is not on the machine. The
+    # note used to say `uv sync --extra vlm`, which is a command for a checkout of the
+    # sources — the person who ticked the box has an installed program and no sources, so
+    # it named a way out they cannot take. The state itself now comes from the same probe
+    # `sorta doctor` uses, and the way out is `tier_add_hint`, appended by the script.
+    #
+    # "Install tier" and not "tier": the word already means the classification tier on
+    # this very screen ("the fast tier (CLIP)"), and two meanings of one word in two
+    # sentences of one note is a real way to lose a reader.
+    "process_deep_falls_back": {
+        "ru": "Прогон посчитает быстрым ярусом (CLIP) — сама галочка ничего не изменит.",
+        "en": "The run will be computed on the fast tier (CLIP) — the checkbox itself "
+              "changes nothing.",
+        "ja": "実行は高速ティア（CLIP）で計算され、このチェック自体は何も変えません。",
+    },
+    # F217: and the half that matters more — the person who has ALREADY run it. The fall
+    # back to the fast tier is silent by design (junk.py catches the whole classifier
+    # build, so a missing package cannot kill a four-hour run), which left the run
+    # finishing, the collection unchanged, and the reason in a log file. `media_class.tier`
+    # has known which tier handled a frame since schema v11; this says it out loud.
+    "process_deep_fell_back": {
+        "ru": "Глубокий анализ был отмечен, но им не обработан ни один кадр — прогон "
+              "прошёл на быстром ярусе (CLIP).",
+        "en": "Deep analysis was ticked, but not a single frame was handled by it — the "
+              "run went through on the fast tier (CLIP).",
+        "ja": "詳細分析にチェックが入っていましたが、それで処理されたコマはありません。"
+              "実行は高速ティア（CLIP）で行われました。",
+    },
+    # The state itself, for any tier that installs packages. What is MISSING by name is
+    # not repeated here: `sorta doctor` lists the distributions because a person repairing
+    # an install by hand needs them, and this screen names the wizard instead.
+    "tier_absent_note": {
+        "ru": "Ярус установки «{name}» не добавлен.",
+        "en": "The “{name}” install tier has not been added.",
+        "ja": "インストールティア「{name}」は追加されていません。",
     },
     "process_geo_online_label": {
         "ru": "Онлайн-гео (точнее заграница)", "en": "Online geo (more accurate abroad)",
@@ -441,16 +481,32 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "{stage} — processed: {processed}, skipped as already processed: {skipped}",
         "ja": "{stage} — 処理: {processed} 件、処理済みのためスキップ: {skipped} 件",
     },
+    # F217: this banner used to end in `uv tool install --force ".[gpu]"`, and for the
+    # person it is written for not one word of that works: an installed copy has no `uv`
+    # on PATH (the installer deliberately puts nothing there), no sources for `.` to point
+    # at, and it was installed with `uv pip install --target` rather than `uv tool`. A
+    # named way out that cannot be taken is worse than silence — the person concludes they
+    # are broken, not the hint. The way out is now the wizard's, in the wizard's own words
+    # (`tier_add_hint`, appended in the markup), and the tier is named the way
+    # `sorta-setup` and `sorta doctor` name it, so a person can find the line they are
+    # being sent to.
+    #
+    # The banner is also shown to fewer people now: only to the one who HAS an NVIDIA card
+    # (F217, `gpu_present`). Without a card the CPU profile is the right install and there
+    # is nothing to advise — the old banner sent those 2.5 GB of CUDA wheels to a machine
+    # that cannot use them.
     "env_cpu_warning": {
-        "ru": "Установлен CPU-профиль: обработка идёт на процессоре — распознавание "
-              "людей, VLM и большие коллекции заметно медленнее. Для скорости "
-              "поставьте GPU-профиль: uv tool install --force \".[gpu]\".",
-        "en": "CPU profile installed: processing runs on the CPU — face recognition, "
-              "VLM and large collections are noticeably slower. For speed, install "
-              "the GPU profile: uv tool install --force \".[gpu]\".",
-        "ja": "CPU プロファイルがインストールされています: 処理は CPU で実行され、"
-              "顔認識・VLM・大規模なコレクションは著しく遅くなります。高速化するには "
-              "GPU プロファイルをインストールしてください: uv tool install --force \".[gpu]\"。",
+        "ru": "Видеокарта NVIDIA есть, но установлен CPU-профиль: распознавание людей, "
+              "VLM и большие коллекции считаются на процессоре и заметно медленнее. "
+              "Ускорение даёт ярус установки «Ускорение на NVIDIA (CUDA 13)».",
+        "en": "There is an NVIDIA card, but the CPU profile is installed: face "
+              "recognition, VLM and large collections run on the processor and are "
+              "noticeably slower. The install tier “NVIDIA acceleration (CUDA 13)” is "
+              "what speeds them up.",
+        "ja": "NVIDIA のグラフィックカードがありますが、CPU プロファイルが"
+              "インストールされています: 顔認識・VLM・大規模なコレクションは CPU で"
+              "計算され、著しく遅くなります。高速化するのはインストールティア"
+              "「NVIDIA アクセラレーション（CUDA 13）」です。",
     },
     "process_cancel_button": {"ru": "Отмена", "en": "Cancel", "ja": "キャンセル"},
     "process_enter_path": {
@@ -3018,3 +3074,59 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "終了できませんでした。プログラムは動作を続けています。",
     },
 }
+
+
+# --- F217: the install tiers, in the words the rest of the product already uses -------
+#
+# These captions are NOT written here. They are taken from the catalog `sorta-setup` and
+# `sorta doctor` answer from, because the run screen and the check screen must not name
+# the same tier, the same download size or the same way out differently — the whole
+# feature exists because the one place that DID name a way out named one that cannot be
+# taken. A translation added to `sorta/i18n.py` arrives here on its own; a second copy
+# could not.
+#
+# The way out is platform-dependent for the reason F213 found: the Start menu belongs to
+# the Windows installer, and an install that came from `uv tool install` has no such
+# entry. `tiers._tier_hint_key` is the one place that decides, and `doctor` reads it too.
+
+_TIER_LANGS: tuple[i18n.Lang, ...] = ("ru", "en", "ja")
+
+
+def _doctor_line(key: str, lang: i18n.Lang, *fields: str) -> str:
+    """A `doctor` sentence as a browser template: its own fields left in for `fmt()`.
+
+    `cli_text` formats, and this needs the sentence UNformatted — the values are known in
+    the browser, not here (which weights are missing depends on the machine). Feeding
+    every field its own name back gives the template again and keeps the one lookup path
+    (asked language -> en) every other caption goes through. The leading indent `doctor`
+    prints its lines with is dropped: on a page it would be a gap, not a list.
+    """
+    substitutions = {name: "{" + name + "}" for name in fields}
+    return i18n.cli_text(key, lang, **substitutions).strip()
+
+
+def _tier_strings() -> dict[str, dict[str, str]]:
+    """One entry per caption the tier notes need, in the three languages.
+
+    `tier_name_*` and `tier_size_*` are per tier because both are constants of the
+    catalog — the name of the tier and what it downloads — while `tier_weights_note`
+    stays a template: which of its models are actually missing is what the probe answers,
+    and the browser fills it in.
+    """
+    strings: dict[str, dict[str, str]] = {
+        "tier_weights_note": {
+            lang: _doctor_line("cli.doctor.tier_weights", lang, "name", "weights", "size")
+            for lang in _TIER_LANGS
+        },
+        "tier_add_hint": {lang: _doctor_line(tiers._tier_hint_key(), lang)
+                          for lang in _TIER_LANGS},
+    }
+    for tier in wizard.TIERS:
+        strings[f"tier_name_{tier.key}"] = {lang: tier.name(lang) for lang in _TIER_LANGS}
+        strings[f"tier_size_{tier.key}"] = {
+            lang: wizard.human_size(tier.download_mb, lang) for lang in _TIER_LANGS
+        }
+    return strings
+
+
+_UI_STRINGS.update(_tier_strings())
