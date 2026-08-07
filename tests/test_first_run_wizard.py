@@ -26,28 +26,45 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sorta import i18n, wizard
+from sorta import i18n, tiers, wizard
 
 _LANGS = ("ru", "en", "ja")
+
+
+def nothing_cached() -> list[tiers.TierState]:
+    """A machine with none of it: every package and every weight still missing.
+
+    Passed to every `run_setup` below on purpose. Without it the wizard probes THIS
+    machine (F223 — a tier already on the disk is not offered again), and a suite whose
+    answers depend on what the developer happens to have cached is a suite that says
+    different things on two machines.
+    """
+    return [tiers.TierState(tier.key,
+                            missing_packages=tuple(f"extra:{e}" for e in tier.extras),
+                            missing_weights=tier.weights)
+            for tier in wizard.TIERS]
 
 
 class Screen:
     """The console the wizard talks to: what it said, and what it was answered."""
 
-    def __init__(self, answers: bool = False) -> None:
+    def __init__(self, answers: bool | None = False) -> None:
         self.lines: list[str] = []
         self.questions: list[str] = []
+        # None — answer whatever the tier's own default is, i.e. press Enter every time.
         self.answers = answers
         self.commands: list[list[str]] = []
         self.doctor_calls: list[str] = []
         self.install_code = 0
+        self.downloaded: list[str] = []
+        self.download_ok = True
 
     def say(self, text: str) -> None:
         self.lines.append(text)
 
-    def ask(self, question: str) -> bool:
+    def ask(self, question: str, default: bool = False) -> bool:
         self.questions.append(question)
-        return self.answers
+        return default if self.answers is None else self.answers
 
     def doctor(self, config_path: str) -> None:
         self.doctor_calls.append(config_path)
@@ -55,6 +72,10 @@ class Screen:
     def install(self, command) -> int:
         self.commands.append(list(command))
         return self.install_code
+
+    def download(self, tier, lang, config_path="config.yaml", *, say) -> bool:
+        self.downloaded.append(tier.key)
+        return self.download_ok
 
     @property
     def said(self) -> str:
@@ -81,8 +102,9 @@ class TestTheCheckScreenIsDoctor(unittest.TestCase):
 
     def test_the_check_screen_runs_before_a_single_question(self):
         screen = Screen()
-        wizard.run_setup("en", manifest={}, chosen=(), say=screen.say, ask=screen.ask,
-                         doctor=screen.doctor, install=screen.install)
+        wizard.run_setup("en", manifest={}, chosen=(), states=nothing_cached(),
+                         say=screen.say, ask=screen.ask, doctor=screen.doctor,
+                         install=screen.install, download=screen.download)
         self.assertEqual(screen.doctor_calls, ["config.yaml"])
 
 
@@ -92,9 +114,11 @@ class TestRefusingEverything(unittest.TestCase):
     def setUp(self):
         self.screen = Screen(answers=False)
         self.code = wizard.run_setup("en", manifest={"exiftool": "exiftool.exe"},
+                                     states=nothing_cached(),
                                      say=self.screen.say, ask=self.screen.ask,
                                      doctor=self.screen.doctor,
-                                     install=self.screen.install)
+                                     install=self.screen.install,
+                                     download=self.screen.download)
 
     def test_every_optional_tier_was_offered_once(self):
         self.assertEqual(len(self.screen.questions), len(wizard.OPTIONAL_TIERS))
@@ -159,8 +183,10 @@ class TestAcceptingATier(unittest.TestCase):
         with _requirements("transformers>=4.49,<4.52", "accelerate>=0.34"):
             code = wizard.run_setup("en", manifest={"uv": "C:/app/uv.exe",
                                                     "python": "C:/app/env/python.exe"},
-                                    chosen=("deep",), say=screen.say, ask=screen.ask,
-                                    doctor=screen.doctor, install=screen.install)
+                                    chosen=("deep",), states=nothing_cached(),
+                                    say=screen.say, ask=screen.ask,
+                                    doctor=screen.doctor, install=screen.install,
+                                    download=screen.download)
         self.assertEqual(code, 0)
         self.assertEqual(screen.commands, [[
             "C:/app/uv.exe", "pip", "install", "--python", "C:/app/env/python.exe",
@@ -177,8 +203,10 @@ class TestAcceptingATier(unittest.TestCase):
         code are already in the base tier. Accepting one must not pretend to install
         anything."""
         screen = Screen()
-        wizard.run_setup("en", manifest={}, chosen=("faces",), say=screen.say,
-                         ask=screen.ask, doctor=screen.doctor, install=screen.install)
+        wizard.run_setup("en", manifest={}, chosen=("faces",),
+                         states=nothing_cached(), say=screen.say, ask=screen.ask,
+                         doctor=screen.doctor, install=screen.install,
+                         download=screen.download)
         self.assertEqual(screen.commands, [])
         self.assertIn("buffalo_l", screen.said)
 
@@ -224,9 +252,10 @@ class TestWhenAnInstallFails(unittest.TestCase):
         screen = Screen()
         screen.install_code = 3
         with _requirements("transformers>=4.49,<4.52"):
-            code = wizard.run_setup("en", manifest={}, chosen=("deep",), say=screen.say,
+            code = wizard.run_setup("en", manifest={}, chosen=("deep",),
+                                    states=nothing_cached(), say=screen.say,
                                     ask=screen.ask, doctor=screen.doctor,
-                                    install=screen.install)
+                                    install=screen.install, download=screen.download)
         self.assertEqual(code, 1)
         deep = wizard.TIERS_BY_KEY["deep"].name("en")
         self.assertIn(i18n.cli_text("cli.setup.install_failed", "en", name=deep,
@@ -236,9 +265,10 @@ class TestWhenAnInstallFails(unittest.TestCase):
     def test_an_extra_with_no_metadata_behind_it_is_not_silently_skipped(self):
         screen = Screen()
         with _requirements():
-            code = wizard.run_setup("en", manifest={}, chosen=("deep",), say=screen.say,
+            code = wizard.run_setup("en", manifest={}, chosen=("deep",),
+                                    states=nothing_cached(), say=screen.say,
                                     ask=screen.ask, doctor=screen.doctor,
-                                    install=screen.install)
+                                    install=screen.install, download=screen.download)
         self.assertEqual(code, 1)
         self.assertEqual(screen.commands, [])
         self.assertIn(i18n.cli_text("cli.setup.no_metadata", "en",
@@ -283,9 +313,9 @@ class TestWhatIsSaidAboutExiftool(unittest.TestCase):
     def test_the_sentence_reaches_the_screen(self):
         screen = Screen()
         with mock.patch.object(wizard.shutil, "which", return_value=None):
-            wizard.run_setup("en", manifest={}, chosen=(), say=screen.say,
-                             ask=screen.ask, doctor=screen.doctor,
-                             install=screen.install)
+            wizard.run_setup("en", manifest={}, chosen=(), states=nothing_cached(),
+                             say=screen.say, ask=screen.ask, doctor=screen.doctor,
+                             install=screen.install, download=screen.download)
         self.assertIn(i18n.cli_text("cli.setup.exiftool_absent", "en"), screen.said)
 
 

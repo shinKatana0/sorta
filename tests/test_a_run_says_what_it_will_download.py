@@ -86,12 +86,14 @@ class TestTheOptionToWeightsTableIsDerivedAndGuarded(unittest.TestCase):
                 self.assertIn(key, tiers.RUN_PARTS_BY_KEY)
 
     def test_the_animals_now_have_a_tier_and_it_is_the_clip_one(self):
-        """Test 6 of the brief, named: today they have no note at all."""
-        self.assertEqual(tiers.part_tiers("pets"), ("search",))
+        """Test 6 of the brief, named: today they have no note at all. F223 moved the
+        model out of "Search by words" into a tier named after what it does, and the
+        pairing followed by itself — which is the property this test is really for."""
+        self.assertEqual(tiers.part_tiers("pets"), ("vision",))
         self.assertEqual(tiers.RUN_PARTS_BY_KEY["pets"].weights, ("ViT-L-14",))
 
     def test_the_tier_of_a_part_is_read_off_the_catalog_not_off_its_name(self):
-        for key, expected in (("landmarks", "search"), ("classify", "search"),
+        for key, expected in (("landmarks", "vision"), ("classify", "vision"),
                               ("faces", "faces"), ("deep", "deep"),
                               ("products", "deep"), ("landmarks_verify", "deep")):
             with self.subTest(part=key):
@@ -168,7 +170,7 @@ class TestWhatThisRunWillDownload(unittest.TestCase):
     def test_the_summary_reads_the_same_probe_as_the_notes(self):
         """One probe, not two — the F217 rule this feature inherits and the reason
         `run_parts` takes the states rather than looking at the disk itself."""
-        states = [tiers.TierState("search", missing_weights=("ViT-L-14",))]
+        states = [tiers.TierState("vision", missing_weights=("ViT-L-14",))]
         parts = {part.key: part for part in tiers.run_parts(states)}
         self.assertEqual(parts["landmarks"].missing, ("ViT-L-14",))
         # ...and a tier nobody probed is not called broken.
@@ -443,7 +445,7 @@ class TestTheRunSummaryReachesTheBrowser(ProcessTestBase):
         nothing = tiers.tier_states(package_present=lambda _n: True,
                                     weights_cached=lambda _n: False)
         parts = ui.process._parts_payload(tiers.run_parts(nothing))
-        self.assertEqual(parts["pets"]["tiers"], ["search"])
+        self.assertEqual(parts["pets"]["tiers"], ["vision"])
         self.assertEqual(parts["pets"]["missing"], ["ViT-L-14"])
         self.start_server()
         _status, body, _ctype = self.get("/")
@@ -630,22 +632,25 @@ class TestTheLandmarkOptionOnTheScreen(ProcessTestBase):
 
 
 class TestTheWizardOffersTheComponent(unittest.TestCase):
-    """§8: the weights belong to the tier called "Search by words", and the landmark
-    stage raises the same file — so that tier NAMES the stage instead of a fifth tier
-    being invented for one model the catalog already carries."""
+    """§8: somebody who wants places recognised by sight has to be able to find the
+    component that gives them — so the tier carrying those weights names the stage.
 
-    def test_no_tier_was_added_for_it(self):
-        self.assertEqual([tier.key for tier in wizard.TIERS],
-                         ["base", "faces", "search", "gpu", "deep"])
+    F222 put that sentence on the tier called "Search by words", which was where
+    ViT-L-14 lived at the time. F223 moved the model into a tier of its own (a person
+    who did not want to search by words was switching off the classification with it),
+    and the sentence moved with the model. Which tier that is, is read off the catalog
+    here rather than written down again: the pairing done by hand is the whole defect
+    both features are about.
+    """
 
     def test_the_offer_names_what_the_stage_gives(self):
+        key = tiers.weight_tier("ViT-L-14")
+        self.assertIsNotNone(key)
         for lang in _LANGS:
             with self.subTest(lang=lang):
-                benefit = i18n.cli_text("cli.setup.tier.search.benefit", lang)
-                without = i18n.cli_text("cli.setup.tier.search.without", lang)
+                benefit = i18n.cli_text(f"cli.setup.tier.{key}.benefit", lang)
                 marker = {"ru": "мест", "en": "places", "ja": "場所"}[lang]
                 self.assertIn(marker, benefit)
-                self.assertIn(marker, without)
 
 
 if __name__ == "__main__":

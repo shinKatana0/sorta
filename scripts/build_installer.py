@@ -747,7 +747,13 @@ def tier_summary() -> list[dict]:
     """The tiers as the download page and the release notes state them."""
     return [
         {"key": tier.key, "extras": list(tier.extras), "weights": list(tier.weights),
-         "download_mb": tier.download_mb, "optional": tier.optional}
+         "download_mb": tier.download_mb, "optional": tier.optional,
+         # F223: what a tier does not work without, what Enter answers for it, and
+         # whether its weights are fetched by the wizard rather than by the first run.
+         # A summary that states the price but not those three describes a catalog the
+         # wizard no longer has — and this file is what the download page reads.
+         "requires": list(tier.requires), "default_yes": tier.default_yes,
+         "preload": tier.preload}
         for tier in wizard.TIERS
     ]
 
