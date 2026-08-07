@@ -165,8 +165,9 @@ class TestProcessStartAndProgress(ProcessTestBase):
              "stage_stats", "phase", "phase_elapsed",
              # F217: the deep tier was asked for, and whether anything came of it.
              "deep_requested", "deep_ran",
-             # F222: the model this run is fetching right now — null between downloads.
-             "download"},
+             # F222: the model this run is fetching right now — null between downloads —
+             # and the stages it skipped while config.yaml still configures them.
+             "download", "skipped_notes"},
         )
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])
