@@ -307,8 +307,9 @@ offers the heavier tiers one by one, with what each one costs to download:
 
 | tier | download | what it adds | without it |
 |---|---|---|---|
+| recognising what is in a frame | ~1.6 GB | ViT‑L‑14: photographs told apart from screenshots, documents and product shots — **what the layout runs on**; the same weights serve places by sight and search by words | the classification stage fetches the same 1.6 GB itself, on the first run and in the middle of it |
 | faces | ~400 MB | buffalo_l: face detection, clusters, per‑person albums | sorting by people is unavailable; everything else works |
-| search by words | ~3 GB | ViT‑L‑14 + XLM‑RoBERTa: `sorta search`, pinned slices | search says it has no index; the face and class slices work |
+| search by words | ~1.4 GB | XLM‑RoBERTa on top of the tier above: `sorta search`, pinned slices | search says it has no index; the face and class slices, the verdicts and the city layout are untouched |
 | NVIDIA (CUDA 13) | ~2.5 GB | the `gpu` profile — the CUDA builds of torch/onnxruntime | the model stages stay on the CPU: they work, but slowly |
 | deep tier (VLM) | ~7 GB | the `vlm` extra + Qwen2.5‑VL‑3B: the `product` class, on‑screen rescue | the `product` class never appears; the fast tier answers the rest |
 
@@ -316,6 +317,19 @@ offers the heavier tiers one by one, with what each one costs to download:
 not a trimmed one. Any tier can be added later: run **Sorta setup** from the Start menu
 (or `sorta-setup`) again. Model weights are downloaded by the stage that needs them on its
 first run, which is why the tiers are priced in this table rather than in the installer.
+
+**One of them is downloaded during the setup**, and it is the first row: the classification
+is what the layout runs on, nobody is asked about it during a run, and so its 1.6 GB is
+fetched here — where somebody is at the screen, the progress is printed line by line, and a
+refusal can be explained on the spot. Answering no is still allowed and costs nothing
+except the timing: the stage fetches the same file on its first run, and the run screen
+says so before it starts (§6). If the download fails — no network, a certificate — the
+install stays exactly as it was and the program works.
+
+**Search by words needs the first row**, and the wizard says so instead of quietly adding
+it: a query is matched by encoding the pictures with ViT‑L‑14 and the words with
+XLM‑RoBERTa, so half of it lives in the tier above. Choosing search by words brings that
+tier along; a machine that already has it downloads nothing twice.
 
 ### 3.8 Linux, from a clean machine
 

@@ -934,6 +934,73 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Add it? [y/N]",
         "ja": "追加しますか？ [y/N]",
     },
+    # F223: the same question for the one tier whose default answer is yes — the tier the
+    # layout itself needs. The brackets say which way Enter goes, and a person who does
+    # not want it types the letter; the refusal is a normal answer here too, and the
+    # `without` line of that tier states what it really costs rather than warning.
+    "cli.setup.question_yes": {
+        "ru": "Доустановить? [Y/n]",
+        "en": "Add it? [Y/n]",
+        "ja": "追加しますか？ [Y/n]",
+    },
+    # F223: one tier needing another, said out loud. The first dependency in this catalog:
+    # search by words encodes the pictures with ViT-L-14 and the words with XLM-RoBERTa,
+    # so half of what it needs lives in the tier above it.
+    "cli.setup.requires": {
+        "ru": "«{name}» без «{required}» не работает — добавляю и его.",
+        "en": "“{name}” does not work without “{required}”, so that one is added too.",
+        "ja": "「{name}」は「{required}」なしでは動作しないため、そちらも追加します。",
+    },
+    "cli.setup.in_place": {
+        "ru": "{name}: уже на месте — качать нечего.",
+        "en": "{name}: already in place — nothing to download.",
+        "ja": "{name}: 既に配置済みです — ダウンロードするものはありません。",
+    },
+    "cli.setup.already": {
+        "ru": "Уже было на месте: {names}",
+        "en": "Already in place: {names}",
+        "ja": "既に配置済み: {names}",
+    },
+    # F223: the weights of the tier the layout needs are fetched HERE, at the screen, so
+    # that the 1.6 GB does not arrive in the middle of a run looking like a hang. The
+    # progress line is not decoration: it is the difference between a download and a
+    # window that has stopped answering.
+    "cli.setup.weights_downloading": {
+        "ru": "Скачиваю {weights} ({size}). Это один раз: дальше стадии берут их с диска.",
+        "en": "Downloading {weights} ({size}). Once only: after this the stages read them "
+              "off the disk.",
+        "ja": "{weights}（{size}）をダウンロードしています。一度だけで、以降はステージが"
+              "ディスクから読み込みます。",
+    },
+    "cli.setup.weights_progress": {
+        "ru": "  …скачано {done} из {size}",
+        "en": "  …{done} of {size} so far",
+        "ja": "  …{size} 中 {done} まで",
+    },
+    "cli.setup.weights_ready": {
+        "ru": "{weights} на месте ({size}) — в сеть за ними больше никто не полезет.",
+        "en": "{weights} is in place ({size}) — nothing will go to the network for it "
+              "again.",
+        "ja": "{weights} を配置しました（{size}）— これ以降ネットワークへ取りに行くことは"
+              "ありません。",
+    },
+    "cli.setup.weights_failed": {
+        "ru": "Не удалось скачать {weights}: {error}. Установка цела и программа работает; "
+              "стадия, которой они нужны, скачает их при первом прогоне и скажет об этом.",
+        "en": "Could not download {weights}: {error}. The install is intact and the "
+              "program works; the stage that needs them fetches them on its first run and "
+              "says so.",
+        "ja": "{weights} をダウンロードできませんでした: {error}。インストールは無傷で"
+              "プログラムは動作します。必要とするステージが初回実行時に取得し、その旨を"
+              "伝えます。",
+    },
+    # F223: the last line of a window that Windows is about to destroy. Without it the
+    # summary — and, worse, any error — vanished in the same instant it was printed.
+    "cli.setup.press_enter": {
+        "ru": "Нажмите Enter, чтобы закрыть это окно.",
+        "en": "Press Enter to close this window.",
+        "ja": "Enter を押すとこのウィンドウを閉じます。",
+    },
     "cli.setup.refused": {
         "ru": "Пропущено. {without}",
         "en": "Skipped. {without}",
@@ -1023,6 +1090,38 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Index, EXIF, geo, duplicates, sorting by city — with no network.",
         "ja": "インデックス、EXIF、位置情報、重複、都市別の振り分け — ネットワーク不要。",
     },
+    # F223: the tier named by what it DOES. These weights used to sit inside "Search by
+    # words", where a person who did not want to search by words switched off the
+    # classification without a word being said about it — and their run then fetched the
+    # same 1.6 GB by itself, mid-run, on a stage they were never asked about.
+    "cli.setup.tier.vision.name": {
+        "ru": "Узнавание содержимого кадров",
+        "en": "Recognising what is in a frame",
+        "ja": "コマの内容の認識",
+    },
+    "cli.setup.tier.vision.benefit": {
+        "ru": "Нужно раскладке: отделяет фотографии от скриншотов, документов и товарных "
+              "карточек — иначе они поедут в папки городов вперемешку. Те же веса нужны "
+              "стадии «Узнавать места по виду» и поиску словами. Скачивается сейчас, "
+              "при вас.",
+        "en": "The layout needs it: it tells photographs from screenshots, documents and "
+              "product shots — without it they ride into the city folders among the "
+              "pictures. The same weights are what the “Recognise places by sight” stage "
+              "and search by words need. Downloaded now, while you are here.",
+        "ja": "振り分けに必要です: 写真をスクリーンショット・書類・商品画像と区別します。"
+              "これがないと、それらが写真に混ざったまま都市フォルダへ入ります。同じ重みは"
+              "「見た目で場所を判定」ステージと言葉による検索にも使われます。ダウンロードは"
+              "いま、この画面で行います。",
+    },
+    "cli.setup.tier.vision.without": {
+        "ru": "Вердикты прогону нужны в любом случае: те же 1,6 ГБ скачает стадия "
+              "классификации при первом запуске — посреди прогона и без этого экрана.",
+        "en": "The verdicts are needed by a run in any case: the same 1.6 GB is fetched "
+              "by the classification stage on its first run — in the middle of a run and "
+              "away from this screen.",
+        "ja": "判定は実行にどのみち必要です: 同じ 1.6 GB を分類ステージが初回実行時に"
+              "取得します — 実行の途中、この画面のないところで。",
+    },
     "cli.setup.tier.faces.name": {
         "ru": "Лица",
         "en": "Faces",
@@ -1043,29 +1142,29 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Search by words",
         "ja": "言葉による検索",
     },
-    # F222: this tier carries the CLIP weights, and the landmark stage raises the same
-    # file — so the stage is NAMED here rather than given a fifth tier of its own for one
-    # 1.6 GB model that is already in the catalog. Somebody who wants places recognised by
-    # sight has to be able to find the component that gives them; a person reading
-    # "Search by words" would never guess it.
+    # F223: what is left of this tier once the model everybody needs was taken out of it —
+    # the multilingual text tower, and nothing else. It says which tier it stands on,
+    # because half of a search by words is done by the other one: the pictures are encoded
+    # by ViT-L-14 and only the words by these weights.
     "cli.setup.tier.search.benefit": {
-        "ru": "Запрос словами по коллекции и закреплённые срезы — на трёх языках. Те же "
-              "веса нужны стадии «Узнавать места по виду» (галочка на экране запуска).",
+        "ru": "Запрос словами по коллекции и закреплённые срезы — на трёх языках. Стоит "
+              "на ярусе «Узнавание содержимого кадров»: картинки кодирует он, слова — "
+              "эти веса.",
         "en": "Ask the collection in words, and pin a query as a slice — in three "
-              "languages. The same weights are what the “Recognise places by sight” "
-              "stage needs (a checkbox on the run screen).",
+              "languages. It stands on the “Recognising what is in a frame” tier: that "
+              "one encodes the pictures, these weights encode the words.",
         "ja": "コレクションを言葉で検索し、クエリをスライスとして固定できます（3言語）。"
-              "同じ重みは「見た目で場所を判定」ステージ（実行画面のチェック）にも"
-              "使われます。",
+              "「コマの内容の認識」ティアの上に成り立ちます: 画像はそちらが、言葉はこの"
+              "重みが符号化します。",
     },
     "cli.setup.tier.search.without": {
-        "ru": "Поиск словами скажет, что индекса нет, вместо выдачи; узнавать места по "
-              "виду тоже не выйдет. Срезы по лицам и классам работают.",
-        "en": "Search by words says it has no index instead of returning a ranking, and "
-              "places cannot be recognised by sight either; the face and class slices "
-              "work.",
-        "ja": "言葉による検索は結果の代わりに索引がないと伝え、見た目による場所の判定も"
-              "できません。顔やクラスのスライスは動作します。",
+        "ru": "Поиск словами скажет, что индекса нет, вместо выдачи. Срезы по лицам и "
+              "классам, вердикты и раскладка по городам работают как работали.",
+        "en": "Search by words says it has no index instead of returning a ranking. The "
+              "face and class slices, the verdicts and the sorting by city work exactly "
+              "as before.",
+        "ja": "言葉による検索は結果の代わりに索引がないと伝えます。顔やクラスのスライス、"
+              "判定、都市別の振り分けはこれまでどおり動作します。",
     },
     "cli.setup.tier.gpu.name": {
         "ru": "Ускорение на NVIDIA (CUDA 13)",
