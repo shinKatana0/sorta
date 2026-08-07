@@ -46,7 +46,7 @@ from typing import Any, Callable, Protocol, Sequence
 
 from PIL import Image
 
-from . import imaging
+from . import accel, imaging
 from .config import (
     DEFAULT_VLM_MAX_EDGE,
     DEFAULT_VLM_MODEL,
@@ -478,8 +478,8 @@ def load_qwen(model_name: str, use_fast: bool = True,
     import torch
     from transformers import Qwen2_5_VLForConditionalGeneration
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
+    device = accel.torch_device(torch)     # F214: CUDA -> MPS -> CPU, chosen in one place
+    dtype = accel.torch_dtype(torch, device)
     requested: dict[str, Any] = {} if attn is None else {"attn_implementation": attn}
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_name, torch_dtype=dtype, device_map=device, **requested)
@@ -538,22 +538,31 @@ def qwen_runtime(model: Any, processor: Any, device: str,
     def prepare(frames: Sequence[Image.Image], prompt: str) -> Any:
         return prepare_batch([frames], prompt)
 
+    # F214: the accelerator may refuse an operator mid-run (MPS has no kernel for
+    # everything Qwen asks of it), and a stage that dies there is worse than a slow one.
+    # The retreat moves the weights as well as the string — and on CUDA it never fires,
+    # so a CUDA machine fails exactly as loudly as it did before.
+    fallback = accel.CpuFallback(device, lambda dev: model.to(dev), what="naming: vlm")
+
     def generate_batch(prepared: Any, max_new_tokens: int) -> list[str]:
-        inputs = prepared.to(device)
-        with torch.no_grad():
-            # #30 (V1): greedy, NOT sampling. Qwen's default generation_config is
-            # do_sample=True: on some frames fp16 logits go to NaN/inf -> softmax
-            # gives a zero distribution -> torch.multinomial triggers a CUDA
-            # device-side assert that POISONS the context (all subsequent frames
-            # also fail). Neither a label nor a short caption needs sampling.
-            out_ids = model.generate(**inputs, max_new_tokens=max_new_tokens,
-                                     do_sample=False)
-        # One offset for the whole batch is correct BECAUSE the padding is on the left:
-        # every row starts generating at the same index. With right padding this line
-        # would quietly slice somebody else's tokens.
-        gen_ids = out_ids[:, inputs["input_ids"].shape[1]:]
-        answers = processor.batch_decode(gen_ids, skip_special_tokens=True)
-        return [str(answer).strip() for answer in answers]
+        def run(on_device: str) -> list[str]:
+            inputs = prepared.to(on_device)
+            with torch.no_grad():
+                # #30 (V1): greedy, NOT sampling. Qwen's default generation_config is
+                # do_sample=True: on some frames fp16 logits go to NaN/inf -> softmax
+                # gives a zero distribution -> torch.multinomial triggers a CUDA
+                # device-side assert that POISONS the context (all subsequent frames
+                # also fail). Neither a label nor a short caption needs sampling.
+                out_ids = model.generate(**inputs, max_new_tokens=max_new_tokens,
+                                         do_sample=False)
+            # One offset for the whole batch is correct BECAUSE the padding is on the
+            # left: every row starts generating at the same index. With right padding
+            # this line would quietly slice somebody else's tokens.
+            gen_ids = out_ids[:, inputs["input_ids"].shape[1]:]
+            answers = processor.batch_decode(gen_ids, skip_special_tokens=True)
+            return [str(answer).strip() for answer in answers]
+
+        return fallback.run(run)
 
     def generate(prepared: Any, max_new_tokens: int) -> str:
         return generate_batch(prepared, max_new_tokens)[0]

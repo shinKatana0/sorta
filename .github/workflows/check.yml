@@ -30,3 +30,48 @@ jobs:
       # past the pin index — so --extra cpu --extra dev are mandatory.
       - name: Quality gate (ruff + mypy + pytest, CPU profile)
         run: uv run --python ${{ matrix.python }} --extra cpu --extra dev python scripts/check.py
+
+  # F214: macOS is where the accelerator this project never asked for actually lives,
+  # and there is no Mac in the project. This job is the only hardware that will ever
+  # look at the Apple path — Apple Silicon, with MPS available and CoreML in
+  # onnxruntime — so it is written to answer, in this order:
+  #
+  #   1. does the CPU profile INSTALL at all (the minimum; everything else is moot)
+  #   2. what does the machine offer, and which model tiers fit on a runner
+  #   3. does the suite pass there like it does on the two platforms that work today
+  #
+  # The order is deliberate: a tier that does not fit is the ANSWER this feature needs,
+  # and burying it under a nine-minute test run is how it gets found last instead of
+  # first. The probe never fails the job for a tier it could not fetch (no `--strict`);
+  # it prints what happened, which is the whole reason it runs here.
+  #
+  # One Python version, not the matrix's two: this job is about the platform, and a
+  # second interpreter would double a slow runner's time to re-answer a question the
+  # ubuntu/windows matrix already answers. The deep VLM tier (~7 GB) is not attempted —
+  # see scripts/probe_accelerator.py on why it has no flag.
+  #
+  # NOT VERIFIED AT THE TIME OF WRITING: this job has never run. F214 was built without
+  # a push (the owner is checking the Windows installer first), so everything below
+  # takes effect on the first push and not before. Nobody should read it as a check
+  # that has passed.
+  macos:
+    name: macos-latest · py3.13 · accelerator
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      # A step of its own so that "it does not install on macOS" is a distinguishable
+      # failure rather than something inferred from a gate that never started.
+      - name: Install the CPU profile
+        run: uv sync --python 3.13 --extra cpu --extra dev
+
+      - name: What this machine offers, and which tiers fit on it
+        run: uv run --python 3.13 --extra cpu --extra dev python scripts/probe_accelerator.py --all
+
+      - name: Quality gate (ruff + mypy + pytest, CPU profile)
+        run: uv run --python 3.13 --extra cpu --extra dev python scripts/check.py
