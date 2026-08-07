@@ -19,6 +19,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 import sorta.exif as exif
 from tests.test_exif_flags import FakeExifTool
 
@@ -338,6 +340,12 @@ class TestSpeedup(FakeExifToolTestCase):
         self.assertEqual(len(out), self.count)
         return elapsed
 
+    # serial: asserts on ELAPSED TIME (8 sessions beat 1) — the parallel half is a
+    # fully loaded machine, and the eight processes this starts cannot get eight cores
+    # there. Measured: it survived 6 parallel gates and 40 runs under two concurrent
+    # `-n auto` suites, because the fake exiftool's cost is a sleep rather than work —
+    # but the margin here is what went red on 2026-08-02 under three gates at once.
+    @pytest.mark.serial
     def test_eight_sessions_beat_one(self):
         serial = self.measure(1)
         parallel = self.measure(8)

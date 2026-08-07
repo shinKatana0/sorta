@@ -35,3 +35,25 @@ os.environ["SORTA_PREVIEW_DIR"] = os.path.join(_SANDBOX, "previews")
 # The switch itself is verified by an assertion on real output —
 # tests/test_comments_english.py::test_the_help_output_carries_no_terminal_styling.
 os.environ["_TYPER_FORCE_DISABLE_TERMINAL"] = "1"
+
+# F219: torch is imported HERE, before a single test runs, and not because anything in
+# this file needs it.
+#
+# Three of the first nine parallel runs died with `Windows fatal exception: access
+# violation` inside torch's DLL loading — twice while a garbage collection pass was
+# finalizing, always from the lazy `import torch` in sorta/diagnostics.py that a test
+# reaches through the CLI. xdist turns one such import per gate into one per worker, so
+# a fault that used to be invisible became a third of all runs, reported as an
+# unrelated test "crashing" the worker it happened to be on.
+#
+# It is not the concurrency: 288 simultaneous `import torch` at process start crashed
+# zero times. It is the lateness — by then the process has loaded onnxruntime, opencv
+# and pillow-heif, and torch's DLLs go in after them. Doing it first, in a young
+# process, is the arrangement that was measured not to fault.
+#
+# Wrapped, because torch belongs to the cpu/gpu install profiles: an environment
+# without one must still collect the tests that do not need it.
+try:
+    import torch  # noqa: F401
+except Exception:  # pragma: no cover — no install profile; the tests say so themselves
+    pass

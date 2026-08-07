@@ -15,6 +15,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+import pytest
+
 from sorta import junk as junk_mod
 from sorta.config import Config, _naming_from
 from sorta.db import connect
@@ -500,6 +502,10 @@ class TestParallelOcrSpeedup(unittest.TestCase):
         finally:
             col.close()
 
+    # serial: asserts on ELAPSED TIME (K=4 beats K=1). This is the test that was caught
+    # red on 2026-08-02 at 0.270 s against a 0.256 s bound, with three gates running at
+    # once — i.e. under exactly the load the parallel half creates every time.
+    @pytest.mark.serial
     def test_four_workers_beat_one(self):
         frames, delay = 6 * WORKERS, 0.02  # ~0.48 s serial, ~0.12 s on 4 workers
         serial = self.elapsed(1, frames, delay)

@@ -37,6 +37,12 @@ from sorta.faces import (
     snapshot_clusters,
 )
 
+# One stream for the whole file: what `face_of` draws depends on how many draws the
+# tests before it made. That is why the parallel half of the gate distributes by FILE
+# (`--dist loadfile`, F219) — the tests here get the same vectors they got when the
+# suite ran in one process, and a clustering verdict does not turn on scheduling.
+# Reseeding per test would give every test its own stream and change those vectors,
+# which is a re-calibration of the expectations below, not a fix.
 RNG = np.random.default_rng(89)
 
 

@@ -53,6 +53,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
+from . import accel
 from .config import Config, DetectConfig, FeaturesConfig, detector_allowed
 
 # The animal classes of COCO, by the 91-entry indexing torchvision's detection models use
@@ -319,9 +320,19 @@ def torchvision_detector(model_name: str,
         raise ValueError(f"detect: неизвестная модель детектора {model_name!r}")
     weights_enum = getattr(tv_detection, f"{_weights_enum_name(model_name)}", None)
     weights = getattr(weights_enum, "DEFAULT", None) if weights_enum is not None else None
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = accel.torch_device(torch)  # F220: CUDA -> MPS -> CPU, chosen in one place
     model = builder(weights=weights).to(device)
     model.eval()
+
+    # F220: the weights and the frame have to be on ONE device, and after a retreat that
+    # is a different device than the one this function started on — so the frame is placed
+    # inside the call, on whatever `run` is handed, rather than on a `device` captured
+    # here. Wrapped because this is a cascade over thousands of candidates: MPS has no
+    # kernel for everything a torchvision detection model asks of it and says so at the
+    # first frame, and a pass that dies at frame 900 loses the 899 before it. Never fires
+    # on CUDA (see accel.CpuFallback).
+    fallback = accel.CpuFallback(device, lambda dev: model.to(dev),
+                                 what="detect: the torchvision detector")
 
     def detect(path: str) -> list[Detection]:
         try:
@@ -332,10 +343,14 @@ def torchvision_detector(model_name: str,
         if image is None:
             return []
         array = np.asarray(image, dtype=np.float32) / 255.0
-        tensor = torch.from_numpy(array).permute(2, 0, 1).to(device)
-        with torch.no_grad():
-            (result,) = model([tensor])
-        return _animals_from(result, floor)
+
+        def run(on_device: str) -> Any:
+            tensor = torch.from_numpy(array).permute(2, 0, 1).to(on_device)
+            with torch.no_grad():
+                (result,) = model([tensor])
+            return result
+
+        return _animals_from(fallback.run(run), floor)
 
     return detect
 

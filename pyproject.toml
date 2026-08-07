@@ -32,7 +32,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "pytest-cov>=5.0", "types-PyYAML"]
+# F219: pytest-xdist is what makes the gate use the machine it runs on. The suite is
+# 5.7k tests on 24 logical cores in ONE process — 28 minutes, and the gate is run more
+# often than anything else in this project. The tests that cannot survive a loaded
+# machine carry the `serial` marker below and are run in a second, single-process pass.
+dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "pytest-cov>=5.0", "pytest-xdist>=3.6",
+       "types-PyYAML"]
 # F37-B: deep classifier tier (VLM Qwen2.5-VL). Opt-in — not in the base
 # dependencies; install `uv sync --extra vlm` when naming.vlm_enabled: true.
 # Without it the code lazily falls back to the fast tier (CLIP) — see the graceful
@@ -179,6 +184,18 @@ target-version = "py311"
 # fifty files. To ruff those imports look dead, and every one of them is load-bearing.
 [tool.ruff.lint.per-file-ignores]
 "sorta/ui/__init__.py" = ["F401"]
+
+# F219: the gate runs the suite twice — everything not marked `serial` under `-n auto`,
+# then the marked ones in a single process. A marker that pytest does not know about is
+# only a warning, and a typo in it would silently move a test into the parallel half,
+# so it is declared here and `--strict-markers` turns any other marker into an error.
+[tool.pytest.ini_options]
+markers = [
+    """serial: run in the single-process pass — the test asserts about time or binds a \
+port, and a loaded machine is exactly the condition under which it fails. Every use \
+carries a one-line reason next to it (checked by tests/test_gate_parallel.py).""",
+]
+addopts = "--strict-markers"
 
 [tool.mypy]
 ignore_missing_imports = true
