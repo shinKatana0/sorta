@@ -46,6 +46,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sha256` beside the file: a silent red screen reads as "this program is dangerous", a
   warned one as "the author has no certificate". Signing is a separate, opt‑in build step
   (`--sign`), so a certificate will plug in without the build being rewritten around it.
+- **The installer is checked by installing it** (F216). Everything F211 shipped could be
+  read out of a checkout — the manifest, the payload plan, the wizard's commands — and
+  none of it answered whether the thing builds, installs, or leaves behind a program that
+  runs. **A workflow on `windows-latest` now builds it, installs it silently as an
+  ordinary user with no administrator, and makes the installed program do work**: the
+  installed interpreter writes fourteen frames through the Pillow that came in the
+  payload, `sorta index` reads them, `sorta stats` counts the same number back out of
+  SQLite, and two of the frames are byte‑for‑byte copies so the duplicate counter is an
+  assertion rather than a rumour. Every check reads OUTPUT, because a stage that found
+  nothing exits zero exactly like one that found everything. **One tier is added for
+  real** (`faces`, ~400 MB), and `sorta doctor` — which now names the tiers present on
+  the machine, in three answers rather than two, since a tier whose packages are in place
+  and whose weights are not is neither installed nor missing — has to report it. **The
+  check is proven able to fail**: the same verification runs against a directory where
+  nothing is installed, and the step is green only when it came back red. What the
+  workflow does NOT cover is written into its own run summary by name — the deep tier
+  (7 GB), the gpu tier (no card on a runner), the tray icon (no desktop) and the
+  signature. It runs on the packaging paths, by hand, and on a tag, so a release cannot
+  skip it.
 - **An icon in the tray, for whoever installed Sorta with an installer** (F207). That
   person does not keep a terminal open, and `sorta ui` prints its address to a console
   and lives until **Ctrl+C** — so for an installed application the address is nowhere to
@@ -123,6 +142,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the clusters and not the set of faces, so they leave the fingerprint alone and cannot be
   undone by a recomputation they triggered themselves. No incremental clustering and no
   partial recompute: half a set of rebuilt clusters is worse than all or none.
+
+### Fixed
+- **The installer would not build at all: the alias `uv` leaves beside the interpreter
+  was counted as a second interpreter.** `uv python install --install-dir X` no longer
+  writes one directory into X — uv 0.11 writes the real
+  `cpython-3.13.14-windows-x86_64-none` **and** a `cpython-3.13-…` junction beside it, so
+  a minor version can be named without knowing its patch. Both answer `is_dir()`, both
+  hold a `python.exe`, and the build stopped on a download that was perfectly good. Found
+  the first time anybody built the installer, which is the argument F216 makes. There was
+  already a test for the function and it caught nothing: its fixture was made by hand, so
+  it described the layout of the day it was written and never disagreed with `uv` about
+  anything. The link in the replacement test is a **junction and not a symlink** — a
+  symlink needs a privilege an ordinary Windows account lacks, so that test would have
+  skipped on the one platform this installer exists for, and `is_symlink()` answers no to
+  a junction, so a symlink fixture would not have covered the branch that does the work.
 
 ## [0.4.0] - 2026-08-06
 
