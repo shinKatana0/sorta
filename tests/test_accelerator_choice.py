@@ -558,5 +558,50 @@ class VerdictsAreComparedNotAssumedTest(unittest.TestCase):
         self.assertEqual(accel.verdicts_agree([], []), (True, 0.0))
 
 
+class TheOnlyMacThisProjectHasIsARunnerTest(unittest.TestCase):
+    """The macOS job in check.yml, checked as text because it cannot be checked by running.
+
+    F214 was written without a push, so this job has never executed — that is stated in
+    the workflow, in the changelog and in the report, and it is not something a test can
+    fix. What a test CAN do is keep the job from being quietly dropped or reduced to an
+    install that proves nothing: the three things it must do are asserted here, and a
+    future edit that removes one fails the gate on the platforms that do run.
+    """
+
+    def workflow(self) -> dict:
+        import yaml
+        text = (_ROOT / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+        return yaml.safe_load(text)
+
+    def macos_job(self) -> dict:
+        jobs = self.workflow()["jobs"]
+        macos = [job for job in jobs.values()
+                 if "macos" in str(job.get("runs-on", "")) or
+                 "macos-latest" in str(job.get("strategy", ""))]
+        self.assertTrue(macos, "no job runs on macOS — the Apple path has no hardware at all")
+        return macos[0]
+
+    def steps(self) -> str:
+        return "\n".join(str(step.get("run", "")) for step in self.macos_job()["steps"])
+
+    def test_the_install_is_the_cpu_profile(self):
+        """`--extra gpu` is a CUDA profile: it does not install on a Mac and must not be
+        asked for there."""
+        run = self.steps()
+        self.assertIn("--extra cpu", run)
+        self.assertNotIn("--extra gpu", run)
+
+    def test_the_machine_is_asked_what_it_offers(self):
+        self.assertIn("probe_accelerator.py", self.steps())
+
+    def test_the_suite_runs_there_too(self):
+        self.assertIn("scripts/check.py", self.steps())
+
+    def test_the_two_platforms_that_work_today_are_still_checked(self):
+        matrix = self.workflow()["jobs"]["check"]["strategy"]["matrix"]["os"]
+        self.assertIn("ubuntu-latest", matrix)
+        self.assertIn("windows-latest", matrix)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
