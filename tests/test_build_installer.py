@@ -62,6 +62,8 @@ def _link_directory(target: Path, link: Path) -> bool:
     except (OSError, NotImplementedError):
         return False
     return True
+
+
 ISS_TEXT = _ISS.read_text(encoding="utf-8")
 
 
