@@ -330,7 +330,8 @@ class TestTheGuidesDescribeTheInstallThatExists(unittest.TestCase):
                          ("cli.doctor.cache_open", "chmod 700")):
             for lang, path in GUIDES.items():
                 with self.subTest(lang=lang, key=key):
-                    self.assertIn(fix, i18n.cli_text(key, lang))
+                    # The fields are what a real line carries; unused ones are ignored.
+                    self.assertIn(fix, i18n.cli_text(key, lang, mode="755", path="/x"))
                     # `assertTrue`, as in `test_docs_guides`: a failure that prints the
                     # whole 2,000-line guide buries the one word it is about.
                     self.assertTrue(fix in read(path), f"{path.name}: {key} — {fix}")

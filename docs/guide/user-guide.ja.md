@@ -196,16 +196,39 @@ venv がアクティブな状態では `sorta …` はチェックアウトか�
 
 ```
 $ sorta doctor
+インタプリタ: /home/you/.local/share/uv/tools/sorta/bin/python
+環境マネージャ uv: /home/you/.local/bin/uv
+コマンド sorta: /home/you/.local/bin/sorta
+メタデータ読み取り exiftool: /usr/bin/exiftool
+インストール済みティア:
+  基本ティア: 利用可能
+  顔: パッケージは配置済み、モデル（buffalo_l、400 MB）はステージの初回実行時にダウンロードされます
+  言葉による検索: パッケージは配置済み、モデル（ViT-L-14, XLM-RoBERTa、3.0 GB）はステージの初回実行時にダウンロードされます
+  NVIDIA アクセラレーション（CUDA 13）: 利用可能
+  ディープティア（VLM）: 未インストール（不足: transformers, accelerate, qwen-vl-utils）
+  ティアの追加: sorta-setup を実行します。
 torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop GPU)
 onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
 mismatch: no
-geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
-実行ログ: C:\Users\you\AppData\Local\sorta\logs\sorta.log
-プレビューキャッシュ: C:\Users\you\AppData\Local\sorta\previews
+geo data: /home/you/.local/share/uv/tools/sorta/lib/python3.13/site-packages/sorta/data/geo/places.tsv (9.2 MB)
+実行ログ: /home/you/.cache/sorta/logs/sorta.log
+プレビューキャッシュ: /home/you/.cache/sorta/previews
 ```
 
 各行の読み方:
 
+- **`インタプリタ:` / `環境マネージャ uv:`** — この実行が使っている python と `uv`。
+  インストール済みのコピーは自前のものを持っており、PATH が覆われていると以下の行が
+  すべて別のインストールについての記述になってしまいます。
+- **`コマンド sorta:`** — いま実行したコマンドの場所。「PATH にありません」は
+  `uv tool install` がシェルの見ない場所に置いたという意味で、まっさらな Linux
+  マシンで最初に起きることです（§3.8）。
+- **`メタデータ読み取り exiftool:`** — ここが「PATH にありません」なら、HEIC/RAW/動画の
+  日付・GPS・向きはまったく読み取られません。エラーは出ず、写真に日付が無いだけ
+  なので、この行が存在します。
+- **`インストール済みティア:`** — インストールが何でできているか。ティアは壊れ方の
+  違う 2 つの半分でできているため、状態は 3 つあります: 「利用可能」、パッケージは
+  あるがモデルの重みが未ダウンロード、そしてパッケージ名付きの「未インストール」。
 - **`torch: …（CUDA available: yes|no）`** — 実際に入ったビルド。`gpu` プロファイル
   なら `+cu130` かつ `CUDA available: yes` でなければなりません。`+cpu` ビルドなら、
   エクストラがインストールコマンドに届いていません（§3.3）。
@@ -220,14 +243,16 @@ geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
   対処は再インストール（チェックアウトなら `python scripts/build_geodata.py`）です。
 - **`実行ログ:`** — 実行ログの出力先（§19）。
 - **`プレビューキャッシュ:`** — デコード済みプレビューの保存先（§18）。
-  末尾の `（無効）` はキャッシュが無効という意味です。
+  末尾の `（無効）` はキャッシュが無効という意味です。Linux では、そのディレクトリを
+  他のローカルユーザーが読める場合、続けて `⚠` の行と、それを閉じる `chmod 700` が
+  表示されます（§3.8）。
 
-上の出力は `language: ru` で取得したものなので、最後の 2 行がロシア語になっています。
-既定の `en` なら "Run log:"、"Preview cache:" と表示されます。その上の 2 つの診断
-サマリー（`torch`/`onnxruntime` と `geo data`）は診断モジュールが生成するもので、
-`language` に関わらず英語のままです。`sorta doctor` が `config.yaml` を読むのは出力
-言語を知るためだけで、設定ファイルが無くても（既定の言語で）動作します。そのため
-表示されるプレビューのパスは既定値（および環境変数 `SORTA_PREVIEW_DIR`）に基づきます。
+上の出力は Linux へのインストールを `language: ja` で取得したものです。ラベルは
+`language` に従いますが、2 つの診断サマリー（`torch`/`onnxruntime` と `geo data`）だけは
+診断モジュールが生成するため、どの言語でも英語のままです。`sorta doctor` が
+`config.yaml` を読むのは出力言語を知るためだけで、設定ファイルが無くても（既定の言語で）
+動作します。そのため表示されるプレビューのパスは既定値（および環境変数
+`SORTA_PREVIEW_DIR`）に基づきます。
 
 ### 3.6 既知の落とし穴: `onnxruntime` が `onnxruntime-gpu` を上書きする
 
@@ -293,6 +318,64 @@ HEIC/RAW/動画の日付と GPS もそのまま読み取れます。
 もう一度実行してください。モデルの重みは、それを必要とするステージの初回実行時に
 ダウンロードされます。ティアの費用がインストーラーのサイズではなくこの表に書かれて
 いるのはそのためです。
+
+### 3.8 まっさらな Linux マシンから
+
+**Linux では `uv tool install` がインストールそのもの**であり、第二の経路はありません
+— AppImage も deb/rpm も snap も flatpak も、今も今後も作りません。これは欠落では
+なく決定です: 誰も保守しないパッケージは半年で「作者の名前が付いた古いバージョン」に
+なり、無いよりも悪くなります。Windows にインストーラーがあるのは、そこでは端末が本当に
+障壁だからです。ここでは 1 行で済み、更新も 1 行です。
+
+まだ何も入っていないマシンでの全手順:
+
+```bash
+# 1. exiftool — HEIC/RAW/動画の日付・GPS・向きに必要
+sudo apt install libimage-exiftool-perl
+# Fedora: sudo dnf install perl-Image-ExifTool · Arch: sudo pacman -S perl-image-exiftool
+
+# 2. uv 本体
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 3. ハードウェアに合うエクストラ付きの Sorta（NVIDIA カードが無ければ [cpu]、
+#    トレイアイコンは "./sorta[gpu,tray]"）
+git clone https://github.com/shinKatana0/sorta.git
+uv tool install "./sorta[gpu]"
+
+# 4. ...そして何になったかを自分の口で言わせる
+sorta doctor
+```
+
+あとで更新するとき: チェックアウトで `git pull` してから
+`uv tool install --force "./sorta[gpu]"` — 同じ行に `--force` を付けるだけです。
+
+実際に壊れるのは何か、出会う順に。**どの項目も `sorta doctor` が言葉で答えます**
+（§3.5）。ガイドがそれを繰り返すのは、起きる前に読めるようにするためであって、
+`doctor` の代わりではありません:
+
+- **インストールに成功した直後の `sorta: command not found`。** `uv` はコマンドを
+  `~/.local/bin` に置きますが、既定のシェルプロファイルはそこを `PATH` に追加せず、
+  その旨の警告はリゾルバの出力に紛れて流れていきます。対処は
+  `uv tool update-shell` を実行し、端末を開き直すこと。それまでもフルパス
+  （`~/.local/bin/sorta doctor`）で動き、`doctor` はコマンドのある場所を表示します。
+- **日付も場所も無い写真。** `exiftool` は python パッケージではないため、どの
+  インストールコマンドも持ってきません。無いと Sorta は Pillow にフォールバックし、
+  HEIC も RAW も動画も読めません。`doctor` は「メタデータ読み取り exiftool: PATH に
+  ありません」と表示し、お使いのディストリビューション向けのインストールコマンドを
+  出力します。
+- **カードのあるマシンに CPU 版 torch。** `uv tool install` に `--extra` フラグは
+  ありません。エクストラが引用符の外にあると、エラーひとつ無しに CPU プロファイルに
+  なります（§3.3）。それが見えるのは `doctor` の `torch:` 行で、隣にあるのが §3.6 の
+  `onnxruntime`/`onnxruntime-gpu` の落とし穴です。
+- **同居人が読めてしまうプレビューキャッシュ。** キャッシュにはコレクション全体の
+  デコード済みコピーが入っており、その中にパスポートがあるかもしれません。Sorta は
+  ディレクトリを `0700` で作成し、既存のディレクトリの権限は変更しません — 他人の
+  ディレクトリを直すのはインデクサの仕事ではないからです。権限が閉じていなければ
+  `doctor` が警告し、`chmod 700` を表示します。
+- **トレイが存在しないこともあり、それが普通です。** GNOME は 3.26 で通知領域を
+  廃止したため、多くのデスクトップにはアイコンの置き場所がありません。`sorta-tray`
+  はそれに気づき、理由を伝え、アドレスをコンソールに出したまま動き続けます — 
+  `sorta ui` と同じ挙動です。エラーではなく、起動しない理由にもなりません。
 
 ---
 

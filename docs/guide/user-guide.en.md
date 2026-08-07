@@ -192,16 +192,39 @@ database and downloads nothing — it just reports what the install actually bec
 
 ```
 $ sorta doctor
+Interpreter: /home/you/.local/share/uv/tools/sorta/bin/python
+Environment manager uv: /home/you/.local/bin/uv
+Command sorta: /home/you/.local/bin/sorta
+Metadata reader exiftool: /usr/bin/exiftool
+Installed tiers:
+  Base tier: in place
+  Faces: packages in place, the models (buffalo_l, 400 MB) download on the first run of the stage
+  Search by words: packages in place, the models (ViT-L-14, XLM-RoBERTa, 3.0 GB) download on the first run of the stage
+  NVIDIA acceleration (CUDA 13): in place
+  Deep tier (VLM): not installed (missing: transformers, accelerate, qwen-vl-utils)
+  To add a tier: run sorta-setup.
 torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop GPU)
 onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
 mismatch: no
-geo data: C:\...\sorta\data\geo\places.tsv (9.2 MB)
-Run log: C:\Users\you\AppData\Local\sorta\logs\sorta.log
-Preview cache: C:\Users\you\AppData\Local\sorta\previews
+geo data: /home/you/.local/share/uv/tools/sorta/lib/python3.13/site-packages/sorta/data/geo/places.tsv (9.2 MB)
+Run log: /home/you/.cache/sorta/logs/sorta.log
+Preview cache: /home/you/.cache/sorta/previews
 ```
 
 How to read it, line by line:
 
+- **`Interpreter:` / `Environment manager uv:`** — which python and which `uv` this run
+  is using. An installed copy ships its own; a shadowed PATH would otherwise turn every
+  line below into a statement about a different installation.
+- **`Command sorta:`** — where the command you just ran lives. `not on PATH` means
+  `uv tool install` put it somewhere your shell does not look, which is the first thing
+  that happens on a clean Linux machine — see §3.8.
+- **`Metadata reader exiftool:`** — `not on PATH` here means HEIC/RAW/video dates, GPS
+  and orientation are not read at all. Nothing raises; the photos simply arrive without
+  dates, which is why this line exists.
+- **`Installed tiers:`** — what the install is made of. Three states, because a tier is
+  two halves that fail differently: `in place`, packages present but the model weights
+  not downloaded yet, and `not installed (missing: …)` by package name.
 - **`torch: … (CUDA available: yes|no)`** — the build you ended up with. On the `gpu`
   profile this must say `+cu130` and `CUDA available: yes`. A `+cpu` build here means
   the extra never made it into the install command (§3.3).
@@ -218,15 +241,16 @@ How to read it, line by line:
   in a checkout).
 - **`Run log:`** — where the run log is written (§19).
 - **`Preview cache:`** — where decoded previews are cached (§18); a
-  ` (DISABLED)` suffix means the cache is switched off.
+  ` (DISABLED)` suffix means the cache is switched off. On Linux a `⚠` line follows it
+  when the directory is readable by other local accounts, with the `chmod 700` that
+  closes it (§3.8).
 
-The capture above was taken with `language: ru`, which is why those last two labels are
-Russian; with the default `en` they read "Run log:" and "Preview cache:". The two health
-summaries above them (`torch`/`onnxruntime` and `geo data`) come from the diagnostics
-module and stay English in every language. `sorta doctor` reads `config.yaml` only to
-learn the output language — it works fine without one, just in the default language —
-so the preview path it prints is the default one plus any `SORTA_PREVIEW_DIR` in the
-environment.
+The capture above is a Linux install with `language: en`; the labels follow `language`,
+except the two health summaries (`torch`/`onnxruntime` and `geo data`), which come from
+the diagnostics module and stay English in every language. `sorta doctor` reads
+`config.yaml` only to learn the output language — it works fine without one, just in the
+default language — so the preview path it prints is the default one plus any
+`SORTA_PREVIEW_DIR` in the environment.
 
 ### 3.6 Known trap: `onnxruntime` overwriting `onnxruntime-gpu`
 
@@ -292,6 +316,63 @@ offers the heavier tiers one by one, with what each one costs to download:
 not a trimmed one. Any tier can be added later: run **Sorta setup** from the Start menu
 (or `sorta-setup`) again. Model weights are downloaded by the stage that needs them on its
 first run, which is why the tiers are priced in this table rather than in the installer.
+
+### 3.8 Linux, from a clean machine
+
+**On Linux `uv tool install` is the install**, and there is no second path: no AppImage,
+no deb/rpm, no snap or flatpak, now or later. That is a decision, not a gap — a package
+nobody maintains turns into an outdated version under the author's name within six
+months, which is worse than not shipping one. Windows gets an installer because there a
+terminal genuinely is the obstacle; here it is one line, and updates are one line too.
+
+The whole path, on a machine that has nothing on it yet:
+
+```bash
+# 1. exiftool — required for HEIC/RAW/video dates, GPS and orientation
+sudo apt install libimage-exiftool-perl
+# Fedora: sudo dnf install perl-Image-ExifTool · Arch: sudo pacman -S perl-image-exiftool
+
+# 2. uv itself
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 3. Sorta, with the extra that matches your hardware ([cpu] without an NVIDIA card,
+#    add `tray` for the icon: "./sorta[gpu,tray]")
+git clone https://github.com/shinKatana0/sorta.git
+uv tool install "./sorta[gpu]"
+
+# 4. ...and it says out loud what it became
+sorta doctor
+```
+
+Updating later: `git pull` in the checkout, then
+`uv tool install --force "./sorta[gpu]"` — the same line with `--force`.
+
+What actually breaks, in the order you meet it. **Every one of these is answered by
+`sorta doctor` in words** (§3.5); the guide repeats them so you can read them before they
+happen, not instead:
+
+- **`sorta: command not found` right after a successful install.** `uv` puts its commands
+  in `~/.local/bin`, which a default shell profile does not add to `PATH`, and its
+  warning about that scrolls past inside the resolver output. Fix:
+  `uv tool update-shell`, then open a new terminal. Until then the command still works by
+  its full path (`~/.local/bin/sorta doctor`), and `doctor` prints the directory it is in.
+- **Photos with no dates and no places.** `exiftool` is not a python package — no install
+  command brings it, and without it Sorta falls back to Pillow, which reads no HEIC, no
+  RAW and no video. `doctor` says `Metadata reader exiftool: not on PATH` and prints the
+  install command for your distribution.
+- **A CPU torch on a machine with a card.** `uv tool install` has no `--extra` flag; with
+  the extra outside the quoted spec you get the CPU profile and no error (§3.3).
+  `doctor`'s `torch:` line is where that shows up, and §3.6 is the related
+  `onnxruntime`/`onnxruntime-gpu` trap.
+- **A preview cache your housemates can read.** The cache holds decoded copies of the
+  whole collection, one of which may be a passport. Sorta creates it `0700`, and it does
+  not change the permissions of a directory that already existed — repairing somebody
+  else's directory is not an indexer's business. `doctor` warns when the mode is not
+  private and prints the `chmod 700` that closes it.
+- **No tray icon, and that is normal.** GNOME dropped the notification area in 3.26, so
+  on many desktops there is nowhere for an icon to go. `sorta-tray` notices, says why,
+  and keeps serving with the address on the console — the same behaviour as `sorta ui`.
+  It is never an error and never a reason for the program not to start.
 
 ---
 
