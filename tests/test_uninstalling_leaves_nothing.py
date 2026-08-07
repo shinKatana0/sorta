@@ -87,6 +87,20 @@ class CacheCase(unittest.TestCase):
         self.write(directory / "det_10g.onnx", size)
         return directory
 
+    @property
+    def no_config(self) -> str:
+        """A config path that does not exist, so the language is the default one.
+
+        Not the literal `"config.yaml"`, which is what these tests used to pass: that
+        resolves against the working directory, and a developer's checkout HAS one —
+        this machine's says `language: ru`. The tests were green in every worktree
+        (`config.yaml` is git-ignored, so a worktree has none) and red in the checkout
+        they were written in, which is the same shape as every other test this project
+        has had to fix: pinned to the state of the machine rather than to what it checks.
+        The command reading the person's language is correct and is checked below.
+        """
+        return str(self.home / "no-config-here.yaml")
+
     def found(self) -> list[weights.Downloaded]:
         return weights.downloaded(insightface=self.models, hub=self.hub)
 
@@ -112,7 +126,7 @@ class TestNothingGoesWithoutAnAnswer(CacheCase):
         self.buffalo()
 
     def test_listing_the_models_removes_nothing(self):
-        cli._cmd_cache("config.yaml", models=True, confirm=None)
+        cli._cmd_cache(self.no_config, models=True, confirm=None)
         self.assertTrue((self.hub / "models--timm--vit_large_patch14_clip_224.openai"
                          ).is_dir())
         self.assertTrue((self.models / "buffalo_l").is_dir())
@@ -124,13 +138,13 @@ class TestNothingGoesWithoutAnAnswer(CacheCase):
             raise SystemExit(1)
 
         with self.assertRaises(SystemExit):
-            cli._cmd_cache("config.yaml", clear_models=True, confirm=refuse)
+            cli._cmd_cache(self.no_config, clear_models=True, confirm=refuse)
         self.assertTrue((self.models / "buffalo_l").is_dir())
         self.assertTrue(self.found())
 
     def test_the_question_states_the_size_before_it_is_asked(self):
         asked: list[str] = []
-        cli._cmd_cache("config.yaml", clear_models=True, confirm=asked.append)
+        cli._cmd_cache(self.no_config, clear_models=True, confirm=asked.append)
         self.assertEqual(len(asked), 1)
         # 6000 bytes of fixture, printed the way the catalog prints sizes.
         self.assertIn("0.00 GB", asked[0])
@@ -140,6 +154,23 @@ class TestNothingGoesWithoutAnAnswer(CacheCase):
         """The person this exists for is removing the program — quite possibly with
         their config.yaml already gone, and always from a directory nobody chose."""
         cli._cmd_cache(str(self.home / "nothing-here.yaml"), models=True, confirm=None)
+
+    def test_the_question_is_asked_in_the_language_the_config_names(self):
+        """The half that had no test, which is why the defect above looked like a defect
+        of the product: a config that names a language must be obeyed, because the person
+        being asked whether to delete gigabytes should be asked in their own words."""
+        self.clip()
+        config = self.home / "config.yaml"
+        config.write_text("language: ru\n", encoding="utf-8")
+        asked: list[str] = []
+        cli._cmd_cache(str(config), clear_models=True, confirm=asked.append)
+        self.assertEqual(len(asked), 1)
+        # The opening words, which come before the size and differ between the two
+        # languages — comparing the whole rendered line would pin the size as well.
+        russian = i18n.cli_text("cli.cache.models_confirm", "ru", size_gb=0.0)[:24]
+        english = i18n.cli_text("cli.cache.models_confirm", "en", size_gb=0.0)[:24]
+        self.assertIn(russian, asked[0])
+        self.assertNotIn(english, asked[0])
 
 
 class TestWhatCannotBeDoneIsSaidRatherThanRaised(CacheCase):
@@ -153,7 +184,7 @@ class TestWhatCannotBeDoneIsSaidRatherThanRaised(CacheCase):
     def test_an_empty_disk_is_an_answer(self):
         printed: list[str] = []
         with patch("builtins.print", lambda *args: printed.append(" ".join(map(str, args)))):
-            cli._cmd_cache("config.yaml", clear_models=True, confirm=None)
+            cli._cmd_cache(self.no_config, clear_models=True, confirm=None)
         self.assertEqual(printed, [i18n.cli_text("cli.cache.models_none", "en")])
 
     def test_a_directory_that_will_not_go_is_reported(self):
@@ -163,7 +194,7 @@ class TestWhatCannotBeDoneIsSaidRatherThanRaised(CacheCase):
                           side_effect=OSError("the file is in use")), \
                 patch("builtins.print",
                       lambda *args: printed.append(" ".join(map(str, args)))):
-            cli._cmd_cache("config.yaml", clear_models=True, confirm=None)
+            cli._cmd_cache(self.no_config, clear_models=True, confirm=None)
         self.assertTrue(any("the file is in use" in line for line in printed))
         self.assertTrue(self.found())  # still there, and said to be
 
