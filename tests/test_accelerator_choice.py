@@ -1,16 +1,23 @@
-"""F214: which device the four ML stages ask for, and what CUDA machines still get.
+"""F214/F220: which device the seven ML stages ask for, and what CUDA machines still get.
 
-The feature is one function replacing four copies of "cuda if available else cpu", and
+The feature is one function replacing seven copies of "cuda if available else cpu", and
 the interesting part of it is not the new Apple rung — it is that Windows and Linux must
-not be able to feel the change. So the CUDA case is checked BY EXHAUSTION over all four
+not be able to feel the change. So the CUDA case is checked BY EXHAUSTION over all seven
 call sites (`SITES` below), against constants spelled out literally here rather than
 imported from the code under test: a test that asks `accel` what `accel` decided would
 pass on a rewrite that quietly moved every machine to a different device.
 
+F220 added the last three — `detect`, `restore` and `search` kept their own line while
+the four F214 converted moved on, which on a Mac meant three stages on the processor
+beside four on the accelerator. The count in this file is not decoration: seven sites
+walked here and seven modules walked by `TheChoiceLivesInOnePlaceTest` are what says the
+decision is in one place rather than in one place and a few leftovers.
+
 Nothing here needs a GPU, a Mac, or the weights. Each site is driven through the module
-it really lives in, with `torch` / `onnxruntime` / `open_clip` / `insightface` faked at
-the import each stage does inside its own function, so what is measured is the argument
-that reached the loader — the same thing the F88 det_size tests measure.
+it really lives in, with `torch` / `onnxruntime` / `open_clip` / `insightface` /
+`transformers` / `torchvision` faked at the import each stage does inside its own
+function, so what is measured is the argument that reached the loader — the same thing
+the F88 det_size tests measure.
 
 What these tests CANNOT say: whether MPS and CoreML produce the same verdicts as the
 CPU. That needs the hardware (see the macOS job in check.yml and
@@ -32,7 +39,7 @@ from unittest import mock
 import numpy as np
 from PIL import Image
 
-from sorta import accel, faces, junk, landmarks, naming
+from sorta import accel, detect, faces, junk, landmarks, naming, restore, search
 from sorta.config import NamingConfig as NamingSettings
 from sorta.faces import FacesSettings
 
@@ -73,6 +80,23 @@ CPU_PROFILE = Machine("windows/linux, cpu profile",
                       providers=("AzureExecutionProvider", "CPUExecutionProvider"))
 
 
+class Placed:
+    """A tensor, reduced to the one thing these tests measure: where it was put.
+
+    `permute` returns itself and `to` returns a new one, the way torch does — so the
+    device a frame ended up on is readable from the object the model was called with.
+    """
+
+    def __init__(self, device: str = "cpu") -> None:
+        self.device = device
+
+    def permute(self, *dims: int) -> "Placed":
+        return self
+
+    def to(self, device: str) -> "Placed":
+        return Placed(device)
+
+
 def fake_torch(machine: Machine) -> Any:
     """A torch module that answers about hardware and does the tensor moves we need."""
     torch = types.ModuleType("torch")
@@ -82,7 +106,14 @@ def fake_torch(machine: Machine) -> Any:
     torch.backends = types.SimpleNamespace(  # type: ignore[attr-defined]
         mps=types.SimpleNamespace(is_available=lambda: machine.mps))
     torch.no_grad = contextlib.nullcontext  # type: ignore[attr-defined]
+    torch.from_numpy = lambda array: Placed()  # type: ignore[attr-defined]
     return torch
+
+
+def refusal() -> NotImplementedError:
+    """What MPS raises for an operator it has no Metal kernel for."""
+    return NotImplementedError("The operator 'aten::_unique2' is not currently "
+                               "implemented for the MPS device")
 
 
 def fake_onnxruntime(machine: Machine) -> Any:
@@ -167,6 +198,203 @@ def fake_open_clip() -> Iterator[list[dict]]:
         yield loads
 
 
+class RecordingDetector:
+    """A torchvision detection model, recording where its weights and its frames went."""
+
+    def __init__(self, refuse: int = 0) -> None:
+        self.moved: list[str] = []
+        self.frames: list[str] = []
+        self._refuse = refuse
+
+    def to(self, device: str) -> "RecordingDetector":
+        self.moved.append(device)
+        return self
+
+    def eval(self) -> None:
+        pass
+
+    def __call__(self, tensors: list[Placed]) -> list[dict]:
+        self.frames.append(tensors[0].device)
+        if len(self.frames) <= self._refuse:
+            raise refusal()
+        return [{"labels": Column([17]), "scores": Column([0.9]),
+                 "boxes": Column([[1.0, 2.0, 3.0, 4.0]])}]  # one cat
+
+
+class Column:
+    """A torch column of a prediction dict — `detect` only ever calls `.tolist()`."""
+
+    def __init__(self, values: list) -> None:
+        self._values = values
+
+    def tolist(self) -> list:
+        return self._values
+
+
+DETECTOR_MODEL = "fasterrcnn_mobilenet_v3_large_fpn"
+
+
+@contextlib.contextmanager
+def detect_site(machine: Machine,
+                refuse: int = 0) -> Iterator[tuple[RecordingDetector, Any]]:
+    """Site 5 — the torchvision detector in `detect`, built inside the fake torch.
+
+    The built detector is yielded rather than returned: its closure reads `torch` and
+    `imaging` at CALL time, so a frame has to be run while the stubs are still installed.
+    """
+    model = RecordingDetector(refuse)
+    detection = types.ModuleType("torchvision.models.detection")
+    detection.__dict__[DETECTOR_MODEL] = lambda weights=None: model
+    models = types.ModuleType("torchvision.models")
+    models.detection = detection  # type: ignore[attr-defined]
+    root = types.ModuleType("torchvision")
+    root.models = models  # type: ignore[attr-defined]
+    with modules(torch=fake_torch(machine), torchvision=root,
+                 **{"torchvision.models": models,
+                    "torchvision.models.detection": detection}):
+        yield model, detect.torchvision_detector(DETECTOR_MODEL)
+
+
+@contextlib.contextmanager
+def a_frame() -> Iterator[str]:
+    """A path that stats and decodes — the preview cache is not what is measured here."""
+    with mock.patch("sorta.imaging.decode_rgb_preview",
+                    lambda *args, **kwargs: Image.new("RGB", (4, 4))):
+        yield str(Path(__file__))
+
+
+class Reconstruction:
+    """`.squeeze().float().cpu().clamp_(0, 1).numpy()` — the chain `restore` walks."""
+
+    def __init__(self, array: np.ndarray) -> None:
+        self._array = array
+
+    def squeeze(self) -> "Reconstruction":
+        return self
+
+    def float(self) -> "Reconstruction":
+        return self
+
+    def cpu(self) -> "Reconstruction":
+        return self
+
+    def clamp_(self, low: float, high: float) -> "Reconstruction":
+        return self
+
+    def numpy(self) -> np.ndarray:
+        return self._array
+
+
+class RecordingUpscaler:
+    """transformers' Swin2SR, recording where its weights went."""
+
+    def __init__(self, refuse: int = 0) -> None:
+        self.moved: list[str] = []
+        self.calls = 0
+        self._refuse = refuse
+
+    def to(self, device: str) -> "RecordingUpscaler":
+        self.moved.append(device)
+        return self
+
+    def eval(self) -> None:
+        pass
+
+    def __call__(self, **inputs: Any) -> Any:
+        self.calls += 1
+        if self.calls <= self._refuse:
+            raise refusal()
+        array = np.zeros((3, 4, 4), dtype=np.float32)
+        return types.SimpleNamespace(
+            reconstruction=types.SimpleNamespace(data=Reconstruction(array)))
+
+
+class RecordingInputs(dict):
+    """The processor's batch: a mapping (it is splatted) that records its `.to()`."""
+
+    def __init__(self) -> None:
+        super().__init__({"pixel_values": 0})
+        self.devices: list[str] = []
+
+    def to(self, device: str) -> "RecordingInputs":
+        self.devices.append(device)
+        return self
+
+
+@contextlib.contextmanager
+def restore_site(machine: Machine,
+                 refuse: int = 0) -> Iterator[tuple[RecordingUpscaler,
+                                                    RecordingInputs, Any]]:
+    """Site 6 — the Swin2SR upscaler in `restore`, built inside the fake torch."""
+    model, inputs = RecordingUpscaler(refuse), RecordingInputs()
+    module = types.ModuleType("transformers")
+    module.Swin2SRForImageSuperResolution = types.SimpleNamespace(  # type: ignore[attr-defined]
+        from_pretrained=lambda name: model)
+    module.AutoImageProcessor = types.SimpleNamespace(  # type: ignore[attr-defined]
+        from_pretrained=lambda name: (lambda image, return_tensors: inputs))
+    with modules(torch=fake_torch(machine), transformers=module):
+        yield model, inputs, restore.load_swin2sr("caidas/swin2SR-test")
+
+
+class Features:
+    """A batch of text vectors: normalized in place, then handed over as numpy."""
+
+    def norm(self, dim: int, keepdim: bool) -> float:
+        return 1.0
+
+    def __itruediv__(self, other: Any) -> "Features":
+        return self
+
+    def cpu(self) -> "Features":
+        return self
+
+    def numpy(self) -> np.ndarray:
+        return np.zeros((1, 4), dtype=np.float32)
+
+
+class Tokens:
+    def __init__(self, device: str = "cpu") -> None:
+        self.device = device
+
+    def to(self, device: str) -> "Tokens":
+        return Tokens(device)
+
+
+class RecordingTextTower:
+    """open_clip's model, as much of it as the search text encoder touches."""
+
+    def __init__(self, refuse: int = 0) -> None:
+        self.moved: list[str] = []
+        self.encoded: list[str] = []
+        self._refuse = refuse
+
+    def to(self, device: str) -> "RecordingTextTower":
+        self.moved.append(device)
+        return self
+
+    def eval(self) -> None:
+        pass
+
+    def encode_text(self, tokens: Tokens) -> Features:
+        self.encoded.append(tokens.device)
+        if len(self.encoded) <= self._refuse:
+            raise refusal()
+        return Features()
+
+
+@contextlib.contextmanager
+def search_site(machine: Machine,
+                refuse: int = 0) -> Iterator[tuple[RecordingTextTower, Any]]:
+    """Site 7 — the CLIP text tower in `search`, built inside the fake torch."""
+    model = RecordingTextTower(refuse)
+    module = types.ModuleType("open_clip")
+    module.create_model_and_transforms = (  # type: ignore[attr-defined]
+        lambda name, **kwargs: (model, None, None))
+    module.get_tokenizer = lambda name: (lambda prompts: Tokens())  # type: ignore[attr-defined]
+    with modules(torch=fake_torch(machine), open_clip=module):
+        yield model, search.text_encoder(NamingSettings())
+
+
 def naming_device(machine: Machine) -> Any:
     """Site 1 — the VLM loader in `naming`: the device string it reports."""
     with modules(torch=fake_torch(machine)), fake_transformers():
@@ -201,8 +429,31 @@ def junk_providers(machine: Machine) -> Any:
     return analysis.built[0]["providers"]
 
 
+def detect_device(machine: Machine) -> Any:
+    """Site 5 — the detector in `detect`: the device its weights were moved to."""
+    with detect_site(machine) as (model, _detect):
+        return model.moved[0]
+
+
+def restore_device(machine: Machine) -> Any:
+    """Site 6 — the upscaler in `restore`: the device its weights were moved to."""
+    with restore_site(machine) as (model, _inputs, _upscale):
+        return model.moved[0]
+
+
+def search_device(machine: Machine) -> Any:
+    """Site 7 — the text tower in `search`: the device open_clip was given."""
+    with modules(torch=fake_torch(machine)), fake_open_clip() as loads:
+        search.text_encoder(NamingSettings())
+    return loads[0]["device"]
+
+
 TORCH_SITES = [("naming: the VLM loader", naming_device),
-               ("landmarks: the CLIP classifier", landmarks_device)]
+               ("landmarks: the CLIP classifier", landmarks_device),
+               # F220: the three that were still choosing for themselves.
+               ("detect: the torchvision detector", detect_device),
+               ("restore: the Swin2SR upscaler", restore_device),
+               ("search: the CLIP text tower", search_device)]
 ORT_SITES = [("faces: the detection session", faces_providers),
              ("junk: the eyelid landmarks", junk_providers)]
 SITES = TORCH_SITES + ORT_SITES
@@ -220,6 +471,16 @@ class CudaMachinesChooseExactlyWhatTheyChoseBeforeTest(unittest.TestCase):
         for name, site in TORCH_SITES:
             with self.subTest(site=name):
                 self.assertEqual(site(NVIDIA), HISTORICAL_DEVICE)
+
+    def test_all_seven_places_are_driven_here(self):
+        """The count is the claim: seven stages asked, seven stages walked.
+
+        A site that is added to `sorta` and not to this list is exactly the failure F220
+        cleaned up after F214 — four converted, three forgotten, and nothing red.
+        `TheChoiceLivesInOnePlaceTest` is the other half of the check and reads the
+        source; this half says how many of them are actually run.
+        """
+        self.assertEqual(len(SITES), 7)
 
     def test_every_onnxruntime_site_still_asks_for_the_same_two_providers(self):
         for name, site in ORT_SITES:
@@ -243,6 +504,20 @@ class CudaMachinesChooseExactlyWhatTheyChoseBeforeTest(unittest.TestCase):
             with self.subTest(site=name):
                 self.assertEqual(list(site(CPU_PROFILE)), HISTORICAL_PROVIDERS)
                 self.assertEqual(list(site(PLAIN)), HISTORICAL_PROVIDERS)
+
+    def test_the_three_newest_sites_did_not_also_gain_a_dtype(self):
+        """F220 moved the device choice and nothing else.
+
+        The four stages F214 converted already had "float16 on CUDA, float32 otherwise";
+        these three never did. Adding `accel.torch_dtype` beside the new device call
+        would have been a change to the numbers a CUDA machine produces, dressed up as a
+        tidy-up — half precision is a separate question and it comes with a measurement.
+        """
+        for name in ("detect.py", "restore.py", "search.py"):
+            with self.subTest(module=name):
+                code = (_ROOT / "sorta" / name).read_text(encoding="utf-8")
+                self.assertNotIn("torch_dtype", code)
+                self.assertNotIn("float16", code)
 
     def test_mps_is_never_reached_while_cuda_answers_yes(self):
         """A machine with both would still be a CUDA machine — order, not preference."""
@@ -300,9 +575,28 @@ class TheChoiceLivesInOnePlaceTest(unittest.TestCase):
     Read as text on purpose. A behavioural test passes just as happily when a stage
     grows its own copy that happens to agree today — the copies this feature removed
     agreed too, right up to the moment a third device existed.
+
+    F220 widened this from the four modules F214 converted to EVERY module under
+    `sorta/`. The old list was a boundary drawn where one feature stopped: it said
+    nothing about `detect`, `restore` and `search`, which kept their own line for three
+    more features and would have kept it longer, and it would say nothing about the next
+    stage that grows one. What is asserted now is the invariant itself — nobody but
+    `accel` decides — so a fourth device (CoreML, ROCm, anything) is one edit again.
     """
 
-    OWNED = ("naming.py", "landmarks.py", "faces.py", "junk.py")
+    # The seven stages that ever had a device line of their own, named so that a rename
+    # or a deletion cannot quietly shrink what the sweep below walks.
+    STAGES = ("naming.py", "landmarks.py", "faces.py", "junk.py",
+              "detect.py", "restore.py", "search.py")
+    # The two modules allowed to name a device, and why each is allowed:
+    #   accel.py        holds the decision — it IS the one place.
+    #   diagnostics.py  ASKS about the hardware for a living. `sorta doctor` reports what
+    #                   this machine has (torch's version, whether CUDA answers, which
+    #                   providers onnxruntime offers), which is a question about the box
+    #                   and not a choice about a stage. It also has to keep answering
+    #                   when torch is broken enough that no stage could run at all, which
+    #                   is why it reads the hardware directly rather than through `accel`.
+    ALLOWED = ("accel.py", "diagnostics.py")
     # `torch.cuda.is_available()` and a hand-written provider list: the two spellings
     # of the decision. Comments are stripped first, because these files EXPLAIN the
     # decision and the explanation must not read as a violation of it.
@@ -310,24 +604,61 @@ class TheChoiceLivesInOnePlaceTest(unittest.TestCase):
               re.compile(r"[\"']CUDAExecutionProvider[\"']"),
               re.compile(r"[\"']CoreMLExecutionProvider[\"']"))
 
-    def code_of(self, name: str) -> str:
-        text = (_ROOT / "sorta" / name).read_text(encoding="utf-8")
+    def code_of(self, path: Path) -> str:
+        text = path.read_text(encoding="utf-8")
         return "\n".join(line.split("#")[0] for line in text.splitlines())
 
-    def test_no_stage_decides_for_itself(self):
-        for name in self.OWNED:
-            code = self.code_of(name)
+    def swept(self) -> list[Path]:
+        """Every module of the package except the two that are allowed to ask."""
+        return [path for path in sorted((_ROOT / "sorta").rglob("*.py"))
+                if path.name not in self.ALLOWED]
+
+    def test_no_module_decides_for_itself(self):
+        for path in self.swept():
+            code = self.code_of(path)
+            where = path.relative_to(_ROOT).as_posix()
             for pattern in self.COPIES:
-                with self.subTest(module=name, pattern=pattern.pattern):
+                with self.subTest(module=where, pattern=pattern.pattern):
                     self.assertIsNone(
                         pattern.search(code),
-                        f"sorta/{name} decides on a device itself — accel is the one place")
+                        f"{where} decides on a device itself — accel is the one place")
+
+    def test_all_seven_stages_are_inside_the_sweep(self):
+        """The sweep is by directory, so this is what keeps it honest.
+
+        `rglob` over a package finds nothing to complain about when a stage is renamed
+        or moved, and a green gate would then mean "nothing was checked" rather than
+        "nothing decides for itself".
+        """
+        swept = {path.name for path in self.swept()}
+        for name in self.STAGES:
+            with self.subTest(module=name):
+                self.assertIn(name, swept)
+
+    def test_every_stage_asks_the_one_place(self):
+        """Not deciding is half of it; the other half is that the stage still asks."""
+        asks = re.compile(r"accel\.(torch_device|onnx_providers|cuda_provider_available)")
+        for name in self.STAGES:
+            with self.subTest(module=name):
+                self.assertRegex(self.code_of(_ROOT / "sorta" / name), asks)
 
     def test_the_one_place_is_the_module_that_holds_it(self):
-        code = self.code_of("accel.py")
+        code = self.code_of(_ROOT / "sorta" / "accel.py")
         for pattern in self.COPIES:
             with self.subTest(pattern=pattern.pattern):
                 self.assertIsNotNone(pattern.search(code))
+
+    def test_the_excused_module_is_still_one_that_asks_rather_than_chooses(self):
+        """`diagnostics` is excused BY NAME, so the excuse has to keep being true.
+
+        An exception nobody rechecks is how a list of allowed files turns into a place
+        to put things. If the day comes that `diagnostics` no longer reads the hardware
+        itself, it stops needing to be here — and if it ever starts BUILDING a model on
+        what it read, the excuse was wrong and this line should not have covered it.
+        """
+        code = self.code_of(_ROOT / "sorta" / "diagnostics.py")
+        self.assertRegex(code, r"cuda\s*\.\s*is_available")
+        self.assertNotIn(".to(device)", code)
 
 
 class TheAcceleratorMayRefuseTest(unittest.TestCase):
@@ -480,6 +811,92 @@ class TheVlmRetreatsWithItsWeightsTest(unittest.TestCase):
         self.assertEqual(answer, "answer-7")
         self.assertEqual(prepared.devices, ["cuda"])
         self.assertEqual(model.moved, [])
+
+
+class TheFrameGoesWhereTheWeightsWentTest(unittest.TestCase):
+    """F220 requirement 4: one device, not two that happen to agree.
+
+    `detect` read its device string twice — once to place the model and once to place
+    every frame — and `restore` still does. Two reads of one variable are fine right up
+    to the moment the variable can change under them, which is what a retreat to the CPU
+    does: a model on the processor fed a tensor on the accelerator is a crash with a
+    confusing message, halfway through a pass. So the detector places the frame on
+    whatever device it is being run on rather than on the one the loader captured.
+    """
+
+    def test_the_detector_puts_its_frame_where_its_weights_are(self):
+        for machine, expected in ((NVIDIA, "cuda"), (APPLE, "mps"), (PLAIN, "cpu")):
+            with self.subTest(machine=machine.name):
+                with detect_site(machine) as (model, detector), a_frame() as path:
+                    found = detector(path)
+                self.assertEqual(model.moved, [expected])
+                self.assertEqual(model.frames, [expected])
+                self.assertEqual([hit.label for hit in found], ["cat"])
+
+    def test_the_upscaler_puts_its_pixels_where_its_weights_are(self):
+        for machine, expected in ((NVIDIA, "cuda"), (APPLE, "mps"), (PLAIN, "cpu")):
+            with self.subTest(machine=machine.name):
+                with restore_site(machine) as (model, inputs, upscale):
+                    upscale(Image.new("RGB", (4, 4)))
+                self.assertEqual(model.moved, [expected])
+                self.assertEqual(inputs.devices, [expected])
+
+
+class WhichOfTheThreeRetreatsToTheCpuTest(unittest.TestCase):
+    """F220: the fallback is a decision per site, not a wrapper applied everywhere.
+
+    A swallowed exception where the exception mattered is a defect that surfaces a month
+    later as "why is this suddenly slow", so each of the three was answered on its own:
+
+        detect    wrapped. A cascade over thousands of candidates; a refusal at frame
+                  900 throws away the 899 before it, and the frames left cost speed.
+        search    wrapped. One phrase through a text tower is milliseconds on a
+                  processor — the cheapest retreat there is, and without it a query
+                  returns a traceback instead of results.
+        restore   NOT wrapped. One frame per press of a button with a person waiting on
+                  it, where the CPU path is minutes rather than seconds. A refusal here
+                  is the answer (this model has no Metal kernel for this), the caller
+                  already turns it into a reason a person can read, and nothing is lost:
+                  the load is not cached and the next press retries.
+
+    On CUDA none of this exists, which is the requirement F214 was built around.
+    """
+
+    def test_the_detector_finishes_the_pass_on_the_cpu(self):
+        with detect_site(APPLE, refuse=1) as (model, detector), a_frame() as path:
+            with self.assertLogs("sorta.accel", level=logging.WARNING):
+                found = detector(path)
+        self.assertEqual(model.frames, ["mps", "cpu"])
+        self.assertEqual(model.moved, ["mps", "cpu"], "the weights follow the frame")
+        self.assertEqual([hit.label for hit in found], ["cat"], "the frame still answers")
+
+    def test_a_cuda_detector_fails_as_loudly_as_it_did_before(self):
+        with detect_site(NVIDIA, refuse=1) as (model, detector), a_frame() as path:
+            with self.assertRaises(NotImplementedError):
+                detector(path)
+        self.assertEqual(model.moved, ["cuda"], "nothing moved, nothing was caught")
+
+    def test_the_text_tower_answers_the_query_on_the_cpu(self):
+        with search_site(APPLE, refuse=1) as (model, encode):
+            with self.assertLogs("sorta.accel", level=logging.WARNING):
+                vectors = encode(["a cat on a roof"])
+        self.assertEqual(model.encoded, ["mps", "cpu"])
+        self.assertEqual(model.moved, ["cpu"])
+        self.assertEqual(vectors.shape, (1, 4), "the query still has a vector")
+
+    def test_a_cuda_text_tower_fails_as_loudly_as_it_did_before(self):
+        with search_site(NVIDIA, refuse=1) as (model, encode):
+            with self.assertRaises(NotImplementedError):
+                encode(["a cat on a roof"])
+        self.assertEqual(model.moved, [])
+
+    def test_the_upscaler_says_no_rather_than_taking_four_minutes(self):
+        """The one that is deliberately not wrapped — see the class docstring."""
+        with restore_site(APPLE, refuse=1) as (model, _inputs, upscale):
+            with self.assertNoLogs("sorta.accel", level=logging.WARNING):
+                with self.assertRaises(NotImplementedError):
+                    upscale(Image.new("RGB", (4, 4)))
+        self.assertEqual(model.moved, ["mps"], "no retreat, so no second device")
 
 
 class InferenceWorkersStayWhereTheyWereTest(unittest.TestCase):
