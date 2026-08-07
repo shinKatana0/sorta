@@ -59,3 +59,6 @@ sort_plan_*.csv
 sort_plan_*.html
 sort_plan_*_thumbs/
 report_output/
+
+# F219: per-run pytest output of scripts/measure_gate_workers.py
+.measure/

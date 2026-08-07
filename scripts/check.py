@@ -14,7 +14,7 @@ Two halves, and why (F-tooling, 2026-07-29)
 The checks split cleanly by how long they take:
 
     fast   version sync + ruff + mypy      seconds
-    slow   pytest with coverage            ~9 minutes on this collection's suite
+    slow   pytest with coverage            see the measurement below
 
 That difference stopped being cosmetic. A worker agent's shell moves any command
 longer than 600 s into the background, and the full gate sits just under that: under
@@ -36,6 +36,50 @@ The safety net does not move: the orchestrator runs the FULL gate on the branch
 before merging, and never trusts a self-report. Splitting only changes who waits for
 the slow half, not whether it is run.
 
+The slow half uses the machine (F219, 2026-08-07)
+-------------------------------------------------
+Measured on a 24-core machine, same commit, 5766 tests, both install profiles:
+
+                     one process     this gate
+    cpu profile      29 min 53 s     6 min 56 s
+    gpu profile      29 min 50 s     6 min 45 s
+
+**4.4x, and it was 7.5x before the workers were capped** — say it that way round. The
+first version of this ran `-n auto`, one worker per logical core, and did the whole
+gate in 4 min 00 s; that was measured on the cpu profile and it died on the gpu one,
+where each worker is half a gigabyte of torch (see `_MAX_WORKERS`). The cap costs
+about 40% of the win and buys a gate that finishes on both profiles and next to
+somebody else's work. A gate that is fast on one machine is not a fast gate.
+
+The docstring above used to say "~9 minutes". The suite had grown by a test per
+feature and nobody was watching the number, so it was wrong by a factor of three. That
+is why the run now prints its own duration per check and in total: the next divergence
+should be visible on the next run rather than half a year later.
+
+The suite is therefore run TWICE, and the split is not cosmetic:
+
+    parallel   pytest -n <cores, at most 8> -m "not serial"   the bulk
+    serial     pytest -m serial                               the tests that assert
+                                                 about TIME or bind a port — the
+                                                 parallel half is a loaded machine,
+                                                 which is exactly the condition under
+                                                 which they fail
+
+The cap on the workers is about memory and not about cores; see `_MAX_WORKERS` below.
+
+A naive `-n auto` over everything would make the gate fast and UNRELIABLE, which is
+worse than slow: an unreliable gate teaches people to re-run instead of to read. No
+test was loosened to survive the parallel half — a test that cannot take it is
+`serial`, with the reason written next to the marker. The serial half is 27 tests and
+1 min 07 s of the 6 min 45 s; the parallel one is the other 5739.
+
+Coverage is measured over the SUM of the two passes: each one writes with
+`--cov-append` and neither judges the threshold (`--cov-fail-under=0`), and the
+threshold from pyproject.toml is checked exactly once, at the end, by `coverage
+report` over the combined data. Checking it per pass would mean judging 85% against
+the dozen tests of the serial half — a red gate — and against the parallel half's
+incomplete data — a green one that covers nothing.
+
 Used:
   - manually: uv run --extra cpu --extra dev python scripts/check.py
   - in CI:    the gate step of the workflow (.github/workflows/check.yml).
@@ -45,6 +89,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 
 # The Windows console (cp1251) does not encode the emoji in the output below —
 # without replace the script crashes with UnicodeEncodeError AFTER all gates have
@@ -65,22 +110,94 @@ FAST_CHECKS = [
     ("mypy (types)", [sys.executable, "-m", "mypy", "sorta"]),
 ]
 
+_COVERAGE = ["--cov=sorta", "--cov-append", "--cov-report="]
+# Neither pass may judge the threshold: it belongs to the sum of the two, and the check
+# for it is the last entry below. `--cov-fail-under=0` is how pytest-cov is told to keep
+# `[tool.coverage.report].fail_under` out of ITS exit code without touching that value.
+_NO_VERDICT = ["--cov-fail-under=0"]
+
+# The number of workers is a question about MEMORY PER PROCESS, not about cores, and
+# this is the line that says so. `-n auto` (one worker per logical core) was measured on
+# the **cpu** install profile, where `import torch` costs a few dozen megabytes. The gate
+# that decides a merge runs on the **gpu** profile, where the same import costs 505 MB —
+# and 24 of those ran the machine out of memory: `MemoryError` inside a 1 MiB read in
+# sorta/hashing.py, on a 63 GB box that had 26 GB free because a product run and another
+# worktree's gate were using the rest.
+#
+# Measured on the gpu profile, peak resident memory of the run's own process tree
+# (scripts/measure_gate_workers.py), against the wall clock of the parallel half:
+#
+#     workers    4      8     12     16     24
+#     peak GB  17.3   20.0   23.1   25.5   ~31 (extrapolated; this is what failed)
+#     seconds   516    310    240    205     —
+#
+# The peak is ~15 GB plus ~0.7 GB per worker: a floor set by whichever heavy files
+# happen to overlap, and a slope that is the per-process cost. Eight is where the run
+# still fits in the memory this machine actually had free with somebody else working on
+# it, with about 4 GB to spare; twelve had one, sixteen had none. It is a cap and not a
+# fixed count — `min(cores, 8)` — so a 4-core CI runner still gets 4 and needs no branch
+# of its own in the configuration.
+_MAX_WORKERS = 8
+_WORKERS = str(min(os.cpu_count() or 1, _MAX_WORKERS))
+
+# `loadfile` and not xdist's default `load` (which hands out one test at a time). The
+# suite has modules whose tests share process state on purpose — a module-level
+# `default_rng` in tests/test_faces_rescan.py, so what a test draws depends on how many
+# draws the tests above it made. Splitting such a file across workers changes the data a
+# test sees and flips its verdict; keeping the file whole reproduces exactly the order
+# it had in one process. That is what makes `-n 1` and `-n 8` agree, which is the
+# property the gate is FOR. Per-file granularity is plenty for eight workers: 225 files.
+_DISTRIBUTION = ["-n", _WORKERS, "--dist", "loadfile"]
+
 SLOW_CHECKS = [
     (
-        "pytest (tests + coverage)",
-        [sys.executable, "-m", "pytest", "--cov=sorta", "--cov-report=term-missing"],
+        "pytest (parallel half)",
+        [sys.executable, "-m", "pytest", *_DISTRIBUTION, "-m", "not serial",
+         *_COVERAGE, *_NO_VERDICT],
+    ),
+    (
+        "pytest (serial half)",
+        [sys.executable, "-m", "pytest", "-m", "serial", *_COVERAGE, *_NO_VERDICT],
+    ),
+    (
+        "coverage threshold",
+        [sys.executable, "-m", "coverage", "report", "--show-missing"],
     ),
 ]
 
+# `--cov-append` on both passes means the previous run's data would be added to this
+# one's, and a file deleted since then would keep its coverage forever. The gate erases
+# once, before the first pass, instead of letting the first pass erase (it cannot: it
+# appends) — one place, and it also covers a run that starts with the serial half.
+ERASE_COVERAGE = [sys.executable, "-m", "coverage", "erase"]
+
+# pytest's "no tests were collected". Only the serial half may legitimately hit it —
+# if every `serial` marker is ever removed, that is an empty pass, not a failed gate.
+_NO_TESTS_COLLECTED = 5
+
+
+def _duration(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m {secs:02d}s" if minutes else f"{secs}s"
+
 
 def run(checks: list[tuple[str, list[str]]]) -> int:
+    started = time.monotonic()
     for name, cmd in checks:
         print(f"\n=== {name} ===")
+        step = time.monotonic()
         result = subprocess.run(cmd)
-        if result.returncode != 0:
+        # Printed per check, not only as a total: this is the number that tells whether
+        # the parallel half or the serial one is what a slow gate is waiting for.
+        print(f"--- {name}: {_duration(time.monotonic() - step)}")
+        if result.returncode != 0 and not (
+            name == "pytest (serial half)" and result.returncode == _NO_TESTS_COLLECTED
+        ):
             print(f"\n❌ GATE FAILED: {name} (exit code {result.returncode})")
+            print(f"Total: {_duration(time.monotonic() - started)}")
             print("Committing is blocked until this check is green.")
             return result.returncode
+    print(f"\nTotal: {_duration(time.monotonic() - started)}")
     return 0
 
 
@@ -90,7 +207,7 @@ def main() -> int:
     group.add_argument("--fast", action="store_true",
                        help="version sync + ruff + mypy (seconds) — run before committing")
     group.add_argument("--slow", action="store_true",
-                       help="pytest with coverage (~9 min) — run it in the background "
+                       help="pytest with coverage (minutes) — run it in the background "
                             "and wait for it")
     args = parser.parse_args()
 
@@ -101,6 +218,9 @@ def main() -> int:
     else:
         checks = FAST_CHECKS + SLOW_CHECKS
         done = "✅ All gates passed (lint + types + tests/coverage)."
+
+    if not args.fast:
+        subprocess.run(ERASE_COVERAGE)
 
     code = run(checks)
     if code:
