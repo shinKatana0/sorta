@@ -826,6 +826,27 @@ class FeaturesConfig:
     `scripts/measure_frame_quality.py` prints the distributions they have to be chosen
     from, on the collection they will be applied to.
     """
+    # F222: the landmark stage, which until now had no switch at all — it ran on every
+    # run, downloaded 1.6 GB of CLIP weights the first time and spent minutes of every
+    # one after that. MEASURED on the owner's collection (26 137 frames, 2026-08-07):
+    #
+    #     places by source        landmarks contributed
+    #       exact_gps      14 254     Prague     121
+    #       unknown         7 622     Moscow      16
+    #       session_inferred 3 171    Paris        5
+    #       trip_inferred     881     New York     1
+    #       visual            143  <- this stage
+    #       path_inferred      66
+    #
+    # 143 places out of 26 137 is 0.55%, and practically one trip. 45.3% of the frames
+    # have no GPS, but what rescues them is `session_inferred` and `trip_inferred`
+    # (4 052 together) — neighbours and clocks, which need no model whatsoever. So the
+    # stage is off unless somebody asks for it, and asking is one checkbox.
+    #
+    # Off does NOT mean gone: a config that switches it on runs exactly the stage it ran
+    # before, and the `visual` places already in a database are never touched by the
+    # stage being skipped — nothing recomputes or devalues them.
+    landmarks: bool = False
     pets: bool = False
     # F130: check every candidate with the local VLM before the label is written — one
     # question with three answers (a live animal / a picture of one / no animal). Its own
@@ -1247,6 +1268,7 @@ def _features_from(raw: dict) -> FeaturesConfig:
     """The `features:` section — every value tolerant of garbage, like `vlm:` above."""
     d = FeaturesConfig()
     return FeaturesConfig(
+        landmarks=_as_bool(raw.get("landmarks"), d.landmarks),
         pets=_as_bool(raw.get("pets"), d.pets),
         pets_verify=_as_bool(raw.get("pets_verify"), d.pets_verify),
         pet_threshold=_as_float(raw.get("pet_threshold"), d.pet_threshold),

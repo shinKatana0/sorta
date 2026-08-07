@@ -368,6 +368,15 @@ detect:
 # this is it. Nothing here is put to a model any more: the third tier of the cascade asked
 # about the frames the two cheap ones did not settle, and F186 retired that question.
 features:
+  # F222: the landmark stage — CLIP over a list of famous places, for the frames geo left
+  # without one. Off by default, and the numbers are why: on a collection of 26 137 frames
+  # (2026-08-07) it produced 143 places, 0.55% of the total and practically a single trip,
+  # for 1.6 GB of CLIP weights on the first run and minutes of every run after it. The
+  # frames with no GPS are rescued by `session_inferred` and `trip_inferred` instead —
+  # neighbours and clocks, which need no model at all.
+  # `true` runs exactly the stage that always ran; switching it off never touches the
+  # `visual` places a previous run already found.
+  landmarks: false
   pets: false
   # The pet-group CLIP score at or above which cat/dog/pet is written to the frame.
   # PROVISIONAL: CLIP's accuracy on this question has never been measured on a real

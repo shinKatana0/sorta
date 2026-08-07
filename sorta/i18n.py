@@ -607,6 +607,54 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  To add a tier: run sorta-setup.",
         "ja": "  ティアの追加: sorta-setup を実行します。",
     },
+    # F222: a stage that goes to the network says so, and a stage that could not says
+    # what it was fetching. Both sentences are built in `sorta/tiers.py`, from the one
+    # table that knows which weights a stage raises — the CLI and the web app print the
+    # same words because they call the same builder.
+    "cli.download.started": {
+        "ru": "Скачивается модель для стадии «{stage}»: {weights} (~{size}). "
+              "Это происходит один раз, дальше она берётся с диска.",
+        "en": "Downloading the model for the “{stage}” stage: {weights} (~{size}). "
+              "This happens once; after that it is read from disk.",
+        "ja": "「{stage}」ステージ用のモデルをダウンロードしています: {weights}"
+              "（約 {size}）。これは初回のみで、以降はディスクから読み込まれます。",
+    },
+    # The one a person actually meets. What they used to get was
+    # `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` — no stage, no model, no
+    # size, nothing to do about it. The traceback stays in the log.
+    "cli.download.failed": {
+        "ru": "Стадия «{stage}» не смогла скачать модель {weights} (~{size}). "
+              "Проверьте подключение к сети и запустите прогон снова; модель можно "
+              "получить заранее через sorta-setup. Причина: {error}",
+        "en": "The “{stage}” stage could not download the model {weights} (~{size}). "
+              "Check the network connection and start the run again; the model can also "
+              "be fetched in advance with sorta-setup. Reason: {error}",
+        "ja": "「{stage}」ステージがモデル {weights}（約 {size}）をダウンロード"
+              "できませんでした。ネットワーク接続を確認して再実行してください。"
+              "モデルは sorta-setup で事前に取得することもできます。理由: {error}",
+    },
+    # The stages that can go to the network, named for those two sentences. Only those
+    # four: a label nobody prints is a translation nobody checks.
+    "cli.stage.landmarks": {
+        "ru": "Определение мест по виду",
+        "en": "Places recognised by sight",
+        "ja": "見た目による場所の判定",
+    },
+    "cli.stage.classify": {
+        "ru": "Классификация кадров",
+        "en": "Frame classification",
+        "ja": "コマの分類",
+    },
+    "cli.stage.junk": {
+        "ru": "Служебные кадры и качество",
+        "en": "Utility frames and quality",
+        "ja": "実用目的のコマと品質",
+    },
+    "cli.stage.faces": {
+        "ru": "Разбор по лицам",
+        "en": "Face detection",
+        "ja": "顔の検出",
+    },
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
         "en": "Run log: {path}",
@@ -1839,6 +1887,19 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "own as `sorta events`",
         "ja": "時間・場所によるイベントへのグループ化。デフォルトは無効で、"
               "`sorta events` として個別に実行できます",
+    },
+    # F222: the third opt-in stage, and the only one with a config key behind it — hence
+    # "the config decides" rather than "off by default" as the two above say.
+    "cli.help.run.landmarks": {
+        "ru": "Определять места по виду (CLIP по списку достопримечательностей); "
+              "по умолчанию решает features.landmarks — выключено, 0,55% мест за "
+              "1,6 ГБ весов; доступно отдельно как `sorta landmarks`",
+        "en": "Recognise places by sight (CLIP over the landmark list); without the "
+              "flag features.landmarks decides — off, 0.55% of the places for 1.6 GB "
+              "of weights; available on its own as `sorta landmarks`",
+        "ja": "見た目で場所を判定します（名所リストに対する CLIP）。フラグがなければ "
+              "features.landmarks が決めます（既定は無効、場所の 0.55% に対し重み "
+              "1.6 GB）。`sorta landmarks` として個別に実行できます",
     },
     "cli.help.run.src": {
         "ru": "Каталог-источник для этого прогона; переопределяет "
