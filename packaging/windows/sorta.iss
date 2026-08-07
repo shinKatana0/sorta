@@ -1,4 +1,4 @@
-﻿; F211 - the Windows installer: the base tier whole, everything heavier offered once.
+; F211 - the Windows installer: the base tier whole, everything heavier offered once.
 ;
 ; Every variable part of this script arrives as a /D define from
 ; scripts/build_installer.py (Version, PayloadDir, OutputDir), so this file holds no
@@ -146,8 +146,9 @@ ja.CleanupModelsNote=重みは他のプログラムと共有するキャッシ�
 // The data half is this script's own work: those two directories are the ones its own
 // [Dirs] section created, they are ours by name, and no shared cache is inside them.
 
-const
-  FILE_ATTRIBUTE_REPARSE_POINT = $400;
+// FILE_ATTRIBUTE_REPARSE_POINT is NOT declared here: Inno 6 predefines the Windows file
+// attribute constants, and re-declaring one aborts the compile with "Duplicate
+// identifier" rather than shadowing it.
 
 function GetFileAttributesW(lpFileName: String): DWORD;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -225,11 +226,13 @@ var
   OkButton, CancelButton: TNewButton;
   Y: Integer;
 begin
-  Form := CreateCustomForm();
+  // Size and sizing flags go in the CALL: in Inno 6 `CreateCustomForm` takes four
+  // parameters, and the shape here is the one CodeClasses.iss of the Inno distribution
+  // itself uses. Neither axis may be resized -- every control on this page is laid out
+  // at a fixed offset, so a dragged edge would only move the buttons out of view.
+  Form := CreateCustomForm(ScaleX(470), ScaleY(285), False, False);
   try
     Form.Caption := CustomMessage('CleanupCaption');
-    Form.ClientWidth := ScaleX(470);
-    Form.ClientHeight := ScaleY(285);
 
     Intro := TNewStaticText.Create(Form);
     Intro.Parent := Form;
@@ -259,8 +262,11 @@ begin
     ModelsBox.Width := Form.ClientWidth - ScaleX(36);
     ModelsBox.Height := ScaleY(18);
     ModelsBox.Checked := False;
-    ModelsBox.Caption := FmtMessage(CustomMessage('CleanupModels'),
-                                    [SizeText(ModelBytes)]);
+    // The argument array stays on THIS line on purpose. Inno decides what a section
+    // header is by the first non-space character of a line, so a continuation that
+    // begins with `[` is read as a section tag and the compile dies with "Invalid
+    // section tag" pointing at Pascal that is perfectly valid.
+    ModelsBox.Caption := FmtMessage(CustomMessage('CleanupModels'), [SizeText(ModelBytes)]);
     MakeNote(Form, CustomMessage('CleanupModelsNote'),
              ModelsBox.Top + ModelsBox.Height + ScaleY(2));
 
@@ -283,7 +289,10 @@ begin
     CancelButton.ModalResult := mrCancel;
     CancelButton.Cancel := True;
 
-    Form.Center();
+    // No centering call. Inno centres a custom form relative to WizardForm through
+    // `FlipAndCenterIfNeeded`, and an UNINSTALL has no WizardForm to centre on; without
+    // the call the form centres itself on the screen, which is what this page wants.
+    // (`Form.Center` is not a method at all -- it aborts the compile.)
     Result := Form.ShowModal() = mrOk;
     if Result then
     begin
@@ -295,7 +304,7 @@ begin
   end;
 end;
 
-function InitializeUninstall(): Boolean;
+function InitializeUninstall: Boolean;
 var
   ModelBytes, DataBytes: Int64;
 begin
