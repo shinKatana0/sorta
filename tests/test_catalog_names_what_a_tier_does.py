@@ -156,7 +156,7 @@ class TestNoTierIsNamedAfterOneOfTheThingsItCarries(unittest.TestCase):
         for lang in _LANGS:
             with self.subTest(lang=lang):
                 without = wizard.TIERS_BY_KEY["vision"].without(lang)
-                self.assertIn("1,6" if lang == "ru" else "1.6", without)
+                self.assertIn(wizard.human_size(1600, lang), without)
 
     def test_the_two_models_are_priced_apart_and_add_up_to_what_was_measured(self):
         vision = wizard.TIERS_BY_KEY["vision"]

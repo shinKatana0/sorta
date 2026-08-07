@@ -947,7 +947,7 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # search by words encodes the pictures with ViT-L-14 and the words with XLM-RoBERTa,
     # so half of what it needs lives in the tier above it.
     "cli.setup.requires": {
-        "ru": "«{name}» без «{required}» не работает — добавляю и его.",
+        "ru": "Ярус «{name}» работает только вместе с ярусом «{required}» — добавляю и его.",
         "en": "“{name}” does not work without “{required}”, so that one is added too.",
         "ja": "「{name}」は「{required}」なしでは動作しないため、そちらも追加します。",
     },
@@ -1114,7 +1114,7 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
               "いま、この画面で行います。",
     },
     "cli.setup.tier.vision.without": {
-        "ru": "Вердикты прогону нужны в любом случае: те же 1,6 ГБ скачает стадия "
+        "ru": "Вердикты прогону нужны в любом случае: те же 1.6 ГБ скачает стадия "
               "классификации при первом запуске — посреди прогона и без этого экрана.",
         "en": "The verdicts are needed by a run in any case: the same 1.6 GB is fetched "
               "by the classification stage on its first run — in the middle of a run and "
