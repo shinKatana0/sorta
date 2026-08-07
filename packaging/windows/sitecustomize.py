@@ -76,5 +76,9 @@ if os.path.isfile(_BUNDLE):
     # `urllib.request.urlopen` ends up verifying against. SSL_CERT_DIR is set beside it
     # so that neither half of OpenSSL's default pair is left pointing at the directory
     # the interpreter happened to be compiled for, which exists on nobody's machine.
+    #
+    # Both are inherited by the processes this interpreter starts — `uv`, when a tier is
+    # added — and that is the intent rather than a side effect: everything an installation
+    # downloads should verify against one set of roots, the one that travels with it.
     os.environ.setdefault("SSL_CERT_FILE", _BUNDLE)
     os.environ.setdefault("SSL_CERT_DIR", _CERTIFI)

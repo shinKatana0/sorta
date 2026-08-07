@@ -113,6 +113,9 @@ jobs:
         # suite (tests/test_payload_carries_its_trust.py) and, last, by hand in a clean
         # virtual machine, step 6 of the checklist in packaging/windows/README.md.
         run: |
+          # Without this line an unset SORTA_APP_DIR would make the comparison below
+          # `-like "*"`, and a check that passes no matter what is worse than no check.
+          if (-not $env:SORTA_APP_DIR) { throw 'SORTA_APP_DIR is unset' }
           $python = Join-Path $env:SORTA_APP_DIR 'python\python.exe'
           $bundle = & $python -c "import os,sys; sys.stdout.write(os.environ.get('SSL_CERT_FILE',''))"
           if (-not $bundle) { throw 'SSL_CERT_FILE is unset — the payload sitecustomize did not run' }
