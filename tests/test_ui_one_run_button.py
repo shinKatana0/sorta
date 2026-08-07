@@ -176,9 +176,12 @@ class TestCheckboxesStillDecideTheOptionalStages(OneButtonTestBase):
     def test_checked_means_it_runs_inside_the_same_single_run(self):
         self.patch_fast_stages()
         self.start_server()
+        # F222: `landmarks` is a third box of exactly this kind — the run walks it only
+        # because it was ticked, in the same single run as the other two.
         status, _resp = self.post(
             "/api/process",
-            {"source_dir": str(self.src_dir), "faces": True, "events": True})
+            {"source_dir": str(self.src_dir), "faces": True, "events": True,
+             "landmarks": True})
         self.assertEqual(status, 200)
         _poll_until(self.status, lambda d: d["finished"])
         self.assertEqual(
@@ -191,7 +194,7 @@ class TestCheckboxesStillDecideTheOptionalStages(OneButtonTestBase):
         html = ui._render_index_html("ru")
         self.assertIn("source_dir: path, deep: deep, geo_online: geoOnline, "
                       "faces: faces, events: events,", html)
-        self.assertIn("pets: pets,", html)
+        self.assertIn("landmarks: landmarks, pets: pets,", html)
 
 
 class TestTheRunSaysWhatItSkipped(OneButtonTestBase):
