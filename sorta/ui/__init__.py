@@ -52,6 +52,13 @@ column. F161 adds `products` to that list (`vlm.products`, the deep junk tier), 
 the effect `deep` used to have of its own: `deep` is now permission and nothing else.
 `GET /api/process/estimate` prices every line of that screen: a measured rate
 times a count from this index, `null` (a dash, never a zero) where the index cannot say.
+F222 adds `landmarks` to the body — a STAGE like `faces`/`events`, off by default, with
+`features.landmarks` behind it — and puts what a run will DOWNLOAD next to what it will
+cost: `GET /api/env` carries, per line of the screen, the weights it raises, which of
+them are absent from this disk and how big they are, all out of the one `tier_states()`
+probe `sorta doctor` reads. While a download is running the status snapshot carries
+`download` ({stage, weights, mb}); a refusal to download reaches `error` as a sentence
+naming the stage, the model and the size, with the traceback in the log.
 
 (8) `POST /api/process/reset` (F42, the "Start over" button) — wipes the ENTIRE index
 via the ready `db.reset_index(conn)` (the same tables as the CLI `sorta reset`:

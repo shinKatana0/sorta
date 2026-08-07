@@ -264,6 +264,33 @@ class TestTheRunSummaryReachesTheBrowser(ProcessTestBase):
             with self.subTest(weight=weight):
                 self.assertGreater(mb, 0)
 
+    def test_the_summary_and_the_notes_read_one_probe(self):
+        """Test 5 of the brief, as a guard. Two readings of "what is installed" answer
+        differently within a release and nobody finds out from the code — the F211/F217
+        lesson. `/api/env` builds the notes, the availability and the download summary
+        from ONE `tier_states()` call.
+        """
+        with mock.patch.object(ui.process, "tier_states",
+                               wraps=ui.process.tier_states) as probe:
+            payload = ui.process._env_payload()
+        self.assertEqual(probe.call_count, 1)
+        self.assertTrue(payload["parts"])
+
+    def test_the_animals_get_the_note_they_never_had(self):
+        """Test 6, named after the case that exposed the whole defect: "why is there no
+        warning at all on animal recognition?" Because its tier is called "Search by
+        words" and nobody paired the two by hand."""
+        nothing = tiers.tier_states(package_present=lambda _n: True,
+                                    weights_cached=lambda _n: False)
+        parts = ui.process._parts_payload(tiers.run_parts(nothing))
+        self.assertEqual(parts["pets"]["tiers"], ["search"])
+        self.assertEqual(parts["pets"]["missing"], ["ViT-L-14"])
+        self.start_server()
+        _status, body, _ctype = self.get("/")
+        html = body.decode("utf-8")
+        self.assertIn('id="process-pets-tier-note"', html)
+        self.assertIn('setPartNote("process-pets-tier-note", "pets"', html)
+
     def test_the_page_carries_the_summary_and_the_line_while_it_downloads(self):
         self.start_server()
         _status, body, _ctype = self.get("/")
