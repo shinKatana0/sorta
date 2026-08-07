@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -41,6 +43,25 @@ def _load_script():
 
 
 builder = _load_script()
+
+
+def _link_directory(target: Path, link: Path) -> bool:
+    """Give `target` a second name at `link`, the way uv does. False if this machine won't.
+
+    On Windows that means a JUNCTION and not a symlink: a symlink needs a privilege an
+    ordinary account does not have (which would skip this test on the very platform the
+    installer is for), while `mklink /J` needs none — and a junction is what uv actually
+    leaves behind, so it is also the faithful fixture.
+    """
+    if sys.platform == "win32":
+        completed = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                                   capture_output=True, text=True)
+        return completed.returncode == 0
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return False
+    return True
 ISS_TEXT = _ISS.read_text(encoding="utf-8")
 
 
@@ -95,6 +116,48 @@ class TestTheCommands(unittest.TestCase):
             self.assertFalse(staged.exists())
             # ...and doing it twice changes nothing.
             self.assertEqual(builder.flatten_python_install(root), root / "python.exe")
+
+    def test_the_alias_uv_leaves_beside_the_interpreter_is_not_a_second_interpreter(self):
+        """Caught by building for real, 2026-08-07: uv 0.11 writes the versioned
+        directory AND a `cpython-3.13-...` junction pointing at it, so a minor version
+        can be named without its patch. Both are directories holding a python.exe, and
+        the build stopped with "found two installations" on a perfectly good download.
+
+        The fixture above was hand-made and therefore never disagreed with uv about
+        anything — the test pinned the layout of the day it was written."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "python"
+            staged = root / "cpython-3.13.14-windows-x86_64-none"
+            (staged / "Lib").mkdir(parents=True)
+            (staged / "python.exe").write_bytes(b"")
+            alias = root / "cpython-3.13-windows-x86_64-none"
+            if not _link_directory(staged, alias):  # pragma: no cover — platform
+                self.skipTest("this machine will not let the test create a link")
+            # The distinction the fix turns on: a junction is NOT a symlink, and asking
+            # `is_symlink()` about one gets a confident no. If this ever stops being a
+            # junction on Windows, the test below stops covering the real case.
+            if sys.platform == "win32":
+                self.assertFalse(alias.is_symlink())
+
+            self.assertEqual(builder.flatten_python_install(root), root / "python.exe")
+            self.assertTrue((root / "python.exe").is_file())
+            self.assertTrue((root / "Lib").is_dir())
+            # Both names are gone: the alias too, because a link left pointing at a
+            # directory that has just been emptied would ship inside the payload.
+            self.assertFalse(staged.exists())
+            self.assertFalse(alias.exists() or alias.is_symlink())
+
+    def test_two_real_interpreters_are_still_an_error(self):
+        """The alias case must not turn into "take whichever comes first": two genuine
+        installations mean the payload would be a coin toss."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "python"
+            for version in ("cpython-3.13.14-windows-x86_64-none",
+                            "cpython-3.12.9-windows-x86_64-none"):
+                (root / version).mkdir(parents=True)
+                (root / version / "python.exe").write_bytes(b"")
+            with self.assertRaises(SystemExit):
+                builder.flatten_python_install(root)
 
     def test_an_install_directory_with_no_interpreter_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:

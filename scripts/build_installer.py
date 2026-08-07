@@ -142,6 +142,19 @@ def python_install_command(uv: str, destination: Path,
             "--no-bin", "--no-registry", version]
 
 
+def _is_alias(path: Path) -> bool:
+    """Is this another NAME for a directory rather than the directory itself?
+
+    A junction is what uv leaves beside the interpreter it installed, and Windows
+    junctions are not symlinks: `is_symlink()` says no to them, and `Path.is_junction`
+    is what says yes (3.12+, hence the probe — the payload is built on 3.13).
+    """
+    if path.is_symlink():
+        return True
+    probe = getattr(path, "is_junction", None)
+    return bool(probe and probe())
+
+
 def flatten_python_install(install_dir: Path) -> Path:
     """Lift uv's versioned directory up one level, and return the interpreter.
 
@@ -149,15 +162,27 @@ def flatten_python_install(install_dir: Path) -> Path:
     and the payload needs ONE fixed path: the manifest, the `.pth` and the shortcuts all
     name `python\\python.exe`, and a path with a patch version in it would have to be
     rewritten by three different files on every upgrade.
+
+    uv 0.11 puts TWO names in there: the real `cpython-3.13.14-...` directory and a
+    `cpython-3.13-...` junction beside it, so that a minor version can be named without
+    knowing its patch. Both answer `is_dir()` and both hold a `python.exe`, so the
+    aliases are separated out rather than counted — two names for one installation are
+    one installation, and an alias is removed before its target is emptied so that the
+    payload never carries a link pointing at nothing.
     """
     direct = install_dir / "python.exe"
     if direct.is_file():
         return direct
-    staged = [child for child in sorted(install_dir.iterdir())
-              if child.is_dir() and (child / "python.exe").is_file()]
+    candidates = [child for child in sorted(install_dir.iterdir())
+                  if child.is_dir() and (child / "python.exe").is_file()]
+    aliases = [child for child in candidates if _is_alias(child)]
+    staged = [child for child in candidates if child not in aliases]
     if len(staged) != 1:
         raise SystemExit(f"expected exactly one python installation in {install_dir}, "
-                         f"found {[child.name for child in staged]}")
+                         f"found {[child.name for child in staged]} "
+                         f"(aliases: {[child.name for child in aliases]})")
+    for alias in aliases:
+        alias.rmdir()
     for item in list(staged[0].iterdir()):
         shutil.move(str(item), str(install_dir / item.name))
     staged[0].rmdir()
