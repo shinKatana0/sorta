@@ -38,11 +38,15 @@ the slow half, not whether it is run.
 
 The slow half uses the machine (F219, 2026-08-07)
 -------------------------------------------------
-Measured before this feature: 28 minutes for 5742 tests on a 24-core machine, in ONE
-pytest process. The docstring above said "~9 minutes" — the suite had grown by a test
-per feature and nobody was watching the number, so it was wrong by a factor of three.
-That is why the run now prints its own duration at the end: the next divergence should
-be visible on the next run, not half a year later.
+Measured on a 24-core machine, same commit, 5765 tests:
+
+    before   29 min 53 s   one pytest process
+    after     4 min 15 s   the whole gate, two passes and the coverage report
+
+The docstring above used to say "~9 minutes". The suite had grown by a test per
+feature and nobody was watching the number, so it was wrong by a factor of three. That
+is why the run now prints its own duration per check and in total: the next divergence
+should be visible on the next run rather than half a year later.
 
 The suite is therefore run TWICE, and the split is not cosmetic:
 
@@ -55,7 +59,8 @@ The suite is therefore run TWICE, and the split is not cosmetic:
 A naive `-n auto` over everything would make the gate fast and UNRELIABLE, which is
 worse than slow: an unreliable gate teaches people to re-run instead of to read. No
 test was loosened to survive the parallel half — a test that cannot take it is
-`serial`, with the reason written next to the marker.
+`serial`, with the reason written next to the marker. The serial half is 27 tests and
+1 min 13 s of the 4 min 15 s; the parallel one is the other 5738.
 
 Coverage is measured over the SUM of the two passes: each one writes with
 `--cov-append` and neither judges the threshold (`--cov-fail-under=0`), and the

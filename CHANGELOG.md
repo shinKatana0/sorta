@@ -213,6 +213,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing, and a request sent past the interface meets the same 409.
 
 ### Changed
+- **The gate uses the machine it runs on: 29 min 53 s → 4 min 15 s** (F219). Not a
+  product change — a tooling one, written down because the price of `scripts/check.py`
+  decides how many features a day get through the process, and it had quietly become the
+  largest single cost in it, bigger than the sessions that write the code. Measured on
+  2026‑08‑07, same commit, 24 logical cores, 5765 tests: **one** pytest process, **29 min
+  53 s**. Six gate runs in a day is two and a half hours of waiting. The docstring of the
+  script promised **"~9 minutes"** and had been wrong by threefold for months, which is
+  the same failure this project already met in the pipeline: **a quantity no watchman
+  checks can be lost threefold**. The gate now prints its own duration, per check and in
+  total, so the next divergence shows up on the next run instead of in half a year.
+  **The suite is split in two passes, and the split is the whole point.** Everything not
+  marked `serial` runs under `pytest -n auto` (pytest‑xdist enters the dev extras);
+  what is marked runs afterwards in a single process. A flat `-n auto` would have made
+  the gate fast and **unreliable**, and an unreliable gate teaches people to re-run
+  instead of to read — the habit this project cured itself of once already, by looking at
+  the TEXT of a failure rather than at its frequency. **Not one test was loosened**: a
+  test that cannot take the parallel half is `serial`, never "raise the bound", because a
+  bound raised to get green is a deleted test that still looks like a test. Four
+  elapsed‑time acceptance tests carry the marker (exiftool sessions, the OCR and VLM
+  pipelines, the pHash cache benchmark), and so does the file that runs the real `ui.serve`
+  on a port it picked a moment earlier. Every marker carries its reason on the line above,
+  and a test in the suite fails the gate if one does not.
+  **Coverage is measured on the SUM of the two passes and judged once, at the end.** Both
+  passes append into one data file and neither pronounces a verdict; the floor from
+  `pyproject.toml` is checked by a single `coverage report` over the combined data.
+  Checking per pass would have failed 85% against the serial half's 27 tests and passed
+  it against the parallel half's incomplete data — a green threshold covering nothing.
+  Verified against the 30‑minute single‑process run on the same commit: **11 573
+  statements, 469 missed vs 471, 96% either way** — the two lines are an `except OSError`
+  in the preview cache that only a concurrent `os.replace` reaches, so the parallel run
+  covers slightly *more*, not less.
+  **What the measurement found was not what it was looking for.** Six full runs under
+  `-n auto` produced **no** timing failure at all — including 40 runs of the speedup
+  tests under two concurrent suites, because their cost is a sleep and not work. It found
+  three other things instead: `tests/test_runlog.py` counted the root logger's handlers
+  and inherited one from whichever module ran before it (now cleaned before the test as
+  well as after); `tests/test_faces_rescan.py` draws its embeddings from one
+  module‑level RNG, so splitting the file across workers changed the data a test saw and
+  flipped a clustering verdict (the parallel pass therefore distributes by **file**,
+  which reproduces the one‑process order exactly, rather than re-calibrating the test);
+  and three runs in eleven died with `Windows fatal exception: access violation` inside
+  torch's DLL loading — not from the concurrency (288 simultaneous `import torch` at
+  process start crashed zero times) but from the **lateness** of the lazy import, which
+  `tests/conftest.py` now performs before collection.
 - **Faces are not re-clustered when there is nothing to re-cluster** (F212). Not "faces
   got faster": the first run still clusters and still honestly costs its seconds. What
   changed is the SECOND one. The repeat run measured on 2026‑08‑06 took **4 min 16 s**, of
