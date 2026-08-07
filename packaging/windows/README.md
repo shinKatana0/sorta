@@ -17,7 +17,8 @@ python scripts/build_installer.py --no-exiftool      # the Pillow-fallback varia
 The payload is a directory that is COPIED to wherever somebody installs the program:
 
 ```
-python\      a standalone CPython, fetched by `uv python install`
+python\      a standalone CPython, fetched by `uv python install`, and beside it the
+             three MSVC runtime libraries torch and onnxruntime import
 lib\         the packages, from `uv pip install --target` — a plain tree, not a venv
 uv.exe       the same resolver, kept for the tiers the wizard offers later
 exiftool\    the metadata reader and its `exiftool_files\`
@@ -43,6 +44,88 @@ nobody can see the state of is not one that gets met — so `exiftool -ver` is r
 `sorta-install.json` at build time. A build made on purpose without it (`--no-exiftool`)
 is not a broken build: the manifest says so and the wizard then SAYS which formats will
 not be read.
+
+## The MSVC runtime travels in `python\`, and a watchdog says whether it does
+
+The installer built before F218 could not load `torch` on a clean Windows 11. The first
+install into a fresh virtual machine got:
+
+```
+WinError 126: the specified module could not be found.
+Error loading ...\Sorta\lib\torch\lib\c10.dll or one of its dependencies
+```
+
+Reading the import table of all 439 modules of the payload named three libraries of the
+Microsoft Visual C++ runtime:
+
+```
+msvcp140.dll                25 modules want it. It WAS in the payload — sklearn ships a
+                            copy in lib\sklearn\.libs\ — but nothing looks there.
+msvcp140_1.dll              onnxruntime wants it. Not in the payload at all.
+msvcp140_atomic_wait.dll    torch_python wants it. Not in the payload at all.
+```
+
+The defect is wider than torch: `msvcp140_1.dll` is onnxruntime's, so faces and CLIP were
+dead too. What survived was everything that imports neither — index, EXIF, geo,
+duplicates, `doctor`. The installer shipped a product whose machine half was silently
+gone, and nobody noticed because the Visual C++ Redistributable is on every development
+machine, put there by a dozen unrelated programs.
+
+**The fix is where the loader already looks.** `vcruntime140.dll` and `vcruntime140_1.dll`
+were fine all along, because standalone CPython puts them in `payload\python\` — the
+directory of the executable, which the Windows loader searches. So the three go there
+too. That is app-local deployment of the runtime, which Microsoft supports explicitly.
+
+**Not `vc_redist.x64.exe` run from the installer**, the way almost everybody does it: it
+needs an administrator, and `PrivilegesRequired=lowest` is a promise this installer is
+built around (F211), not a decoration to drop over a missing file.
+
+**And not a copy out of the build machine's `System32`**, which would pin the release to
+that machine's patch level and be unreproducible the moment somebody else builds. The
+build downloads the official `vc_redist.x64.exe` from a permanent, versioned Microsoft
+URL (`aka.ms/vs/17/release/...` is always the newest one and therefore not a pin),
+verifies its SHA-256, reads the offset of the packages cabinet out of the bundle's
+`.wixburn` section, and unpacks the three files with Windows' own `expand.exe`. Nothing
+is executed, nothing needs administrator, and the version lands in `sorta-install.json`
+beside exiftool's. The redistributable is cached in `dist\windows\cache\` — an offline
+build machine can be given the file by hand, and the checksum is checked either way.
+Attribution is in `NOTICE` §4.
+
+### The watchdog: the payload carries what it imports
+
+`build_installer.py` reads the import directory of every `*.dll` and `*.pyd` of the
+staged payload and requires each imported name to be either **inside the payload** or
+**provided by Windows**. It runs in the build — an incomplete payload never reaches Inno
+Setup — and again in the test suite, so that an edit to the list of system libraries
+cannot pass in silence.
+
+This is deliberately a check about FILES rather than about starting the program, and that
+is the whole lesson of this feature. The build machine has the runtime in System32, and so
+does `windows-latest` — it is a developer image. "Does it run on the runner" answers
+whether the RUNNER has the runtime, not whether the payload is complete, so the F216
+workflow would have gone green on the broken payload too. Reading the files needs no
+clean machine, no virtual machine and no runner, and it would have caught this before the
+first install.
+
+Two things it is worth knowing about the check:
+
+- **The list of system libraries is the check.** Too soft and it passes on a broken
+  payload; too strict and it goes red on every build until somebody switches it off. It
+  is kept explicit in `SYSTEM_DLLS`, with one line per name saying why it is there, and
+  the families `api-ms-win-*` and `ext-ms-win-*` are Windows API sets —
+  `api-ms-win-crt-*` in particular is the universal C runtime, which is **part of Windows
+  10 and 11** and is not something a payload should carry. `msvcp140.dll` is deliberately
+  NOT on that list, and a test pins that: put it there and today's defect passes again.
+- **"Carried" means the name is in the payload, anywhere.** numpy and shapely ship their
+  own copies of the runtime under mangled names (`msvcp140-a4c2229b….dll`) that only
+  their own package's directory makes findable, and a check insisting on one canonical
+  location would go red on every build because of them. WHERE a library sits so the
+  loader finds it is fixed by putting the runtime in `python\`; what the watchdog answers
+  is the other half — whether the payload contains it at all. That half was unchecked.
+
+The proof that it can go red is in `tests/test_payload_carries_what_it_imports.py`, which
+assembles a payload with a module importing a name nothing carries and reads the
+complaint back. We have shipped checks that pass no matter what before (F182, F216).
 
 ## Unsigned, on purpose
 
@@ -97,6 +180,11 @@ Named here so nobody reads it wider than it is:
   notification area is the last metre, and it is a human one.
 - **SmartScreen.** What an unsigned installer looks like to somebody downloading it can
   only be seen by downloading it.
+- **A machine without the Visual C++ Redistributable.** `windows-latest` is a developer
+  image and almost certainly has it, so the runner cannot tell whether the payload's own
+  copy is doing the work or System32's is. What the workflow proves about F218 is that
+  the completeness watchdog passed; that the three libraries are enough is proven in a
+  clean virtual machine, by hand, at step 5 of the checklist below.
 
 ## The manual checklist (a clean machine, once per release)
 
@@ -110,9 +198,19 @@ The things above, plus everything the workflow cannot judge:
    the machine has to be described as a working product, not a stub.
 4. The Start menu **shortcut** opens the web app with an icon in the notification area
    and no console window behind it. Right-click → Quit closes the program.
-5. Sort a folder of real photographs: dates, GPS and cities have to be there without a
+5. On a machine that has **never had the Visual C++ Redistributable** (a fresh Windows
+   snapshot, before anything else is installed on it), import the two libraries whose
+   absence F218 was about — this is the check no runner can stand in for:
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Sorta\python\python.exe" -c "import torch, onnxruntime; print(torch.__version__, onnxruntime.__version__)"
+   ```
+
+   A `WinError 126` here means the payload is missing a runtime library again; the
+   watchdog in the build will name which one.
+6. Sort a folder of real photographs: dates, GPS and cities have to be there without a
    single download.
-6. Run **Sorta setup** again and accept one tier; the refusal in step 3 must not have
+7. Run **Sorta setup** again and accept one tier; the refusal in step 3 must not have
    been final.
-7. Uninstall, and check that `%APPDATA%\sorta\config.yaml`, the run log and the preview
+8. Uninstall, and check that `%APPDATA%\sorta\config.yaml`, the run log and the preview
    cache are still there — uninstalling a program is not a request to delete data.

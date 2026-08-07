@@ -61,6 +61,21 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files (x86)\Inno Setup 6'
 
       - name: Build the payload and compile the installer
+        # This step is also where the completeness watchdog runs (F218): before Inno
+        # Setup is called, the build reads what every `*.dll` and `*.pyd` of the staged
+        # payload imports and fails if a name is neither carried nor provided by Windows.
+        # It gets no step of its own on purpose — a payload that cannot load itself must
+        # not become an installer at all, and a separate step would run after one had.
+        # The step also downloads the pinned `vc_redist.x64.exe` (25 MB) and unpacks the
+        # three MSVC runtime libraries out of it; nothing is executed and nothing needs
+        # an administrator.
+        #
+        # What this runner CANNOT answer about F218: `windows-latest` is a developer
+        # image and has the Visual C++ Redistributable in System32, so an `import torch`
+        # here would succeed even from a payload missing all three. That is precisely why
+        # the check is about files. The last word is a clean virtual machine, by hand —
+        # step 5 of the checklist in packaging/windows/README.md.
+        #
         # `--no-project`: the build script imports nothing but the standard library and
         # `sorta.wizard` (which imports `sorta.i18n` and nothing else), and it puts the
         # repository root on sys.path itself so a checkout works. Syncing the CPU profile
@@ -155,7 +170,9 @@ jobs:
             '### Proven',
             '- the installer builds, installs per-user with no administrator, and the',
             '  installed program indexes, counts and deduplicates real files;',
-            '- one tier (`faces`, ~400 MB) downloads for real and `doctor` reports it.',
+            '- one tier (`faces`, ~400 MB) downloads for real and `doctor` reports it;',
+            '- every DLL and PYD of the payload imports only names the payload carries',
+            '  or Windows provides (F218 — checked in the build step, before compiling).',
             '',
             '### NOT proven here',
             '- **the deep tier** (`deep`, Qwen2.5-VL-3B, ~7 GB) — it fits neither the',
@@ -167,7 +184,11 @@ jobs:
             '  app running are covered by F207 against a fake backend. That a person SEES',
             '  the icon is the last metre, and it stays human;',
             '- **the signature** — this installer ships unsigned on purpose (owner, ',
-            '  2026-08-06), so SmartScreen behaviour is not exercised.'
+            '  2026-08-06), so SmartScreen behaviour is not exercised;',
+            '- **a machine without the Visual C++ Redistributable** — this one is a',
+            '  developer image and has it, so nothing here can tell whether the three',
+            '  libraries the payload now carries are the ones doing the work. That is a',
+            '  clean virtual machine, by hand, and it stays human.'
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: Keep the installer and the install log

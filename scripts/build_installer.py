@@ -10,7 +10,8 @@ What it makes, and why it looks like this
 -----------------------------------------
 The payload is a directory that is COPIED to wherever somebody installs the program:
 
-    python\\      a standalone CPython, fetched by `uv python install`
+    python\\      a standalone CPython, fetched by `uv python install`, plus the three
+                 MSVC runtime libraries that torch and onnxruntime import (F218)
     lib\\         the packages, from `uv pip install --target` — a plain tree
     uv.exe       the same resolver, kept for the tiers the wizard offers later
     exiftool\\    the metadata reader (see the decision in packaging/windows/README.md)
@@ -32,6 +33,12 @@ the project and forgotten in the installer fails the gate). Building the real th
 a network, `uv`, Inno Setup and a Windows machine, and pretending otherwise in a test would
 prove nothing — the manual checklist is in packaging/windows/README.md.
 
+The second watchdog, `payload_import_gaps`, is about FILES and not about running anything
+(F218): it reads what every `*.dll` and `*.pyd` of the payload imports and requires each
+name to be either in the payload or given by Windows. That is what catches a payload which
+works on the build machine only because the machine happens to have something installed —
+which is exactly how the MSVC runtime went missing for three releases.
+
 Signing: OFF by default and not in the path at all (owner's decision, 2026-08-06 — the
 installer ships unsigned and SmartScreen is warned about in the README and the guides
 instead). `--sign`, or SORTA_SIGN_INSTALLER=1, adds one step at the end that runs
@@ -43,12 +50,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import mmap
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tomllib
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -60,6 +70,11 @@ PACKAGING = ROOT / "packaging" / "windows"
 ISS = PACKAGING / "sorta.iss"
 DIST = ROOT / "dist" / "windows"
 PAYLOAD = DIST / "payload"
+# Downloads that survive `--skip-payload` and a rebuilt payload: the redistributable is
+# 25 MB and its version is pinned, so fetching it once per machine is the whole point.
+CACHE = DIST / "cache"
+# Where the three runtime libraries are unpacked before they are copied into the payload.
+RUNTIME_STAGE = DIST / "msvc-runtime"
 
 # The interpreter that ships. Inside `requires-python` of pyproject.toml (checked by the
 # suite), and pinned rather than "latest": the version somebody installs is the version
@@ -98,6 +113,51 @@ STATIC_PAYLOAD: tuple[tuple[str, str], ...] = (
     ("sorta/web/favicon.ico", "favicon.ico"),
 )
 
+# --- the MSVC runtime the payload has to carry (F218) --------------------------------
+#
+# The installer built before this shipped a payload that could not load torch on a clean
+# Windows: `c10.dll` failed with WinError 126 and everything behind it — faces, CLIP,
+# the whole machine half of the product — was dead. Reading the import table of all 439
+# modules named three libraries:
+#
+#   msvcp140.dll               25 modules want it. It IS in the payload — sklearn ships
+#                              a copy in lib\sklearn\.libs\ — but nothing looks there.
+#   msvcp140_1.dll             onnxruntime wants it. Not in the payload at all.
+#   msvcp140_atomic_wait.dll   torch_python wants it. Not in the payload at all.
+#
+# `vcruntime140.dll` and `vcruntime140_1.dll` were already fine, and the reason is the
+# whole fix: standalone CPython puts them in `payload\python\`, the directory of the
+# executable, which the Windows loader searches. So the three go there too — app-local
+# deployment of the runtime, which Microsoft supports explicitly.
+#
+# NOT `vc_redist.x64.exe` run from the installer, the way almost everybody does it: that
+# needs an administrator, and `PrivilegesRequired=lowest` is a promise the installer is
+# built around (F211), not a decoration to drop over a missing file.
+MSVC_RUNTIME_DLLS: tuple[str, ...] = (
+    "msvcp140.dll", "msvcp140_1.dll", "msvcp140_atomic_wait.dll",
+)
+
+# Where they come from, and why this source and not another. A copy from the System32 of
+# whoever ran the build is NOT a source: it pins the release to that machine's patch
+# level and the next build is made by somebody else. This is the official
+# redistributable, at a PERMANENT versioned URL (the `aka.ms/vs/17/release` shortcut
+# always points at the newest one, so it is not reproducible), verified by checksum
+# before it is opened. The version is what `sorta-install.json` records — the same
+# obligation exiftool's version travels for.
+VC_REDIST_VERSION = "14.44.35211"
+VC_REDIST_URL = (
+    "https://download.visualstudio.microsoft.com/download/pr/"
+    "9b0d1fa5-c16d-4ee8-97f0-c2734086ece8/"
+    "CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe"
+)
+VC_REDIST_SHA256 = "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b"
+# Inside the redistributable's cabinets every file carries the architecture it is for.
+VC_REDIST_ARCH_SUFFIX = "_amd64"
+# The signature and header of a WiX "burn" bundle, which vc_redist.x64.exe is.
+BURN_SECTION = b".wixburn"
+BURN_MAGIC = 0x00F14300
+CAB_MAGIC = b"MSCF"
+
 
 # --- the watchdog: the tiers against pyproject.toml ----------------------------------
 
@@ -125,6 +185,251 @@ def unaccounted_extras(pyproject_text: str) -> tuple[set[str], set[str]]:
     declared = wizard.declared_extras()
     actual = project_extras(pyproject_text)
     return actual - declared, declared - actual
+
+
+# --- the watchdog: the payload carries what it imports (F218) ------------------------
+#
+# Why a check about FILES rather than one about running the thing. On the build machine —
+# and on `windows-latest`, which is a developer image with build tools on it — the MSVC
+# runtime is in System32, put there by any one of a dozen unrelated programs. So "does it
+# start on this machine" answers "does this machine have the runtime", not "is the payload
+# complete", and F216's workflow would have gone green on the broken payload too. Reading
+# the import tables needs no clean machine, no virtual machine and no runner, and it would
+# have caught this before the first install.
+#
+# The PE parsing is about sixty lines of `struct` on purpose: `pefile` is a dependency
+# this repository does not need, and reading the FILE rather than loading it means the
+# check gives the same answer on Linux, which is where most of the suite runs.
+
+MODULE_SUFFIXES = (".dll", ".pyd")
+
+# What a module may import without the payload carrying it: Windows itself. The list is
+# explicit and every entry says why it is here, because this list is where the check
+# lives or dies — too soft and it passes on a broken payload, too strict and it goes red
+# on every build until somebody switches it off.
+SYSTEM_DLLS: dict[str, str] = {
+    "ntdll.dll": "the native API; mapped into every process before it starts",
+    "kernel32.dll": "the Win32 base API — processes, files, memory",
+    "kernelbase.dll": "the lower half of kernel32, imported directly by newer toolchains",
+    "advapi32.dll": "the registry and the security API",
+    "sechost.dll": "the half of advapi32 that moved out of it in Windows 8",
+    "rpcrt4.dll": "RPC, which COM is built on",
+    "user32.dll": "windows and messages",
+    "gdi32.dll": "the drawing API",
+    "gdiplus.dll": "the drawing API Windows has shipped since XP",
+    "ole32.dll": "the COM runtime",
+    "combase.dll": "the half of COM that moved out of ole32",
+    "oleaut32.dll": "the COM automation types (BSTR, VARIANT)",
+    "oleacc.dll": "the accessibility API",
+    "propsys.dll": "the shell property system",
+    "shell32.dll": "the shell API — known folders",
+    "shlwapi.dll": "the shell path helpers",
+    "comdlg32.dll": "the common dialogs",
+    "comctl32.dll": "the common controls",
+    "version.dll": "the file version resource API",
+    "psapi.dll": "process information",
+    "userenv.dll": "the user profile API",
+    "powrprof.dll": "the power API — what a thread pool asks about cores",
+    "pdh.dll": "the performance counters",
+    "setupapi.dll": "device enumeration",
+    "cfgmgr32.dll": "the configuration manager, the newer half of setupapi",
+    "cabinet.dll": "the cabinet reader Windows uses itself",
+    "imm32.dll": "the input method API",
+    "winmm.dll": "the multimedia timers",
+    "winspool.drv": "the print spooler API",
+    "mpr.dll": "the network share API",
+    "ws2_32.dll": "the sockets library",
+    "wsock32.dll": "the older sockets library, still shipped",
+    "mswsock.dll": "the Winsock service provider",
+    "iphlpapi.dll": "the IP helper API — interfaces and addresses",
+    "dnsapi.dll": "the resolver",
+    "netapi32.dll": "the network management API",
+    "wldap32.dll": "the LDAP client",
+    "winhttp.dll": "the HTTP client Windows ships",
+    "wininet.dll": "the older HTTP client Windows ships",
+    "urlmon.dll": "URL monikers",
+    "normaliz.dll": "Unicode normalisation",
+    "crypt32.dll": "certificates",
+    "bcrypt.dll": "the CNG primitives — hashes and random",
+    "bcryptprimitives.dll": "the implementation half of CNG",
+    "ncrypt.dll": "CNG key storage",
+    "secur32.dll": "SSPI, the authentication interface",
+    "wintrust.dll": "signature verification",
+    "dbghelp.dll": "stack walking and symbols — what a crash handler calls",
+    "imagehlp.dll": "the older name of the same, and still a real Windows DLL",
+    # The two C runtimes that ARE Windows, as opposed to the three this feature adds.
+    # `ucrtbase.dll` is the universal C runtime: part of the operating system since
+    # Windows 10, which is why nothing has to carry it. `msvcrt.dll` is the OS's own
+    # copy, used by Windows itself and kept for compatibility.
+    "ucrtbase.dll": "the universal C runtime — part of Windows since 10",
+    "msvcrt.dll": "the OS's own C runtime, kept for compatibility",
+    "dxgi.dll": "the DirectX device enumeration",
+    "d3d11.dll": "Direct3D 11",
+    "d3d12.dll": "Direct3D 12",
+    "dxcore.dll": "the newer adapter enumeration DirectML asks for",
+    "d3dcompiler_47.dll": "the shader compiler shipped with Windows",
+    "opengl32.dll": "the OpenGL entry point Windows ships",
+    "glu32.dll": "its companion utility library",
+    "dwmapi.dll": "the desktop window manager",
+    "uxtheme.dll": "the theming API",
+    "avicap32.dll": "Video for Windows capture — opencv's cameras",
+    "avifil32.dll": "Video for Windows files — opencv again",
+    "msvfw32.dll": "the Video for Windows compressor interface",
+    "mf.dll": "Media Foundation",
+    "mfplat.dll": "the Media Foundation platform",
+    "mfreadwrite.dll": "the Media Foundation source reader",
+    "hid.dll": "the human interface device API",
+    "winusb.dll": "the generic USB driver interface",
+}
+
+# Whole families rather than names, and this needs saying in words or the next reader
+# decides somebody forgot to ship them: `api-ms-win-*` are the API SETS of Windows 10 and
+# 11 — virtual DLL names the loader resolves to the real implementation inside the OS.
+# `api-ms-win-crt-*` in particular is the universal C runtime, part of Windows since
+# Windows 10, and a payload is not supposed to carry it. `ext-ms-win-*` are the same idea
+# for extensions that are present on some editions and absent on others.
+SYSTEM_DLL_PREFIXES: dict[str, str] = {
+    "api-ms-win-": "a Windows API set; `api-ms-win-crt-*` is the universal C runtime, "
+                   "which is part of Windows 10 and 11",
+    "ext-ms-win-": "a Windows extension API set, resolved by the loader when present",
+}
+
+
+def is_system_dll(name: str) -> bool:
+    """Does Windows provide this one, so that the payload need not carry it?"""
+    lowered = name.lower()
+    if lowered in SYSTEM_DLLS:
+        return True
+    return any(lowered.startswith(prefix) for prefix in SYSTEM_DLL_PREFIXES)
+
+
+def _cstring(view, offset: int) -> str:
+    end = view.find(b"\0", offset)
+    return bytes(view[offset:end if end != -1 else offset]).decode("ascii", "replace")
+
+
+def _section_table(view, first: int, count: int) -> list[tuple[int, int, int, int]]:
+    """(virtual address, virtual size, raw offset, raw size) per section."""
+    table = []
+    for index in range(count):
+        header = first + index * 40
+        virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from(
+            "<IIII", view, header + 8)
+        table.append((virtual_address, virtual_size, raw_offset, raw_size))
+    return table
+
+
+def _file_offset(sections: list[tuple[int, int, int, int]], rva: int) -> int | None:
+    """Where an address the loader would use sits in the file on disk."""
+    for virtual_address, virtual_size, raw_offset, raw_size in sections:
+        if virtual_address <= rva < virtual_address + max(virtual_size, raw_size):
+            inside = rva - virtual_address
+            if inside < raw_size:
+                return raw_offset + inside
+    return None
+
+
+def _descriptor_names(view, sections, first: int, size: int, stride: int,
+                      name_field: int, base: int, delayed: bool) -> list[str]:
+    """Walk an array of import descriptors and collect the DLL names it points at."""
+    names: list[str] = []
+    offset = _file_offset(sections, first)
+    if offset is None:
+        return names
+    while offset + stride <= size:
+        fields = struct.unpack_from(f"<{stride // 4}I", view, offset)
+        if not any(fields):
+            break
+        rva = fields[name_field]
+        # A delay-load descriptor written before Visual Studio 2015 stores addresses the
+        # image would have once loaded, not addresses relative to it — the low bit of its
+        # attributes says which, and getting this backwards would read a name out of thin
+        # air rather than out of the file.
+        if delayed and not fields[0] & 1:
+            rva -= base
+        located = _file_offset(sections, rva) if rva > 0 else None
+        if located is not None:
+            names.append(_cstring(view, located))
+        offset += stride
+    return names
+
+
+def imported_dlls(path: Path) -> list[str]:
+    """Every DLL named by the import directory of a PE file, in the order they appear.
+
+    Both directories are read: the ordinary one and the delay-load one, because a name
+    that is only reached on the first call is still a name that has to be there when the
+    call comes. Anything that is not a PE file — a stray text file with a `.dll` name, an
+    empty stub — is not an error and returns nothing: this walks a whole payload, and one
+    unreadable file must not stop it from checking the other four hundred.
+    """
+    if path.stat().st_size < 0x40:
+        return []
+    with path.open("rb") as handle:
+        with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as view:
+            size = len(view)
+            if view[:2] != b"MZ":
+                return []
+            pe = struct.unpack_from("<I", view, 0x3C)[0]
+            if pe + 24 > size or view[pe:pe + 4] != b"PE\0\0":
+                return []
+            coff = pe + 4
+            section_count = struct.unpack_from("<H", view, coff + 2)[0]
+            optional_size = struct.unpack_from("<H", view, coff + 16)[0]
+            optional = coff + 20
+            if optional + optional_size > size:
+                return []
+            magic = struct.unpack_from("<H", view, optional)[0]
+            if magic == 0x20B:  # PE32+, which everything x64 is
+                image_base = struct.unpack_from("<Q", view, optional + 24)[0]
+                directory_count = optional + 108
+            elif magic == 0x10B:  # PE32, still here for the 32-bit modules of old wheels
+                image_base = struct.unpack_from("<I", view, optional + 28)[0]
+                directory_count = optional + 92
+            else:
+                return []
+            count = struct.unpack_from("<I", view, directory_count)[0]
+            directories = directory_count + 4
+            sections = _section_table(view, optional + optional_size, section_count)
+            names: list[str] = []
+            if count > 1:  # directory 1 — the ordinary imports
+                rva = struct.unpack_from("<I", view, directories + 8)[0]
+                if rva:
+                    names += _descriptor_names(view, sections, rva, size, 20, 3,
+                                               image_base, delayed=False)
+            if count > 13:  # directory 13 — the delay-loaded ones
+                rva = struct.unpack_from("<I", view, directories + 13 * 8)[0]
+                if rva:
+                    names += _descriptor_names(view, sections, rva, size, 32, 1,
+                                               image_base, delayed=True)
+            return names
+
+
+def payload_modules(payload: Path) -> list[Path]:
+    """Every module of the payload whose imports have to be accounted for."""
+    return sorted(item for item in payload.rglob("*")
+                  if item.is_file() and item.suffix.lower() in MODULE_SUFFIXES)
+
+
+def payload_import_gaps(payload: Path) -> list[tuple[Path, str]]:
+    """(module, name) for every import the payload neither carries nor gets from Windows.
+
+    "Carries" is by file name, anywhere in the payload, and that is deliberate rather
+    than lax: numpy and shapely ship their own copies of the runtime under mangled names
+    (`msvcp140-a4c2229b….dll`), those copies are found through the directory their own
+    package adds at import time, and a check that insisted on one canonical location
+    would go red on every build because of them. Where a library sits so that the loader
+    finds it is fixed by putting the runtime in `python\\` — the directory of the
+    executable; what this answers is the other half, whether the payload contains it at
+    all. That is the half nobody was checking.
+    """
+    carried = {item.name.lower() for item in payload.rglob("*") if item.is_file()}
+    gaps: list[tuple[Path, str]] = []
+    for module in payload_modules(payload):
+        for name in imported_dlls(module):
+            if name.lower() not in carried and not is_system_dll(name):
+                gaps.append((module.relative_to(payload), name))
+    return gaps
 
 
 # --- the commands (returned, not run — this is the checkable half) -------------------
@@ -241,14 +546,138 @@ def sign_command(target: Path, env: dict[str, str] | None = None) -> list[str]:
     return command
 
 
+# --- the MSVC runtime, fetched reproducibly ------------------------------------------
+
+
+def verified_download(url: str, destination: Path, checksum: str) -> Path:
+    """Download once, and refuse to use anything whose checksum is not the pinned one.
+
+    Cached by file name: the version is in the constant above, so a cached copy is the
+    same copy. The checksum is verified on the CACHED file too — a truncated download
+    left behind by an interrupted build is exactly the case this must not wave through.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.is_file():
+        print(f"  download {url}\n        -> {destination}")
+        with urllib.request.urlopen(url, timeout=300) as response:  # noqa: S310 — pinned
+            destination.write_bytes(response.read())
+    actual = sha256(destination)
+    if actual != checksum.lower():
+        raise SystemExit(f"{destination}: sha256 is {actual}, expected {checksum.lower()} "
+                         f"— delete it and let the build fetch it again")
+    return destination
+
+
+def burn_attached_container(data: bytes) -> tuple[int, int]:
+    """Where the payload cabinet of a WiX bundle starts, and how long it is.
+
+    `vc_redist.x64.exe` is a "burn" bundle: a small executable with two cabinets glued
+    behind it — the user interface, then the packages. `/layout` only copies the bundle,
+    `expand` does not recognise it, and the offset is not guessable, so it is read from
+    the `.wixburn` section the linker writes for exactly this purpose: the size of the
+    stub, then the size of each container. The cabinet's own header carries its length,
+    which is what is returned rather than the container size — the authenticode signature
+    is appended after the containers and must not travel into the cabinet.
+    """
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    coff = pe + 4
+    section_count = struct.unpack_from("<H", data, coff + 2)[0]
+    sections = coff + 20 + struct.unpack_from("<H", data, coff + 16)[0]
+    for index in range(section_count):
+        header = sections + index * 40
+        if data[header:header + 8].rstrip(b"\0") != BURN_SECTION.rstrip(b"\0"):
+            continue
+        start = struct.unpack_from("<I", data, header + 20)[0]
+        magic, _version = struct.unpack_from("<II", data, start)
+        if magic != BURN_MAGIC:
+            raise SystemExit("the .wixburn section does not begin with the burn magic — "
+                             "this is not the redistributable this build expects")
+        # After the magic, the version and the bundle's GUID come the stub size, the
+        # original checksum, the signature's offset and size, the format, and then one
+        # length per container.
+        fixed = start + 8 + 16
+        stub, _checksum, _offset, _size, _format, containers = struct.unpack_from(
+            "<IIIIII", data, fixed)
+        lengths = struct.unpack_from(f"<{containers}I", data, fixed + 24)
+        # Container 0 is the user interface; the packages are the one after it.
+        cabinet = data.find(CAB_MAGIC, stub + lengths[0])
+        if cabinet == -1:
+            raise SystemExit("no cabinet behind the bundle's stub")
+        return cabinet, struct.unpack_from("<I", data, cabinet + 8)[0]
+    raise SystemExit("no .wixburn section — this is not a WiX bundle")
+
+
+def expand_binary() -> str:
+    """Windows' own `expand.exe`, by full path.
+
+    By name it would be found on PATH, and on a machine where the build runs from a
+    POSIX shell that is a completely different program (`expand` turns tabs into spaces)
+    which cheerfully copies the cabinet and reports success.
+    """
+    return str(Path(os.environ.get("SystemRoot", "C:\\Windows")) / "System32" / "expand.exe")
+
+
+def extract_msvc_runtime(redist: Path, stage: Path,
+                         names: tuple[str, ...] = MSVC_RUNTIME_DLLS) -> Path:
+    """Unpack the three runtime libraries out of the redistributable; return their directory.
+
+    Two cabinets deep: the bundle's attached container holds one package per
+    architecture, and the x64 runtime package holds the libraries under names with the
+    architecture appended (`msvcp140.dll_amd64`).
+    """
+    if stage.exists():
+        shutil.rmtree(stage)
+    packages = stage / "packages"
+    packages.mkdir(parents=True)
+    offset, length = burn_attached_container(redist.read_bytes())
+    container = stage / "packages.cab"
+    with redist.open("rb") as handle:
+        handle.seek(offset)
+        container.write_bytes(handle.read(length))
+    subprocess.run([expand_binary(), str(container), "-F:*", str(packages)],
+                   capture_output=True, check=True)
+    for package in sorted(packages.iterdir()):
+        with package.open("rb") as handle:  # these run to eleven megabytes; read four
+            if handle.read(4) != CAB_MAGIC:
+                continue  # the MSIs travel beside the cabinets and hold nothing we want
+        for name in names:
+            if (stage / name).is_file():
+                continue
+            packed = name + VC_REDIST_ARCH_SUFFIX
+            subprocess.run([expand_binary(), str(package), f"-F:{packed}", str(stage)],
+                           capture_output=True, check=False)
+            if (stage / packed).is_file():
+                (stage / packed).replace(stage / name)
+    missing = [name for name in names if not (stage / name).is_file()]
+    if missing:
+        raise SystemExit(f"the redistributable {redist} does not hold {missing} — the "
+                         f"pinned version or the naming inside it has changed")
+    shutil.rmtree(packages)
+    container.unlink()
+    return stage
+
+
+def msvc_runtime(cache: Path = CACHE, stage: Path = RUNTIME_STAGE) -> Path:
+    """The three libraries on disk, downloaded and unpacked if they are not there yet."""
+    redist = verified_download(VC_REDIST_URL,
+                               cache / f"VC_redist.x64-{VC_REDIST_VERSION}.exe",
+                               VC_REDIST_SHA256)
+    return extract_msvc_runtime(redist, stage)
+
+
 # --- the payload ---------------------------------------------------------------------
 
 
-def payload_plan(exiftool: Path | None, root: Path = ROOT) -> list[tuple[Path, Path]]:
+def payload_plan(exiftool: Path | None, runtime: Path | None = None,
+                 root: Path = ROOT) -> list[tuple[Path, Path]]:
     """(source, destination-inside-the-payload) for everything copied as it is."""
     plan = [(root / source, Path(destination)) for source, destination in STATIC_PAYLOAD]
     if exiftool is not None:
         plan.append((exiftool, PAYLOAD_EXIFTOOL))
+    if runtime is not None:
+        # Beside `vcruntime140.dll`, which standalone CPython put there and which IS
+        # found from there — the directory of the executable is on the loader's path.
+        plan += [(runtime / name, PAYLOAD_PYTHON / name) for name in MSVC_RUNTIME_DLLS]
     return plan
 
 
@@ -287,7 +716,8 @@ def exiftool_version(binary: Path | None) -> str | None:
 
 def build_manifest(version: str, *, exiftool: bool, tool_version: str | None = None,
                    payload: Path = PAYLOAD,
-                   python_version: str = PYTHON_VERSION) -> dict:
+                   python_version: str = PYTHON_VERSION,
+                   msvc_runtime_version: str = VC_REDIST_VERSION) -> dict:
     """What the installer leaves next to the program for the wizard to read.
 
     Paths are relative to this file's own directory: the payload is built here and
@@ -297,6 +727,10 @@ def build_manifest(version: str, *, exiftool: bool, tool_version: str | None = N
     return {
         "version": version,
         "python_version": python_version,
+        # Which release of the MSVC runtime travels in `python\` — the same obligation
+        # exiftool's version travels for: a library bundled without its version recorded
+        # is one nobody can tell whether they have to update.
+        "msvc_runtime_version": msvc_runtime_version,
         "python": str(PAYLOAD_PYTHON_EXE),
         "lib": str(PAYLOAD_LIB),
         "uv": str(PAYLOAD_UV),
@@ -398,7 +832,12 @@ def build(args: argparse.Namespace) -> int:
         builder.write(PAYLOAD / PAYLOAD_PYTHON / "Lib" / "site-packages" / PTH_NAME,
                       PTH_LINE + "\n")
         builder.copy(Path(uv), PAYLOAD / PAYLOAD_UV)
-        for source, destination in payload_plan(exiftool):
+        # The MSVC runtime, from the pinned redistributable rather than from the System32
+        # of whoever is building (F218). A dry run says what would be fetched and fetches
+        # nothing, so the staging directory is named but not filled.
+        print(f"  msvc runtime {VC_REDIST_VERSION} <- {VC_REDIST_URL}")
+        runtime = RUNTIME_STAGE if args.dry_run else msvc_runtime()
+        for source, destination in payload_plan(exiftool, runtime):
             builder.copy(source, PAYLOAD / destination)
 
     manifest = build_manifest(version, exiftool=exiftool is not None,
@@ -406,6 +845,28 @@ def build(args: argparse.Namespace) -> int:
                               else exiftool_version(exiftool))
     builder.write(PAYLOAD / wizard.MANIFEST_NAME,
                   json.dumps(manifest, indent=2, ensure_ascii=False))
+
+    if not args.dry_run:
+        # The second watchdog, before a byte is compiled: an incomplete payload must not
+        # reach Inno Setup. This is the check that would have caught the missing runtime
+        # before the first install rather than in somebody's clean virtual machine.
+        modules = payload_modules(PAYLOAD)
+        if not modules:
+            print(f"no modules under {PAYLOAD} — nothing is staged there, and a "
+                  f"completeness check over nothing proves nothing")
+            return 1
+        gaps = payload_import_gaps(PAYLOAD)
+        if gaps:
+            print(f"\nthe payload does not carry what it imports "
+                  f"({len(gaps)} unresolved import(s)):")
+            for module, name in gaps:
+                print(f"  {module} imports {name}")
+            print("Every name above is neither inside the payload nor provided by "
+                  "Windows. Either it has to travel, or — if Windows really does give "
+                  "it — SYSTEM_DLLS in this script has to say so, and say why.")
+            return 1
+        print(f"payload complete: {len(modules)} modules, every import either carried "
+              f"or provided by Windows")
 
     iscc = shutil.which("ISCC") or shutil.which("iscc") or args.iscc
     if not iscc:
