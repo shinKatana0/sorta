@@ -597,7 +597,10 @@ from ..sorter import _fs, _is_the_same_file
 # every name `sorta/ui.py` answered to — the imports above are the module's own, these are
 # the tabs. (ruff would call the unused ones dead; per-file-ignores in pyproject.toml say
 # why they are not.)
-from .strings import _UI_STRINGS
+# F217: `tiers` and `wizard` ride along because `strings` reads the tier catalog out of
+# them rather than spelling one out by hand — and the package re-exports every name a tab
+# module defines, which the suite checks.
+from .strings import _TIER_LANGS, _UI_STRINGS, _doctor_line, _tier_strings, tiers, wizard
 from .common import (
     DEFAULT_PORT, _CLUSTER_SAMPLE_LIMIT, _DEFAULT_ALBUM_DIRNAME, _DEST_GROUPS, _DEST_MODE,
     _EVENT_SAMPLE_LIMIT, _ImgCacheKey, _LANG_SELF_NAMES, _OVERVIEW_LIVE, _PLAN_PAGE_DEFAULT_LIMIT,
@@ -669,9 +672,11 @@ from .moves import (
     _UndoState, _last_batch_id, _moves_payload, _run_undo, _target_rel,
 )
 from .process import (
-    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, _CACHE_TARGETS, _DEFAULT_RATES,
+    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
-    _OPTIONAL_STAGES,
+    _OPTIONAL_STAGES, TIER_ABSENT, TIER_READY, TIER_WEIGHTS, _deep_tier_ran,
+    _gpu_present, _gpu_present_cache, _gpu_present_cache_clear, _gpu_present_lock,
+    _tier_state_name, _tiers_payload,
     _PIPELINE_STAGE_NAMES, _PipelineCancelled, _ProcessState, _RATE_DEFAULT, _RATE_FIXED,
     _RATE_MEASURED, _RATE_UNITS, _Rate, _RunOptions, _SEC_PER_BASE_FRAME, _SEC_PER_EVENTS_FRAME,
     _SEC_PER_FACES_FRAME, _SEC_PER_VLM_FRAME, _StageFn, _StageProgress, _StageStats,
