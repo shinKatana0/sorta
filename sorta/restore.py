@@ -97,7 +97,7 @@ from typing import Any, Callable
 
 from PIL import Image
 
-from . import imaging
+from . import accel, imaging
 from .hashing import file_hash as hash_file
 
 _log = logging.getLogger(__name__)
@@ -206,12 +206,20 @@ def load_swin2sr(model_name: str) -> UpscaleFn:  # pragma: no cover — ML, smok
     imports without transformers installed, and the failure happens HERE, where the
     caller is already wrapping it into a reason. `transformers` lives in the `vlm` extra,
     so on a base install this raises ImportError and the interface says so.
+
+    F220: the device comes from `accel` (CUDA -> MPS -> CPU) and is NOT wrapped in
+    `accel.CpuFallback`, unlike the batch stages. This is one frame per press of a button,
+    with a person waiting on it, and a Swin2SR pass over a full-size frame on the CPU is
+    minutes rather than the seconds a card takes. A refusal here means the model has no
+    Metal kernel for this work — that is an answer the caller already turns into a reason
+    a person can read (nothing is cached on failure, the next press retries), and it is a
+    better one than a button that silently starts taking four minutes.
     """
     import numpy as np
     import torch
     from transformers import AutoImageProcessor, Swin2SRForImageSuperResolution
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = accel.torch_device(torch)  # F220: CUDA -> MPS -> CPU, chosen in one place
     processor = AutoImageProcessor.from_pretrained(model_name)
     model = Swin2SRForImageSuperResolution.from_pretrained(model_name).to(device)
     model.eval()

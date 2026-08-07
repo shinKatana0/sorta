@@ -18,7 +18,9 @@ The payload is a directory that is COPIED to wherever somebody installs the prog
 
 ```
 python\      a standalone CPython, fetched by `uv python install`, and beside it the
-             three MSVC runtime libraries torch and onnxruntime import
+             three MSVC runtime libraries torch and onnxruntime import; in its
+             `Lib\site-packages\` the `.pth` that finds `lib\` and the `sitecustomize.py`
+             that points TLS at the certificates in it
 lib\         the packages, from `uv pip install --target` — a plain tree, not a venv
 uv.exe       the same resolver, kept for the tiers the wizard offers later
 exiftool\    the metadata reader and its `exiftool_files\`
@@ -127,6 +129,97 @@ The proof that it can go red is in `tests/test_payload_carries_what_it_imports.p
 assembles a payload with a module importing a name nothing carries and reads the
 complaint back. We have shipped checks that pass no matter what before (F182, F216).
 
+## The payload carries its own trust, not the machine's
+
+The installer built before F221 could not download anything at all on a clean Windows.
+The first run in a fresh virtual machine stopped at the verdicts stage:
+
+```
+stage failed: verdicts
+Processing error: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED]
+  certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)>
+```
+
+The weights go through `urllib.request.urlopen`, and on Windows urllib verifies the chain
+against the **system root certificate store**. On a freshly installed Windows that store
+is nearly empty — Windows fetches roots on demand, and on a clean machine that regularly
+does not happen. The stage that failed is the one that builds CLIP, but the defect is
+wider than any stage: faces, search by words and the deep tier download the same way, so
+**no tier could be added at all** and the whole tiered construction was unreachable on
+the machine it was built for.
+
+`certifi` was in the payload already — `requests` and `huggingface_hub` depend on it and
+use it by default, which is why those two paths always worked. Plain `urllib` had simply
+never heard of it. So the payload now points its own interpreter at that same set:
+
+```
+python\Lib\site-packages\sitecustomize.py   sets SSL_CERT_FILE and SSL_CERT_DIR to
+                                            ..\..\..\lib\certifi\cacert.pem
+```
+
+Four things about that choice, because each of them is a way the fix could have been
+narrower than the defect:
+
+- **certifi and not `truststore`, and not filling the system store.** certifi's set is
+  self-contained and versioned with the delivery, so it does not depend on the state of
+  the machine at all — the same principle the missing MSVC runtime was fixed with.
+  `truststore` does the opposite: it defers to the operating system's store, and the
+  operating system's store is exactly what is empty here.
+- **`sitecustomize` and not a shortcut, a launcher or an entry point.** There are five
+  ways this program starts — the two Start-menu shortcuts, `sorta-setup`, the console
+  command and the tray — and a variable set in one of them fixes one route out of five.
+  CPython imports `sitecustomize` out of `site-packages` while it is still starting up,
+  before a line of our code runs, on every one of the five. It also touches nothing
+  outside the process: `os.environ` there is that interpreter's own, and nothing is
+  written to the machine.
+- **`setdefault` and not assignment.** A corporate proxy with a root of its own is an
+  ordinary thing, and somebody who has already named their own set keeps it.
+- **A path derived from `__file__`.** The payload is built here and copied to somebody
+  else's disk — the same reason `lib\` is found by a relative `.pth`.
+
+**Certificate verification is not weakened anywhere.** No `verify=False`, no
+`ssl._create_unverified_context`, not even "just for the download": a program that
+downloads and then RUNS model weights has to know where they came from. A test pins the
+absence of every one of those names.
+
+### The guard: an empty root store, not a working network
+
+The defect lived because **checking whether TLS works on a machine where TLS works proves
+nothing.** The build machine's root store is full, and `windows-latest` is a developer
+image — both would have gone green on the broken payload, exactly the way they did for
+the missing MSVC runtime.
+
+So `tests/test_payload_carries_its_trust.py` does not check the network. It starts an
+interpreter whose root store is **empty** (`ssl.enum_certificates` returning nothing is
+precisely a clean machine's store), puts one known certificate in a payload-shaped
+directory, and reads back what `ssl.create_default_context()` ends up trusting: with the
+shipped `sitecustomize.py` on the path it is exactly that one certificate, and with it
+taken away it is whatever the machine has. It also pins that a set the person configured
+themselves survives, and that a payload moved to another directory points at its own copy.
+
+**It has been seen going red**, which is the only reason to believe any of the above: with
+the two `os.environ.setdefault` lines removed from `sitecustomize.py`, four of its tests
+fail — `SSL_CERT_FILE` comes back unset and the context trusts something that is not the
+payload's certificate. That is the same demonstration F182, F216 and F218 each ended up
+needing.
+
+Beside it, the build refuses to compile an installer whose payload is missing either half
+of the pair (`payload_trust_gap`), and the workflow checks after installing that
+`SSL_CERT_FILE` points inside the installation. **Neither of those is a test of TLS** —
+the runner is not a clean machine either. The last word is a clean virtual machine, step 6
+of the checklist below.
+
+### Until a build with this in it exists
+
+The workaround the owner verified, for an installation that already has the defect:
+
+```powershell
+$env:SSL_CERT_FILE = "$env:LOCALAPPDATA\Programs\Sorta\lib\certifi\cacert.pem"
+```
+
+It is per-shell and therefore per-route, which is the whole reason it is a workaround and
+not the fix.
+
 ## Unsigned, on purpose
 
 The owner's decision of 2026-08-06: this release ships without a code-signing
@@ -185,6 +278,11 @@ Named here so nobody reads it wider than it is:
   copy is doing the work or System32's is. What the workflow proves about F218 is that
   the completeness watchdog passed; that the three libraries are enough is proven in a
   clean virtual machine, by hand, at step 5 of the checklist below.
+- **A machine whose root certificate store Windows has not filled in.** Same shape of
+  gap, for F221: the runner downloads 400 MB of weights successfully, which says the
+  RUNNER's store is populated and nothing about a clean one. The workflow checks the
+  wiring — that `SSL_CERT_FILE` points at a file inside the installation — and the suite
+  checks the behaviour against an empty store; the machine itself is step 6 below.
 
 ## The manual checklist (a clean machine, once per release)
 
@@ -208,9 +306,26 @@ The things above, plus everything the workflow cannot judge:
 
    A `WinError 126` here means the payload is missing a runtime library again; the
    watchdog in the build will name which one.
-6. Sort a folder of real photographs: dates, GPS and cities have to be there without a
+6. On that **same never-touched machine**, before installing anything else on it, add one
+   tier and let it download — this is the check no runner can stand in for either, because
+   a runner's root certificate store is full:
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Sorta\python\python.exe" -X utf8 -m sorta.wizard --tiers faces
+   & "$env:LOCALAPPDATA\Programs\Sorta\python\python.exe" -X utf8 -m sorta.cli faces
+   ```
+
+   A `CERTIFICATE_VERIFY_FAILED` here means the interpreter is not seeing the payload's
+   own certificates (F221). What it should be seeing:
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Sorta\python\python.exe" -c "import os; print(os.environ['SSL_CERT_FILE'])"
+   # ...\Programs\Sorta\lib\certifi\cacert.pem
+   ```
+
+7. Sort a folder of real photographs: dates, GPS and cities have to be there without a
    single download.
-7. Run **Sorta setup** again and accept one tier; the refusal in step 3 must not have
+8. Run **Sorta setup** again and accept one tier; the refusal in step 3 must not have
    been final.
-8. Uninstall, and check that `%APPDATA%\sorta\config.yaml`, the run log and the preview
+9. Uninstall, and check that `%APPDATA%\sorta\config.yaml`, the run log and the preview
    cache are still there — uninstalling a program is not a request to delete data.

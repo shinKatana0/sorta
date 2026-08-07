@@ -105,6 +105,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from . import accel
 from .config import (
     SEARCH_FUSION_OFF,
     SEARCH_FUSION_RANK,
@@ -192,17 +193,28 @@ def text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML, 
     import open_clip
     import torch
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = accel.torch_device(torch)  # F220: CUDA -> MPS -> CPU, chosen in one place
     model, _, _ = open_clip.create_model_and_transforms(
         s.clip_model, pretrained=s.clip_pretrained, device=device)
     tokenizer = open_clip.get_tokenizer(s.clip_model)
     model.eval()
 
+    # F220: wrapped, and this is the cheapest of the retreats — a text tower over a phrase
+    # somebody typed is milliseconds on a processor. What it buys is the difference between
+    # a search that answers slowly and a search that answers with a traceback: an encoder
+    # that raises leaves the query with no vector at all, and every ranking downstream with
+    # nothing to rank. Never fires on CUDA (see accel.CpuFallback).
+    fallback = accel.CpuFallback(device, lambda dev: model.to(dev),
+                                 what="search: the clip text tower")
+
     def encode(texts: Sequence[str]) -> np.ndarray:
-        with torch.no_grad():
-            feats = model.encode_text(tokenizer(list(texts)).to(device))
-            feats /= feats.norm(dim=-1, keepdim=True)
-        return feats.cpu().numpy().astype(np.float32)
+        def run(on_device: str) -> np.ndarray:
+            with torch.no_grad():
+                feats = model.encode_text(tokenizer(list(texts)).to(on_device))
+                feats /= feats.norm(dim=-1, keepdim=True)
+            return feats.cpu().numpy().astype(np.float32)
+
+        return fallback.run(run)
 
     return encode
 
