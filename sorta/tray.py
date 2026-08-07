@@ -57,7 +57,9 @@ DEFAULT_CONFIG = "config.yaml"
 ICON_PATH = Path(__file__).resolve().parent / "web" / "favicon.ico"
 # "Is the program on this port ours?" — a route of this server that reads nothing and
 # needs no body. A foreign server may well answer 200 on it, so the shape of the answer
-# is checked too: `/api/env` is `{"gpu_profile": ...}` and nothing else.
+# is checked too: `/api/env` carries `gpu_profile`, which nothing else answers with.
+# (F217 added two more fields to that route; the probe reads the one field, so a payload
+# that grows stays recognisable.)
 PROBE_ROUTE = "/api/env"
 PROBE_FIELD = "gpu_profile"
 PROBE_TIMEOUT = 2.0
