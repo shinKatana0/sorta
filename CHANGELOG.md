@@ -281,6 +281,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **On a clean Windows not one component could be downloaded: every tier failed on the
+  certificate check, so the tiers could not be added at all** (F221). The owner put a
+  built installer into a fresh virtual machine, started a run, and the verdicts stage —
+  the one that builds CLIP and fetches its weights — stopped with
+  `[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate`. The download
+  goes through `urllib.request.urlopen`, which on Windows verifies the chain against the
+  **system root certificate store**, and on a freshly installed Windows that store is
+  nearly empty: the roots are fetched on demand and on a clean machine that regularly does
+  not happen. The blast radius is everything: **faces, search by words, the deep tier and
+  the CLIP weights all download the same way**, so the entire tiered construction that
+  F211 and F216 were written for was unreachable on the machine it was built for.
+  **The fix is that the payload now carries its own trust instead of borrowing the
+  machine's.** `certifi` was already inside it — `requests` and `huggingface_hub` depend
+  on it and use it by default — and plain `urllib` simply had never heard of it. A
+  `sitecustomize.py` now travels in `python\Lib\site-packages\`, beside the `.pth` that
+  finds `lib\`, and points `SSL_CERT_FILE`/`SSL_CERT_DIR` at `lib\certifi\cacert.pem`.
+  CPython imports that file while it is still starting up, so **all five ways of starting
+  the program are covered at once** — both shortcuts, `sorta-setup`, the console command
+  and the tray — where a variable set in one shortcut would have fixed one route out of
+  five. It uses `setdefault`, so a corporate proxy with a root of its own keeps it; the
+  path is derived from `__file__`, so the payload stays movable; nothing is written to the
+  machine and no other process's environment is touched. **Certificate verification is not
+  weakened anywhere** — `verify=False` and unverified contexts are not a fix but a hole in
+  a program that downloads and then RUNS model weights, and a test pins their absence.
+  **The third defect of one class in a day, and the guard is the part that matters.** The
+  MSVC runtime (F218) and this one are the same failure: the product relied on the state
+  of the host machine while promising not to. Checking whether TLS works on a machine
+  where TLS works proves nothing, so the guard does not check the network — it starts an
+  interpreter with an **empty root store**, which is precisely a clean machine's, and
+  reads back what `ssl.create_default_context()` ends up trusting: with the payload's
+  configuration it is exactly the certificate set the payload carries, and with the fix
+  taken away it is not (four tests go red — verified by removing it). The build refuses to
+  compile an installer whose payload is missing either half of the pair, and the installer
+  workflow checks after installing that `SSL_CERT_FILE` points inside the installation —
+  which is a check of the wiring, not of TLS, because a runner is not a clean machine
+  either. The last word is the owner's virtual machine, and it is written down as such.
 - **The installer shipped a product whose machine half was dead: torch and onnxruntime
   could not load on any machine that had never had the Visual C++ Redistributable**
   (F218). The owner put a built installer into a clean Windows 11 virtual machine and the
