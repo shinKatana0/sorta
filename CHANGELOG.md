@@ -160,6 +160,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **The installer shipped a product whose machine half was dead: torch and onnxruntime
+  could not load on any machine that had never had the Visual C++ Redistributable**
+  (F218). The owner put a built installer into a clean Windows 11 virtual machine and the
+  first measurement got `WinError 126` on `lib\torch\lib\c10.dll`. Reading the import
+  table of all 439 modules of the payload named three libraries of the MSVC runtime:
+  `msvcp140.dll`, wanted by 25 modules and present only inside `lib\sklearn\.libs\` where
+  nothing looks for it; `msvcp140_1.dll`, wanted by **onnxruntime** and absent
+  altogether; and `msvcp140_atomic_wait.dll`, wanted by `torch_python` and absent too.
+  So the defect was never only torch: on a clean machine **neither faces nor search by
+  words could start**, and what still worked was everything importing neither — index,
+  EXIF, geo, duplicates, `doctor`. Anyone installing 0.4.0 on a machine without the
+  redistributable got a product with its whole machine half silently gone.
+  **Nobody caught it because every machine we build and test on has that runtime in
+  System32**, put there by any one of a dozen unrelated programs — and `windows-latest`
+  is a developer image, so F216's "install it and make it work" would have gone green on
+  the broken payload as well. The three libraries now travel in `payload\python\`, beside
+  the `vcruntime140.dll` that standalone CPython puts there and that was being found all
+  along, because that is the directory of the executable and the Windows loader searches
+  it. **No administrator anywhere**: running `vc_redist.x64.exe` from the installer is
+  what almost everybody does and it needs one, while `PrivilegesRequired=lowest` is a
+  promise this installer is built around. The files are extracted at build time from the
+  official redistributable, pinned by a permanent versioned URL and a SHA-256 and
+  recorded by version in `sorta-install.json` — a copy from the build machine's System32
+  would tie a release to one person's patch level.
+  **The watchdog matters more than the three files**, and it is the reason this is
+  written down at length: the files fix today's breakage, the watchdog fixes the class.
+  The build now reads what every `*.dll` and `*.pyd` of the staged payload imports and
+  refuses to compile an installer unless each name is either in the payload or provided
+  by Windows — a check about FILES, which needs no clean machine and would have caught
+  this before the first install. It runs in the build and again in the suite, the list of
+  what counts as "provided by Windows" is explicit with a reason per name, and a test
+  assembles a payload with a hole in it and reads the complaint back: we have shipped
+  checks that pass no matter what before (F182, F216). That the fix itself is enough on a
+  machine without the redistributable is the one thing no check here can prove — it is
+  step 5 of the manual checklist, in a clean virtual machine.
 - **The installer would not build at all: the alias `uv` leaves beside the interpreter
   was counted as a second interpreter.** `uv python install --install-dir X` no longer
   writes one directory into X — uv 0.11 writes the real

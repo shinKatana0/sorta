@@ -2,9 +2,10 @@ Sorta — third-party data attribution
 =====================================
 
 This project bundles and/or queries geographic data from third parties, and
-the Windows installer additionally bundles one third-party program (§3).
-Sorta's own source code is MIT-licensed (see LICENSE); the notices below
-cover only the data and that program, not the code.
+the Windows installer additionally bundles one third-party program (§3) and
+three Microsoft runtime libraries (§4). Sorta's own source code is
+MIT-licensed (see LICENSE); the notices below cover only the data, that
+program and those libraries, not the code.
 
 1. GeoNames (bundled, offline reverse geocoding)
 -------------------------------------------------
@@ -56,3 +57,33 @@ The version bundled by a given build is recorded in that build's
 `sorta-install.json`; the build refuses to ship silently without it
 (`--no-exiftool` builds the Pillow-fallback variant on purpose, and the
 first-run wizard then says which formats will not be read).
+
+4. Microsoft Visual C++ runtime (bundled by the Windows installer only)
+--------------------------------------------------------------------------
+The Windows installer (F218, `packaging/windows/`) ships three libraries of
+the Microsoft Visual C++ runtime inside its payload, beside the interpreter
+in `python\`:
+
+  msvcp140.dll, msvcp140_1.dll, msvcp140_atomic_wait.dll
+
+They are what `torch` and `onnxruntime` import, and without them neither
+loads on a machine that has never had the Visual C++ Redistributable
+installed. They are extracted at build time from the official
+`vc_redist.x64.exe` (Microsoft Visual C++ 2015-2022 Redistributable),
+downloaded from a permanent versioned Microsoft URL and verified by SHA-256;
+the version is recorded in that build's `sorta-install.json`.
+
+Microsoft grants redistribution of these files with an application under the
+"Distributable Code" terms of the Visual Studio licence, which permit
+app-local deployment — copying them into the application's own directory —
+alongside the redistributable installer. Two of the three already travelled
+inside Sorta's payload before this was written: `scikit-learn` and `numpy`
+ship their own copies of `msvcp140.dll` in their wheels.
+
+  Microsoft Visual C++ runtime (c) Microsoft Corporation, redistributed
+  under the Visual Studio Distributable Code terms:
+  https://visualstudio.microsoft.com/license-terms/
+
+This applies to the Windows installer only. A `uv tool install` of Sorta
+does not carry these libraries: the wheels it installs bring their own, and
+a Python already on the machine brought its own runtime with it.
