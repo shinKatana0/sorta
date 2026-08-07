@@ -2939,6 +2939,10 @@
     var info = partStates[key];
     if (!info) return false;
     if (info.always) return true;
+    // A line whose tier is not on the machine will not run whatever its box says — the
+    // saved tick is kept and shown, and the run falls back. Promising its download would
+    // be the same lie as promising its hours (§6).
+    if (!partAvailable(key)) return false;
     var row = null;
     COST_ROWS.forEach(function (candidate) {
       if (candidate.key === key) row = candidate;

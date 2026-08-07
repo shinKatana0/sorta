@@ -375,6 +375,14 @@ class TestAnUnavailableTierIsAnUnavailableCheckbox(ProcessTestBase):
         self.assertIn("function loadEnv()", source)
         self.assertIn("window.setInterval", source)
 
+    def test_the_summary_does_not_promise_an_absent_tiers_download_either(self):
+        """The same rule as the seconds: a checkbox left ticked for a tier that is not on
+        the machine describes a run that will not happen, so neither its hours nor its
+        gigabytes are quoted."""
+        source = _APP_JS.read_text(encoding="utf-8")
+        block = source.split("function partWillRun(")[1].split("\n  }")[0]
+        self.assertIn("partAvailable(key)", block)
+
     def test_the_estimate_does_not_promise_an_absent_tiers_time(self):
         """§6: the deep tier's checkbox can be ticked with the tier missing, and
         `junk.classify` then falls back to the fast one — so the price shown has to be
