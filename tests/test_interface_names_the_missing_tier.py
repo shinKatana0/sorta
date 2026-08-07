@@ -292,10 +292,15 @@ class TestNothingIsInstalledFromTheBrowser(unittest.TestCase):
                 self.assertNotIn(needle, source)
 
     def test_the_env_route_answers_and_changes_nothing(self):
-        """The one route that carries the tier states is a GET that reads three
-        answers — there is no verb on it."""
+        """The one route that carries the tier states is a GET that reads a handful of
+        answers — there is no verb on it.
+
+        F222 added two of those answers (`parts`, `weights`): what each line of the run
+        screen would download, out of the same probe. Still a read.
+        """
         payload = ui.process._env_payload()
-        self.assertEqual(set(payload), {"gpu_profile", "gpu_present", "tiers"})
+        self.assertEqual(set(payload),
+                         {"gpu_profile", "gpu_present", "tiers", "parts", "weights"})
 
 
 class TestASilentFallBackIsSaidOutLoud(ProcessTestBase):
@@ -386,11 +391,26 @@ class TestTheNoteStandsAtTheOption(ProcessTestBase):
         self.assertIn("function updateTierNotes()", source)
         self.assertNotIn("updateVlmMissingWarning", source)
 
-    def test_the_checkbox_is_not_disabled_by_a_missing_tier(self):
-        """We explain, we do not forbid: the run is still allowed and still honest."""
+    def test_the_note_itself_still_only_explains(self):
+        """F217 wrote "we explain, we do not forbid" and asserted that the note function
+        disables nothing. F222 §6b reversed the FORBIDDING half for one case — a tier
+        whose packages are absent makes the checkbox useless, and a control that does
+        nothing is what F211 rules out — but not this half: the sentence is still a
+        sentence, and whatever goes dead is decided elsewhere
+        (`updateOptionAvailability`), from the probe rather than from the wording.
+        """
         source = (_ROOT / "sorta" / "web" / "app" / "app.js").read_text(encoding="utf-8")
-        notes = source.split("function tierNote(")[1].split("function applyProcessDefaults")[0]
+        notes = source.split("function tierNote(")[1].split("function setPartNote")[0]
         self.assertNotIn("disabled", notes)
+
+    def test_a_tier_that_only_lacks_its_weights_never_disables_anything(self):
+        """The distinction F216 built the middle state for, now that a state CAN disable
+        a control: weights arrive on first use, so an option waiting for them is a normal
+        option — only absent packages make one impossible."""
+        weights_only = [tiers.TierState("faces", missing_weights=("buffalo_l",))]
+        parts = ui.process._parts_payload(tiers.run_parts(weights_only))
+        self.assertTrue(parts["faces"]["available"])
+        self.assertEqual(parts["faces"]["missing"], ["buffalo_l"])
 
     def test_the_tier_states_reach_the_browser_on_the_env_request(self):
         ui.process._gpu_present_cache_clear()

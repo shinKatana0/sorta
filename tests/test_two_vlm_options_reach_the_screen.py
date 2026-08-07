@@ -174,6 +174,9 @@ class RunScreenCase(RunCostsTestBase):
         Two stages instead of `run_once`'s one: the rescue is a setting of the back half
         of the junk stage, the landmark check is a setting of the landmarks stage, and
         "the checkbox reached the run" is a statement about the config each of them got.
+
+        F222 made the landmark stage opt-in, so it is asked for here — a config that
+        never reaches a stage says nothing about whether the checkbox reached it.
         """
         junk_cfg: list[object] = []
         landmark_cfg: list[object] = []
@@ -193,7 +196,8 @@ class RunScreenCase(RunCostsTestBase):
         self._patch("detect_landmarks", fake_landmarks)
         self.start_server()
         status, resp = self.post("/api/process",
-                                 {"source_dir": str(self.src_dir), **body})
+                                 {"source_dir": str(self.src_dir), "landmarks": True,
+                                  **body})
         self.assertEqual(status, 200, resp)
         _poll_until(self.status, lambda d: d["finished"])
         self.assertEqual((len(junk_cfg), len(landmark_cfg)), (1, 1))
@@ -431,12 +435,20 @@ class TestBothLinesAreOnTheScreen(unittest.TestCase):
     def options(self) -> str:
         return self.html.split('id="step-options"', 1)[1].split('id="step-actions"', 1)[0]
 
-    def test_both_stand_under_the_master_with_a_price_of_their_own(self):
-        block = self.options().split('id="process-deep-checkbox"', 1)[1]
-        for control, key in (("process-junk-rescue-checkbox", "junk_rescue"),
-                             ("process-landmarks-verify-checkbox",
-                              "landmarks_verify")):
+    def test_both_stand_under_the_line_they_belong_to_with_a_price_of_their_own(self):
+        """F222 moved the landmark check from under the master switch to under the
+        landmark stage it is a question about. It is still subordinate to the master —
+        that is behaviour, and `TestTheLandmarkCheckIsSubordinateInFact` above asserts it
+        at the stage — but a check of a stage that is not in the run is a control that
+        does nothing, and putting it inside that stage's row is how the screen says so.
+        """
+        for parent, control, key in (
+                ("process-deep-checkbox", "process-junk-rescue-checkbox",
+                 "junk_rescue"),
+                ("process-landmarks-checkbox", "process-landmarks-verify-checkbox",
+                 "landmarks_verify")):
             with self.subTest(control=control):
+                block = self.options().split(f'id="{parent}"', 1)[1]
                 self.assertIn(f'id="{control}"', block)
                 self.assertIn(f'data-cost="{key}"', block)
 

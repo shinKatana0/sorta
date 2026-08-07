@@ -201,8 +201,9 @@ sorta ui                                # http://127.0.0.1:8756 → Обрабо
 
 # Или CLI
 sorta index /путь/к/фото                # сканирование
-sorta run                               # гео, landmarks, junk + хэши почти-дублей (города+дубли)
+sorta run                               # гео, junk + хэши почти-дублей (города+дубли)
 sorta run --faces --events              # ...плюс детекция лиц и построение событий
+sorta run --landmarks                   # ...плюс места по виду (1,6 ГБ весов)
 sorta sort --by city --dest /путь/к/разложенному            # dry-run план (CSV + HTML)
 sorta sort --by city --dest /путь/к/разложенному --copy --apply   # применить (copy неразрушающий)
 sorta undo                              # откатить последний батч при необходимости

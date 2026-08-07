@@ -52,6 +52,13 @@ column. F161 adds `products` to that list (`vlm.products`, the deep junk tier), 
 the effect `deep` used to have of its own: `deep` is now permission and nothing else.
 `GET /api/process/estimate` prices every line of that screen: a measured rate
 times a count from this index, `null` (a dash, never a zero) where the index cannot say.
+F222 adds `landmarks` to the body — a STAGE like `faces`/`events`, off by default, with
+`features.landmarks` behind it — and puts what a run will DOWNLOAD next to what it will
+cost: `GET /api/env` carries, per line of the screen, the weights it raises, which of
+them are absent from this disk and how big they are, all out of the one `tier_states()`
+probe `sorta doctor` reads. While a download is running the status snapshot carries
+`download` ({stage, weights, mb}); a refusal to download reaches `error` as a sentence
+naming the stage, the model and the size, with the traceback in the log.
 
 (8) `POST /api/process/reset` (F42, the "Start over" button) — wipes the ENTIRE index
 via the ready `db.reset_index(conn)` (the same tables as the CLI `sorta reset`:
@@ -673,13 +680,15 @@ from .moves import (
 )
 from .process import (
     _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
+    _DownloadRefused,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
     _OPTIONAL_STAGES, TIER_ABSENT, TIER_READY, TIER_WEIGHTS, _deep_tier_ran,
-    _gpu_present, _gpu_present_cache, _gpu_present_cache_clear, _gpu_present_lock,
-    _tier_state_name, _tiers_payload,
+    _run_language, _gpu_present, _gpu_present_cache, _gpu_present_cache_clear,
+    _gpu_present_lock, _parts_payload, _tier_state_name, _tiers_payload, _weights_payload,
     _PIPELINE_STAGE_NAMES, _PipelineCancelled, _ProcessState, _RATE_DEFAULT, _RATE_FIXED,
     _RATE_MEASURED, _RATE_UNITS, _Rate, _RunOptions, _SEC_PER_BASE_FRAME, _SEC_PER_EVENTS_FRAME,
-    _SEC_PER_FACES_FRAME, _SEC_PER_VLM_FRAME, _StageFn, _StageProgress, _StageStats,
+    _SEC_PER_FACES_FRAME, _SEC_PER_LANDMARKS_FRAME, _SEC_PER_VLM_FRAME, _StageFn,
+    _StageProgress, _StageStats,
     _TREE_MAX_DEPTH, _TREE_MAX_NODES, _any_truncated, _browse_for_folder, _browse_lock,
     _cache_payload, _env_payload, _estimate_cache, _estimate_cache_clear, _estimate_cache_lock,
     _excludes_payload, _pipeline_steps, _positive_or_none, _process_defaults_payload,

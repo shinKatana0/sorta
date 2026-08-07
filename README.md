@@ -200,8 +200,9 @@ sorta-tray                              # ...the same, with an icon in the tray 
 
 # Or the CLI
 sorta index /path/to/photos             # scan
-sorta run                               # geo, landmarks, junk + near-dup hashes (city+dupes)
+sorta run                               # geo, junk + near-dup hashes (city+dupes)
 sorta run --faces --events              # ...also detect faces and build events
+sorta run --landmarks                   # ...also recognise places by sight (1.6 GB of weights)
 sorta sort --by city --dest /path/to/sorted            # dry-run plan (CSV + HTML)
 sorta sort --by city --dest /path/to/sorted --copy --apply   # apply (copy = non-destructive)
 sorta undo                              # reverse the last batch if needed

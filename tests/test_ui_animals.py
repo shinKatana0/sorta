@@ -356,12 +356,13 @@ class TestProcessPetsOverride(ProcessTestBase):
             "/api/process", {"source_dir": str(self.src_dir), "pets": True})
         self.assertEqual(status, 200)
         final = _poll_until(self.status, lambda d: d["finished"])
+        # F222: `landmarks` is opt-in now and was not asked for, so it is not here —
+        # what this case is about is that `pets` adds no stage of its own.
         self.assertEqual(
             self.calls,
-            ["index", "assign_duplicates", "geo", "landmarks", "classify", "junk",
-             "phash"])
-        # index/geo/landmarks/classify/junk/phash
-        self.assertEqual(final["stage_total"], 6)
+            ["index", "assign_duplicates", "geo", "classify", "junk", "phash"])
+        # index/geo/classify/junk/phash
+        self.assertEqual(final["stage_total"], 5)
         self.assertNotIn("pets", ui._PIPELINE_STAGE_NAMES)
         self.assertNotIn("pets", ui._OPTIONAL_STAGES)
 

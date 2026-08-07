@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import shutil
 import sqlite3
@@ -19,8 +20,8 @@ except ImportError:  # pragma: no cover — a sandbox/CI without typer, see _arg
 else:
     _TYPER_AVAILABLE = True
 
-from . import __version__, imaging, wizard
-from .config import Config, configure_logging, load_config
+from . import __version__, imaging, tiers, wizard
+from .config import Config, configure_logging, load_config, skipped_stage_notes
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import (
@@ -80,6 +81,9 @@ from .tiers import (  # noqa: F401
     _weights_cached,
     tier_states,
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 def _configure_runtime() -> None:
@@ -358,7 +362,12 @@ def _cmd_landmarks(config_path: str) -> None:
     lang = _lang(cfg)
     conn = connect(cfg.database)
     with progress_task(_t("cli.progress.landmarks", lang)) as cb:
-        stats = detect_landmarks(cfg, conn, progress=cb)
+        # F222: through the announcing factory, so this command says what it downloads
+        # too. Still lazy — a run with no unknown places builds no model and prints no
+        # sentence about one.
+        stats = detect_landmarks(
+            cfg, conn, classifier=_LazySharedClassifier(
+                lambda: _build_clip(cfg, "landmarks")), progress=cb)
     print(_summarize_landmarks(stats, lang))
 
 
@@ -398,7 +407,8 @@ def _cmd_junk(config_path: str, *, pets: bool | None = None) -> None:
     conn = connect(cfg.database)
     with progress_task(_t("cli.progress.junk", lang),
                        phase_labels=_junk_phase_labels(lang)) as cb:
-        stats = classify_junk(cfg, conn, progress=cb)
+        stats = classify_junk(cfg, conn, classifier=_LazySharedClassifier(
+            lambda: _build_clip(cfg, "junk")), progress=cb)
     print(_summarize_junk(stats, lang))
 
 
@@ -414,7 +424,8 @@ def _cmd_classify(config_path: str) -> None:
     conn = connect(cfg.database)
     with progress_task(_t("cli.progress.classify", lang),
                        phase_labels=_junk_phase_labels(lang)) as cb:
-        stats = classify_junk(cfg, conn, verdicts_only=True, progress=cb)
+        stats = classify_junk(cfg, conn, classifier=_LazySharedClassifier(
+            lambda: _build_clip(cfg, "classify")), verdicts_only=True, progress=cb)
     print(_summarize_junk(stats, lang))
 
 
@@ -429,7 +440,42 @@ def _cmd_events(config_path: str) -> None:
     print(_summarize_events(stats, lang))
 
 
-# --- The `sorta run` pipeline -----------------------------------------------
+# --- F222: a stage says what it is downloading, and why it could not ---------
+#
+# The report this comes from: "it hung on landmarks". Nothing had hung — 1.6 GB of CLIP
+# weights were arriving over a slow line with not one character on screen, and then the
+# run died on the verdicts with `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>`,
+# which names neither the model, nor the stage, nor what to do about it.
+#
+# Both halves live where the model is BUILT rather than where the stage is called: a
+# stage with nothing to do (no unknown places, no new frames) never reaches the factory
+# and must not announce a download that will not happen. That is also why `faces` has no
+# sentence here: its model is raised inside `sorta/faces.py`, there is no factory in this
+# file to hang one on, and announcing it a stage early would claim a download an
+# incremental run does not make. What that stage gets instead is a line in the summary of
+# the run screen, where its 400 MB is stated before anything starts.
+
+
+def _build_clip(cfg, stage: str) -> Classifier:
+    """The CLIP classifier for `stage`, with the download said out loud on both sides.
+
+    The failure is re-worded ONLY when the weights were actually missing before the
+    attempt. A model that is already on disk and still will not load failed for some
+    other reason, and dressing that up as a download problem would send a person to check
+    a network connection that is fine.
+    """
+    lang = _lang(cfg)
+    pending = tiers.stage_downloads(stage)
+    if pending:
+        print(tiers.download_notice(stage, pending, lang))
+    try:
+        return clip_classifier(naming_settings(cfg))
+    except Exception as exc:
+        if not pending:
+            raise
+        _log.exception("не удалось скачать веса для стадии %r", stage)
+        raise SystemExit(tiers.download_failure(stage, pending, lang, exc)) from exc
+
 
 class _LazySharedClassifier:
     """Builds the real CLIP classifier on the FIRST call and reuses it between
@@ -473,7 +519,14 @@ class _LazySharedClassifier:
 # scenario (cities + dupes) — opt-in via --faces/--events, default off.
 # `_pipeline_steps()` still builds the FULL list; filtering is up to the caller
 # (`_cmd_run`), see below.
-_OPTIONAL_STAGES = ("faces", "events")
+#
+# F222: `landmarks` joins them, and it is the first of the three that a config file can
+# decide (`features.landmarks`) — faces and events are per-run flags with no key behind
+# them. The stage had no switch of any kind: it ran on every run, fetched 1.6 GB of CLIP
+# weights the first time and produced 0.55% of the places of the owner's collection. Same
+# mechanism as the other two on purpose — a second way of skipping a stage is a second
+# way of getting it wrong.
+_OPTIONAL_STAGES = ("landmarks", "faces", "events")
 
 
 def _pipeline_steps() -> list[tuple[str, object]]:
@@ -492,12 +545,17 @@ def _pipeline_steps() -> list[tuple[str, object]]:
     second call scores frames the first one already encoded.
     """
     shared: dict[str, _LazySharedClassifier] = {}
+    # F222: which stage asked last. The classifier is shared by three of them (F19) and
+    # built by whichever gets there first, so the sentence about the download has to name
+    # that one rather than a stage picked at definition time.
+    asked_by = {"stage": "landmarks"}
 
-    def _clip(cfg) -> _LazySharedClassifier:
+    def _clip(cfg, stage: str) -> _LazySharedClassifier:
+        asked_by["stage"] = stage
         clf = shared.get("clip")
         if clf is None:
             clf = shared["clip"] = _LazySharedClassifier(
-                lambda: clip_classifier(naming_settings(cfg)))
+                lambda: _build_clip(cfg, asked_by["stage"]))
         return clf
 
     def _index(cfg, conn, cb) -> str:
@@ -510,7 +568,8 @@ def _pipeline_steps() -> list[tuple[str, object]]:
 
     def _landmarks(cfg, conn, cb) -> str:
         return _summarize_landmarks(
-            detect_landmarks(cfg, conn, classifier=_clip(cfg), progress=cb), _lang(cfg))
+            detect_landmarks(cfg, conn, classifier=_clip(cfg, "landmarks"), progress=cb),
+            _lang(cfg))
 
     def _faces(cfg, conn, cb) -> str:
         face_stats, cl_stats = detect_and_cluster(cfg, conn, progress=cb)
@@ -523,12 +582,13 @@ def _pipeline_steps() -> list[tuple[str, object]]:
 
     def _classify(cfg, conn, cb) -> str:
         return _summarize_junk(
-            classify_junk(cfg, conn, classifier=_clip(cfg), verdicts_only=True,
-                          progress=cb), _lang(cfg))
+            classify_junk(cfg, conn, classifier=_clip(cfg, "classify"),
+                          verdicts_only=True, progress=cb), _lang(cfg))
 
     def _junk(cfg, conn, cb) -> str:
         return _summarize_junk(
-            classify_junk(cfg, conn, classifier=_clip(cfg), progress=cb), _lang(cfg))
+            classify_junk(cfg, conn, classifier=_clip(cfg, "junk"), progress=cb),
+            _lang(cfg))
 
     return [
         ("index", _index),
@@ -544,7 +604,8 @@ def _pipeline_steps() -> list[tuple[str, object]]:
 def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
              deep: bool | None = None, geo: str | None = None,
              faces: bool = False, events: bool = False,
-             src: str | None = None, pets: bool | None = None) -> None:
+             src: str | None = None, pets: bool | None = None,
+             landmarks: bool | None = None) -> None:
     """`deep`/`geo` (F50/#34) — an opt-in override for THIS run, not written to
     config.yaml: `deep` -> `naming.vlm_enabled`, `geo` ("offline"|"online") ->
     `geo.provider`. None (flag not passed) -> the value stays from config.
@@ -558,7 +619,12 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
 
     `pets` (F127) — the same kind of per-run override as `deep`, on the frame-quality
     cascade (see `_quality_overrides`). NOT a stage: it changes what the `junk` stage
-    computes and leaves the list of steps as it was."""
+    computes and leaves the list of steps as it was.
+
+    `landmarks` (F222) — an opt-in step like `faces`/`events`, with one difference: None
+    means the config decides (`features.landmarks`), so `--landmarks/--no-landmarks` moves
+    it in both directions and a file that switches the stage on keeps running it without
+    anybody passing a flag."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
@@ -574,11 +640,19 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     if geo is not None:
         cfg = dataclasses.replace(cfg, geo=dataclasses.replace(cfg.geo, provider=geo))
     cfg = _quality_overrides(cfg, pets=pets)
+    if landmarks is not None:
+        cfg = dataclasses.replace(
+            cfg, features=dataclasses.replace(cfg.features, landmarks=landmarks))
     conn = connect(cfg.database)
     try:
-        enabled_optional = {"faces": faces, "events": events}
+        enabled_optional = {"faces": faces, "events": events,
+                            "landmarks": bool(cfg.features.landmarks)}
         steps = [(name, fn) for name, fn in _pipeline_steps()
                  if name not in _OPTIONAL_STAGES or enabled_optional[name]]
+        for line in skipped_stage_notes(
+                cfg, [name for name in _OPTIONAL_STAGES if not enabled_optional[name]],
+                lang):
+            print(line)
         for i, (name, fn) in enumerate(steps, 1):
             print(_t("cli.run.stage", lang, index=i, total=len(steps), name=name))
             # F69: the per-stage timing goes to the run log, so "which stage ate the
@@ -1360,6 +1434,10 @@ def build_app(lang: Lang) -> typer.Typer:
             False, "--faces/--no-faces", help=h("cli.help.run.faces")),
         events: bool = typer.Option(
             False, "--events/--no-events", help=h("cli.help.run.events")),
+        # F222: None and not False — the stage has a config key behind it, so the flag is
+        # an override in both directions rather than the only way to switch it on.
+        landmarks: bool = typer.Option(
+            None, "--landmarks/--no-landmarks", help=h("cli.help.run.landmarks")),
         src: str = typer.Option(None, "--src", help=h("cli.help.run.src")),
         pets: bool = pets_opt,
         config: str = cfg_opt,
@@ -1367,7 +1445,7 @@ def build_app(lang: Lang) -> typer.Typer:
         if geo is not None and geo not in ("offline", "online"):
             raise typer.BadParameter(_t("cli.run.geo_choice", _lang_of(config)))
         _cmd_run(config, by=by, dest=str(dest) if dest else None, deep=deep, geo=geo,
-                 faces=faces, events=events, src=src, pets=pets)
+                 faces=faces, events=events, src=src, pets=pets, landmarks=landmarks)
 
     return app
 

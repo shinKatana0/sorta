@@ -269,6 +269,13 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
 .cost-total-label { font-size: 0.85rem; color: var(--muted); }
 .cost-total-value { font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* F222: what this run will download, right above the button that starts it. Laid out
+   like the total above it rather than like a warning — it is a fact about the run, and
+   a machine that already has the weights reads one calm line here. */
+.download-block { display: flex; flex-direction: column; gap: 2px;
+      padding-top: var(--space-sm); }
+.download-total { font-size: 0.9rem; font-weight: 600; }
+
 /* --- the shared cards ----------------------------------------------------- */
 .card { border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--space-md) var(--space-lg);
       margin-bottom: var(--space-md); background: var(--card); box-shadow: var(--shadow-sm); }

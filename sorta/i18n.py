@@ -470,6 +470,30 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "[stage {index}/{total}] {name}",
         "ja": "[ステージ {index}/{total}] {name}",
     },
+    # F222: the stage is skipped and the file still configures it. Said, and no more than
+    # said — the settings are not read as consent and nothing is switched on by them, or
+    # in six months nobody could explain why the stage ran. The one thing that would be
+    # worse is silence: the owner of such a file would learn about the change from a
+    # missing result.
+    "cli.run.stage_skipped_configured": {
+        "ru": "Этап «{stage}» пропущен: с этой версии он выключен по умолчанию, а в "
+              "config.yaml остались его настройки ({keys}). {how}",
+        "en": "The “{stage}” stage was skipped: it is off by default from this version "
+              "on, and config.yaml still holds its settings ({keys}). {how}",
+        "ja": "「{stage}」ステージはスキップされました: このバージョンから既定で無効に"
+              "なりましたが、config.yaml にはその設定が残っています（{keys}）。{how}",
+    },
+    # Every way to switch that stage back on, in one sentence per stage — a flag, a key
+    # and a checkbox are three different things and only the stage knows which it has.
+    "cli.run.enable_landmarks": {
+        "ru": "Включить: features.landmarks: true в config.yaml, флаг --landmarks у "
+              "sorta run или галочка «Узнавать места по виду» на экране запуска.",
+        "en": "To switch it on: features.landmarks: true in config.yaml, the --landmarks "
+              "flag of sorta run, or the “Recognise places by sight” checkbox on the run "
+              "screen.",
+        "ja": "有効にするには: config.yaml の features.landmarks: true、sorta run の "
+              "--landmarks フラグ、または実行画面の「見た目で場所を判定」チェック。",
+    },
     "cli.run.plan": {
         "ru": "[план] dry-run sort --by {by} -> {dest}",
         "en": "[plan] dry-run sort --by {by} -> {dest}",
@@ -606,6 +630,54 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "  Доустановить ярус: sorta-setup.",
         "en": "  To add a tier: run sorta-setup.",
         "ja": "  ティアの追加: sorta-setup を実行します。",
+    },
+    # F222: a stage that goes to the network says so, and a stage that could not says
+    # what it was fetching. Both sentences are built in `sorta/tiers.py`, from the one
+    # table that knows which weights a stage raises — the CLI and the web app print the
+    # same words because they call the same builder.
+    "cli.download.started": {
+        "ru": "Скачивается модель для стадии «{stage}»: {weights} (~{size}). "
+              "Это происходит один раз, дальше она берётся с диска.",
+        "en": "Downloading the model for the “{stage}” stage: {weights} (~{size}). "
+              "This happens once; after that it is read from disk.",
+        "ja": "「{stage}」ステージ用のモデルをダウンロードしています: {weights}"
+              "（約 {size}）。これは初回のみで、以降はディスクから読み込まれます。",
+    },
+    # The one a person actually meets. What they used to get was
+    # `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` — no stage, no model, no
+    # size, nothing to do about it. The traceback stays in the log.
+    "cli.download.failed": {
+        "ru": "Стадия «{stage}» не смогла скачать модель {weights} (~{size}). "
+              "Проверьте подключение к сети и запустите прогон снова; модель можно "
+              "получить заранее через sorta-setup. Причина: {error}",
+        "en": "The “{stage}” stage could not download the model {weights} (~{size}). "
+              "Check the network connection and start the run again; the model can also "
+              "be fetched in advance with sorta-setup. Reason: {error}",
+        "ja": "「{stage}」ステージがモデル {weights}（約 {size}）をダウンロード"
+              "できませんでした。ネットワーク接続を確認して再実行してください。"
+              "モデルは sorta-setup で事前に取得することもできます。理由: {error}",
+    },
+    # The stages that can go to the network, named for those two sentences. Only those
+    # four: a label nobody prints is a translation nobody checks.
+    "cli.stage.landmarks": {
+        "ru": "Определение мест по виду",
+        "en": "Places recognised by sight",
+        "ja": "見た目による場所の判定",
+    },
+    "cli.stage.classify": {
+        "ru": "Классификация кадров",
+        "en": "Frame classification",
+        "ja": "コマの分類",
+    },
+    "cli.stage.junk": {
+        "ru": "Служебные кадры и качество",
+        "en": "Utility frames and quality",
+        "ja": "実用目的のコマと品質",
+    },
+    "cli.stage.faces": {
+        "ru": "Разбор по лицам",
+        "en": "Face detection",
+        "ja": "顔の検出",
     },
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
@@ -971,19 +1043,29 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Search by words",
         "ja": "言葉による検索",
     },
+    # F222: this tier carries the CLIP weights, and the landmark stage raises the same
+    # file — so the stage is NAMED here rather than given a fifth tier of its own for one
+    # 1.6 GB model that is already in the catalog. Somebody who wants places recognised by
+    # sight has to be able to find the component that gives them; a person reading
+    # "Search by words" would never guess it.
     "cli.setup.tier.search.benefit": {
-        "ru": "Запрос словами по коллекции и закреплённые срезы — на трёх языках.",
+        "ru": "Запрос словами по коллекции и закреплённые срезы — на трёх языках. Те же "
+              "веса нужны стадии «Узнавать места по виду» (галочка на экране запуска).",
         "en": "Ask the collection in words, and pin a query as a slice — in three "
-              "languages.",
-        "ja": "コレクションを言葉で検索し、クエリをスライスとして固定できます（3言語）。",
+              "languages. The same weights are what the “Recognise places by sight” "
+              "stage needs (a checkbox on the run screen).",
+        "ja": "コレクションを言葉で検索し、クエリをスライスとして固定できます（3言語）。"
+              "同じ重みは「見た目で場所を判定」ステージ（実行画面のチェック）にも"
+              "使われます。",
     },
     "cli.setup.tier.search.without": {
-        "ru": "Поиск словами скажет, что индекса нет, вместо выдачи; срезы по лицам и "
-              "классам работают.",
-        "en": "Search by words says it has no index instead of returning a ranking; the "
-              "face and class slices work.",
-        "ja": "言葉による検索は結果の代わりに索引がないと伝えます。顔やクラスの"
-              "スライスは動作します。",
+        "ru": "Поиск словами скажет, что индекса нет, вместо выдачи; узнавать места по "
+              "виду тоже не выйдет. Срезы по лицам и классам работают.",
+        "en": "Search by words says it has no index instead of returning a ranking, and "
+              "places cannot be recognised by sight either; the face and class slices "
+              "work.",
+        "ja": "言葉による検索は結果の代わりに索引がないと伝え、見た目による場所の判定も"
+              "できません。顔やクラスのスライスは動作します。",
     },
     "cli.setup.tier.gpu.name": {
         "ru": "Ускорение на NVIDIA (CUDA 13)",
@@ -1840,6 +1922,19 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "時間・場所によるイベントへのグループ化。デフォルトは無効で、"
               "`sorta events` として個別に実行できます",
     },
+    # F222: the third opt-in stage, and the only one with a config key behind it — hence
+    # "the config decides" rather than "off by default" as the two above say.
+    "cli.help.run.landmarks": {
+        "ru": "Определять места по виду (CLIP по списку достопримечательностей); "
+              "по умолчанию решает features.landmarks — выключено, 0,55% мест за "
+              "1,6 ГБ весов; доступно отдельно как `sorta landmarks`",
+        "en": "Recognise places by sight (CLIP over the landmark list); without the "
+              "flag features.landmarks decides — off, 0.55% of the places for 1.6 GB "
+              "of weights; available on its own as `sorta landmarks`",
+        "ja": "見た目で場所を判定します（名所リストに対する CLIP）。フラグがなければ "
+              "features.landmarks が決めます（既定は無効、場所の 0.55% に対し重み "
+              "1.6 GB）。`sorta landmarks` として個別に実行できます",
+    },
     "cli.help.run.src": {
         "ru": "Каталог-источник для этого прогона; переопределяет "
               "config sources (как позиционный аргумент у `index`)",
@@ -1879,3 +1974,18 @@ def cli_text(key: str, lang: Lang, **fields: object) -> str:
     if entry is None:
         return key
     return (entry.get(lang) or entry[_DEFAULT_LANG]).format(**fields)
+
+
+def stage_label(stage: str, lang: Lang) -> str:
+    """A pipeline stage, named the way a person reads it — or its bare key (F222).
+
+    Here rather than next to either caller because turning a key into a name in a
+    language is what this module is for, and there are two callers: the sentences about a
+    download (`sorta/tiers.py`) and the one about a stage that was skipped while its
+    settings sat in the config (`sorta/config.py`). Not every stage has a name — only the
+    ones some sentence prints — and a stage without one is called by its key rather than
+    by nothing.
+    """
+    key = f"cli.stage.{stage}"
+    named = cli_text(key, lang)
+    return stage if named == key else named
