@@ -142,6 +142,32 @@ class TestNothingGoesWithoutAnAnswer(CacheCase):
         cli._cmd_cache(str(self.home / "nothing-here.yaml"), models=True, confirm=None)
 
 
+class TestWhatCannotBeDoneIsSaidRatherThanRaised(CacheCase):
+    """A cleanup that ends in a traceback is a cleanup nobody finishes — and this one
+    runs inside an uninstaller, where a traceback goes nowhere at all."""
+
+    def setUp(self):
+        super().setUp()
+        self.use_as_real_caches()
+
+    def test_an_empty_disk_is_an_answer(self):
+        printed: list[str] = []
+        with patch("builtins.print", lambda *args: printed.append(" ".join(map(str, args)))):
+            cli._cmd_cache("config.yaml", clear_models=True, confirm=None)
+        self.assertEqual(printed, [i18n.cli_text("cli.cache.models_none", "en")])
+
+    def test_a_directory_that_will_not_go_is_reported(self):
+        self.clip()
+        printed: list[str] = []
+        with patch.object(weights, "_delete",
+                          side_effect=OSError("the file is in use")), \
+                patch("builtins.print",
+                      lambda *args: printed.append(" ".join(map(str, args)))):
+            cli._cmd_cache("config.yaml", clear_models=True, confirm=None)
+        self.assertTrue(any("the file is in use" in line for line in printed))
+        self.assertTrue(self.found())  # still there, and said to be
+
+
 class TestOnlyTheCatalogModelsGo(CacheCase):
     """A shared cache is a cache somebody else is also using."""
 

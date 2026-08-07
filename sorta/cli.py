@@ -1006,7 +1006,8 @@ def _cmd_cache(config_path: str, *, clear: bool = False, clear_geo: bool = False
     # a directory nobody chose.
     if models or clear_models:
         _cache_models(_lang_of(config_path), clear=clear_models, confirm=confirm)
-        return
+        if not (clear or clear_geo):
+            return  # ...and `--clear`/`--clear-geo` alongside it still do their half
     # F127: the ceiling for this run, without editing `imaging.preview_cache_max_gb`.
     # The env variable IS the override: imaging.py is a leaf module the pool workers
     # call with a path and nothing else, so the config file seeds these variables and
