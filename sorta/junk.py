@@ -520,7 +520,7 @@ from typing import Any, Callable, Generator, Sequence
 import numpy as np
 from PIL import Image
 
-from . import imaging
+from . import accel, imaging
 from .config import Config, FeaturesConfig, products_allowed, vlm_allowed
 from .detect import (
     ANIMAL_QUERY_PROMPTS,
@@ -2003,7 +2003,7 @@ def insightface_eye_landmarks() -> EyeLandmarkFn:  # pragma: no cover — ML
     faces_mod._enable_cuda_dll_dirs()
     app = FaceAnalysis(name="buffalo_l",
                        allowed_modules=["detection", "landmark_2d_106"],
-                       providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+                       providers=accel.onnx_providers())  # F214: CUDA -> CoreML -> CPU
     edge = faces_mod.DET_SIZE_DEFAULT   # F88's pinned shape; nothing here detects anything
     app.prepare(ctx_id=0, det_size=(edge, edge))
     model = app.models["landmark_2d_106"]

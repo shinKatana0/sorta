@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **macOS gets asked for its accelerator, and the machines that work today are not
+  touched** (F214). On Apple Silicon `torch.cuda.is_available()` is False, so an M3 Max
+  ran every stage on its processor — MPS was never requested, CoreML was never requested,
+  and nothing in the code was broken enough to notice. The reason it stayed that way is
+  worth naming: the question "what do I run on" was answered **four times**, by four
+  copies of the same two lines in `naming`, `landmarks`, `faces` and `junk`. Four copies
+  of a two-branch decision survive exactly as long as there are two branches. **They are
+  now one function** (`sorta/accel.py`) and four calls to it, with the order **CUDA → MPS
+  → CPU** for torch and **CUDA → CoreML → CPU** for onnxruntime; a rung that is not there
+  is not an error, it is the next rung.
+  **The requirement that shaped the code is not speed, it is that Windows and Linux feel
+  nothing.** Where CUDA is present the choice is byte-for-byte the one that shipped —
+  same device, same `float16`, same providers in the same order — and that is proven by a
+  test that walks **all four call sites**, not the one an issue happened to name, against
+  constants written out by hand rather than read back from the new code. A CPU-only
+  Windows box keeps asking for `CUDAExecutionProvider` too: tidying that list would have
+  been a change to a platform this feature is not allowed to change.
+  **An accelerator that refuses an operation costs speed, not the run.** MPS has no
+  kernel for everything a model asks of it, and it says so at the first call rather than
+  at load time — so the stage steps down to the CPU once, with a line in the log, the way
+  it already steps down when weights are missing. On CUDA nothing is caught: a card that
+  fails has to fail as loudly as it did before.
+  **On real hardware this has not been tested, and the missing pieces are named rather
+  than glossed.** There is no Mac here; the `macos-latest` job added to `check.yml` (and
+  `scripts/probe_accelerator.py`, which prints what a machine offers and which model
+  tiers fit on it) takes effect on the first push and has never run. So: whether the
+  product installs and works on macOS is unverified; which tiers fit a runner is
+  unverified; and **whether MPS and CoreML return the same verdicts as the CPU is
+  unmeasured** — a device is the same class of change as an attention kernel, and that
+  one moved 7–11 verdicts out of 300. The deep VLM tier (~7 GB) is not attempted on CI at
+  all and has been looked at by nobody, anywhere. What is measured is the choice itself:
+  the order, the fallback, and the CUDA path standing still.
 - **A Windows installer, in tiers rather than one 15 GB file** (F211). `uv tool install`
   is not something a person with a shoebox of photographs should have to know about, and
   the obstacle was never the packaging — it was the weights: torch with the CUDA wheels,

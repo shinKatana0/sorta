@@ -44,7 +44,7 @@ from urllib.parse import quote
 
 import numpy as np
 
-from . import imaging
+from . import accel, imaging
 from .config import Config
 from .progress import PhaseCB, ProgressCB
 
@@ -314,20 +314,6 @@ def _decode_workers(cfg: Config) -> int:
     return min(8, os.cpu_count() or 4)
 
 
-def _cuda_provider_available() -> bool:
-    """Is onnxruntime built with CUDA available in this environment?
-
-    The GPU profile installs onnxruntime-gpu, the CPU one plain onnxruntime; an
-    absent/broken onnxruntime means CPU semantics.
-    """
-    try:
-        import onnxruntime
-
-        return "CUDAExecutionProvider" in onnxruntime.get_available_providers()
-    except Exception:
-        return False
-
-
 def _infer_workers(cfg: Config) -> int:
     """How many independent inference sessions run in parallel (F12.1).
 
@@ -336,11 +322,15 @@ def _infer_workers(cfg: Config) -> int:
     independent FaceAnalysis sessions — measured ×3.17 on 4 sessions, ~0.6 GB VRAM
     each. On a CPU-only profile parallel sessions merely oversubscribe the cores,
     so the auto default there is 1 (and the pipeline keeps the prefetch-decode pool).
+
+    F214 moved the "is CUDA there" question into `accel` with the rest of the device
+    choice. A CoreML machine keeps the single-session default: how many Metal sessions
+    a Mac wants is a measurement nobody has made, and this feature does not guess.
     """
     n = (cfg.raw.get("faces") or {}).get("infer_workers")
     if n:
         return max(1, int(n))
-    return 4 if _cuda_provider_available() else 1
+    return 4 if accel.cuda_provider_available() else 1
 
 
 def _detect_parallel(
@@ -559,7 +549,7 @@ def _insightface_infer(s: FacesSettings) -> Infer:  # pragma: no cover — ML, s
     app = FaceAnalysis(
         name="buffalo_l",
         allowed_modules=_ALLOWED_MODULES,
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        providers=accel.onnx_providers(),  # F214: CUDA -> CoreML -> CPU, in one place
     )
     app.prepare(ctx_id=0, det_thresh=float(s.det_threshold),
                 det_size=(int(s.det_size), int(s.det_size)))
@@ -1400,7 +1390,7 @@ def compare_allowed_modules_embeddings(paths: list[str]) -> SmokeReport:  # prag
     from insightface.app import FaceAnalysis
 
     _enable_cuda_dll_dirs()
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    providers = accel.onnx_providers()
     s = FacesSettings()  # F88: the same pinned det_size the pipeline runs with
 
     def run(allowed_modules: list[str] | None) -> tuple[list[list[np.ndarray]], float]:
