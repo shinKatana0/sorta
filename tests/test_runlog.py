@@ -15,21 +15,35 @@ from sorta import runlog
 LOGGER_NAME = "sorta.runlog"
 
 
-@pytest.fixture(autouse=True)
-def clean_logging():
-    """Remove our handlers and restore levels — otherwise the file sink leaks into
-    the rest of the pytest session (duplicated output, an open file in tmp_path)."""
+def drop_our_handlers() -> None:
     root = logging.getLogger()
-    sorta_logger = logging.getLogger("sorta")
-    root_level, sorta_level = root.level, sorta_logger.level
-    # The file handler sees a record only after the emitting logger passes it; other
-    # test modules call config.configure_logging, which pins `sorta` to WARNING.
-    sorta_logger.setLevel(logging.DEBUG)
-    yield
     for handler in list(root.handlers):
         if getattr(handler, "_sorta_runlog_handler", False):
             root.removeHandler(handler)
             handler.close()
+
+
+@pytest.fixture(autouse=True)
+def clean_logging():
+    """Remove our handlers and restore levels — otherwise the file sink leaks into
+    the rest of the pytest session (duplicated output, an open file in tmp_path).
+
+    Cleaned BEFORE the test as well as after (F219): the root logger is process-wide,
+    and any test module that calls `config.configure_logging` leaves the sandbox
+    `sorta.log` handler attached to it. The tests below count the handlers they
+    installed themselves, so an inherited one makes them fail on somebody else's
+    behalf — which is what happened the first time the suite ran under xdist, where
+    each worker gets a different set of neighbours ahead of this module.
+    """
+    root = logging.getLogger()
+    sorta_logger = logging.getLogger("sorta")
+    root_level, sorta_level = root.level, sorta_logger.level
+    drop_our_handlers()
+    # The file handler sees a record only after the emitting logger passes it; other
+    # test modules call config.configure_logging, which pins `sorta` to WARNING.
+    sorta_logger.setLevel(logging.DEBUG)
+    yield
+    drop_our_handlers()
     root.setLevel(root_level)
     sorta_logger.setLevel(sorta_level)
     logging.captureWarnings(False)
