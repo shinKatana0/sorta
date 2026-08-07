@@ -75,7 +75,10 @@ class StageRowTestBase(ProcessTestBase):
             return step
 
         names = [f"stage{i}" for i in range(1, count + 1)]
-        self._patch("_pipeline_steps", lambda: [(n, fake_step(n)) for n in names])
+        # F222: the real `_pipeline_steps` takes the download-notify hook, so a double
+        # that stands in for it has to accept one too.
+        self._patch("_pipeline_steps",
+                    lambda notify=None: [(n, fake_step(n)) for n in names])
 
     def run_with_stages(self, count: int) -> dict:
         """Run a whole pipeline of `count` stages and return the final status."""
@@ -160,7 +163,8 @@ class TestWhatStaysVisibleCollapsed(StageRowTestBase):
 
         original = ui.process._pipeline_steps()
         self._patch("_pipeline_steps",
-                    lambda: [(n, boom if n == "stage3" else fn) for n, fn in original])
+                    lambda notify=None: [(n, boom if n == "stage3" else fn)
+                                         for n, fn in original])
         status, _resp = self.post("/api/process", {"source_dir": str(self.src_dir)})
         self.assertEqual(status, 200)
         final = _poll_until(self.status, lambda d: d["finished"])

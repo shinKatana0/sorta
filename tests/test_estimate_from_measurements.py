@@ -54,7 +54,11 @@ MEASURED = {
     "stage=junk phase=junk_pets_vlm": 5.00,
     "stage=junk phase=junk_rescue_vlm": 7.00,
 }
-BASE_RATE = sum(MEASURED[f"stage={s}"] for s in ("index", "geo", "landmarks", "phash"))
+# F222 took `landmarks` out of the always-on line: the stage has a checkbox now, and
+# a run without it does not spend those seconds, so quoting them would price a run
+# that is not going to happen.
+BASE_RATE = sum(MEASURED[f"stage={s}"] for s in ("index", "geo", "phash"))
+LANDMARKS_RATE = MEASURED["stage=landmarks"]
 
 
 def log_line(at: datetime, message: str) -> str:
@@ -223,6 +227,18 @@ class TestTheLogIsBelievedOverTheConstants(EstimateTestBase):
         self.assertAlmostEqual(data["seconds"]["base"], round(4 * BASE_RATE, 1))
         self.assertEqual(data["sources"]["base"], "measured")
 
+    def test_the_landmark_stage_is_priced_on_a_line_of_its_own(self):
+        """F222: it used to hide inside the line above, where nobody could decline it."""
+        for i in range(4):
+            self.add_photo(f"p{i}.jpg")
+        self.write_run_log()
+        self.start_server()
+        data = self.estimate()
+
+        self.assertAlmostEqual(data["seconds"]["landmarks"],
+                               round(4 * LANDMARKS_RATE, 1))
+        self.assertEqual(data["sources"]["landmarks"], "measured")
+
     def test_a_half_measured_line_stays_a_default(self):
         """Three measured stages plus a guessed fourth is a guess wearing a
         measurement's clothes — the base line covers four."""
@@ -349,7 +365,8 @@ class TestTheEstimateAndTheRunAgree(EstimateTestBase):
         this sum with F186: the stage it priced is not run, so a budget that still
         carried it would describe a longer run than the one about to happen.
         """
-        total = photos * BASE_RATE                    # index/geo/landmarks/phash
+        total = photos * BASE_RATE                    # index/geo/phash
+        total += photos * LANDMARKS_RATE              # landmarks, switched on
         total += photos * MEASURED["stage=faces"]     # faces, switched on
         total += photos * MEASURED["stage=events"]    # events, switched on
         total += deep * MEASURED["stage=classify phase=junk_vlm"]   # the deep tier

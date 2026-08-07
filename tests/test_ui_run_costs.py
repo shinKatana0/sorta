@@ -260,7 +260,9 @@ class TestTheBlockItself(RunCostsTestBase):
         block = self.html.split('id="process-costs"', 1)[1].split("</div>\n</div>", 1)[0]
         rows = len(re.findall(r'class="cost-row"', block))
         self.assertLessEqual(rows, 7)
-        self.assertEqual(rows, 5)
+        # Six since F222 gave the landmark stage a line: it used to be part of the
+        # always-on one, with no way to decline it and no way to see what it cost.
+        self.assertEqual(rows, 6)
 
     def test_every_line_carries_a_price_slot(self):
         for key in ("base", "faces", "events", "pets", "pets_verify", "deep",
@@ -433,9 +435,11 @@ class TestEstimateEndpoint(RunCostsTestBase):
             self.add_photo(f"dup{i}.jpg", phash="f" * 16)
         self.start_server()
         data = self.estimate()
+        # F222 adds `landmarks` for the same reason: the stage is in the run only when
+        # it is asked for, so it is a line of the budget rather than part of the base.
         self.assertEqual(set(data["seconds"]),
-                         {"base", "faces", "events", "pets", "pets_verify", "deep",
-                          "products", "junk_rescue", "landmarks_verify"})
+                         {"base", "landmarks", "faces", "events", "pets", "pets_verify",
+                          "deep", "products", "junk_rescue", "landmarks_verify"})
         for retired in ("keeper", "quality_all", "quality_groups", "quality_events",
                         "quality_faces"):
             with self.subTest(line=retired):

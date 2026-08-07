@@ -2916,17 +2916,13 @@
   // Summed by MODEL and not by line: landmarks, the animals and the classification raise
   // the same ViT-L-14, and three lines quoting its size would promise three downloads of
   // one file.
-  var DOWNLOAD_PART_LABELS = {
-    landmarks: "process_landmarks_label",
-    faces: "process_faces_label",
-    pets: "process_pets_label",
-    deep: "process_deep_label",
-    products: "process_products_label",
-    pets_verify: "process_pets_verify_label",
-    junk_rescue: "process_junk_rescue_label",
-    landmarks_verify: "process_landmarks_verify_label",
-    classify: "download_always_part"
-  };
+  // A line is named by its own caption — the server prices it under the same key the
+  // checkbox is built from, so the caption follows from the key and no second table is
+  // needed. The one exception is the work with no checkbox to be named after.
+  function downloadPartLabel(key) {
+    if (key === "classify") return I18N.download_always_part;
+    return I18N["process_" + key + "_label"];
+  }
 
   function downloadSize(mb) {
     if (mb < 1000) return fmt(I18N.tier_size_mb, { mb: mb });
@@ -2970,7 +2966,7 @@
       if (!partWillRun(key)) return;
       (partStates[key].missing || []).forEach(function (weight) {
         if (!forWhat[weight]) forWhat[weight] = [];
-        var label = I18N[DOWNLOAD_PART_LABELS[key]];
+        var label = downloadPartLabel(key);
         if (label) forWhat[weight].push(label);
       });
     });

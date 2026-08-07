@@ -54,10 +54,18 @@ class TestRunningStateGuards(unittest.TestCase):
         afterwards changes nothing about the run in progress — it only looks like it
         does, and that is found out an hour later by the stage that still ran.
         """
-        body = self._body("updateProcessInputsDisabled")
-        for control in ("process-deep-checkbox", "process-geo-online-checkbox",
-                        "process-faces-checkbox", "process-events-checkbox"):
-            self.assertIn(control, body)
+        # F222 moved the ticks into `updateOptionAvailability`, which the function
+        # above calls: a missing install tier is a third reason for a control to be
+        # dead, and a status tick that only knew about the run would have re-enabled
+        # those boxes every 1.5 seconds. The keys are the ones the server prices and
+        # probes them under; the ids follow from them.
+        self.assertIn("updateOptionAvailability();",
+                      self._body("updateProcessInputsDisabled"))
+        body = self._body("updateOptionAvailability")
+        self.assertIn("processRunning", body)
+        keys = self.html.split("var RUN_OPTION_KEYS = ", 1)[1].split("]", 1)[0]
+        for key in ("deep", "geo_online", "faces", "events"):
+            self.assertIn(f'"{key}"', keys)
 
     def test_the_options_come_back_when_the_run_ends(self):
         """`disabled = processRunning`, not a one-way disable: a finished or cancelled

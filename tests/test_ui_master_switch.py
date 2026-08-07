@@ -86,7 +86,10 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
     def test_they_go_dead_and_are_not_hidden(self):
         """A vanished option reads as "there is no such feature", and there is one."""
         body = self.body("updateVlmSubordinatesDisabled")
-        self.assertIn("el.disabled = off || processRunning", body)
+        # F222 gave one of the four a second parent — the landmark check goes dead with
+        # the stage it checks as well as with the master — so the condition is a function
+        # of the control rather than the master alone. The run is still the other reason.
+        self.assertIn("el.disabled = subordinateOff(id) || processRunning", body)
         self.assertNotIn("style.display", body.split(".vlm-off-hint")[0])
 
     def test_the_reason_is_written_next_to_each_of_them(self):
@@ -102,11 +105,15 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
     def test_their_price_is_zero_and_not_the_old_number(self):
         """The estimate has to add up to what the run will do — a dash would say
         "unknown" and the old number would say "this evening is gone"."""
-        self.assertIn("if (row.vlm && !vlmMasterOn()) return 0;",
-                      self.body("costSeconds"))
+        # F222 folded the two ways a line does not run into one predicate — the master
+        # is off (including "the tier it needs is not installed"), or the stage it is a
+        # question about is not in this run.
+        self.assertIn("if (row.vlm && !vlmMasterOn()) return false;",
+                      self.body("rowRuns"))
+        self.assertIn("if (!rowRuns(row)) return 0;", self.body("costSeconds"))
         # ...and it is spelled out rather than shown as "almost free", which is what a
         # stage that runs and is cheap gets
-        self.assertIn("(row.vlm && vlmOff) ? I18N.costs_off : formatCost(seconds)",
+        self.assertIn(": !rowRuns(row) ? I18N.costs_off : formatCost(seconds)",
                       self.body("renderCosts"))
         self.assertIn("0", ui._UI_STRINGS["costs_off"]["ru"])
 
@@ -128,7 +135,11 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         self.assertNotIn("vlm: true", rows.split('{ key: "deep"', 1)[1].split("}", 1)[0])
 
     def test_the_sum_is_recomputed_whenever_the_master_moves(self):
-        self.assertIn("updateVlmSubordinatesDisabled();", self.body("renderCosts"))
+        # F222: through the pass that applies every reason a control can be dead, which
+        # ends in `updateVlmSubordinatesDisabled` — one place, three reasons.
+        self.assertIn("updateOptionAvailability();", self.body("renderCosts"))
+        self.assertIn("updateVlmSubordinatesDisabled();",
+                      self.body("updateOptionAvailability"))
         self.assertIn('"process-deep-checkbox", "process-products-checkbox"', self.html)
 
 
