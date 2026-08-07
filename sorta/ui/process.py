@@ -987,6 +987,30 @@ def _tiers_payload(states: list[TierState] | None = None) -> dict[str, dict]:
     }
 
 
+# Whether this machine has an NVIDIA card is asked ONCE per process. Two reasons, and
+# the second one is not cosmetic: a card does not arrive or leave while a server is up,
+# and `nvidia-smi` on a half-installed driver may take the full 3 s its probe allows —
+# which is longer than the tray gives this whole route when it asks "is the program on
+# this port ours?" (`tray.PROBE_TIMEOUT`, 2 s). A second launch would then be told a
+# stranger holds the port. The lock is held across the call so that two requests arriving
+# together run one `nvidia-smi` and not two.
+_gpu_present_cache: dict[str, bool] = {}
+_gpu_present_lock = threading.Lock()
+
+
+def _gpu_present_cache_clear() -> None:
+    """Forget the hardware answer (test isolation)."""
+    with _gpu_present_lock:
+        _gpu_present_cache.clear()
+
+
+def _gpu_present() -> bool:
+    with _gpu_present_lock:
+        if "answer" not in _gpu_present_cache:
+            _gpu_present_cache["answer"] = nvidia_gpu_present()
+        return _gpu_present_cache["answer"]
+
+
 def _env_payload() -> dict:
     """F64: the environment for the UI banner. `gpu_profile` — whether the GPU profile
     is installed (the nvidia-* packages exist only in the `gpu` extra; `find_spec`
@@ -998,14 +1022,15 @@ def _env_payload() -> dict:
     that banner is shown. `gpu_profile` alone cannot: it answers "are the nvidia-*
     packages here", so a machine with no NVIDIA card was being advised to download a
     2.5 GB CUDA profile it has no use for. The probe is `nvidia-smi`, cheap and without
-    importing torch, and everything that is not a successful listing is "no card".
+    importing torch, and everything that is not a successful listing is "no card"; it is
+    asked once per process (see `_gpu_present`).
 
     `tiers` is the same answer `sorta doctor` gives, from the same probe, so the run
     screen can say next to a checkbox that the tier behind it is not installed.
     """
     return {
         "gpu_profile": importlib.util.find_spec("nvidia") is not None,
-        "gpu_present": nvidia_gpu_present(),
+        "gpu_present": _gpu_present(),
         "tiers": _tiers_payload(),
     }
 

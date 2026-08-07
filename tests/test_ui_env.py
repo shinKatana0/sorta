@@ -19,12 +19,40 @@ from tests.test_ui import UiServerTestBase
 
 
 def _no_card():
-    """The nvidia-smi probe answered for the test rather than for this machine."""
+    """The nvidia-smi probe answered for the test rather than for this machine.
+
+    The answer is cached for the life of the process (see `_gpu_present`), so every case
+    that cares about it clears the cache first.
+    """
+    ui.process._gpu_present_cache_clear()
     return mock.patch.object(ui.process, "nvidia_gpu_present", return_value=False)
 
 
 def _with_card():
+    ui.process._gpu_present_cache_clear()
     return mock.patch.object(ui.process, "nvidia_gpu_present", return_value=True)
+
+
+class TestTheCardIsAskedAboutOnce(unittest.TestCase):
+    """`/api/env` is also how a second launch asks whether the program on this port is
+    ours (`tray.PROBE_TIMEOUT`, 2 s) — and `nvidia-smi` on a half-installed driver may
+    take the 3 s its own probe allows. A card does not arrive while the server is up, so
+    the question is asked once."""
+
+    def setUp(self):
+        ui.process._gpu_present_cache_clear()
+
+    def tearDown(self):
+        ui.process._gpu_present_cache_clear()
+
+    def test_the_probe_runs_once_however_often_the_route_is_asked(self):
+        with mock.patch.object(ui.process, "nvidia_gpu_present",
+                               return_value=True) as probe:
+            first = ui.process._gpu_present()
+            second = ui.process._gpu_present()
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(probe.call_count, 1)
 
 
 class TestApiEnv(UiServerTestBase):

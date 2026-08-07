@@ -675,6 +675,7 @@ from .process import (
     _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
     _OPTIONAL_STAGES, TIER_ABSENT, TIER_READY, TIER_WEIGHTS, _deep_tier_ran,
+    _gpu_present, _gpu_present_cache, _gpu_present_cache_clear, _gpu_present_lock,
     _tier_state_name, _tiers_payload,
     _PIPELINE_STAGE_NAMES, _PipelineCancelled, _ProcessState, _RATE_DEFAULT, _RATE_FIXED,
     _RATE_MEASURED, _RATE_UNITS, _Rate, _RunOptions, _SEC_PER_BASE_FRAME, _SEC_PER_EVENTS_FRAME,

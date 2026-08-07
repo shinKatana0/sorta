@@ -387,6 +387,8 @@ class TestTheNoteStandsAtTheOption(ProcessTestBase):
         self.assertNotIn("disabled", notes)
 
     def test_the_tier_states_reach_the_browser_on_the_env_request(self):
+        ui.process._gpu_present_cache_clear()
+        self.addCleanup(ui.process._gpu_present_cache_clear)
         with mock.patch.object(ui.process, "nvidia_gpu_present", return_value=False):
             self.start_server()
             _status, body, _ctype = self.get("/api/env")
