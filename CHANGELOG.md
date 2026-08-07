@@ -48,6 +48,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **The estimate follows.** A missing tier no longer buys hours of promised VLM time on a
   run that will spend minutes, and the landmark minutes came out of the "always" line
   into one of their own.
+  **A config that already configures a skipped stage is told, not obeyed.** One real
+  `config.yaml` holds `naming.landmark_threshold: 0.50` and `features.landmarks_verify:
+  true` and no `features.landmarks` — because that key did not exist when those lines
+  were written. After this change the stage stops running for that file, and its owner
+  would have found out from a missing result. So the run says it: the stage was skipped,
+  it is off by default now, the file still holds its settings (named), and here is every
+  way to switch it back on. What is deliberately NOT done is reading those settings as
+  consent and switching the stage on — six months later nobody could explain why it ran.
+  The rule is a table keyed by stage rather than a test for landmarks, and the line
+  appears **only** when the file really configures the skipped stage: one that appeared
+  on every run would be learned and then not read on the run it was written for.
   **The owner's regression is a test, not a promise**: a database with `visual` places in
   it, a run with the stage switched off, and the places still there, byte for byte —
   the stage only ever writes where geo gave up (`confidence = 'unknown'`), and a
