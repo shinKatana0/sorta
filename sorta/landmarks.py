@@ -50,7 +50,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
-from . import i18n, imaging
+from . import accel, i18n, imaging
 from .config import Config, vlm_allowed
 from .geodata import GeoResolver
 from .naming import (
@@ -300,7 +300,7 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
     import torch
 
     pillow_heif.register_heif_opener()  # so CLIP reads HEIC/HEIF (iPhone)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = accel.torch_device(torch)  # F214: CUDA -> MPS -> CPU, chosen in one place
     model, _, preprocess = open_clip.create_model_and_transforms(
         s.clip_model, pretrained=s.clip_pretrained, device=device
     )
@@ -331,36 +331,53 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
         except Exception:
             return None
 
-    def _text_features(prompts: list[str]):
+    def _text_features(prompts: list[str], on_device: str):
         key = tuple(prompts)
         cached = _text_cache.get(key)
         if cached is None:
             with torch.no_grad():
-                tf = model.encode_text(tokenizer(list(prompts)).to(device))
+                tf = model.encode_text(tokenizer(list(prompts)).to(on_device))
                 tf /= tf.norm(dim=-1, keepdim=True)
             _text_cache[key] = cached = tf
         return cached
+
+    # F214: an accelerator that refuses an operator halfway through a stage retreats to
+    # the CPU once, with a line in the log — the same shape of degradation this stage
+    # already has for missing weights. The text-feature cache is dropped with it: those
+    # tensors live on the old device, and a matmul across two devices is an error in
+    # itself. Never fires on CUDA (see accel.CpuFallback).
+    def _to_cpu(dev: str) -> None:
+        model.to(dev)
+        _text_cache.clear()
+
+    fallback = accel.CpuFallback(device, _to_cpu, what="landmarks: clip")
 
     def encode(image_paths: list[str]) -> list[np.ndarray | None]:
         tensors = list(_pool.map(_load, image_paths))  # parallel decode
         results: list[np.ndarray | None] = [None] * len(image_paths)
         valid = [i for i, t in enumerate(tensors) if t is not None]
         if valid:
-            batch = torch.stack([tensors[i] for i in valid]).to(device)
-            with torch.no_grad():
-                feats = model.encode_image(batch)  # the whole batch in one call
-                feats /= feats.norm(dim=-1, keepdim=True)
-            feats_np = feats.cpu().numpy()
+            def run(on_device: str) -> np.ndarray:
+                batch = torch.stack([tensors[i] for i in valid]).to(on_device)
+                with torch.no_grad():
+                    feats = model.encode_image(batch)  # the whole batch in one call
+                    feats /= feats.norm(dim=-1, keepdim=True)
+                return feats.cpu().numpy()
+
+            feats_np = fallback.run(run)
             for j, i in enumerate(valid):
                 results[i] = feats_np[j]
         return results
 
     def score(image_feats: np.ndarray, prompts: list[str]) -> np.ndarray:
-        text_feat = _text_features(prompts)
-        with torch.no_grad():
-            feats_t = torch.from_numpy(image_feats).to(device)
-            probs = (100.0 * feats_t @ text_feat.T).softmax(dim=-1).cpu().numpy()
-        return probs
+        def run(on_device: str) -> np.ndarray:
+            text_feat = _text_features(prompts, on_device)
+            with torch.no_grad():
+                feats_t = torch.from_numpy(image_feats).to(on_device)
+                probs = (100.0 * feats_t @ text_feat.T).softmax(dim=-1).cpu().numpy()
+            return probs
+
+        return fallback.run(run)
 
     return CachingFeatureClassifier(encode=encode, score=score)
 

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **macOS gets asked for its accelerator, and the machines that work today are not
+  touched** (F214). On Apple Silicon `torch.cuda.is_available()` is False, so an M3 Max
+  ran every stage on its processor — MPS was never requested, CoreML was never requested,
+  and nothing in the code was broken enough to notice. The reason it stayed that way is
+  worth naming: the question "what do I run on" was answered **four times**, by four
+  copies of the same two lines in `naming`, `landmarks`, `faces` and `junk`. Four copies
+  of a two-branch decision survive exactly as long as there are two branches. **They are
+  now one function** (`sorta/accel.py`) and four calls to it, with the order **CUDA → MPS
+  → CPU** for torch and **CUDA → CoreML → CPU** for onnxruntime; a rung that is not there
+  is not an error, it is the next rung.
+  **The requirement that shaped the code is not speed, it is that Windows and Linux feel
+  nothing.** Where CUDA is present the choice is byte-for-byte the one that shipped —
+  same device, same `float16`, same providers in the same order — and that is proven by a
+  test that walks **all four call sites**, not the one an issue happened to name, against
+  constants written out by hand rather than read back from the new code. A CPU-only
+  Windows box keeps asking for `CUDAExecutionProvider` too: tidying that list would have
+  been a change to a platform this feature is not allowed to change.
+  **An accelerator that refuses an operation costs speed, not the run.** MPS has no
+  kernel for everything a model asks of it, and it says so at the first call rather than
+  at load time — so the stage steps down to the CPU once, with a line in the log, the way
+  it already steps down when weights are missing. On CUDA nothing is caught: a card that
+  fails has to fail as loudly as it did before.
+  **On real hardware this has not been tested, and the missing pieces are named rather
+  than glossed.** There is no Mac here; the `macos-latest` job added to `check.yml` (and
+  `scripts/probe_accelerator.py`, which prints what a machine offers and which model
+  tiers fit on it) takes effect on the first push and has never run. So: whether the
+  product installs and works on macOS is unverified; which tiers fit a runner is
+  unverified; and **whether MPS and CoreML return the same verdicts as the CPU is
+  unmeasured** — a device is the same class of change as an attention kernel, and that
+  one moved 7–11 verdicts out of 300. The deep VLM tier (~7 GB) is not attempted on CI at
+  all and has been looked at by nobody, anywhere. What is measured is the choice itself:
+  the order, the fallback, and the CUDA path standing still.
 - **A Windows installer, in tiers rather than one 15 GB file** (F211). `uv tool install`
   is not something a person with a shoebox of photographs should have to know about, and
   the obstacle was never the packaging — it was the weights: torch with the CUDA wheels,
@@ -81,6 +113,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of all three guides was rewritten to the path that exists, and a watchdog test pairs
   the two: the fix a guide prints has to be the fix `doctor` prints, so the document and
   the program cannot drift apart.
+- **The interface names the install tier that is missing, where it is missing** (F217).
+  A person installs Sorta with the installer and clears the "set it up at the end" box —
+  their right, the box is meant to be clearable. They then live in the web app and never
+  open a terminal, **and the app never told them anything was missing**: the word "tier"
+  is all over those screens and always meant the other thing (the classification tier,
+  fast CLIP against deep VLM). Worse, the refusal is silent *by design* and stays that
+  way — `junk.py` catches the whole classifier build so that a missing package cannot
+  kill a four-hour run — so ticking "Deep analysis" produced a finished run, an unchanged
+  collection, and the reason in a log file. The conclusion a person draws is that deep
+  analysis does not work in this program.
+  **The state of every tier now reaches the run screen from the same probe `sorta doctor`
+  uses** (moved out of `sorta/cli.py`, which the web app cannot import, into
+  `sorta/tiers.py`, which both read). Not a second implementation: two check screens that
+  answer one question two ways disagree within a release — the precedent is F211, where
+  the wizard calls `doctor` rather than growing a screen of its own — and a watchdog test
+  now pairs the browser's answer with the printed one, state by state.
+  **Three answers, not two.** Two of the four tiers install no packages at all: `faces`
+  (buffalo_l, 400 MB) and `search` (ViT‑L‑14 + XLM‑RoBERTa, 3 GB) download their weights
+  on the first run of the stage that needs them, so reporting them as "not installed"
+  would be a lie that sends somebody to the wizard for something that happens by itself.
+  They get the sentence F216 wrote for exactly that state, with the size in it. A tier
+  that really is absent gets **the way out, in `doctor`'s own words and matched to the
+  machine** — the Start‑menu item on Windows, `sorta-setup` everywhere else, the pairing
+  F213 established. The note stands **at the checkbox**, not in a banner at the top that
+  gets scrolled past, and **nothing is blocked**: a person may start the run and get an
+  honest result from the fast tier.
+  **A run that asked for the deep tier and went through on the fast one says so on
+  screen**, after it finishes — the half that catches whoever has already run it. Nothing
+  new is recorded for that: `media_class.tier` has held which tier handled a frame since
+  schema v11, and the run screen now reads what the Overview tab reads.
+  **Two lines that named an impossible way out are gone.** The CPU‑profile banner ended in
+  `uv tool install --force ".[gpu]"` and the deep hint in `uv sync --extra vlm` — commands
+  for a checkout of the sources, for a reader who has an installed program and no
+  sources, no `uv` on PATH and no `.` to point at. A named exit that cannot be taken is
+  worse than silence: the person concludes that they are broken, not the hint. Both now
+  name the tier and the wizard. **And the banner is shown to fewer people**: it asks
+  `nvidia_gpu_present()` — the cheap `nvidia-smi` probe that was written and unused — so
+  a machine with no NVIDIA card is no longer advised to download 2.5 GB of CUDA wheels it
+  cannot use.
+  **The interface still installs nothing**, and that is now a test rather than somebody's
+  memory: no route, no helper, no command line anywhere in `sorta/ui/` or `sorta/web/`.
+  The page names the way out; the wizard does the work — installing takes minutes, fails
+  in ways that need a person reading the output, and a local page that drives a package
+  installer is not what this product is.
 - **An icon in the tray, for whoever installed Sorta with an installer** (F207). That
   person does not keep a terminal open, and `sorta ui` prints its address to a console
   and lives until **Ctrl+C** — so for an installed application the address is nowhere to

@@ -23,6 +23,7 @@ from typing import Any, Callable
 from .. import imaging
 from ..config import Config
 from ..dedup import assign_duplicates, compute_phashes
+from ..diagnostics import nvidia_gpu_present
 from ..events import build_events
 from ..faces import detect_and_cluster
 from ..geo import geo_cache_size, resolve_places
@@ -41,6 +42,7 @@ from ..naming import name_events, naming_settings
 from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
+from ..tiers import TierState, tier_states
 from .common import _ProgressCB, _connect, _log
 from .layout import PlanCache
 from .review import _db_fingerprint
@@ -237,6 +239,14 @@ class _ProcessState:
         self._cancel_requested = False
         # F135: per-stage {"processed", "skipped"} of THIS run — see `_stage_stats`.
         self.stage_stats: dict[str, dict[str, int]] = {}
+        # F217: was the deep tier asked for, and did it run. The fall back to the fast
+        # tier is silent on purpose (`junk.py` catches everything around building the
+        # classifier, and a missing package may not kill a four-hour run) — which leaves
+        # a person who ticked "Deep analysis" with a finished run, an unchanged
+        # collection and the reason in a log. `None` means the question was not asked or
+        # could not be answered; see `_deep_tier_ran`.
+        self.deep_requested = False
+        self.deep_ran: bool | None = None
 
     def try_start(self, source_dir: str) -> bool:
         """True and switches to running if nothing is going now; otherwise False (409)."""
@@ -260,6 +270,16 @@ class _ProcessState:
             self.total = 0
             self.phase = None
             self._phase_started = 0.0
+
+    def set_deep_requested(self, requested: bool) -> None:
+        """F217: this run was started with the deep tier ticked."""
+        with self._lock:
+            self.deep_requested = requested
+
+    def set_deep_ran(self, ran: bool | None) -> None:
+        """F217: whether the deep tier actually handled anything (None — unknown)."""
+        with self._lock:
+            self.deep_ran = ran
 
     def set_stage_stats(self, name: str, stats: dict[str, int]) -> None:
         """F135: what the finished stage `name` processed and what it skipped."""
@@ -343,6 +363,10 @@ class _ProcessState:
                 "phase": self.phase,
                 "phase_elapsed": (round(time.monotonic() - self._phase_started, 1)
                                   if self.phase else 0.0),
+                # F217: the deep tier was asked for and the run went through on the fast
+                # one — the state the log used to be the only witness of.
+                "deep_requested": self.deep_requested,
+                "deep_ran": self.deep_ran,
             }
 
 
@@ -582,8 +606,7 @@ def _validate_excludes_payload(
 def _process_defaults_payload(cfg: Config) -> dict:
     """F57: defaults for the "Process" checkboxes — JS sets .checked by these values
     on page init (otherwise the checkboxes always start empty regardless of
-    config.yaml). `vlm_available` — whether the `transformers` package is installed
-    (`find_spec`, WITHOUT importing the module/loading the model).
+    config.yaml).
 
     F123: `pets` rides here for the same reason and from the same place — the config
     (`features.pets`), which the settings column also edits. Two entry points, one
@@ -604,6 +627,12 @@ def _process_defaults_payload(cfg: Config) -> dict:
     all: the file decided them, the run spent the hours, and the estimate below was
     already pricing one of them. An option nobody can see is not a default, it is a
     thing that happens.
+
+    F217 took `vlm_available` out of here. It answered "is `transformers` importable",
+    which is one half of one tier read a second way — and a second reading of the same
+    question is what this feature exists to remove: `/api/env` now carries the state of
+    every tier from the probe `sorta doctor` uses, and the note next to the deep checkbox
+    is drawn from that.
     """
     return {
         "deep": bool(cfg.naming.vlm_enabled),
@@ -613,7 +642,6 @@ def _process_defaults_payload(cfg: Config) -> dict:
         "pets_verify": bool(cfg.features.pets_verify),
         "junk_rescue": bool(cfg.features.junk_rescue),
         "landmarks_verify": bool(cfg.features.landmarks_verify),
-        "vlm_available": importlib.util.find_spec("transformers") is not None,
     }
 
 
@@ -910,13 +938,101 @@ def _process_estimate_payload(cfg: Config, db_path: Path) -> dict:
     return payload
 
 
+# --- F217: the install tiers, on the screen where the checkbox is -------------
+#
+# A person who installed Sorta with the installer and cleared the "set it up at the end"
+# box lives in this web app and never opens a terminal — and until now the app never told
+# them that a tier is missing. Worse, the refusal is silent BY DESIGN and rightly so:
+# `junk.py` catches everything around building the deep classifier and falls back to the
+# fast tier, so a run with "Deep analysis" ticked finishes, changes nothing, and says why
+# only in a log nobody reads.
+#
+# The three states are the doctor's three lines and are named after them, because they
+# are the same probe's answer (`sorta/tiers.py`) rather than a second reading of it. Two
+# tiers of the catalog install no packages at all — their weights are downloaded by the
+# stage on first use — so calling those "not installed" would send a person to the wizard
+# for something that happens by itself. That is the distinction F216 built the middle
+# state for, and it is the one this feature could most easily get wrong.
+TIER_READY = "ready"
+TIER_WEIGHTS = "weights"
+TIER_ABSENT = "absent"
+
+
+def _tier_state_name(state: TierState) -> str:
+    """Which of the doctor's three sentences this tier gets — in its order of severity.
+
+    Packages first: a tier missing both is missing the half a person has to act on, and
+    the weights of a tier whose code is not installed will never be asked for.
+    """
+    if state.missing_packages:
+        return TIER_ABSENT
+    if state.missing_weights:
+        return TIER_WEIGHTS
+    return TIER_READY
+
+
+def _tiers_payload(states: list[TierState] | None = None) -> dict[str, dict]:
+    """Every tier of the catalog as the browser needs it: a state and what is missing.
+
+    `missing` carries the model names for the middle state — the page renders the
+    doctor's own sentence about them, and the size next to it comes from the catalog.
+    The package names of an absent tier are not sent: the screen names the way out
+    (`sorta-setup`), and a list of distributions is a repair a person does not perform
+    from a browser.
+    """
+    return {
+        state.key: {"state": _tier_state_name(state),
+                    "missing": list(state.missing_weights)}
+        for state in (tier_states() if states is None else states)
+    }
+
+
+# Whether this machine has an NVIDIA card is asked ONCE per process. Two reasons, and
+# the second one is not cosmetic: a card does not arrive or leave while a server is up,
+# and `nvidia-smi` on a half-installed driver may take the full 3 s its probe allows —
+# which is longer than the tray gives this whole route when it asks "is the program on
+# this port ours?" (`tray.PROBE_TIMEOUT`, 2 s). A second launch would then be told a
+# stranger holds the port. The lock is held across the call so that two requests arriving
+# together run one `nvidia-smi` and not two.
+_gpu_present_cache: dict[str, bool] = {}
+_gpu_present_lock = threading.Lock()
+
+
+def _gpu_present_cache_clear() -> None:
+    """Forget the hardware answer (test isolation)."""
+    with _gpu_present_lock:
+        _gpu_present_cache.clear()
+
+
+def _gpu_present() -> bool:
+    with _gpu_present_lock:
+        if "answer" not in _gpu_present_cache:
+            _gpu_present_cache["answer"] = nvidia_gpu_present()
+        return _gpu_present_cache["answer"]
+
+
 def _env_payload() -> dict:
     """F64: the environment for the UI banner. `gpu_profile` — whether the GPU profile
     is installed (the nvidia-* packages exist only in the `gpu` extra; `find_spec`
     without importing torch). CPU profile -> False -> a reduced-speed banner on the
     "Process" tab. (Detects the chosen profile, not "whether CUDA works right now" —
-    on a broken GPU profile the runtime fallback fires, which is a separate symptom.)"""
-    return {"gpu_profile": importlib.util.find_spec("nvidia") is not None}
+    on a broken GPU profile the runtime fallback fires, which is a separate symptom.)
+
+    F217: `gpu_present` — whether there is a card at all, and it is what decides whether
+    that banner is shown. `gpu_profile` alone cannot: it answers "are the nvidia-*
+    packages here", so a machine with no NVIDIA card was being advised to download a
+    2.5 GB CUDA profile it has no use for. The probe is `nvidia-smi`, cheap and without
+    importing torch, and everything that is not a successful listing is "no card"; it is
+    asked once per process (see `_gpu_present`).
+
+    `tiers` is the same answer `sorta doctor` gives, from the same probe, so the run
+    screen can say next to a checkbox that the tier behind it is not installed.
+    """
+    return {
+        "gpu_profile": importlib.util.find_spec("nvidia") is not None,
+        "gpu_present": _gpu_present(),
+        "tiers": _tiers_payload(),
+    }
 
 
 # F94: the two caches the web app may look at and empty. The CLI (`sorta cache`) knows
@@ -961,6 +1077,29 @@ def _validate_cache_clear_payload(payload: object) -> str | None:
     if not isinstance(target, str) or target not in _CACHE_TARGETS:
         return None
     return target
+
+
+# F217: "did the deep tier handle anything at all" — the Overview tab's own question
+# (`vlm_ran`), asked on the run screen, where the person who ticked the box is standing.
+# `media_class.tier` holds which tier produced a verdict, and `junk.classify` writes
+# 'vlm' only when the model was actually raised (a fall back to CLIP writes 'clip'), so
+# this is the signal the database already carries — nothing new is recorded for it.
+_DEEP_TIER_SQL = "SELECT 1 FROM media_class WHERE tier = 'vlm' LIMIT 1"
+
+
+def _deep_tier_ran(conn: sqlite3.Connection) -> bool | None:
+    """Has any frame of this index been classified by the deep tier? None — cannot tell.
+
+    A statement about the INDEX and not about this run alone, deliberately: an
+    incremental run over a collection the deep tier has already been through processes
+    nothing new, and calling that a fall back would be an alarm about a run that did
+    exactly what it should. What it catches is the case the feature is for — the tier was
+    asked for, it has never handled a single frame, and the answer was in a log.
+    """
+    try:
+        return conn.execute(_DEEP_TIER_SQL).fetchone() is not None
+    except sqlite3.Error:  # a schema older than the column — nothing is claimed
+        return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1154,6 +1293,7 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     Events read the DB directly on each request and need no refresh.
     """
     opts = options or _RunOptions()
+    state.set_deep_requested(opts.deep)
     conn = _connect(db_path)
     error: str | None = None
     error_stage: str | None = None
@@ -1197,6 +1337,11 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
                 completed = False
                 break
         if completed and error is None:
+            # F217: only for a run that finished. A cancelled or failed one did not get
+            # to the classifier, and "the deep tier did not run" would describe the
+            # cancel rather than the missing tier.
+            if opts.deep:
+                state.set_deep_ran(_deep_tier_ran(conn))
             try:
                 cache.rebuild(cfg, conn)
             except Exception as exc:  # noqa: BLE001
