@@ -18,10 +18,10 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .. import imaging
-from ..config import Config
+from ..config import Config, skipped_stage_notes
 from ..dedup import assign_duplicates, compute_phashes
 from ..diagnostics import nvidia_gpu_present
 from ..events import build_events
@@ -152,8 +152,14 @@ class _LazyClassifierHolder:
         return list(features_of(paths))
 
 
-def _download_language(cfg: Config) -> Lang:
-    """The language the download sentences are written in — the configured one."""
+def _run_language(cfg: Config) -> Lang:
+    """The language a run writes its own sentences in — the configured one.
+
+    The web app renders its chrome from `ui/strings.py`, but these two sentences (F222:
+    the refusal of a download, and the note about a stage skipped while its settings sit
+    in the file) are built on the server by the same functions the command line calls, so
+    that the two entry points cannot word the same fact differently.
+    """
     return normalize_lang(getattr(cfg, "language", None))
 
 
@@ -194,7 +200,7 @@ def _pipeline_steps(
                 raise  # already on disk: this failed for some other reason, say so as-is
             _log.exception("sorta ui: не удалось скачать веса для этапа %r", stage)
             raise _DownloadRefused(download_failure(
-                stage, pending, _download_language(cfg), exc)) from exc
+                stage, pending, _run_language(cfg), exc)) from exc
         finally:
             if pending and notify is not None:
                 notify(None, ())
@@ -308,6 +314,10 @@ class _ProcessState:
         # a named model beats a silent hour.
         self.download_stage: str | None = None
         self.download_weights: tuple[str, ...] = ()
+        # F222: stages this run skipped whose settings are still in config.yaml. The
+        # sentence is built by `config.skipped_stage_notes`, the same one `sorta run`
+        # prints, so a person cannot be told two different things about one file.
+        self.skipped_notes: tuple[str, ...] = ()
 
     def try_start(self, source_dir: str) -> bool:
         """True and switches to running if nothing is going now; otherwise False (409)."""
@@ -347,6 +357,11 @@ class _ProcessState:
         with self._lock:
             self.download_stage = stage if weights else None
             self.download_weights = weights
+
+    def set_skipped_notes(self, notes: Sequence[str]) -> None:
+        """F222: what this run left out while the file still configures it."""
+        with self._lock:
+            self.skipped_notes = tuple(notes)
 
     def set_stage_stats(self, name: str, stats: dict[str, int]) -> None:
         """F135: what the finished stage `name` processed and what it skipped."""
@@ -441,6 +456,10 @@ class _ProcessState:
                               "weights": list(self.download_weights),
                               "mb": weights_size_mb(self.download_weights)}
                              if self.download_weights else None),
+                # F222: the stages this run skipped whose settings the file still holds.
+                # Almost always empty — a note on every run is noise, and noise is what
+                # gets learned and then not read.
+                "skipped_notes": list(self.skipped_notes),
             }
 
 
@@ -1484,6 +1503,12 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
         else:
             steps = [(name, fn) for name, fn in steps_of
                      if name not in _OPTIONAL_STAGES or enabled_optional[name]]
+            # F222: said about the config FILE and not about this run's overrides, so
+            # `cfg` rather than `run_cfg` — the question is what a person wrote down and
+            # is about to get nothing out of.
+            state.set_skipped_notes(skipped_stage_notes(
+                cfg, [name for name in _OPTIONAL_STAGES if not enabled_optional[name]],
+                _run_language(cfg)))
         state.set_stage_total(len(steps))
         completed = True
         for i, (name, fn) in enumerate(steps, 1):

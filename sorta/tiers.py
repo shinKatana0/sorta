@@ -342,16 +342,10 @@ def stage_downloads(stage: str, states: list[TierState] | None = None) -> tuple[
 # log, where it belongs.
 
 
-def stage_label(stage: str, lang: i18n.Lang) -> str:
-    """The stage, named the way a person reads it — or its bare key if it has no name."""
-    key = f"cli.stage.{stage}"
-    named = i18n.cli_text(key, lang)
-    return stage if named == key else named
-
-
 def download_notice(stage: str, weights: Sequence[str], lang: i18n.Lang) -> str:
     """«Downloading X for stage Y, ~N GB — this happens once»."""
-    return i18n.cli_text("cli.download.started", lang, stage=stage_label(stage, lang),
+    return i18n.cli_text("cli.download.started", lang,
+                         stage=i18n.stage_label(stage, lang),
                          weights=", ".join(weights),
                          size=wizard.human_size(weights_size_mb(weights), lang))
 
@@ -360,7 +354,7 @@ def download_failure(stage: str, weights: Sequence[str], lang: i18n.Lang,
                      error: object) -> str:
     """The refusal in words: the stage, the model, the size and the way out."""
     return i18n.cli_text(
-        "cli.download.failed", lang, stage=stage_label(stage, lang),
+        "cli.download.failed", lang, stage=i18n.stage_label(stage, lang),
         weights=", ".join(weights) or "-",
         size=wizard.human_size(weights_size_mb(weights), lang),
         error=str(error).strip() or error.__class__.__name__)

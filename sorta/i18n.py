@@ -470,6 +470,30 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "[stage {index}/{total}] {name}",
         "ja": "[ステージ {index}/{total}] {name}",
     },
+    # F222: the stage is skipped and the file still configures it. Said, and no more than
+    # said — the settings are not read as consent and nothing is switched on by them, or
+    # in six months nobody could explain why the stage ran. The one thing that would be
+    # worse is silence: the owner of such a file would learn about the change from a
+    # missing result.
+    "cli.run.stage_skipped_configured": {
+        "ru": "Этап «{stage}» пропущен: с этой версии он выключен по умолчанию, а в "
+              "config.yaml остались его настройки ({keys}). {how}",
+        "en": "The “{stage}” stage was skipped: it is off by default from this version "
+              "on, and config.yaml still holds its settings ({keys}). {how}",
+        "ja": "「{stage}」ステージはスキップされました: このバージョンから既定で無効に"
+              "なりましたが、config.yaml にはその設定が残っています（{keys}）。{how}",
+    },
+    # Every way to switch that stage back on, in one sentence per stage — a flag, a key
+    # and a checkbox are three different things and only the stage knows which it has.
+    "cli.run.enable_landmarks": {
+        "ru": "Включить: features.landmarks: true в config.yaml, флаг --landmarks у "
+              "sorta run или галочка «Узнавать места по виду» на экране запуска.",
+        "en": "To switch it on: features.landmarks: true in config.yaml, the --landmarks "
+              "flag of sorta run, or the “Recognise places by sight” checkbox on the run "
+              "screen.",
+        "ja": "有効にするには: config.yaml の features.landmarks: true、sorta run の "
+              "--landmarks フラグ、または実行画面の「見た目で場所を判定」チェック。",
+    },
     "cli.run.plan": {
         "ru": "[план] dry-run sort --by {by} -> {dest}",
         "en": "[plan] dry-run sort --by {by} -> {dest}",
@@ -1950,3 +1974,18 @@ def cli_text(key: str, lang: Lang, **fields: object) -> str:
     if entry is None:
         return key
     return (entry.get(lang) or entry[_DEFAULT_LANG]).format(**fields)
+
+
+def stage_label(stage: str, lang: Lang) -> str:
+    """A pipeline stage, named the way a person reads it — or its bare key (F222).
+
+    Here rather than next to either caller because turning a key into a name in a
+    language is what this module is for, and there are two callers: the sentences about a
+    download (`sorta/tiers.py`) and the one about a stage that was skipped while its
+    settings sat in the config (`sorta/config.py`). Not every stage has a name — only the
+    ones some sentence prints — and a stage without one is called by its key rather than
+    by nothing.
+    """
+    key = f"cli.stage.{stage}"
+    named = cli_text(key, lang)
+    return stage if named == key else named

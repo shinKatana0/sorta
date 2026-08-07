@@ -34,7 +34,10 @@ from pathlib import Path
 from unittest import mock
 
 from sorta import i18n, tiers, ui, wizard
-from sorta.config import FeaturesConfig, _features_from
+from sorta.config import (
+    STAGE_SETTINGS, STAGE_SETTINGS_BY_STAGE, Config, FeaturesConfig, NamingConfig,
+    _features_from, configured_settings_of, skipped_stage_notes,
+)
 from sorta.ui import strings as ui_strings
 from tests.test_ui_process import ProcessTestBase, _poll_until
 
@@ -193,7 +196,7 @@ class TestARefusalToDownloadIsWords(unittest.TestCase):
                 text = tiers.download_failure("landmarks", ("ViT-L-14",), lang,
                                               "SSL: CERTIFICATE_VERIFY_FAILED")
                 self.assertIn("ViT-L-14", text)
-                self.assertIn(tiers.stage_label("landmarks", lang), text)
+                self.assertIn(i18n.stage_label("landmarks", lang), text)
                 self.assertIn("1.6", text)
                 self.assertIn("SSL: CERTIFICATE_VERIFY_FAILED", text)
                 self.assertIn("sorta-setup", text)
@@ -203,17 +206,157 @@ class TestARefusalToDownloadIsWords(unittest.TestCase):
             with self.subTest(lang=lang):
                 text = tiers.download_notice("classify", ("ViT-L-14",), lang)
                 self.assertIn("ViT-L-14", text)
-                self.assertIn(tiers.stage_label("classify", lang), text)
+                self.assertIn(i18n.stage_label("classify", lang), text)
                 self.assertIn("1.6", text)
 
     def test_a_stage_with_no_name_of_its_own_is_still_named(self):
-        self.assertEqual(tiers.stage_label("phash", "en"), "phash")
+        self.assertEqual(i18n.stage_label("phash", "en"), "phash")
 
     def test_the_stage_labels_exist_in_three_languages(self):
         for stage in tiers.STAGE_WEIGHTS:
-            labels = {lang: tiers.stage_label(stage, lang) for lang in _LANGS}
+            labels = {lang: i18n.stage_label(stage, lang) for lang in _LANGS}
             with self.subTest(stage=stage):
                 self.assertEqual(len(set(labels.values())), 3, labels)
+
+
+class TestASkippedStageWhoseSettingsAreInTheFile(unittest.TestCase):
+    """The addendum of 2026-08-07, and the file it comes from. That config holds
+
+        naming:    landmark_threshold: 0.50
+        features:  landmarks_verify: true
+
+    and no `features.landmarks` — because the key did not exist when those lines were
+    written and the stage ran unconditionally. After this feature it stops running for
+    that file, and its owner would find out from a missing result.
+
+    Both halves are pinned, and the second is not the lesser one: a line that appears on
+    every run is noise, noise is learned and stopped being read, and then it is not read
+    on the single run it was written for.
+    """
+
+    def config(self, raw: dict) -> Config:
+        return Config(raw=raw)
+
+    def test_the_owners_file_gets_the_line(self):
+        cfg = self.config({"naming": {"landmark_threshold": 0.50},
+                           "features": {"landmarks_verify": True}})
+        notes = skipped_stage_notes(cfg, ["landmarks"], "en")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("naming.landmark_threshold", notes[0])
+        self.assertIn("features.landmarks_verify", notes[0])
+
+    def test_either_setting_alone_is_enough(self):
+        for section, key in (("naming", "landmark_threshold"),
+                             ("features", "landmarks_verify")):
+            with self.subTest(setting=f"{section}.{key}"):
+                cfg = self.config({section: {key: 0.5}})
+                self.assertEqual(len(skipped_stage_notes(cfg, ["landmarks"], "en")), 1)
+
+    def test_a_file_that_never_configured_the_stage_gets_nothing(self):
+        """The half that keeps the other half worth reading."""
+        for raw in ({}, {"naming": {"clip_batch_size": 8}},
+                    {"features": {"pets": True}}, {"naming": {}, "features": {}}):
+            with self.subTest(raw=raw):
+                self.assertEqual(skipped_stage_notes(self.config(raw),
+                                                     ["landmarks"], "en"), [])
+
+    def test_a_stage_that_runs_says_nothing_however_configured_it_is(self):
+        """The note is about what was SKIPPED — the caller passes the skipped ones, and
+        a run with the stage on passes none."""
+        cfg = self.config({"features": {"landmarks_verify": True}})
+        self.assertEqual(skipped_stage_notes(cfg, [], "en"), [])
+        self.assertEqual(skipped_stage_notes(cfg, ["faces", "events"], "en"), [])
+
+    def test_the_line_says_what_it_owes_the_reader(self):
+        cfg = self.config({"features": {"landmarks_verify": True}})
+        for lang in _LANGS:
+            with self.subTest(lang=lang):
+                note = skipped_stage_notes(cfg, ["landmarks"], lang)[0]
+                # the stage, by name...
+                self.assertIn(i18n.stage_label("landmarks", lang), note)
+                # ...the setting it found, and every way to switch the stage back on
+                self.assertIn("features.landmarks_verify", note)
+                self.assertIn("features.landmarks", note)
+                self.assertIn("--landmarks", note)
+
+    def test_nothing_switches_the_stage_on_by_itself(self):
+        """The owner's decision, as a property: say, do not decide. A config with the
+        settings and without the key stays a config with the stage OFF — inferring
+        consent from a leftover number is what nobody could explain six months later."""
+        features = _features_from({"landmarks_verify": True,
+                                   "landmark_candidate_threshold": 0.5})
+        self.assertTrue(features.landmarks_verify)   # the settings are read...
+        self.assertFalse(features.landmarks)         # ...and decide nothing about this
+
+    def test_the_rule_is_a_table_and_not_a_test_for_one_stage(self):
+        """"Generalise, do not special-case": the situation is any stage whose default
+        changes under a file that already configures it. Today there is one; the rule has
+        to survive the second without being rewritten."""
+        self.assertIn("landmarks", STAGE_SETTINGS_BY_STAGE)
+        source = (_ROOT / "sorta" / "config.py").read_text(encoding="utf-8")
+        block = source.split("def skipped_stage_notes(")[1].split("\ndef ", 1)[0]
+        self.assertNotIn("landmarks", block)   # nothing in the rule names the stage
+        # ...and an unknown stage is simply not one of these, rather than an error.
+        self.assertEqual(configured_settings_of(self.config({"faces": {"det_size": 640}}),
+                                                "faces"), ())
+
+    def test_every_key_of_the_table_is_a_key_the_config_really_has(self):
+        """A path that no longer exists would make the note unfireable, and nothing else
+        would notice — the file simply would not match."""
+        sections = {"naming": NamingConfig(), "features": FeaturesConfig()}
+        for entry in STAGE_SETTINGS:
+            for path in entry.keys:
+                section, _, key = path.partition(".")
+                with self.subTest(path=path):
+                    self.assertIn(section, sections)
+                    self.assertTrue(hasattr(sections[section], key))
+
+    def test_the_enable_sentence_of_every_stage_exists_in_three_languages(self):
+        for entry in STAGE_SETTINGS:
+            for lang in _LANGS:
+                with self.subTest(stage=entry.stage, lang=lang):
+                    text = i18n.cli_text(entry.enable_key, lang)
+                    self.assertNotEqual(text, entry.enable_key)
+                    self.assertTrue(text.strip())
+
+
+class TestBothEntryPointsSayIt(ProcessTestBase):
+    """One builder, two callers — the rule this whole feature is written under."""
+
+    def test_the_run_screen_carries_the_line_for_the_owners_file(self):
+        self.cfg.raw = {"features": {"landmarks_verify": True}}
+        self.patch_fast_stages()
+        self.start_server()
+        status, _resp = self.post("/api/process", {"source_dir": str(self.src_dir)})
+        self.assertEqual(status, 200)
+        final = _poll_until(self.status, lambda d: d["finished"])
+        self.assertNotIn("landmarks", self.calls)
+        self.assertEqual(len(final["skipped_notes"]), 1)
+        self.assertIn("features.landmarks_verify", final["skipped_notes"][0])
+
+    def test_a_run_that_ran_the_stage_says_nothing(self):
+        self.cfg.raw = {"features": {"landmarks_verify": True}}
+        self.patch_fast_stages()
+        self.start_server()
+        self.post("/api/process",
+                  {"source_dir": str(self.src_dir), "landmarks": True})
+        final = _poll_until(self.status, lambda d: d["finished"])
+        self.assertIn("landmarks", self.calls)
+        self.assertEqual(final["skipped_notes"], [])
+
+    def test_an_ordinary_file_gets_no_line_from_the_screen_either(self):
+        self.patch_fast_stages()
+        self.start_server()
+        self.post("/api/process", {"source_dir": str(self.src_dir)})
+        final = _poll_until(self.status, lambda d: d["finished"])
+        self.assertEqual(final["skipped_notes"], [])
+
+    def test_the_page_has_a_slot_the_script_fills_from_the_status(self):
+        self.start_server()
+        _status, body, _ctype = self.get("/")
+        html = body.decode("utf-8")
+        self.assertIn('id="process-skipped-notes"', html)
+        self.assertIn("data.skipped_notes", html)
 
 
 class TestTheOwnersRegressionIsNotTouched(ProcessTestBase):

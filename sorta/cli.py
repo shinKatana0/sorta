@@ -21,7 +21,7 @@ else:
     _TYPER_AVAILABLE = True
 
 from . import __version__, imaging, tiers, wizard
-from .config import Config, configure_logging, load_config
+from .config import Config, configure_logging, load_config, skipped_stage_notes
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import (
@@ -649,6 +649,10 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
                             "landmarks": bool(cfg.features.landmarks)}
         steps = [(name, fn) for name, fn in _pipeline_steps()
                  if name not in _OPTIONAL_STAGES or enabled_optional[name]]
+        for line in skipped_stage_notes(
+                cfg, [name for name in _OPTIONAL_STAGES if not enabled_optional[name]],
+                lang):
+            print(line)
         for i, (name, fn) in enumerate(steps, 1):
             print(_t("cli.run.stage", lang, index=i, total=len(steps), name=name))
             # F69: the per-stage timing goes to the run log, so "which stage ate the

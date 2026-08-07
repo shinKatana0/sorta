@@ -3326,6 +3326,19 @@
     box.style.display = "";
   }
 
+  // F222: a stage this run skipped whose settings are still in config.yaml. The sentence
+  // comes from the server ready-made — the command line prints the same one, from the
+  // same builder, so a person cannot be told two different things about one file. It is
+  // NOT a warning that something went wrong: the run was correct, and what is being said
+  // is that a file written before the stage had a switch now describes less than its
+  // author meant. Nothing is switched on for them by it.
+  function renderSkippedNotes(data) {
+    var box = document.getElementById("process-skipped-notes");
+    var notes = data.skipped_notes || [];
+    box.textContent = notes.length ? notes.join(" ") : "";
+    box.style.display = notes.length ? "" : "none";
+  }
+
   function renderProcessStatus(data) {
     var startBtn = document.getElementById("process-start-btn");
     var cancelBtn = document.getElementById("process-cancel-btn");
@@ -3343,6 +3356,7 @@
     renderStages(data);
     renderProcessPhase(data);
     renderDownloadStatus(data);
+    renderSkippedNotes(data);
     renderProcessSummary(data);
     renderDeepFallback(data);
     if (data.running) {

@@ -1433,6 +1433,106 @@ class Config:
     raw: dict = field(default_factory=dict)  # the full YAML for future-phase sections
 
 
+# --- F222: a stage that is skipped while its settings sit in the file ------------------
+#
+# The case this exists for is one real config.yaml. It holds
+#
+#     naming:    landmark_threshold: 0.50      # lowered from 0.85 for a measurement
+#     features:  landmarks_verify: true        # switched on 2026-08-02 for the cascade
+#
+# and no `features.landmarks`, because that key did not exist when those lines were
+# written — the stage ran unconditionally. After F222 the stage stops running for that
+# file, and its owner would find out from a missing result rather than from the program.
+#
+# What is NOT done here, deliberately: the settings are not read as an intention and the
+# stage is not switched back on by them. Six months later nobody would be able to say why
+# it ran, and a program that infers consent from a leftover number is worse than one that
+# asks. What IS done is saying it out loud, once, in the run that skips the stage.
+#
+# Keyed by stage rather than written as `if landmarks` because the situation is not about
+# landmarks: it is about any stage whose default changes under a file that already
+# configures it. Today there is exactly one, and the reason the other two opt-in stages
+# (`faces`, `events`) are not here is not that they have no settings — it is that they
+# have been opt-in since the day their settings existed, so no file was ever reinterpreted
+# under its author.
+
+
+@dataclass(frozen=True)
+class StageSettings:
+    """One stage, the config keys that belong to it, and how it is switched on.
+
+    `keys` are `section.key` paths read against the RAW YAML: what matters is whether the
+    person wrote them down, not what they evaluate to — a threshold set by hand to its
+    own default is still evidence that somebody was using this stage.
+    """
+
+    stage: str
+    keys: tuple[str, ...]
+    # The catalog key of the sentence naming every way to switch the stage back on. Per
+    # stage because the ways differ: a flag, a config key and a checkbox are three
+    # different things and only the stage knows which of them it has.
+    enable_key: str
+
+
+STAGE_SETTINGS: tuple[StageSettings, ...] = (
+    StageSettings(
+        stage="landmarks",
+        keys=("naming.landmark_threshold", "naming.landmark_group_min",
+              "naming.landmark_group_dominance", "naming.landmarks_file",
+              "features.landmarks_verify", "features.landmark_candidate_threshold"),
+        enable_key="cli.run.enable_landmarks",
+    ),
+)
+
+STAGE_SETTINGS_BY_STAGE: dict[str, StageSettings] = {
+    entry.stage: entry for entry in STAGE_SETTINGS}
+
+
+def configured_settings_of(cfg: Config, stage: str) -> tuple[str, ...]:
+    """Which of that stage's settings this config file actually spells out.
+
+    Empty for a stage nobody has configured — and that half matters as much as the other
+    one: a line printed on every run is noise, and noise is learned and then not read on
+    the single run it was written for.
+    """
+    entry = STAGE_SETTINGS_BY_STAGE.get(stage)
+    if entry is None:
+        return ()
+    raw = getattr(cfg, "raw", None)
+    if not isinstance(raw, dict):
+        return ()
+    found: list[str] = []
+    for path in entry.keys:
+        section, _, key = path.partition(".")
+        values = raw.get(section)
+        if isinstance(values, dict) and key in values:
+            found.append(path)
+    return tuple(found)
+
+
+def skipped_stage_notes(cfg: Config, skipped: Sequence[str],
+                        lang: i18n.Lang) -> list[str]:
+    """One line per skipped stage this config still configures. Usually none.
+
+    Both entry points call this — `sorta run` prints the lines, the web app carries them
+    into the status of the run — so the two cannot say different things about the same
+    file. "Usually none" is the property the line depends on: one that appeared on every
+    run would be learned and stopped being read, and then it would not work on the single
+    run it was written for.
+    """
+    notes: list[str] = []
+    for stage in skipped:
+        keys = configured_settings_of(cfg, stage)
+        if not keys:
+            continue
+        entry = STAGE_SETTINGS_BY_STAGE[stage]
+        notes.append(i18n.cli_text(
+            "cli.run.stage_skipped_configured", lang,
+            stage=i18n.stage_label(stage, lang), keys=", ".join(keys),
+            how=i18n.cli_text(entry.enable_key, lang)))
+    return notes
+
+
 def vlm_allowed(cfg: Config) -> bool:
     """F145: may this run load the VLM at all? — `vlm.enabled`, the master switch.
 
