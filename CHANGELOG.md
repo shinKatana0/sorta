@@ -65,6 +65,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (7 GB), the gpu tier (no card on a runner), the tray icon (no desktop) and the
   signature. It runs on the packaging paths, by hand, and on a tag, so a release cannot
   skip it.
+- **Linux installs in one line, and `doctor` answers every way that line goes wrong**
+  (F213). No packaging is coming — not AppImage, not deb/rpm, not snap or flatpak: the
+  Windows installer exists because there is no alternative there, while on Linux a
+  package manager and a terminal already do, and packaging nobody can maintain becomes an
+  outdated version under the author's name within six months. `uv tool install sorta` is
+  the whole path. So the work was to make that path faultless, and the shape of it is
+  that **every failure is answered by `sorta doctor`, in words, at the moment it
+  happens** — rather than by a paragraph in a guide nobody reads just then. `sorta` not
+  on PATH is reported with the directory it is in *and* the command that puts it there,
+  the one this shell profile actually uses. A missing exiftool says what stops working
+  and prints a paste-able install command **for this distribution**. A cache directory
+  other local users can read is a warning with the fix in it — and on Windows the
+  question is not asked at all, because the ACL already answers it. The install section
+  of all three guides was rewritten to the path that exists, and a watchdog test pairs
+  the two: the fix a guide prints has to be the fix `doctor` prints, so the document and
+  the program cannot drift apart.
 - **An icon in the tray, for whoever installed Sorta with an installer** (F207). That
   person does not keep a terminal open, and `sorta ui` prints its address to a console
   and lives until **Ctrl+C** — so for an installed application the address is nowhere to
