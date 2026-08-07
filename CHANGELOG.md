@@ -236,6 +236,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **Three stages out of seven still chose their own device, and on a Mac they would have
+  run on the processor beside four that did not** (F220). F214 replaced four copies of
+  `"cuda" if torch.cuda.is_available() else "cpu"` with one function and said in its own
+  report that three were left outside its boundary: the detector (`detect`), the restore
+  upscaler (`restore`) and the text tower of search (`search`). On Apple Silicon that
+  answer is False, so those three would have gone to the CPU quietly while their
+  neighbours used MPS — and neighbouring stages disagreeing about which device a run is
+  on is worse than all of them being slow, because nothing shows it until somebody
+  measures. **The more expensive half is the arithmetic**: seven places minus four is
+  three copies of one decision, which is exactly the shape it drifted apart from the
+  first time. The three now call `accel`, so a fourth device is one edit rather than a
+  hunt through three files with one of them forgotten.
+  **Nothing changed on CUDA, and that is proved rather than observed**: all seven call
+  sites are driven in the test suite against constants written out by hand, and the text
+  guard that used to read four modules now sweeps **every** module of the package —
+  `accel`, which holds the decision, and `diagnostics`, which asks about the hardware for
+  a living, are excused by name and with a reason, and the excuse is itself rechecked.
+  **No dtype was introduced.** The four converted stages already had "float16 on CUDA,
+  float32 otherwise"; these three never did, and adding it would have moved the numbers a
+  CUDA machine produces under cover of a tidy-up.
+  **The retreat to the CPU was decided per stage, not applied by reflex.** `detect` and
+  `search` are wrapped — a cascade over thousands of candidates should not lose 899
+  frames to a refusal at the 900th, and a text tower over one typed phrase costs
+  milliseconds on a processor. `restore` is deliberately not: it is one frame per press
+  of a button with a person waiting on it, its CPU path is minutes rather than seconds,
+  and the caller already turns a refusal into a reason a person can read.
+  **Still unverified on Apple hardware** — there is no Mac here, and a green gate on
+  Windows says nothing about MPS.
 - **The installer shipped a product whose machine half was dead: torch and onnxruntime
   could not load on any machine that had never had the Visual C++ Redistributable**
   (F218). The owner put a built installer into a clean Windows 11 virtual machine and the
