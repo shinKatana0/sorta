@@ -129,7 +129,7 @@ def modules(**stubs: Any) -> Iterator[None]:
         yield
 
 
-# --- the four call sites ----------------------------------------------------------
+# --- the seven call sites ---------------------------------------------------------
 
 class RecordingFaceAnalysis:
     """insightface's session, recording the providers it was built with."""
@@ -198,6 +198,16 @@ def fake_open_clip() -> Iterator[list[dict]]:
         yield loads
 
 
+class Column:
+    """A column of a torchvision prediction — `detect` only ever calls `.tolist()`."""
+
+    def __init__(self, values: list) -> None:
+        self._values = values
+
+    def tolist(self) -> list:
+        return self._values
+
+
 class RecordingDetector:
     """A torchvision detection model, recording where its weights and its frames went."""
 
@@ -221,16 +231,6 @@ class RecordingDetector:
                  "boxes": Column([[1.0, 2.0, 3.0, 4.0]])}]  # one cat
 
 
-class Column:
-    """A torch column of a prediction dict — `detect` only ever calls `.tolist()`."""
-
-    def __init__(self, values: list) -> None:
-        self._values = values
-
-    def tolist(self) -> list:
-        return self._values
-
-
 DETECTOR_MODEL = "fasterrcnn_mobilenet_v3_large_fpn"
 
 
@@ -244,7 +244,7 @@ def detect_site(machine: Machine,
     """
     model = RecordingDetector(refuse)
     detection = types.ModuleType("torchvision.models.detection")
-    detection.__dict__[DETECTOR_MODEL] = lambda weights=None: model
+    setattr(detection, DETECTOR_MODEL, lambda weights=None: model)
     models = types.ModuleType("torchvision.models")
     models.detection = detection  # type: ignore[attr-defined]
     root = types.ModuleType("torchvision")
