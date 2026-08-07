@@ -600,7 +600,7 @@ def burn_attached_container(data: bytes) -> tuple[int, int]:
             "<IIIIII", data, fixed)
         lengths = struct.unpack_from(f"<{containers}I", data, fixed + 24)
         # Container 0 is the user interface; the packages are the one after it.
-        cabinet = data.find(CAB_MAGIC, stub + sum(lengths[:1]))
+        cabinet = data.find(CAB_MAGIC, stub + lengths[0])
         if cabinet == -1:
             raise SystemExit("no cabinet behind the bundle's stub")
         return cabinet, struct.unpack_from("<I", data, cabinet + 8)[0]
@@ -637,8 +637,9 @@ def extract_msvc_runtime(redist: Path, stage: Path,
     subprocess.run([expand_binary(), str(container), "-F:*", str(packages)],
                    capture_output=True, check=True)
     for package in sorted(packages.iterdir()):
-        if package.read_bytes()[:4] != CAB_MAGIC:
-            continue  # the MSIs travel beside the cabinets; they hold no files we want
+        with package.open("rb") as handle:  # these run to eleven megabytes; read four
+            if handle.read(4) != CAB_MAGIC:
+                continue  # the MSIs travel beside the cabinets and hold nothing we want
         for name in names:
             if (stage / name).is_file():
                 continue
