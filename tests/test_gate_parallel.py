@@ -283,10 +283,25 @@ class TestTheGateChecksTheThresholdOnce(unittest.TestCase):
     def test_one_pass_is_parallel_and_the_other_is_not(self):
         parallel, serial = self.pytest_steps()
         args = pytest_args(parallel)
-        self.assertEqual(args[args.index("-n") + 1], "auto")
+        self.assertGreaterEqual(int(args[args.index("-n") + 1]), 1)
         self.assertEqual(marker_expression(parallel), "not serial")
         self.assertNotIn("-n", pytest_args(serial))
         self.assertEqual(marker_expression(serial), "serial")
+
+    def test_the_worker_count_is_capped_and_never_exceeds_the_cores(self):
+        """The cap is a memory budget, not a core count.
+
+        `-n auto` is one worker per logical core, and it was chosen on the cpu install
+        profile where `import torch` is cheap. On the gpu profile it is 505 MB per
+        worker, and 24 of them exhausted a 63 GB machine that had 26 GB free — the
+        gate died with a MemoryError inside a 1 MiB read. A count that is a number and
+        not `auto` is the whole fix, so this test pins that it stays one.
+        """
+        args = pytest_args(self.pytest_steps()[0])
+        workers = int(args[args.index("-n") + 1])
+        self.assertLessEqual(workers, self.check._MAX_WORKERS)
+        self.assertLessEqual(workers, os.cpu_count() or 1)
+        self.assertNotIn("auto", args, "a per-core worker count is what ran out of memory")
 
     def test_the_run_reports_how_long_it_took(self):
         """The number in the docstring was wrong by threefold because nobody saw it."""
@@ -431,8 +446,8 @@ class TestEverySerialMarkerCarriesAReason(unittest.TestCase):
 
 
 class TestTheVerdictDoesNotDependOnTheWorkerCount(unittest.TestCase):
-    """A subset of the real suite, run both ways. Not the whole one — that is 28
-    minutes twice, and the property is about the mechanism, not about volume."""
+    """A subset of the real suite, run both ways. Not the whole one — that is half an
+    hour twice, and the property is about the mechanism, not about volume."""
 
     SUBSET = ["tests/test_dates.py", "tests/test_config.py", "tests/test_progress.py"]
 
@@ -444,10 +459,14 @@ class TestTheVerdictDoesNotDependOnTheWorkerCount(unittest.TestCase):
         )
 
     def test_one_process_and_many_agree(self):
+        """Many = the count the gate really uses, read off `check.py`. Asserting about
+        `-n auto` here would have gone on passing while the gate ran something else."""
+        workers = pytest_args(load_check().SLOW_CHECKS[0][1])
+        many_args = ("-n", workers[workers.index("-n") + 1], "--dist", "loadfile")
         single = self.run_subset()
-        many = self.run_subset("-n", "auto")
+        many = self.run_subset(*many_args)
         self.assertEqual(single.returncode, many.returncode,
-                         f"-n 0:\n{single.stdout}\n-n auto:\n{many.stdout}")
+                         f"one process:\n{single.stdout}\n{many_args}:\n{many.stdout}")
         self.assertEqual(single.returncode, 0, single.stdout + single.stderr)
         counts = re.compile(r"(\d+) passed")
         self.assertEqual(counts.findall(single.stdout), counts.findall(many.stdout))

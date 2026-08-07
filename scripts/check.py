@@ -50,11 +50,14 @@ should be visible on the next run rather than half a year later.
 
 The suite is therefore run TWICE, and the split is not cosmetic:
 
-    parallel   pytest -n auto -m "not serial"    the bulk, one worker per core
-    serial     pytest -m serial                  the tests that assert about TIME or
-                                                 bind a port — `-n auto` is a loaded
-                                                 machine, which is exactly the
-                                                 condition under which they fail
+    parallel   pytest -n <cores, at most 8> -m "not serial"   the bulk
+    serial     pytest -m serial                               the tests that assert
+                                                 about TIME or bind a port — the
+                                                 parallel half is a loaded machine,
+                                                 which is exactly the condition under
+                                                 which they fail
+
+The cap on the workers is about memory and not about cores; see `_MAX_WORKERS` below.
 
 A naive `-n auto` over everything would make the gate fast and UNRELIABLE, which is
 worse than slow: an unreliable gate teaches people to re-run instead of to read. No
@@ -105,14 +108,38 @@ _COVERAGE = ["--cov=sorta", "--cov-append", "--cov-report="]
 # `[tool.coverage.report].fail_under` out of ITS exit code without touching that value.
 _NO_VERDICT = ["--cov-fail-under=0"]
 
+# The number of workers is a question about MEMORY PER PROCESS, not about cores, and
+# this is the line that says so. `-n auto` (one worker per logical core) was measured on
+# the **cpu** install profile, where `import torch` costs a few dozen megabytes. The gate
+# that decides a merge runs on the **gpu** profile, where the same import costs 505 MB —
+# and 24 of those ran the machine out of memory: `MemoryError` inside a 1 MiB read in
+# sorta/hashing.py, on a 63 GB box that had 26 GB free because a product run and another
+# worktree's gate were using the rest.
+#
+# Measured on the gpu profile, peak resident memory of the run's own process tree
+# (scripts/measure_gate_workers.py), against the wall clock of the parallel half:
+#
+#     workers    4      8     12     16     24
+#     peak GB  17.3   20.0   23.1   25.5   ~31 (extrapolated; this is what failed)
+#     seconds   516    310    240    205     —
+#
+# The peak is ~15 GB plus ~0.7 GB per worker: a floor set by whichever heavy files
+# happen to overlap, and a slope that is the per-process cost. Eight is where the run
+# still fits in the memory this machine actually had free with somebody else working on
+# it, with about 4 GB to spare; twelve had one, sixteen had none. It is a cap and not a
+# fixed count — `min(cores, 8)` — so a 4-core CI runner still gets 4 and needs no branch
+# of its own in the configuration.
+_MAX_WORKERS = 8
+_WORKERS = str(min(os.cpu_count() or 1, _MAX_WORKERS))
+
 # `loadfile` and not xdist's default `load` (which hands out one test at a time). The
 # suite has modules whose tests share process state on purpose — a module-level
 # `default_rng` in tests/test_faces_rescan.py, so what a test draws depends on how many
 # draws the tests above it made. Splitting such a file across workers changes the data a
 # test sees and flips its verdict; keeping the file whole reproduces exactly the order
-# it had in one process. That is what makes `-n 0` and `-n auto` agree, which is the
-# property the gate is FOR. Per-file granularity still saturates 24 cores: 224 files.
-_DISTRIBUTION = ["-n", "auto", "--dist", "loadfile"]
+# it had in one process. That is what makes `-n 1` and `-n 8` agree, which is the
+# property the gate is FOR. Per-file granularity is plenty for eight workers: 225 files.
+_DISTRIBUTION = ["-n", _WORKERS, "--dist", "loadfile"]
 
 SLOW_CHECKS = [
     (
