@@ -240,12 +240,18 @@ class TestTheCaptionsAreTheProductsOwnWords(unittest.TestCase):
                                  i18n.cli_text("cli.doctor.tier_weights", lang, name="N",
                                                weights="W", size="S").strip())
 
-    def test_the_cpu_banner_names_the_gpu_tier_as_the_wizard_names_it(self):
-        for lang in _LANGS:
-            with self.subTest(lang=lang):
-                banner = ui_strings._UI_STRINGS["env_cpu_warning"][lang]
-                self.assertIn(wizard.TIERS_BY_KEY["gpu"].name(lang), banner)
-                self.assertNotIn("uv tool install", banner)
+    def test_the_two_captions_that_name_a_tier_in_prose_name_it_the_same_way(self):
+        """Two sentences on this screen mention a tier inside prose rather than as a
+        value, so the name is written out in them — and pinned here to the catalog, which
+        is the only reason writing it out is allowed."""
+        for caption, key, gone in (("env_cpu_warning", "gpu", "uv tool install"),
+                                   ("process_deep_hint", "deep", "uv sync")):
+            for lang in _LANGS:
+                with self.subTest(caption=caption, lang=lang):
+                    text = ui_strings._UI_STRINGS[caption][lang]
+                    self.assertIn(wizard.TIERS_BY_KEY[key].name(lang), text)
+                    # ...and neither of them offers a command for a source checkout.
+                    self.assertNotIn(gone, text)
 
     def test_every_new_caption_exists_in_three_distinct_languages(self):
         keys = ("tier_absent_note", "tier_weights_note", "tier_add_hint",
