@@ -11,7 +11,8 @@ What it makes, and why it looks like this
 The payload is a directory that is COPIED to wherever somebody installs the program:
 
     python\\      a standalone CPython, fetched by `uv python install`, plus the three
-                 MSVC runtime libraries that torch and onnxruntime import (F218)
+                 MSVC runtime libraries that torch and onnxruntime import (F218), plus a
+                 `sitecustomize.py` that points it at the certifi set in lib\\ (F221)
     lib\\         the packages, from `uv pip install --target` — a plain tree
     uv.exe       the same resolver, kept for the tiers the wizard offers later
     exiftool\\    the metadata reader (see the decision in packaging/windows/README.md)
@@ -38,6 +39,12 @@ The second watchdog, `payload_import_gaps`, is about FILES and not about running
 name to be either in the payload or given by Windows. That is what catches a payload which
 works on the build machine only because the machine happens to have something installed —
 which is exactly how the MSVC runtime went missing for three releases.
+
+The third, `payload_trust_gap`, is the same idea about the same class of defect (F221):
+the payload has to carry the certificate set its interpreter is pointed at, or nothing
+downloads on a machine whose root store Windows has not filled in yet. Whether TLS works
+cannot be answered here — the build machine's store IS filled — so the proof is a suite
+test against an empty root store, and last a clean virtual machine.
 
 Signing: OFF by default and not in the path at all (owner's decision, 2026-08-06 — the
 installer ships unsigned and SmartScreen is warned about in the README and the guides
@@ -92,8 +99,19 @@ PAYLOAD_EXIFTOOL = Path("exiftool") / "exiftool.exe"
 # The one line that puts `lib\` on the path of the shipped interpreter. Relative to the
 # .pth file's own directory (`python\Lib\site-packages`), which is what makes the whole
 # payload movable.
+PAYLOAD_SITE_PACKAGES = PAYLOAD_PYTHON / "Lib" / "site-packages"
 PTH_NAME = "_sorta_lib.pth"
 PTH_LINE = "..\\..\\..\\lib"
+
+# F221 — the trust the shipped interpreter uses, and where it comes from. `sitecustomize`
+# is imported by CPython out of `site-packages` before any of our code runs, on every one
+# of the five ways this program starts, so it is the one place that can point OpenSSL at
+# the certifi set the payload already carries. The file itself says why at length; what
+# matters here is that BOTH halves have to be in the payload, which is what
+# `payload_trust_gap` below checks before an installer is compiled.
+SITECUSTOMIZE_SOURCE = "packaging/windows/sitecustomize.py"
+PAYLOAD_SITECUSTOMIZE = PAYLOAD_SITE_PACKAGES / "sitecustomize.py"
+PAYLOAD_CA_BUNDLE = PAYLOAD_LIB / "certifi" / "cacert.pem"
 
 # The environment the optional signing step reads. Nothing here is consulted unless
 # signing was asked for.
@@ -111,6 +129,11 @@ STATIC_PAYLOAD: tuple[tuple[str, str], ...] = (
     ("LICENSE", "LICENSE"),
     ("NOTICE", "NOTICE"),
     ("sorta/web/favicon.ico", "favicon.ico"),
+    # F221: a real file in the repository rather than a string generated here, for the
+    # same reason `config.example.yaml` is one — a second copy written out by hand is the
+    # copy that drifts, and this one is read by people trying to understand what the
+    # shipped interpreter trusts.
+    (SITECUSTOMIZE_SOURCE, str(PAYLOAD_SITECUSTOMIZE)),
 )
 
 # --- the MSVC runtime the payload has to carry (F218) --------------------------------
@@ -430,6 +453,41 @@ def payload_import_gaps(payload: Path) -> list[tuple[Path, str]]:
             if name.lower() not in carried and not is_system_dll(name):
                 gaps.append((module.relative_to(payload), name))
     return gaps
+
+
+# --- the watchdog: the payload carries the trust it points at (F221) ------------------
+#
+# The same class of defect as F218 and checked the same way, about FILES: the product
+# relied on the state of the host machine — there, on the Visual C++ runtime being in
+# System32; here, on Windows' root certificate store being filled — while promising not
+# to. `sitecustomize.py` points OpenSSL at `lib\certifi\cacert.pem`, and it does so
+# silently when the file is absent, because it runs at the start of every process
+# including the tray, which has no console. So the loud half is here: an installer is not
+# compiled from a payload where either end of that pair is missing.
+#
+# What this canNOT answer is whether TLS works, and nothing on this machine can: the build
+# machine's root store is full, so a successful download here proves only that the machine
+# is not the owner's clean one. That half is the suite (an empty root store, in
+# tests/test_payload_carries_its_trust.py) and, last, a clean virtual machine.
+
+
+def payload_trust_gap(payload: Path) -> str | None:
+    """Why the payload's TLS trust would not work, in one sentence — or None if it would.
+
+    Both ends are named because they fail identically and are fixed differently: without
+    `sitecustomize.py` nothing points the interpreter anywhere, and without the certifi
+    set it points at a file that is not there — and in both cases every download falls
+    back to the machine's own root store, which is the defect.
+    """
+    if not (payload / PAYLOAD_SITECUSTOMIZE).is_file():
+        return (f"{PAYLOAD_SITECUSTOMIZE} is missing — nothing would point the shipped "
+                f"interpreter at the certificate set the payload carries, and every "
+                f"download would fall back to the machine's own root store")
+    if not (payload / PAYLOAD_CA_BUNDLE).is_file():
+        return (f"{PAYLOAD_CA_BUNDLE} is missing — certifi travels as a dependency of "
+                f"requests and huggingface_hub, so a payload without it means the base "
+                f"tier was not installed the way this build expects")
+    return None
 
 
 # --- the commands (returned, not run — this is the checkable half) -------------------
@@ -829,8 +887,7 @@ def build(args: argparse.Namespace) -> int:
             flatten_python_install(PAYLOAD / PAYLOAD_PYTHON)
         builder.run(base_install_command(uv, PAYLOAD / PAYLOAD_PYTHON_EXE,
                                          PAYLOAD / PAYLOAD_LIB))
-        builder.write(PAYLOAD / PAYLOAD_PYTHON / "Lib" / "site-packages" / PTH_NAME,
-                      PTH_LINE + "\n")
+        builder.write(PAYLOAD / PAYLOAD_SITE_PACKAGES / PTH_NAME, PTH_LINE + "\n")
         builder.copy(Path(uv), PAYLOAD / PAYLOAD_UV)
         # The MSVC runtime, from the pinned redistributable rather than from the System32
         # of whoever is building (F218). A dry run says what would be fetched and fetches
@@ -867,6 +924,13 @@ def build(args: argparse.Namespace) -> int:
             return 1
         print(f"payload complete: {len(modules)} modules, every import either carried "
               f"or provided by Windows")
+        # The third watchdog (F221): the payload has to carry its own TLS trust, or
+        # nothing downloads on a machine whose root store Windows has not filled yet.
+        trust = payload_trust_gap(PAYLOAD)
+        if trust:
+            print(f"\nthe payload does not carry the trust it points at:\n  {trust}")
+            return 1
+        print(f"payload trust: {PAYLOAD_SITECUSTOMIZE} points at {PAYLOAD_CA_BUNDLE}")
 
     iscc = shutil.which("ISCC") or shutil.which("iscc") or args.iscc
     if not iscc:
