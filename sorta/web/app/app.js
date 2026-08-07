@@ -2641,8 +2641,13 @@
     return !info || info.available !== false;
   }
 
+  // Every option of this screen, by the key the server prices and probes it under. A
+  // fixed list rather than the keys of the last answer: a failed /api/env must not leave
+  // the ticks editable in the middle of a run.
+  var RUN_OPTION_KEYS = ["geo_online", "landmarks", "faces", "events", "pets", "deep"];
+
   function updateOptionAvailability() {
-    Object.keys(partStates).forEach(function (key) {
+    RUN_OPTION_KEYS.forEach(function (key) {
       var el = document.getElementById("process-" + key.replace(/_/g, "-") + "-checkbox");
       if (!el) return;
       // The run itself is the other reason a control is dead — whichever applies, the
@@ -2850,7 +2855,10 @@
     // nobody is computing is a choice about nothing.
     var petsOn = document.getElementById("process-pets-checkbox").checked;
     document.getElementById("process-pets-verify-row").style.display = petsOn ? "" : "none";
-    updateVlmSubordinatesDisabled();
+    // F222: through the availability pass rather than straight to the subordinates — a
+    // missing tier is a third reason for a control to be dead, and one place applies all
+    // three.
+    updateOptionAvailability();
     var total = 0;
     var unknown = false;
     var measured = false;
