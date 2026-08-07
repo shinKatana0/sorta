@@ -148,7 +148,6 @@ ja.CleanupModelsNote=重みは他のプログラムと共有するキャッシ�
 
 const
   FILE_ATTRIBUTE_REPARSE_POINT = $400;
-  INVALID_FILE_ATTRIBUTES = $FFFFFFFF;
 
 function GetFileAttributesW(lpFileName: String): DWORD;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -323,9 +322,10 @@ begin
     Exit;
   // Never through a link: a junction here points at a directory that is not ours, and
   // DelTree walks into one. The same rule the model half follows in `sorta.weights`.
+  // A failed call answers $FFFFFFFF, which has that bit set too - so a directory this
+  // cannot read is left alone, which is the right way round for a delete.
   Attributes := GetFileAttributesW(Path);
-  if (Attributes <> INVALID_FILE_ATTRIBUTES) and
-     ((Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+  if (Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
     Exit;
   DelTree(Path, True, True, True);
 end;
