@@ -61,7 +61,13 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files (x86)\Inno Setup 6'
 
       - name: Build the payload and compile the installer
-        run: uv run --extra cpu python scripts/build_installer.py
+        # `--no-project`: the build script imports nothing but the standard library and
+        # `sorta.wizard` (which imports `sorta.i18n` and nothing else), and it puts the
+        # repository root on sys.path itself so a checkout works. Syncing the CPU profile
+        # here would download torch to run a script that never touches it — the payload
+        # does its own `uv pip install --target`, which is the whole point.
+        # `--python 3.13` because a runner's stock interpreter can predate tomllib.
+        run: uv run --no-project --python 3.13 python scripts/build_installer.py
 
       - name: Install it silently, per-user, without administrator
         # `PrivilegesRequired=lowest` in the .iss is a claim; running the installer as
