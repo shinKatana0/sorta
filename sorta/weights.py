@@ -181,13 +181,14 @@ def downloaded(*, insightface: Path | None = None,
     which names a model `models--<org>--<repo>`.
     """
     models = tiers._INSIGHTFACE_MODELS if insightface is None else insightface
-    cache = hf_cache_dir() if hub is None else hub
+    entries = _hub_entries(hf_cache_dir() if hub is None else hub)
     found: list[Downloaded] = []
     seen: set[Path] = set()
     for weight in catalog_weights():
+        # `<name>.zip` is the archive insightface downloads before unpacking it next to
+        # itself; it is named after the model exactly, so it is ours when it is there.
         candidates = [models / weight, models / f"{weight}.zip"]
-        candidates += [child for child in _hub_entries(cache)
-                       if _matches(weight, child.name)]
+        candidates += [child for child in entries if _matches(weight, child.name)]
         for path in candidates:
             if path in seen or not _present(path):
                 continue
