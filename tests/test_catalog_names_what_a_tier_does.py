@@ -323,9 +323,9 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
         with self.assertRaises(LookupError):
             wizard.fetch_weights(wizard.Tier("x", weights=("Qwen2.5-VL-3B",)))
 
-    def test_the_model_fetched_is_the_one_the_config_will_load(self):
-        with mock.patch.object(wizard, "_FETCHERS", {}):
-            pass  # the table is a table; what follows is the pair it is asked for
+    def test_a_machine_with_no_config_yet_preloads_the_default_model(self):
+        """The ordinary state of a fresh install: there is no config.yaml at this point,
+        and the defaults are what such a machine will load."""
         self.assertEqual(wizard.clip_weight_names("nowhere/config.yaml"),
                          ("ViT-L-14-quickgelu", "openai"))
 
@@ -475,10 +475,19 @@ class TestTheWindowDoesNotCloseOverTheAnswer(unittest.TestCase):
 
     def test_the_post_install_step_of_the_installer_runs_the_same_wizard(self):
         """The `[Run]` entry of sorta.iss goes through this module, so it inherits the
-        hold above rather than needing one of its own (the .iss is not touched)."""
+        hold above rather than needing one of its own (the .iss is not touched).
+
+        Two properties of that entry are what make the pause safe, and they are read
+        here rather than assumed: the console is a real one (no `runhidden`, so there is
+        a window to hold and a keyboard behind it), and an unattended install skips the
+        step altogether (`skipifsilent`) — a pause with nobody there would otherwise be
+        an installer that never finishes.
+        """
         iss = (_ROOT / "packaging" / "windows" / "sorta.iss").read_text(encoding="utf-8")
         run_section = iss.split("[Run]")[1]
         self.assertIn("sorta.wizard", run_section)
+        self.assertIn("skipifsilent", run_section)
+        self.assertNotIn("runhidden", run_section)
 
 
 class TestTheCatalogIsStatedTheSameEverywhere(unittest.TestCase):

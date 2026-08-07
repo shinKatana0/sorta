@@ -199,7 +199,8 @@ Metadata reader exiftool: /usr/bin/exiftool
 Installed tiers:
   Base tier: in place
   Faces: packages in place, the models (buffalo_l, 400 MB) download on the first run of the stage
-  Search by words: packages in place, the models (ViT-L-14, XLM-RoBERTa, 3.0 GB) download on the first run of the stage
+  Recognising what is in a frame: packages in place, the models (ViT-L-14, 1.6 GB) download on the first run of the stage
+  Search by words: packages in place, the models (XLM-RoBERTa, 1.4 GB) download on the first run of the stage
   NVIDIA acceleration (CUDA 13): in place
   Deep tier (VLM): not installed (missing: transformers, accelerate, qwen-vl-utils)
   To add a tier: run sorta-setup.

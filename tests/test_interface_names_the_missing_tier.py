@@ -151,7 +151,7 @@ class TestATierThatDownloadsItselfIsNotCalledBroken(unittest.TestCase):
 
     def test_the_sentence_states_the_size_and_does_not_say_not_installed(self):
         payload = ui.process._tiers_payload(_machine_with_nothing())
-        expected_size = {"faces": "400", "search": "3.0"}
+        expected_size = {"faces": "400", "search": "1.4"}
         for key in ("faces", "search"):
             for lang in _LANGS:
                 with self.subTest(tier=key, lang=lang):

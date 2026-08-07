@@ -715,12 +715,15 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
                say: Callable[[str], None],
                install: Callable[[Sequence[str]], int],
                download: Callable[..., bool] = download_weights) -> None:
-    """Install what was said yes to — packages now, model weights on first use.
+    """Install what was said yes to: packages now, weights now or on first use.
 
-    The two halves are reported apart because they cost the person different things: a
-    package is downloaded here and now, while weights arrive inside the first run of the
-    stage that needs them. Saying "installed" about the second would be a lie the person
-    only discovers when a stage starts a 7 GB download.
+    The halves are reported apart because they cost the person different things: a
+    package is downloaded here and now, while weights ordinarily arrive inside the first
+    run of the stage that needs them. Saying "installed" about the second would be a lie
+    the person only discovers when a stage starts a 7 GB download.
+
+    F223 adds the third case, for the tier the layout needs: its weights are fetched
+    HERE, and the sentence is neither "installed" nor "later" but the download itself.
     """
     uv = uv_binary(manifest)
     python = python_binary(manifest)

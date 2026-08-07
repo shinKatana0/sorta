@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The catalog names a tier by what it does, not by what is inside it** (F223). One line
+  of the install catalog read `Tier("search", weights=("ViT-L-14", "XLM-RoBERTa"),
+  download_mb=3000)` — two models glued into one 3.0 GB question called **"Search by
+  words"**. Measured off the disk on 2026-08-07: **ViT-L-14 is 1 631 MB and every run
+  needs it**, because it is what the classification stage loads; **XLM-RoBERTa is 1 397 MB
+  and only a search by words needs it**. A person who decided they did not want to search
+  by words answered no — and switched off the classification, which nobody had told them
+  was in there. That is exactly what happened to the owner: the wizard was walked through,
+  almost nothing was taken, and the run then stopped on the verdicts because they went to
+  fetch 1.6 GB by themselves. The same class as F217's notes hung on two checkboxes out of
+  five: the pairing had been made by matching NAMES instead of by what a stage really
+  loads.
+  **So the line was split, and each half is named after what it gives.** The new tier is
+  "Recognising what is in a frame — what the layout runs on" (1.6 GB), and "Search by
+  words" is the 1.4 GB text tower that is left. **A test now fails if a model every run
+  needs ever shares a tier with one it does not** — the defect itself, guarded, rather
+  than the name of today's fix.
+  **Putting ViT-L-14 into the installer was considered and rejected on the numbers**:
+  341 MB + 1 631 MB ≈ **1.97 GB** against GitHub's **2 GB** limit on a release file. Thirty
+  megabytes of headroom means the next torch that grows breaks the way the program is
+  distributed; every update would also be two gigabytes, and an `.exe` download that drops
+  starts again from zero, while huggingface_hub resumes where it stopped.
+  **Three things the catalog did not have** and now does. A tier can **require** another —
+  a search by words encodes the pictures with ViT-L-14 and the words with XLM-RoBERTa, so
+  choosing it brings the tier it stands on and **the wizard says so** instead of quietly
+  turning a 1.4 GB answer into 3.0 GB. A tier can **default to yes**, and exactly one does,
+  because refusing it damages the main task rather than a feature: without the verdicts the
+  1 652 screenshots, 863 documents, 188 memes and 2 534 product shots of the owner's index
+  ride into the city folders among the photographs. And the wizard can **download weights**,
+  not just install packages — with a progress line every few seconds, because 1.6 GB with
+  nothing on screen reads as a hang and has already cost an hour. Refusing that download
+  leaves a working install: the tier is not added, the stage fetches the model on its first
+  run, and F222's screen says so beforehand. Weights already on the disk are reported as in
+  place and never offered again — the probe that answers it is `sorta doctor`'s, not a
+  second one.
+- **`sorta-setup` no longer closes over its own answer** (F223). The setup was started from
+  the Start menu, a tier was chosen — and the window shut. Not on an error: on the end.
+  The only `input()` in the wizard was the tier question, so after the last answer the
+  process returned and Windows destroyed the console it had created for it, taking the
+  summary with it. A failure disappeared exactly as fast as a success, which is why the
+  certificate error of F221 was invisible for as long as it was. The wizard now holds the
+  window until Enter — **but only when the console is its own**, which on Windows is a
+  question about how many processes are attached to it. `sorta-setup` typed into a terminal
+  that was already open still returns straight to the prompt.
 - **A run says what it will download, before it starts — and the landmark stage is a
   choice** (F222). Somebody installed the program, chose almost nothing in the wizard,
   pressed the button and watched the run go `index → geo → landmarks → verdicts`, hang on
