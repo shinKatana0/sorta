@@ -195,8 +195,9 @@ sorta ui                                # http://127.0.0.1:8756 → フォルダ
 
 # または CLI
 sorta index /path/to/photos             # スキャン
-sorta run                               # geo, landmarks, junk + 近似重複ハッシュ（都市+重複）
+sorta run                               # geo, junk + 近似重複ハッシュ（都市+重複）
 sorta run --faces --events              # ...顔検出とイベント構築も行う
+sorta run --landmarks                   # ...見た目による場所の判定も行う（重み 1.6 GB）
 sorta sort --by city --dest /path/to/sorted            # dry-run プラン（CSV + HTML）
 sorta sort --by city --dest /path/to/sorted --copy --apply   # 適用（copy は非破壊）
 sorta undo                              # 必要なら直前のバッチを取り消し
