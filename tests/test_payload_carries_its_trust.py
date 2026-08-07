@@ -108,13 +108,13 @@ def probe_serials(certificate: str) -> list[str]:
     return sorted(cert.get("serialNumber", "") for cert in context.get_ca_certs())
 
 
-def install_tree(root: Path, *, certificate: str | None = None,
-                 sitecustomize: bool = True) -> Path:
+def install_tree(root: Path, *, sitecustomize: bool = True) -> Path:
     """A directory shaped like an installation: the two files this feature is about.
 
     `python\\Lib\\site-packages\\sitecustomize.py` is the real one, copied rather than
-    re-written, and `lib\\certifi\\cacert.pem` is where certifi lands when the base tier
-    is installed into `lib\\`.
+    re-written — a fixture that restates the thing under test agrees with itself and with
+    nothing else — and `lib\\certifi\\cacert.pem` is where certifi lands when the base
+    tier is installed into `lib\\`.
     """
     site_packages = root / builder.PAYLOAD_SITE_PACKAGES
     site_packages.mkdir(parents=True, exist_ok=True)
@@ -122,8 +122,7 @@ def install_tree(root: Path, *, certificate: str | None = None,
         shutil.copy2(_SITECUSTOMIZE, site_packages / "sitecustomize.py")
     bundle = root / builder.PAYLOAD_CA_BUNDLE
     bundle.parent.mkdir(parents=True, exist_ok=True)
-    bundle.write_text(certificate if certificate is not None else one_certificate(),
-                      encoding="ascii")
+    bundle.write_text(one_certificate(), encoding="ascii")
     return root
 
 

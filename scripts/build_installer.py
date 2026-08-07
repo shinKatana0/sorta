@@ -96,10 +96,14 @@ PAYLOAD_LIB = Path("lib")
 PAYLOAD_UV = Path("uv.exe")
 PAYLOAD_EXIFTOOL = Path("exiftool") / "exiftool.exe"
 
+# The directory of the shipped interpreter that CPython reads at startup: both the `.pth`
+# below and the `sitecustomize.py` further down are found there, and both climb out of it
+# by the same four levels.
+PAYLOAD_SITE_PACKAGES = PAYLOAD_PYTHON / "Lib" / "site-packages"
+
 # The one line that puts `lib\` on the path of the shipped interpreter. Relative to the
 # .pth file's own directory (`python\Lib\site-packages`), which is what makes the whole
 # payload movable.
-PAYLOAD_SITE_PACKAGES = PAYLOAD_PYTHON / "Lib" / "site-packages"
 PTH_NAME = "_sorta_lib.pth"
 PTH_LINE = "..\\..\\..\\lib"
 
