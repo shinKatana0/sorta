@@ -5,6 +5,7 @@ import dataclasses
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 from pathlib import Path
 from typing import Callable
@@ -811,6 +812,118 @@ def tier_states(*, package_present: Callable[[str], bool] = _package_present,
     return states
 
 
+# --- F213: what `uv tool install` leaves broken on a clean machine ----------
+# There is no Linux installer and there will not be one — one line of terminal is the
+# supported path there, which makes `doctor` the whole of the install experience after
+# it. So the three things that actually go wrong on a machine that had nothing on it
+# are ANSWERED here, in words, rather than described in a guide nobody reads at the
+# moment they happen:
+#
+# * `sorta: command not found` — `uv tool install` writes its commands into
+#   `~/.local/bin`, which a default shell profile does not have on PATH. The person who
+#   hits this cannot run `doctor` by that name either, so the line is written for the
+#   one who reached it some other way (a full path, `uv run`, an activated venv) and it
+#   names the directory and the command that fixes it;
+# * no `exiftool` — Sorta falls back to Pillow and stops reading HEIC/RAW/video dates,
+#   GPS and orientation, which on a phone collection is most of what it sorts by. It
+#   fails as an EMPTY result, never as an error, so nothing else would ever say it;
+# * a preview cache other local accounts can read. F210 creates it 0700 and refuses to
+#   repair a directory that already exists — deliberately, that is somebody else's
+#   directory — so a cache made before that rule (or by a hand-run `mkdir`) is still
+#   0755, and this is the only place that can tell its owner.
+#
+# CUDA is the fourth case of the brief and is already answered by `gpu_health()` below,
+# which is why nothing about it is written here.
+
+# The permission bits that make the cache readable by another local account. Group and
+# other, both, and any of them is enough: a shared group is exactly how a family machine
+# is set up.
+_CACHE_OPEN_TO_OTHERS = 0o077
+
+# The install hint for `exiftool`, by the packaging a machine actually has. One command
+# per platform and not a list of three — a person on Debian has no use for `winget`, and
+# the point of the line is to be pasteable.
+_EXIFTOOL_HINTS = {
+    "win32": "cli.doctor.exiftool_windows",
+    "darwin": "cli.doctor.exiftool_macos",
+}
+_EXIFTOOL_HINT_DEFAULT = "cli.doctor.exiftool_linux"
+
+
+def _tier_hint_key(os_name: str = os.name) -> str:
+    """How to add a tier, named the way it exists on this machine.
+
+    The Start menu belongs to the Windows installer and to nothing else: a machine that
+    got Sorta from `uv tool install` has no such entry, and sending its owner to look for
+    one is exactly the kind of line this feature exists to remove.
+    """
+    return "cli.doctor.tier_hint" if os_name == "nt" else "cli.doctor.tier_hint_posix"
+
+
+def _exiftool_hint_key(platform: str = sys.platform) -> str:
+    """Which install line to print — everything that is not Windows or macOS is a Linux
+    of some kind, and `apt`/`dnf`/`pacman` all package the same perl distribution."""
+    return _EXIFTOOL_HINTS.get(platform, _EXIFTOOL_HINT_DEFAULT)
+
+
+def _scripts_dir() -> Path:
+    """Where THIS install puts its commands (`~/.local/bin`, `…\\Scripts`, a venv `bin`).
+
+    `sysconfig` rather than the directory of `sys.executable`: on Windows a system python
+    keeps its scripts one level down, and a directory named in an error message has to be
+    the one a person can actually look into.
+    """
+    import sysconfig
+
+    return Path(sysconfig.get_path("scripts"))
+
+
+def _doctor_install_lines(lang: Lang, *, command: str | None, scripts: Path,
+                          exiftool: str | None,
+                          hint_key: str | None = None) -> list[str]:
+    """The `sorta`-on-PATH and `exiftool` lines, in the state this machine has them."""
+    if command:
+        lines = [_t("cli.doctor.command", lang, path=command)]
+    else:
+        lines = [_t("cli.doctor.command_missing", lang, path=scripts),
+                 _t("cli.doctor.command_hint", lang)]
+    if exiftool:
+        lines.append(_t("cli.doctor.exiftool", lang, path=exiftool))
+    else:
+        lines.append(_t("cli.doctor.exiftool_missing", lang))
+        lines.append(_t(hint_key or _exiftool_hint_key(), lang))
+    return lines
+
+
+def _directory_mode(directory: Path) -> int | None:
+    """The POSIX permission bits of `directory`, or None when there is no question.
+
+    None on Windows (NTFS ignores the bits entirely — `%LOCALAPPDATA%` inherits the ACL
+    of the account that owns it) and None for a directory that does not exist yet: the
+    first run creates it 0700, and warning about a cache nobody has written would be a
+    statement about nothing.
+    """
+    if os.name == "nt":
+        return None
+    try:
+        return stat.S_IMODE(directory.stat().st_mode)
+    except OSError:
+        return None
+
+
+def _doctor_cache_lines(lang: Lang, directory: Path, mode: int | None) -> list[str]:
+    """A warning when the preview cache is not private to its owner — otherwise nothing.
+
+    Nothing, because the path itself is already printed a line above and a second line
+    saying "and it is fine" is noise on every healthy machine. Decoded photographs of a
+    whole collection sit in there, one of which may be a passport (F210), so the only
+    state worth a sentence is the one that needs an answer.
+    """
+    if mode is None or not mode & _CACHE_OPEN_TO_OTHERS:
+        return []
+    return [_t("cli.doctor.cache_open", lang, path=directory, mode=f"{mode:03o}")]
+
+
 def _some_of(names: tuple[str, ...], limit: int = _MISSING_SHOWN) -> str:
     """A list of names for one line: the first few, then how many were left out."""
     if len(names) <= limit:
@@ -834,7 +947,7 @@ def _doctor_tier_lines(lang: Lang, states: list[TierState]) -> list[str]:
         else:
             lines.append(_t("cli.doctor.tier_ready", lang, name=name))
     if not all(state.ready for state in states):
-        lines.append(_t("cli.doctor.tier_hint", lang))
+        lines.append(_t(_tier_hint_key(), lang))
     return lines
 
 
@@ -853,6 +966,13 @@ def _cmd_doctor(config_path: str) -> None:
     uv_path = shutil.which("uv")
     print(_t("cli.doctor.uv", lang, path=uv_path) if uv_path
           else _t("cli.doctor.uv_missing", lang))
+    # F213: ...and the two things `uv tool install` leaves broken on a clean Linux
+    # machine — the command it put somewhere PATH does not look, and the `exiftool` it
+    # does not install at all.
+    for line in _doctor_install_lines(lang, command=shutil.which("sorta"),
+                                      scripts=_scripts_dir(),
+                                      exiftool=shutil.which("exiftool")):
+        print(line)
     # F216: ...and what the install is made of. The installer ships one tier and offers
     # four, so both the person who installed it by hand and the workflow that installs
     # it on a clean machine ask this first.
@@ -864,9 +984,14 @@ def _cmd_doctor(config_path: str) -> None:
     geo = geo_data_health()
     print(("" if geo.available else "⚠ ") + geo.summary)
     print(_t("cli.doctor.log", lang, path=default_log_path()))
-    print(_t("cli.cache.preview_dir", lang, path=imaging.preview_dir())
+    preview_dir = imaging.preview_dir()
+    print(_t("cli.cache.preview_dir", lang, path=preview_dir)
           + ("" if imaging.preview_cache_enabled()
              else _t("cli.cache.preview_disabled", lang)))
+    # F213: on Linux a cache created before F210 (or by hand) is world-readable, and
+    # nothing else on this machine would ever mention it.
+    for line in _doctor_cache_lines(lang, preview_dir, _directory_mode(preview_dir)):
+        print(line)
 
 
 def _cmd_cache(config_path: str, *, clear: bool = False, clear_geo: bool = False,

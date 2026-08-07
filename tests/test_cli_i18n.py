@@ -256,13 +256,22 @@ class _Env:
         # F216: the same for the tier block below them — the machine running the suite
         # has whatever it has, so the three states are fixed here and it is the SENTENCES
         # that are under test.
+        # F213: `sorta` and `exiftool` join them for the same reason and are pinned the
+        # same way. The way out of a missing tier is pinned too: it names the Start menu
+        # on Windows and nothing but the command elsewhere, and this case is about the
+        # WORDS rather than about the machine the suite happens to run on. The cache mode
+        # is fixed to a private one — the warning that follows an open cache has its own
+        # cases in test_linux_install.
         health = SimpleNamespace(summary="health", available=True)
+        found = {"uv": "uv.exe", "sorta": "sorta.exe", "exiftool": "exiftool.exe"}
         with patch.object(cli, "gpu_health", lambda: health), \
                 patch.object(cli, "geo_data_health", lambda: health), \
                 patch.object(cli, "tier_states", lambda: DOCTOR_TIERS), \
                 patch.object(cli, "default_log_path", lambda: "run.log"), \
                 patch.object(cli.sys, "executable", "python.exe"), \
-                patch.object(cli.shutil, "which", lambda _name: "uv.exe"), \
+                patch.object(cli.shutil, "which", found.get), \
+                patch.object(cli, "_tier_hint_key", lambda: "cli.doctor.tier_hint"), \
+                patch.object(cli, "_directory_mode", lambda _path: 0o700), \
                 patch("sorta.imaging.preview_cache_enabled", lambda: False):
             return self._cap(lambda: cli._cmd_doctor(cfg))
 
@@ -424,6 +433,8 @@ class TestRussianOutputIsUnchanged(_EnvCase):
         self.assertEqual(
             got["doctor"],
             f"Интерпретатор: python.exe\nМенеджер окружения uv: uv.exe\n"
+            f"Команда sorta: sorta.exe\n"
+            f"Чтение метаданных exiftool: exiftool.exe\n"
             f"Ярусы установки:\n"
             f"  Базовый ярус: на месте\n"
             f"  Лица: пакеты на месте, модели (buffalo_l, 400 МБ) скачаются при первом "

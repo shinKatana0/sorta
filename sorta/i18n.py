@@ -509,6 +509,61 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Environment manager uv: not on PATH",
         "ja": "環境マネージャ uv: PATH にありません",
     },
+    # F213: on Linux `uv tool install` IS the installer — there is no second path and no
+    # AppImage coming — so the two ways it leaves a machine half-installed are answered
+    # here, in words, at the moment a person is looking. `sorta: command not found` is
+    # the first of them: uv writes its commands into `~/.local/bin`, which a default
+    # shell profile does not put on PATH, and uv's own warning about it scrolls past
+    # inside the install output.
+    "cli.doctor.command": {
+        "ru": "Команда sorta: {path}",
+        "en": "Command sorta: {path}",
+        "ja": "コマンド sorta: {path}",
+    },
+    "cli.doctor.command_missing": {
+        "ru": "Команда sorta: не в PATH (команды этой установки лежат в {path})",
+        "en": "Command sorta: not on PATH (this install keeps its commands in {path})",
+        "ja": "コマンド sorta: PATH にありません（このインストールのコマンドは {path}）",
+    },
+    "cli.doctor.command_hint": {
+        "ru": "  Добавить этот каталог в PATH: uv tool update-shell, затем новый терминал.",
+        "en": "  Add that directory to PATH: uv tool update-shell, then a new terminal.",
+        "ja": "  その場所を PATH に追加: uv tool update-shell を実行し、端末を開き直します。",
+    },
+    # The second one, and the quietest failure in the product: without exiftool the
+    # reader falls back to Pillow, so HEIC/RAW/video dates, GPS and orientation are not
+    # read at all. Nothing raises — the photographs simply have no dates to sort by.
+    "cli.doctor.exiftool": {
+        "ru": "Чтение метаданных exiftool: {path}",
+        "en": "Metadata reader exiftool: {path}",
+        "ja": "メタデータ読み取り exiftool: {path}",
+    },
+    "cli.doctor.exiftool_missing": {
+        "ru": "Чтение метаданных exiftool: не найден в PATH — даты, GPS и ориентация "
+              "HEIC/RAW/видео читаться не будут",
+        "en": "Metadata reader exiftool: not on PATH — HEIC/RAW/video dates, GPS and "
+              "orientation are not read",
+        "ja": "メタデータ読み取り exiftool: PATH にありません — HEIC/RAW/動画の"
+              "日付・GPS・向きは読み取られません",
+    },
+    "cli.doctor.exiftool_linux": {
+        "ru": "  Установить: sudo apt install libimage-exiftool-perl "
+              "(Fedora: sudo dnf install perl-Image-ExifTool).",
+        "en": "  Install it: sudo apt install libimage-exiftool-perl "
+              "(Fedora: sudo dnf install perl-Image-ExifTool).",
+        "ja": "  インストール: sudo apt install libimage-exiftool-perl"
+              "（Fedora: sudo dnf install perl-Image-ExifTool）。",
+    },
+    "cli.doctor.exiftool_windows": {
+        "ru": "  Установить: winget install OliverBetz.ExifTool.",
+        "en": "  Install it: winget install OliverBetz.ExifTool.",
+        "ja": "  インストール: winget install OliverBetz.ExifTool。",
+    },
+    "cli.doctor.exiftool_macos": {
+        "ru": "  Установить: brew install exiftool.",
+        "en": "  Install it: brew install exiftool.",
+        "ja": "  インストール: brew install exiftool。",
+    },
     # F216: which tiers are actually on this machine. `doctor` is the check screen the
     # wizard calls and the one command a person is pointed at when something is missing,
     # and it described everything about the install except what the install is MADE of.
@@ -544,6 +599,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  To add a tier: sorta-setup (the Sorta setup item of the Start menu).",
         "ja": "  ティアの追加: sorta-setup（スタートメニューの「Sorta setup」）。",
     },
+    # F213: the same way out for an install that came from `uv tool install`. The Start
+    # menu belongs to the Windows installer and nothing else; naming it on a machine
+    # that has no such entry sends a person looking for a menu item that is not there.
+    "cli.doctor.tier_hint_posix": {
+        "ru": "  Доустановить ярус: sorta-setup.",
+        "en": "  To add a tier: run sorta-setup.",
+        "ja": "  ティアの追加: sorta-setup を実行します。",
+    },
     "cli.doctor.log": {
         "ru": "Лог прогона: {path}",
         "en": "Run log: {path}",
@@ -554,6 +617,18 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "Кэш превью: {path}",
         "en": "Preview cache: {path}",
         "ja": "プレビューキャッシュ: {path}",
+    },
+    # F213: the third case of a hand-made Linux install. F210 creates the cache 0700 and
+    # deliberately does not repair a directory that already exists, so one made before
+    # that rule stays readable by every other local account — with a decoded copy of the
+    # whole collection inside it.
+    "cli.doctor.cache_open": {
+        "ru": "⚠ Кэш превью читается другими локальными пользователями (права {mode}) — "
+              "закрыть: chmod 700 {path}",
+        "en": "⚠ The preview cache is readable by other local accounts (mode {mode}) — "
+              "close it: chmod 700 {path}",
+        "ja": "⚠ プレビューキャッシュは他のローカルユーザーから読めます（権限 {mode}）— "
+              "閉じる: chmod 700 {path}",
     },
     "cli.cache.preview_disabled": {
         "ru": " (ОТКЛЮЧЁН)",
