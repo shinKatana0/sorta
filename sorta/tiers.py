@@ -47,14 +47,14 @@ _WEIGHT_MARKERS: dict[str, tuple[str, ...]] = {
 # F222: what ONE model weighs, so a run can say what IT will download rather than what
 # the tier carrying it would. The catalog prices a tier (`wizard.Tier.download_mb`) and
 # that is the right unit for the wizard, which installs tiers — but the run screen is
-# asked a different question: the classification stage fetches ViT-L-14 and nothing else,
-# and quoting the 3.0 GB of the whole "Search by words" tier for it would overstate the
-# download by almost half. `wizard.TIERS` is deliberately NOT touched for this (the F222
-# boundary): the numbers live here, next to the markers that answer "is it on disk", and
-# a test pins their sum to the catalog so the two cannot drift.
+# asked a different question: a stage fetches the one model it loads, and quoting the
+# price of a tier that carries more than that would overstate the download. The numbers
+# live here, next to the markers that answer "is it on disk", and a test pins their sum
+# to the catalog so the two cannot drift.
 #
-# ViT-L-14 is the 1.6 GB the owner's run of 2026-08-07 measured; XLM-RoBERTa is the rest
-# of the 3.0 GB the catalog states for the tier that carries both.
+# These two were what F222 measured on 2026-08-07, inside one 3.0 GB catalog line — and
+# the gap between them is why F223 split that line in two: 1 631 MB that every run needs
+# against 1 397 MB that only a search by words does.
 _WEIGHT_MB: dict[str, int] = {
     "buffalo_l": 400,
     "ViT-L-14": 1600,
@@ -214,7 +214,8 @@ RUN_PARTS: tuple[RunPart, ...] = (
     RunPart("base", optional=False),
     # The verdicts. No checkbox by decision (without them screenshots, documents and
     # product shots ride into the city folders among the photographs), so the ONLY way
-    # its 1.6 GB can be stated before the run is a line like this one.
+    # its 1.6 GB can be stated before the run is a line like this one. F223 gave the
+    # model a tier of its own for the same reason, one screen earlier.
     RunPart("classify", ("ViT-L-14",), optional=False),
     RunPart("geo_online"),
     # F222: a stage with a checkbox for the first time — 0.55% of the owner's places for

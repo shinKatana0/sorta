@@ -166,10 +166,12 @@ RAM/VRAM notes, in the [user guide](docs/guide/user-guide.en.md#2-requirements).
 `sorta-<version>-setup.exe` on the [releases page](https://github.com/shinKatana0/sorta/releases/latest)
 carries the **base tier** whole and works with no network afterwards: index, EXIF, geo,
 duplicates and sorting by city. Its shortcut opens the web app with an icon in the tray
-and no console window. The heavier tiers — faces (~400 MB), search by words (~3 GB),
-NVIDIA/CUDA 13 (~2.5 GB), the deep VLM tier (~7 GB) — are offered once by the first‑run
-wizard (`sorta-setup`, re‑runnable at any time), and **saying no to all of them leaves a
-working product**, not a stub.
+and no console window. The heavier tiers — recognising what is in a frame (~1.6 GB), faces
+(~400 MB), search by words (~1.4 GB), NVIDIA/CUDA 13 (~2.5 GB), the deep VLM tier (~7 GB) —
+are offered once by the first‑run wizard (`sorta-setup`, re‑runnable at any time), and
+**saying no to all of them leaves a working product**, not a stub. The first of those is
+what the layout runs on, so the wizard downloads it while you watch instead of leaving it
+to the middle of the first run; refusing is still allowed and only changes when it arrives.
 
 > ⚠️ **The installer is not signed**, so Windows SmartScreen greets it with "Windows
 > protected your PC". Click **More info** → **Run anyway**. The release page publishes a
