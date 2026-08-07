@@ -352,9 +352,10 @@ What actually breaks, in the order you meet it. **Every one of these is answered
 happen, not instead:
 
 - **`sorta: command not found` right after a successful install.** `uv` puts its commands
-  in `~/.local/bin`, which a default shell profile does not add to `PATH`, and its
-  warning about that scrolls past inside the resolver output. Fix:
-  `uv tool update-shell`, then open a new terminal. Until then the command still works by
+  in `~/.local/bin`, and the shell you installed from does not have that directory on
+  `PATH`: Ubuntu's default `~/.profile` adds it only if it already existed when the shell
+  started, and other distributions do not add it at all. uv's warning about this scrolls
+  past inside the resolver output. Fix: `uv tool update-shell`, then a new terminal. Until then the command still works by
   its full path (`~/.local/bin/sorta doctor`), and `doctor` prints the directory it is in.
 - **Photos with no dates and no places.** `exiftool` is not a python package — no install
   command brings it, and without it Sorta falls back to Pillow, which reads no HEIC, no
