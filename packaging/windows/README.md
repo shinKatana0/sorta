@@ -197,6 +197,12 @@ shipped `sitecustomize.py` on the path it is exactly that one certificate, and w
 taken away it is whatever the machine has. It also pins that a set the person configured
 themselves survives, and that a payload moved to another directory points at its own copy.
 
+**It has been seen going red**, which is the only reason to believe any of the above: with
+the two `os.environ.setdefault` lines removed from `sitecustomize.py`, four of its tests
+fail — `SSL_CERT_FILE` comes back unset and the context trusts something that is not the
+payload's certificate. That is the same demonstration F182, F216 and F218 each ended up
+needing.
+
 Beside it, the build refuses to compile an installer whose payload is missing either half
 of the pair (`payload_trust_gap`), and the workflow checks after installing that
 `SSL_CERT_FILE` points inside the installation. **Neither of those is a test of TLS** —
