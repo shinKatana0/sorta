@@ -2909,7 +2909,7 @@
   //
   // The report: "why did it get in at all, when I ticked almost nothing in the setup?"
   // The answer was that landmarks, the classification and the near-duplicates had no
-  // tick — and the first two fetch 1.6 GB between them on a fresh machine, silently. So
+  // tick — and the first two raise the same 1.6 GB of CLIP weights, silently. So
   // the sum stands above the button, over the lines that WILL run, with the ones nobody
   // ticks included, and every model says what it is for.
   //

@@ -27,6 +27,7 @@ from ..diagnostics import nvidia_gpu_present
 from ..events import build_events
 from ..faces import detect_and_cluster
 from ..geo import geo_cache_size, resolve_places
+from ..i18n import Lang, normalize_lang
 from ..indexer import excludes_path, index as run_index, load_excludes
 from ..junk import classify as classify_junk
 from ..junk import (
@@ -42,7 +43,6 @@ from ..naming import name_events, naming_settings
 from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
-from ..i18n import Lang, normalize_lang
 from ..tiers import (
     PartState, TierState, download_failure, run_parts, stage_downloads, tier_states,
     weights_size_mb,

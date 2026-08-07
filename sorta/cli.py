@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover — a sandbox/CI without typer, see _arg
 else:
     _TYPER_AVAILABLE = True
 
-from . import __version__, imaging, wizard
+from . import __version__, imaging, tiers, wizard
 from .config import Config, configure_logging, load_config
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
@@ -73,7 +73,6 @@ from .sorter import undo as undo_batch
 # `_MISSING_SHOWN`. `_WEIGHT_MARKERS`, `_distribution_name` and `_weights_cached` are the
 # parts of it the suite reads through this module; noqa because ruff cannot see that a
 # re-export is a use.
-from . import tiers
 from .tiers import (  # noqa: F401
     TierState,
     _distribution_name,
