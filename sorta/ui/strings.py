@@ -484,7 +484,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # F217: this banner used to end in `uv tool install --force ".[gpu]"`, and for the
     # person it is written for not one word of that works: an installed copy has no `uv`
     # on PATH (the installer deliberately puts nothing there), no sources for `.` to point
-    # at, and it was installed with `uv pip install --target` rather than `uv tool`. A
+    # at, and the installer lays the packages into a directory of its own rather than as a
+    # tool of `uv` — so even the verb is the wrong one. A
     # named way out that cannot be taken is worse than silence — the person concludes they
     # are broken, not the hint. The way out is now the wizard's, in the wizard's own words
     # (`tier_add_hint`, appended in the markup), and the tier is named the way
