@@ -35,9 +35,21 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from sorta import ui
 from sorta.config import Config
 from sorta.db import connect
+
+# serial: the whole file runs the REAL program — `ui.serve` on a port chosen a moment
+# earlier, its loop on a second thread, and a shutdown the assertions wait for. In
+# eleven runs of the parallel half it broke this file twice and nothing else once: a
+# worker died with an access violation (2026-08-07, run 5) and a worker sat in
+# `thread.join(timeout=2)` for fifteen minutes with nothing consuming CPU (run 10) —
+# a hung gate, which is worse than a red one. It is the class the split exists for: a
+# free port stops being free between the probe and the bind, and a server thread that
+# has to be scheduled to answer competes with 23 workers for the machine.
+pytestmark = pytest.mark.serial
 
 
 def _free_port() -> int:
