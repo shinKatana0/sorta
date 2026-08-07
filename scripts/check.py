@@ -38,10 +38,18 @@ the slow half, not whether it is run.
 
 The slow half uses the machine (F219, 2026-08-07)
 -------------------------------------------------
-Measured on a 24-core machine, same commit, 5765 tests:
+Measured on a 24-core machine, same commit, 5766 tests, both install profiles:
 
-    before   29 min 53 s   one pytest process
-    after     4 min 15 s   the whole gate, two passes and the coverage report
+                     one process     this gate
+    cpu profile      29 min 53 s     6 min 56 s
+    gpu profile      29 min 50 s     6 min 45 s
+
+**4.4x, and it was 7.5x before the workers were capped** — say it that way round. The
+first version of this ran `-n auto`, one worker per logical core, and did the whole
+gate in 4 min 00 s; that was measured on the cpu profile and it died on the gpu one,
+where each worker is half a gigabyte of torch (see `_MAX_WORKERS`). The cap costs
+about 40% of the win and buys a gate that finishes on both profiles and next to
+somebody else's work. A gate that is fast on one machine is not a fast gate.
 
 The docstring above used to say "~9 minutes". The suite had grown by a test per
 feature and nobody was watching the number, so it was wrong by a factor of three. That
@@ -63,7 +71,7 @@ A naive `-n auto` over everything would make the gate fast and UNRELIABLE, which
 worse than slow: an unreliable gate teaches people to re-run instead of to read. No
 test was loosened to survive the parallel half — a test that cannot take it is
 `serial`, with the reason written next to the marker. The serial half is 27 tests and
-1 min 13 s of the 4 min 15 s; the parallel one is the other 5738.
+1 min 07 s of the 6 min 45 s; the parallel one is the other 5739.
 
 Coverage is measured over the SUM of the two passes: each one writes with
 `--cov-append` and neither judges the threshold (`--cov-fail-under=0`), and the

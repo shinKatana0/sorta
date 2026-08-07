@@ -27,7 +27,7 @@ two halves by how long they take, and you are expected to run both:
 
 ```bash
 uv run --extra cpu --extra dev python scripts/check.py --fast  # ~3 s, before committing
-uv run --extra cpu --extra dev python scripts/check.py --slow  # the test suite, ~4 min
+uv run --extra cpu --extra dev python scripts/check.py --slow  # the test suite, ~7 min
 uv run --extra cpu --extra dev python scripts/check.py         # everything, in order
 ```
 
@@ -37,16 +37,23 @@ uv run --extra cpu --extra dev python scripts/check.py         # everything, in 
 | `--slow` | pytest with coverage | Start it in the background and wait for it; a fast pass is not a green gate on its own. |
 | no flags | both, fast half first | What CI runs and what a merge is checked with. |
 
-The slow half runs the suite **twice**: everything under `-n auto` (one pytest worker
-per core, whole files at a time), then the handful of tests marked `serial` in a single
+The slow half runs the suite **twice**: everything in parallel (`pytest -n`, whole files
+at a time, **at most 8 workers**), then the handful of tests marked `serial` in a single
 process. A test is `serial` when it asserts about elapsed time or runs the real server
 on a port — under load those measure the machine rather than the code. **The marker is
-not a place to put a test that went red once**: a failure that only happens under
-`-n auto` is shared process state until proven otherwise, and it gets fixed rather than
-marked. Every use carries its reason next to it, and `tests/test_gate_parallel.py` fails
-the gate if one does not. The four-minute figure is what the two passes plus the
-coverage report took on a 24-core machine; the run prints its own duration at the end,
-so the next time this number goes stale it is visible on the spot.
+not a place to put a test that went red once**: a failure that only happens in parallel
+is shared process state until proven otherwise, and it gets fixed rather than marked.
+Every use carries its reason next to it, and `tests/test_gate_parallel.py` fails the gate
+if one does not.
+
+The eight is a **memory** budget, not a core count: under `--extra gpu` each worker
+carries a 505 MB torch, and one worker per core exhausted a 63 GB machine that had a
+product run and another gate on it. Seven minutes is what the two passes plus the
+coverage report took on a 24-core machine on **both** profiles, against **30 minutes**
+in one process — 4.4x, where the uncapped version was 7.5x and did not finish on the gpu
+profile at all. `scripts/measure_gate_workers.py` re-derives the table behind the cap.
+The run prints its own duration at the end, so the next time this number goes stale it
+is visible on the spot.
 
 Pass the same profile you installed with (`cpu` or `gpu`) plus `dev`. A bare
 `uv run python scripts/check.py` re‑syncs the environment to the base
