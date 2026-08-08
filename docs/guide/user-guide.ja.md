@@ -2,7 +2,7 @@
 
 > 言語: [English](user-guide.en.md) · [Русский](user-guide.ru.md) · **日本語**
 
-Sorta は、大規模な写真・動画コレクション（60 GB 以上で検証、300 GB 以上を想定）を
+Sorta は、大規模な写真・動画コレクション（380 GB・38,485 ファイルで検証済み）を
 **インデックス化**し、ファイルを新しいフォルダ構成へ**振り分ける**コマンドライン／
 ローカル Web ツールです。**都市・国別**、**人物別**、**イベント別**に整理でき、安全性
 を最優先します（既定はドライラン、移動ジャーナル、ワンコマンドでの取り消し）。
@@ -50,7 +50,7 @@ Sorta は、大規模な写真・動画コレクション（60 GB 以上で検�
 
 | 項目 | 要件 |
 |---|---|
-| OS | Windows、Linux、macOS |
+| OS | Windows または Linux（macOS については下の注記を参照） |
 | Python | 3.11 – 3.14（`requires-python >=3.11,<3.15`） |
 | 環境マネージャ | [`uv`](https://docs.astral.sh/uv/)（推奨）または `pip` |
 | `exiftool` | **必須**（HEIC/RAW/動画のメタデータ: 日付・GPS・向き — 事実上どのスマホ写真にも該当）。無い場合は Pillow にフォールバックしますが、読めるのは JPEG/PNG/TIFF/WEBP のみで動画は読めません。 |
@@ -64,13 +64,19 @@ Sorta の ML バックエンド（顔検出、不要写真分類用の CLIP/OCR�
 |---|---|---|
 | ハードウェア | 任意の x86‑64 マシン、GPU 不要 | NVIDIA GPU + **CUDA 13** 対応ドライバ（Blackwell/RTX 5090 で検証済み） |
 | バックエンド | `onnxruntime`（CPU）+ CPU ビルドの torch/torchvision | `onnxruntime-gpu` + CUDA 13/cuDNN 9 ランタイム（pip wheel）+ CUDA ビルドの torch/torchvision |
-| 顔検出/CLIP の速度 | 正しく動作するが**低速** — 大規模コレクションでは `faces`/`junk`/`landmarks` に数時間かかることも。都市別振り分け+重複検出には十分（そもそも顔検出/イベントは opt‑in、§8 参照）。顔検出/イベントを有効にした小規模コレクションでも使える。 | 高速。2026‑07‑28 に 24,196 枚のコレクションで実測（顔検出+イベント+junk 有効）: 深いティア無しのフル実行で **≈ 40分**。オプションの深い VLM ティア（`vlm.enabled` / `uv sync --extra vlm`）は **+122分**を追加しますが、これは一度きりです — 段階ごとの内訳は §8 参照。 |
+| 顔検出/CLIP の速度 | 正しく動作するが**低速** — 大規模コレクションでは `faces`/`junk`/`landmarks` に数時間かかることも。都市別振り分け+重複検出には十分（そもそも顔検出/イベントは opt‑in、§8 参照）。顔検出/イベントを有効にした小規模コレクションでも使える。 | 高速。2026‑07‑28 に 24,196 枚のコレクションで実測（顔検出+イベント+junk 有効）: 深いティア無しのフル実行で **≈ 40分**。オプションの深い VLM ティア（`vlm.enabled` + `vlm` エクストラ）は **+122分**を追加しますが、これは一度きりです — 段階ごとの内訳は §8 参照。 |
 | RAM | 8 GB 以上を推奨（インデックス作成/ハッシュ計算が最も RAM を使う部分で、プロファイルによらず共通） | 同上、加えて GPU ドライバが確保する分 |
 | VRAM | 該当なし | ベース + 顔認識で **~3 GB**（RTX 5090 で実測: CLIP ViT‑L ≈2.0 GB + buffalo_l ≈0.6 GB）— **4 GB 以上**の GPU が快適。オプションの深い VLM ティア（Qwen2.5‑VL‑3B）は ≈7 GB 追加（3B fp16 モデルからの推定、未実測）→ 合計 **8 GB 以上** |
 
 上記のタイミングと VRAM の数値は当方の環境での観測値であり、保証ではありません —
 実際の値はコレクションの構成（動画プレビュー、RAW ファイル、写真あたりの顔の数が
 主なコスト要因）によって変わります。
+
+**macOS は約束しません。** ここに Mac が無く、確かめる手段がないため、何も検証されて
+いません: アクセラレータのモジュールは Metal/CoreML の段を持っており、CI の
+`macos-latest` ジョブが **advisory** と記されているのはまさにそのためです — 報告はし
+ますが、何も決めません。これは「サポート済み」ではなく「未検証」と読んでください。
+本ガイドのパス・コマンド・数値は Windows と Linux のものです。
 
 ---
 
@@ -85,7 +91,7 @@ cd sorta
 # exiftool を導入 — HEIC/RAW/動画メタデータに**必須**:
 #   Windows: winget install OliverBetz.ExifTool
 #   Debian/Ubuntu: sudo apt install libimage-exiftool-perl
-#   macOS: brew install exiftool
+# （Windows のインストーラー（§3.7）は自前のコピーを同梱 — この手順はチェックアウト向け）
 
 # テンプレートから設定ファイルを作成
 cp config.example.yaml config.yaml
@@ -95,6 +101,21 @@ cp config.example.yaml config.yaml
 JPEG/PNG/TIFF/WEBP だけで、動画は一切読めず、HEIC/RAW からは日付・GPS・向きも
 取得できません。スマホのコレクションでは、Sorta が振り分けに使うメタデータの
 ほとんどがそれに当たります。任意ではなく必須と考えてください。
+
+**インストールの形はちょうど 3 つあり、一方で通用するコマンドが他方には存在しないこと
+があります。** 以下の助言も、プログラム自身が表示するヒントも、どの形に属するかを必ず
+名指しします。ここから 1 行をコピーする前に、自分がどれなのかを確認してください:
+
+| 形 | 中身 | ティアとプロファイルの変え方 |
+|---|---|---|
+| チェックアウト | ソースとプロジェクトの venv（§3.4） | `uv sync --extra gpu --extra dev` |
+| `uv tool install` | PATH 上の wheel。プロジェクトディレクトリは無い（§3.3） | `uv tool install --force "…[gpu]"` |
+| インストール済みコピー | `sorta-<version>-setup.exe` が残したもの（§3.7） | `sorta-setup --tiers gpu` |
+
+`sorta doctor` は自分が 3 つのどれから動いているかを述べます — `install profile:` の行
+の後半（§3.5）— そして提案する修復コマンドはすべてその答えで選ばれます。インストール
+済みコピーにはプロジェクトディレクトリも `dev` エクストラも無いので、`uv sync` は実行
+のしようがありません。
 
 ### 3.2 ハードウェアプロファイルを選ぶ
 
@@ -171,7 +192,7 @@ uv sync --extra cpu --extra dev      # NVIDIA GPU なし
 
 # シェルセッションごとに一度アクティベート:
 .\.venv\Scripts\Activate.ps1         # Windows PowerShell
-source .venv/bin/activate            # Linux/macOS/bash
+source .venv/bin/activate            # Linux/bash
 ```
 
 `--extra` をフラグとして受け取るのはこの `uv sync` の方で、しかもプロファイルは
@@ -313,6 +334,7 @@ HEIC/RAW/動画の日付と GPS もそのまま読み取れます。
 | プログラム（インタプリタ、パッケージ、`uv`、exiftool） | `%LOCALAPPDATA%\Programs\Sorta` |
 | 設定 | `%APPDATA%\sorta\config.yaml` — `config.example.yaml` のコピー。再インストールでも**上書きされません** |
 | ショートカット | `sorta-tray`（§6）を起動 — トレイアイコン付きのウェブアプリ、コンソールなし |
+| スタートメニュー | **Sorta**、**Sorta setup**、**Uninstall Sorta** — 出口は入口の隣にあり、インストール先ディレクトリの実行ファイルではありません |
 | 実行ログ、プレビューキャッシュ | 他のインストールと同じく `%LOCALAPPDATA%\sorta\...` |
 
 インストール直後、セットアップ（`sorta-setup`）が `sorta doctor` の結果を表示し、重い
@@ -332,9 +354,13 @@ HEIC/RAW/動画の日付と GPS もそのまま読み取れます。
 ダウンロードされます。ティアの費用がインストーラーのサイズではなくこの表に書かれて
 いるのはそのためです。
 
-**「はい」と答えたティアはその場でダウンロードします** — 進捗は行として表示されます。
-人が画面の前にいて失敗もその場で説明できるからで、外から見れば固まったようにしか見えな
-い実行の途中で始まるよりも良いからです。7 GB のティアについては、数十分かかることを開始
+**「はい」と答えたティアはその場ですべてダウンロードします** — 最初の 1 つだけでは
+ありません。人が画面の前にいて失敗もその場で説明できるからで、外から見れば固まったよう
+にしか見えない実行の途中で始まるよりも良いからです。各ダウンロードは**その場で描き直さ
+れる 1 行**（「Y のうち X」、5 秒に 1 回以上）で自分を報告します。数え方は、Sorta のモデル
+が置かれうる 3 つのキャッシュすべてにあるディスク上のバイト数です。その間ライブラリ自身
+の進捗バーは黙らせるので、見えるのは 3 つではなく 1 つのカウンターです。出力を表示せずに
+収集する場所 — 実行ログや別の画面 — では、同じ行が単に別々の行として届きます。7 GB のティアについては、数十分かかることを開始
 前に別の行で伝えます。断ることは引き続き可能で、失うのはタイミングだけです — 同じファイ
 ルをステージが初回実行時に取得し、実行画面が開始前にそれを伝え、どれだけ取得できたかも
 表示します（§6）。ダウンロードが失敗しても（ネットワークなし、証明書）、インストールは
@@ -491,6 +517,28 @@ Web UI が最も簡単で、ターミナル操作は起動のみです。
 sorta ui                       # http://127.0.0.1:8756 でローカルサーバー起動
 ```
 
+**起動が何を、どの順でするか**（F227）。インストーラーのショートカットには読めるコン
+ソールが無く、しかも初回起動がいちばん遅い — インストーラー同梱のインタープリタ、速い
+マシンでポートのバインドまで 5.65 秒、ディスクが冷えた仮想マシンでは数十秒です。そこで:
+
+- **「Sorta を起動しています」**の小さなウィンドウが、プログラム本体が読み込まれる*前*
+  に出ます。それ自身のプロセスで動き、タブが要求された時点で閉じます;
+- **最初に尋ねるのはポート**です — 設定より、インデックスより、重いものすべてより先。
+  そのため**ショートカットの 2 回目のクリックは TCP 接続 1 回分の費用**で、すでに動いて
+  いるコピーのタブを開きます。2 つ目のプロセスは立ち上がらず、ポート使用中のエラーにも
+  出会いません;
+- **サーバーが応答できるようになった時点でプログラムが引き渡されます。** 環境ヘッダー、
+  グラフィックカードの点検、地理データの点検は、サービスではなく診断です — 5.65 秒の
+  うち 3.9 秒、うち torch の import だけで 13.96 秒。これらは今、すでに応答している
+  プログラムのスレッドで走り、同じ行を同じ実行ログ（§19）に書きます。`sorta ui` も同様
+  で、カードを調べている間にアドレスは表示され、ページは応答します。`sorta doctor` は
+  従来どおり、求められたときに本当に調べます;
+- 起動が終わりきるまでの間、ページは今どの段階かを 3 言語すべてで言葉にし、最後の段階
+  が済むと**自分でプログラムを表示します** — 再読み込みは不要です。パーセント表示は
+  **意図的にありません**: 段階ごとの長さが 2 桁違うからです。各段階は実行ログに
+  `startup step=<名前> elapsed=<秒>` も書くので、「なぜ遅いのか」はファイルで答えられ
+  ます。
+
 ブラウザには 5 つのタブがあります: **概要 · 仕分け · 振り分け · スライス · 移動**。
 名前はパイプラインの段階ではなく、**コレクションに対して何をするか**から付けています。
 できることはちょうど 3 つで、ファイルに何が起きるかが違うからです:
@@ -578,8 +626,9 @@ sorta ui                       # http://127.0.0.1:8756 でローカルサーバ�
   何も計算せず、コストもゼロです。所要時間は下に並ぶ各項目に表示され、それぞれが自分の
   価格を示します。実際に何かが動くのは、モデルが許可され(このチェック
   ボックス、`--deep`、または config の `vlm.enabled: true`)かつ
-  インストールされている(extra `vlm`、例: `uv tool install ".[gpu,vlm]"` や
-  `uv sync --extra gpu --extra vlm --extra dev`)場合の**両方**を満たしたとき
+  インストールされている(extra `vlm` — インストール済みコピーなら
+  `sorta-setup --tiers deep`、他の 2 形態なら `uv tool install ".[gpu,vlm]"` や
+  `uv sync --extra gpu --extra vlm --extra dev`、§3.1)場合の**両方**を満たしたとき
   だけです — この extra が無ければ自動的に高速 CLIP ティアへフォールバック
   し、チェックボックス下のヒントにもそう表示されます。
 - **「商品の認識」** — `vlm.products`(§21)、マスターの下に並ぶ項目です。これが深い
@@ -755,9 +804,11 @@ $ sorta stats -c config.yaml
                             CLIP）。既定は config.yaml（features.landmarks — オフ）
                             が決めるため、このフラグは両方向に動かせます。
 --deep / --no-deep         この実行で junk 分類に深い VLM ティアを使う
-                            （`uv sync --extra vlm` が必要。無ければ自動的に
-                            高速 CLIP ティアへフォールバック）。既定は
-                            config.yaml（vlm.enabled）から。
+                            （`vlm` エクストラが必要。インストール済みコピーなら
+                            `sorta-setup --tiers deep`、チェックアウトなら
+                            `uv sync --extra vlm`。無ければ自動的に高速 CLIP
+                            ティアへフォールバック）。既定は config.yaml
+                            （vlm.enabled）から。
 --geo offline|online       この実行の逆ジオコーディングプロバイダ。`online` は
                             海外でより正確ですが、GPS 座標（画像は送らない）を
                             Nominatim へ送信します。既定は config.yaml
@@ -1430,7 +1481,7 @@ $ sorta cache --clear -c config.yaml
 | OS | パス |
 |---|---|
 | Windows | `%LOCALAPPDATA%\sorta\previews` |
-| Linux / macOS | `~/.cache/sorta/previews` |
+| Linux | `~/.cache/sorta/previews` |
 
 **容量の目安: 1 枚あたり約 150 KB、合計はギガバイト単位です。** 150 KB は 1536 px
 q88 の JPEG としての設計値で、精細なフレームはもっと大きくなります。実測では
@@ -1513,7 +1564,7 @@ imaging:
 | OS | パス |
 |---|---|
 | Windows | `%LOCALAPPDATA%\sorta\logs\sorta.log` |
-| Linux / macOS | `~/.cache/sorta/logs/sorta.log` |
+| Linux | `~/.cache/sorta/logs/sorta.log` |
 
 ローテーションは **5 MB × 5 世代**（`sorta.log.1` … `sorta.log.5`）なので、無制限に
 増えることはありません。パイプラインの実行（`sorta run`）と `sorta ui` の起動時には、
@@ -1597,7 +1648,10 @@ Hub へ問い合わせる段階は 1 つもありません。キャッシュが�
 | モデルの重み | `~/.cache/huggingface/hub` | 1.6 GB（CLIP）、1.4 GB（多言語）、7 GB（VLM） |
 | モデルの重み | `~/.insightface/models` | 0.4 GB（`buffalo_l`） |
 
-**Windows のアンインストーラは確認します。** *この*マシンで各グループがどれだけの容量
+**Windows のアンインストーラは確認します。** 呼び出し口はスタートメニューの
+**Uninstall Sorta** で、**Sorta** と **Sorta setup** の隣にあります: Inno はアンインス
+トーラをインストール先ディレクトリに書きますが、そこは誰も見ません。*この*マシンで各
+グループがどれだけの容量
 かを数字で示し、2 つの独立したチェックボックスとして提示します。**既定はどちらも
 空**です — プログラムの削除は、誰かのデータを削除してほしいという依頼ではありません。
 サイレントアンインストール（`/VERYSILENT`）は尋ねる相手がいないため、何も削除しません。
@@ -2252,10 +2306,16 @@ sorta search --words "Rose"         # 同じ文字列を語として検索（名
 
 ## 25. トラブルシューティング
 
+- **この一覧からコマンドをコピーする前に、3 つのインストール形態のどれにいるかを確認
+  してください**（§3.1）。`sorta doctor` の `install profile:` の行は `checkout`、
+  `tool`、`installed` のいずれかで終わり、インストール済みコピーに `uv sync` はあり
+  ません。
 - **GPU 搭載機なのに `sorta doctor` が `torch: 2.13.0+cpu` と表示する** — エクストラ
   がインストールコマンドに届いていません。`uv tool install` に `--extra` フラグは
   無く、エクストラは引用符付きの指定の内側に書きます:
-  `uv tool install --force "C:\path\to\sorta[gpu]"`（§3.3）。
+  `uv tool install --force "C:\path\to\sorta[gpu]"`（§3.3）。インストール済みコピーでの
+  同じ操作は `sorta-setup --tiers gpu`、そこから戻るのは `sorta-setup --restore-cpu`
+  です（§3.7）。
 - **torch は CUDA を認識しているのに `sorta doctor` に `CUDAExecutionProvider` が無い**
   — `insightface` が連れてくる素の `onnxruntime` が `onnxruntime-gpu` を上書きし、
   顔検出が CPU で動いています。説明と回避策は §3.6。
@@ -2272,8 +2332,9 @@ sorta search --words "Rose"         # 同じ文字列を語として検索（名
 - **HEIC/RAW の日付・プレビュー・動画メタデータが無い** — `exiftool` を導入
   （§3）。これらの形式には必須で、Pillow は JPEG/PNG/TIFF/WEBP しかカバーしま
   せん。
-- **GPU プロファイルで顔／CLIP が非常に遅い** — 実際に `uv sync --extra gpu`
-  （`cpu` ではなく）を実行したか、ドライバが CUDA 13 に対応しているか確認して
+- **GPU プロファイルで顔／CLIP が非常に遅い** — `gpu` プロファイルが実際に入ったか
+  （チェックアウトなら `uv sync --extra gpu`、インストール済みコピーなら
+  `sorta-setup --tiers gpu`）、ドライバが CUDA 13 に対応しているか確認して
   ください。`sorta faces`/`sorta junk` は出力の先頭付近で、onnxruntime がどの
   execution provider を選んだか（`CUDAExecutionProvider` か
   `CPUExecutionProvider` か）を表示します。
@@ -2291,7 +2352,7 @@ sorta search --words "Rose"         # 同じ文字列を語として検索（名
   用途で使用中など）— コマンドに対して `CUDA_VISIBLE_DEVICES=`（空）を設定して
   ください。torch も onnxruntime もこれを尊重して CPU にフォールバックします:
   ```bash
-  CUDA_VISIBLE_DEVICES= sorta faces          # bash/macOS/Linux
+  CUDA_VISIBLE_DEVICES= sorta faces          # bash/Linux
   ```
   ```powershell
   $env:CUDA_VISIBLE_DEVICES=''; sorta faces  # PowerShell
