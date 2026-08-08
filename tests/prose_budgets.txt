@@ -32,7 +32,7 @@ sorta/progress.py     34
 sorta/restore.py      300
 sorta/runlog.py       270
 sorta/search.py       225
-sorta/sorter.py       784
+sorta/sorter.py       772
 sorta/tiers.py        138
 sorta/tray.py         245
 sorta/ui/__init__.py  856

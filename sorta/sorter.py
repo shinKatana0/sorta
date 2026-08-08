@@ -2094,23 +2094,16 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
 
     The slice, by kind:
 
-    person   — canonical files with a face in a cluster whose merged_into root (F31, via
-               _CTE/_person_files) has label==selector, by casefold.
+    person   — canonical files with a face in a cluster whose merged_into root (F31) has
+               label==selector, by casefold.
     event    — the event_files of the event(s) the selector names or numbers.
-    animal   — `animal_ids_sql`: the stored scores, answers and detections read under the
-               CURRENT thresholds (F137/F160), corrected by the user's marks (F124), and
-               the same expression the web app's tab and counter use.
-    query    — the top `features.search_limit` canonical photographs of the CLIP ranking
-               for the words of the selector (F129). `encoder` is the text encoder, taken
-               as an argument so tests can hand in a fake; every other kind ignores it.
-    class    — `media_class.verdict = kind`, which is what the bucket's counter counts. A
-               class listed in `vlm.exclude_classes` is REFUSED (F133): that key means
-               "this class is private", and gathering somebody's passports into one folder
-               in one click is what it exists to prevent.
-    quality  — the "Review" workspace's list of that name, inside its own window
-               (`quality_slice_where`). F157: for `blurred` the window is the first page
-               of a ranking, and the album gathers exactly that — "everything below, for
-               ever" is the whole collection.
+    animal   — `animal_ids_sql`, the expression the web app's tab and counter also read.
+    query    — the top `features.search_limit` photographs of the CLIP ranking for the
+               words of the selector (F129); `encoder` lets a test hand in a fake.
+    class    — `media_class.verdict = kind`, what the bucket's counter counts. A class in
+               `vlm.exclude_classes` is REFUSED (F133): gathering somebody's passports
+               into one folder in one click is what that key exists to prevent.
+    quality  — the "Review" list of that name, inside its own window.
     face     — `face_slice_ids_sql`, a fact of the `faces` table that covers 77% of what a
                person would call a photo of people (measured).
 
@@ -2119,21 +2112,16 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     the person's photos), while errors and duplicates always are.
 
     F193: `file_ids` is the frames a person TICKED. It NARROWS — ANDed onto the membership
-    condition, never substituted for it, so a request sent past the interface cannot
-    gather a file the slice does not hold and no guard (a private class, a quality window)
-    can be walked around. `None` is the whole slice; an EMPTY list is refused, because
-    "nobody ticked anything" and "this slice holds nothing" are different sentences and a
-    folder of zero files states the second.
+    condition, never substituted for it, so nothing sent past the interface can gather a
+    file the slice does not hold or walk around a guard. `None` is the whole slice; an
+    EMPTY list is refused, because "nobody ticked anything" and "this slice holds nothing"
+    are different sentences and a folder of zero files states the second.
 
-    dry-run (default) prints the plan and writes nothing. apply=True journals into
-    move_batches/moves BEFORE each operation (mode='album_<kind>', operation=mode).
-
-    mode='move' always warns, dry-run included: the file leaves the sort canon. A frame
-    with 2+ named people is NOT moved (blocked_multi++) — whose album it is, is ambiguous;
-    link and copy carry no such limit.
-
-    F97: the same `_resolve_dst` as the city layout, so a file already in the album folder
-    byte-for-byte is left alone instead of being re-materialized under a `_1` name.
+    dry-run (default) prints the plan and writes nothing; apply=True journals into
+    move_batches/moves BEFORE each operation. mode='move' always warns — the file leaves
+    the sort canon — and a frame with 2+ named people is NOT moved, whose album it is
+    being ambiguous. F97: the same `_resolve_dst` as the city layout, so a file already in
+    the album folder byte-for-byte is left alone.
     """
     if kind not in ALBUM_KINDS:
         raise ValueError(f"неизвестный тип альбома {kind!r}; допустимы: {', '.join(ALBUM_KINDS)}")
