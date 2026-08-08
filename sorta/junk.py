@@ -13,21 +13,20 @@ over `naming.junk_threshold`. Conservative throughout: a real photo in the trash
 than junk left among the city folders.
 
 F37-A hangs a text-density signal (easyocr, the fraction of the frame under text boxes) on
-the document<->photo pair alone, and only for frames without faces: below `text_frac_min` a
-document goes back to being a photo, above `text_frac_document` a photo CLIP scored low
-becomes a document. source='ocr' means, and only means, that OCR moved the verdict.
+the document<->photo pair alone, and only for frames without faces. source='ocr' means, and
+only means, that OCR moved the verdict.
 
 F37-B adds the DEEP TIER: one VLM (Qwen2.5-VL) over the candidates the fast tier doubts,
 answering personal_photo/document/product, opt-in and off by default. Screenshots stay the
-fast tier's job — the deep tier has no such answer. Every model in this file is optional in
-the strong sense: a factory that will not build is caught around the BUILD, logged, and the
-run goes on with the verdicts the tier below it gave.
+fast tier's job — the deep tier has no such answer. Every model here is optional in the
+strong sense: a factory that will not build is caught around the BUILD, logged, and the run
+goes on with the verdicts the tier below it gave.
 
 F68: incrementality runs on `media_class.tier`, not on `source`. `source` is WHAT decided
-(heuristic | clip | ocr | vlm — user-facing, read by sorter.py), `tier` is WHICH TIER
-walked the row (heuristic | clip | vlm). They do not coincide — the OCR gate rewrites
-source, and the deep tier deliberately leaves clear photographs on 'clip' — and under the
-old source-based marker both kinds of row were reclassified on EVERY run.
+(heuristic | clip | ocr | vlm, read by sorter.py), `tier` is WHICH TIER walked the row
+(heuristic | clip | vlm). They do not coincide — the OCR gate rewrites source, and the deep
+tier deliberately leaves clear photographs on 'clip' — and under the old source-based
+marker both kinds of row were reclassified on EVERY run.
 
 F48/F67: every decode here comes from the shared disk preview cache
 (`imaging.decode_rgb_preview`), never from the original. Before F67 the second decode
@@ -50,8 +49,8 @@ finishes first), the model still sees one frame per call with the same prompt an
 greedy decode, the writes still happen on this thread alone, and a frame whose preparation
 fails keeps its cheap-tier answer and still steps the progress bar.
 `tests/test_junk_asker_pipeline.py` prices the animal phase AGAINST the deep tier's phase
-of the same run: seconds per frame are a statement about a machine, a ratio between two
-phases asking one model one question is a statement about this stage.
+of the same run, because a cost per frame in seconds is a statement about a machine where a
+RATIO between two phases is a statement about this stage.
 
 The OCR half has a pool of its own (`_OcrPool`, F73): K threads, each with its OWN easyocr
 Reader — a Reader holds a torch model and its buffers, the same reason F12.1 gives every
@@ -62,11 +61,10 @@ F95: the VLM weights are loaded by `naming.shared_vlm` and not by this module �
 stage runs the same model and two copies do not fit in VRAM (peak 20.5 GB).
 
 F90: OCR runs on 28% of the frames and changes 2% of the verdicts (14:1), and
-`text_rescue_docscore_min` is the number that decides that ratio. It is a decision for a
-user in front of the table `scripts/measure_ocr_gate.py` prints, not something a worker
-raises quietly — so the verdict and gate branches live in functions of their own
-(`clip_verdict`, `ocr_gate_open`, `apply_text_frac`, over `gate_settings`) and the script
-drives exactly those, or it would price a gate the pipeline does not have.
+`text_rescue_docscore_min` decides that ratio. It is a user's decision in front of the table
+`scripts/measure_ocr_gate.py` prints, so the verdict and gate branches live in functions of
+their own (`clip_verdict`, `ocr_gate_open`, `apply_text_frac`) and the script drives exactly
+those, or it would price a gate the pipeline does not have.
 
 F100/F205: the stage names the phase it is in (CLASSIFY_PHASE_* below) through the optional
 `progress.phase(name)` channel, and the three model passes have three names. A phase name
@@ -76,27 +74,17 @@ prices that differ threefold prices none of them.
 F113: the stage also fills `frame_quality`, and every signal there is taken with the
 CHEAPEST TOOL THAT CAN ANSWER IT — a laplacian over the preview for sharpness, a prompt
 group inside the CLIP call this stage already makes for animals, eyelid geometry for the
-eyes (F179; the VLM that used to answer them is retired). The next tier up is paid for only
-where the cheap one is not sure. This half keeps its OWN incrementality marker
-(`frame_quality.source`), because the two go stale independently: switching `features.pets`
-on changes no junk verdict, and a collection classified before the feature existed has no
-quality rows at all.
+eyes (F179; the VLM that used to answer them is retired). That half keeps its OWN
+incrementality marker (`frame_quality.source`): switching `features.pets` on changes no
+junk verdict, and a collection classified before the feature existed has no quality rows.
 
 F128/F141: the CLIP vector of every frame this stage looks at is KEPT (`clip_embeddings`)
 where it used to be read for three scores and dropped, and behind `features.search_index` a
-SECOND vector from a multilingual model is computed beside it (`search_embeddings`). The
-first costs no model call at all — the vector comes out of the caching classifier that has
-just scored the chunk. Both tables write the model into every row, a mismatch means
-recompute rather than use, and both hold the F120 population.
+SECOND vector from a multilingual model is computed beside it (`search_embeddings`).
 
 F130/F154: the animal label is a CASCADE — CLIP selects widely, the VLM answers whether the
 animal is alive, an object detector answers whether there is one at all. Each tier
-overrides the one below it and falls back to it, never to "no animal". WHERE THE ANSWER IS
-READ IS NOT HERE: since F137 the album, the "Animals" tab and the Overview counter derive
-the label as they read, through `sorter.animal_auto_sql`. F154 shipped without that branch
-and the gap was the worst kind — the stage ran, the boxes were in the database, and nothing
-a user looks at moved — so `pet_label` here and `animal_auto_sql` there are now run through
-one case table (`tests/test_detector_reaches_the_screen.py`).
+overrides the one below it and falls back to it, never to "no animal" (`pet_label`).
 
 F140: the search by words put memes and screenshots at the top of its results while all
 19 753 rows it searches carry the verdict `photo` — this stage being wrong about ~4% of
@@ -117,18 +105,16 @@ model's answer hidden:
 
     PICKING AT RANDOM               30.4%   (20 000 shuffles: 30.3%)
 
-Nothing was bought to replace it, because a question no rule answers is not a question with
-a cheaper answer somewhere. The MECHANISM stays in dedup.py (`group_keeper`,
+Nothing was bought to replace it: a question no rule answers is not a question with a
+cheaper answer somewhere. The MECHANISM stays in dedup.py (`group_keeper`,
 `dedup.group_key`, `dedup.keeper_groups` and the sharpness ranking the Duplicates tab
-shows), and `dedup_choice` is what it has always been: the user's own decision, which no
-path of this stage has ever written.
+shows), and `dedup_choice` remains the user's own decision, which no path here has ever
+written.
 
-F164: the two thread ceilings of the stage keep their values for two different reasons.
-`vlm.workers` was measured and 4 is past the knee already — one frame's preparation uses
-about seven cores since F105, so 6, 8 and 12 threads came back SLOWER on the live
-collection (config.default_vlm_workers holds that table). `_DEFAULT_OCR_WORKERS_CAP` is
-unmeasured on purpose: what it protects is VRAM, only a free card can price it, so the tool
-ships and the number waits for the run that earns it.
+F164: `vlm.workers` was measured and 4 is past the knee already — one frame's preparation
+uses about seven cores since F105, so 6, 8 and 12 threads came back SLOWER on the live
+collection (config.default_vlm_workers holds that table). The other ceiling of the stage is
+`_DEFAULT_OCR_WORKERS_CAP`, unmeasured on purpose for the reason written beside it.
 
 F165: THE STAGE RUNS IN TWO HALVES, and `verdicts_only` is which one. The faces stage is
 46% of a full run and used to walk 4 300 frames of 24 195 that this stage already knew were
@@ -137,20 +123,19 @@ screenshots, documents, memes or products — so the verdicts move ahead of it:
     index -> geo -> landmarks -> classify -> faces -> events -> junk -> phash
 
 The split is by dependency and nothing else: `verdicts_only=True` runs everything that does
-not read `frame_quality` (the fast pass, the deep tier, the stored vectors) and leaves the
-rest behind faces. Swapping the two stages instead of splitting them would have switched
-`face_sharpness` off silently on every first run. Both halves are the SAME function under
-the same incrementality, so the second call reclassifies nothing and `sorta junk` alone
-still does the whole thing.
+not read `frame_quality` and leaves the rest behind faces. Swapping the two stages instead
+of splitting them would have switched `face_sharpness` off silently on every first run.
+Both halves are the SAME function under the same incrementality, so the second call
+reclassifies nothing and `sorta junk` alone still does the whole thing.
 
 THE ONE THING THAT DOES CHANGE WITH IT, written here because no test can show it and no log
 line will mention it: the fast tier reads `has_faces` in four places (the F13 veto, the F15
 document pass, the F38 OCR gate, the #14 VLM gate), and before the faces stage has ever run
 there is nothing to read. On a FIRST run with `--faces` a frame CLIP calls a meme is no
-longer vetoed by the face in it — which is exactly what a default run has always done
-(faces are opt-in, F53) — and a frame this stage calls junk is a frame `faces` now skips,
-so the veto cannot reach it afterwards. The brief accepted that trade for the 18% (F165,
-«Оговорки», 2 and 3).
+longer vetoed by the face in it — exactly what a default run has always done (faces are
+opt-in, F53) — and a frame this stage calls junk is a frame `faces` now skips, so the veto
+cannot reach it afterwards. The brief accepted that trade for the 18% (F165, «Оговорки»,
+2 and 3).
 """
 from __future__ import annotations
 
@@ -2173,23 +2158,21 @@ VERDICTS_STAGE = "classify"
 class _PhaseProgress:
     """Phase + `(done, total)` reporting for `classify` (F100).
 
-    The phase channel is optional and duck-typed as in faces (F84): a callback that can
-    show a caption exposes `phase(name)`, a bare `(done, total)` function gets no phases,
-    and without a callback every method is a no-op — the CLI path, the quiet mode and most
-    of the suite call classify() that way.
+    The phase channel is optional and duck-typed as in faces (F84): a bare `(done, total)`
+    function gets no phases, and without a callback every method is a no-op.
 
     The fast-tier phases interleave INSIDE the per-chunk loop (CLIP -> OCR -> write, F73)
-    over one shared counter, so `enter` only relabels and never touches the count: a bar
-    that restarted three times per chunk would be worse than no phases at all. Repeating
-    the current phase is not re-sent, because the UI restarts the phase clock on every
-    report. `start` is for the passes that count their OWN items, and it moves caption and
-    denominator together — which is what makes new numbers readable instead of a bar that
+    over one shared counter, so `enter` only relabels and never touches the count — a bar
+    that restarted three times per chunk would be worse than no phases at all — and it does
+    not re-send the current phase, because the UI restarts the phase clock on every report.
+    `start` is for the passes that count their OWN items, and it moves caption and
+    denominator together, which is what makes new numbers readable instead of a bar that
     silently slid backwards.
 
-    F147/F166: the stopwatch (`runlog.StagePhases`) hangs on this same object, so a phase
-    is timed under the name it is ANNOUNCED under and the run log cannot drift from the
-    caption. Timing therefore happens with no callback at all, and the clock is read out
-    as the stage goes: a run cut short still leaves the phases that finished.
+    F147/F166: the stopwatch (`runlog.StagePhases`) hangs on this same object, so a phase is
+    timed under the name it is ANNOUNCED under and the run log cannot drift from the
+    caption. Timing therefore happens with no callback at all, and the clock is read as the
+    stage goes: a run cut short still leaves the phases that finished.
     """
 
     def __init__(self, progress: ProgressCB | None,
@@ -3240,41 +3223,32 @@ def classify(
     this run touches gets tier = active_tier ('heuristic' | 'clip' | 'vlm'), and only rows
     carrying a different tier are redone.
 
-    EVERY MODEL OF THIS STAGE IS INJECTABLE AND OPTIONAL, and both halves of that are one
-    rule rather than a list of parameters. Injectable: each `*_detector` / `*_vlm` /
-    `*_encoder` argument takes a ready object (the suite passes mocks — no test loads a
-    model) and each `*_factory` builds the real one, LAZILY, so a run with nothing to ask
-    loads no weights. Optional: a factory that raises — no transformers, a model that will
-    not load, not enough VRAM — is caught around the BUILD, logged, and the run continues
-    on the tier below with every verdict and label the cheaper tier gave it.
+    EVERY MODEL OF THIS STAGE IS INJECTABLE AND OPTIONAL, which is one rule rather than a
+    list of parameters. Each `*_detector` / `*_vlm` / `*_encoder` takes a ready object (the
+    suite passes mocks — no test loads a model) and each `*_factory` builds the real one,
+    LAZILY, so a run with nothing to ask loads no weights; a factory that raises is caught
+    around the BUILD, logged, and the run continues on the tier below. F145: all of them
+    are subordinate to `vlm.enabled` as well — their own keys say WHAT to ask, not whether
+    a model is raised.
 
-    F145: each of those questions is also subordinate to `vlm.enabled`. Their own keys say
-    WHAT to ask, not whether a model is raised, so a run without deep analysis loads no
-    weights whatever config.yaml holds.
-
-    Two arguments do not follow that shape. `classifier` is the CLIP scorer, and F128 also
-    takes the stored vector out of its cache (`features(paths)`), so a classifier injected
-    as a plain function stores nothing, logs why once, and changes nothing else.
-    `eye_landmarks_factory` (F179) is handed to the sharpness detector rather than run in a
-    pass of its own, because the pixels it needs are the ones that decode has in memory —
-    an injected `sharpness_detector` answers for all three numbers and leaves it unused.
+    Two arguments do not follow that shape. `classifier` is the CLIP scorer, and F128 takes
+    the stored vector out of its cache (`features(paths)`), so a classifier injected as a
+    plain function stores nothing and logs why once. `eye_landmarks_factory` (F179) goes to
+    the sharpness detector rather than a pass of its own, because the pixels it needs are
+    already in that decode — an injected `sharpness_detector` leaves it unused.
 
     verdicts_only (F165): run the halves that do NOT need the face signal and stop — the
-    fast pass, the deep tier and the stored vectors, i.e. everything that ends in
-    `media_class` or `clip_embeddings`. This is the `classify` stage, which the pipeline
-    runs BEFORE faces so that the faces stage can skip what is already known not to be a
+    fast pass, the deep tier and the stored vectors. This is the `classify` stage, which
+    the pipeline runs BEFORE faces so that stage can skip what is already known not to be a
     photograph (`faces._files_to_detect`); the quality cascade, the animal cascade, the
-    rescue and the search index are left to the `junk` stage after it. Nothing else about
-    the call changes — the same incrementality markers, so the second half finds the
-    verdicts current — and a lone `sorta junk` still runs the whole stage.
+    rescue and the search index are left to `junk` after it. The incrementality markers do
+    not change, so the second half finds the verdicts current and a lone `sorta junk` still
+    runs the whole stage.
 
-    progress (F100): the usual `(done, total)` callback; if it also carries a `phase(name)`
-    channel the stage reports which of its phases it is in (CLASSIFY_PHASE_*). A plain
-    function without that channel is not an error and gets the counter alone.
-
-    F147: those same phases are TIMED, and each one that ran leaves a
-    `stage=junk phase=<name> elapsed=<sec> processed=<n>` line in the run log. Independent
-    of `progress` — a run with no callback measures itself just the same.
+    progress (F100): the usual `(done, total)` callback; one that also carries a
+    `phase(name)` channel is told which phase the stage is in (CLASSIFY_PHASE_*). F147:
+    those phases are TIMED whether or not there is a callback, and each one that ran leaves
+    a `stage=junk phase=<name> elapsed=<sec> processed=<n>` line in the run log.
     """
     s = naming_settings(cfg)
     rows = conn.execute(
@@ -3665,9 +3639,8 @@ def classify(
             _log.info("junk: OCR-детекторов создано %d (воркеров %d)",
                       ocr.detectors_built, ocr_workers)
 
-    # #14/V1: the deep tier — the VLM only on the selected candidates (not all frames).
-    # A VLM runtime error on one frame does NOT crash the run (closes #31) — the file
-    # keeps its fast verdict.
+    # #14/V1: the deep tier, over the selected candidates alone. A runtime error on one
+    # frame does not crash the run (closes #31) — that file keeps its fast verdict.
     if vlm_fn is not None and vlm_candidates:
         stats.vlm_candidates = len(vlm_candidates)
         # F100: the denominator switches from the frames of the fast pass to the candidates
@@ -3696,9 +3669,8 @@ def classify(
                         stats.by_verdict[fast_verdict] = stats.by_verdict.get(fast_verdict, 1) - 1
                         stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
                         stats.vlm_applied += 1
-                # F100: outside the `else` — a frame the model failed on is a frame the
-                # pass is done with (an error on the last candidate would otherwise
-                # leave the bar one short of its total for good).
+                # F100: outside the `else` — an error on the last candidate would otherwise
+                # leave the bar one short of its total for good.
                 report.step(j + 1)
 
     # THE ORDER OF THE THREE PASSES BELOW IS THE CONTRACT. The rescue first: it reads the
