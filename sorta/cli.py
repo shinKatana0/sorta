@@ -113,16 +113,14 @@ def _ensure_utf8_console() -> None:
 
 
 # --- F112: the output language ----------------------------------------------
-# Every user-visible string of this module goes through `i18n.cli_text` (imported as
-# `_t`) with the language from `cfg.language`. The commands that load the config
-# anyway read it off `cfg`; the few checks that fire BEFORE the config is read (the
-# `typer.BadParameter` guards) use `_lang_of` below.
+# Every user-visible string here goes through `i18n.cli_text` (imported as `_t`) with the
+# language of `cfg.language`; the checks that fire BEFORE the config is read use
+# `_lang_of` below.
 #
-# F114: the `--help` texts are in that same catalog now. They could not be: a
-# `typer.Option(..., help=...)` runs when this module is imported, and by then nothing
-# has read the config. So the interface is no longer built at import time either — it
-# is assembled by `build_app(lang)` after `_startup_lang()` has peeked at argv for
-# `--config` and read the language off it.
+# F114: the `--help` texts are in the same catalog. A `typer.Option(..., help=...)` runs
+# at import, when nothing has read the config, so the interface is no longer built at
+# import time either — `build_app(lang)` assembles it after `_startup_lang()` has peeked
+# at argv for `--config`.
 
 def _lang(cfg) -> Lang:
     """The output language of a command that already holds a loaded config."""
@@ -130,12 +128,9 @@ def _lang(cfg) -> Lang:
 
 
 def _lang_of(config_path: str) -> Lang:
-    """The output language for a check that runs before the config is loaded.
-
-    An unreadable/absent config.yaml must not swallow the very message it was needed
-    for (a bad `--geo` value is still a bad `--geo` value without a config), so any
-    failure here falls back to the default language.
-    """
+    """The output language for a check that runs before the config is loaded. An
+    unreadable config must not swallow the very message it was needed for, so any failure
+    here falls back to the default language."""
     try:
         return _lang(load_config(config_path))
     except Exception:  # noqa: BLE001 — any unreadable config, the message still goes out
@@ -148,15 +143,14 @@ _DEFAULT_CONFIG = "config.yaml"
 def _peek_config_path(argv: list[str]) -> str:
     """The value of `--config`/`-c` in a command line, without parsing it.
 
-    F114: the help language comes out of the config, and the config path comes out of
-    the command line — but the command line cannot be parsed yet, because the parser is
-    what we are about to build. So this only LOOKS: it consumes nothing, validates
-    nothing and never raises. Whatever is wrong with the arguments is still typer's to
-    say, in typer's words, a moment later.
+    F114: the help language comes out of the config and the config path out of the command
+    line, which cannot be parsed yet because the parser is what is being built. So this
+    only LOOKS — it consumes nothing, validates nothing and never raises, leaving whatever
+    is wrong with the arguments to typer a moment later.
 
-    Every spelling click accepts is recognised — `--config x`, `--config=x`, `-c x`,
-    `-c=x`, `-cx` — and a repeated flag keeps its LAST value, the way click does. A bare
-    `--` ends the scan: after it click sees only positional arguments.
+    Every spelling click accepts is recognised (`--config x`, `--config=x`, `-c x`, `-c=x`,
+    `-cx`), a repeated flag keeps its LAST value as click does, and a bare `--` ends the
+    scan, after which click sees only positional arguments.
     """
     path = _DEFAULT_CONFIG
     rest = list(argv)
@@ -410,15 +404,9 @@ def _cmd_phash(config_path: str) -> None:
 def _quality_overrides(cfg, *, pets: bool | None = None):
     """F127: the frame-quality knobs of ONE run, from flags instead of config.yaml.
 
-    The same principle `--deep`/`--geo` have followed since F50: a copy of the config
-    for this run (`dataclasses.replace`), never a write to the file. `None` means the
-    flag was not passed and the value stays as the config has it — which is what makes
-    `--no-pets` able to switch OFF what `features.pets: true` switched on, instead of
-    the flag only ever being able to add.
-
-    F186 left one knob of the three here. `--quality` and `--quality-scope` overrode the
-    frame-quality question and the population it was asked of, and both are retired with
-    it; `features.pets` is the CLIP prompt group, which is untouched.
+    The F50 principle of `--deep`/`--geo`: a copy of the config for this run, never a
+    write to the file. `None` means the flag was not passed and the config keeps deciding,
+    which is what lets `--no-pets` switch OFF what `features.pets: true` switched on.
     """
     if pets is not None:
         cfg = dataclasses.replace(
@@ -471,36 +459,28 @@ def _cmd_events(config_path: str) -> None:
 # --- F222: a stage says what it is downloading, and why it could not ---------
 #
 # The report this comes from: "it hung on landmarks". Nothing had hung — 1.6 GB of CLIP
-# weights were arriving over a slow line with not one character on screen, and then the
-# run died on the verdicts with `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>`,
-# which names neither the model, nor the stage, nor what to do about it.
+# weights were arriving over a slow line with not one character on screen, and the run
+# then died on the verdicts with `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>`,
+# which names neither the model nor the stage nor what to do about it.
 #
-# Both halves live where the model is BUILT rather than where the stage is called: a
-# stage with nothing to do (no unknown places, no new frames) never reaches the factory
-# and must not announce a download that will not happen. That is also why `faces` has no
-# sentence here: its model is raised inside `sorta/faces.py`, there is no factory in this
-# file to hang one on, and announcing it a stage early would claim a download an
-# incremental run does not make. What that stage gets instead is a line in the summary of
-# the run screen, where its 400 MB is stated before anything starts.
+# Both halves live where the model is BUILT and not where the stage is called: a stage
+# with nothing to do never reaches the factory and must not announce a download that will
+# not happen. That is also why `faces` has no sentence here — its model is raised inside
+# `sorta/faces.py` — and it gets a line in the run screen's summary instead, where its
+# 400 MB is stated before anything starts.
 
 
 def _build_clip(cfg, stage: str, progress: object | None = None) -> Classifier:
     """The CLIP classifier for `stage`, with the download said out loud on both sides.
 
-    The failure is re-worded ONLY when the weights were actually missing before the
-    attempt. A model that is already on disk and still will not load failed for some
-    other reason, and dressing that up as a download problem would send a person to check
-    a network connection that is fine.
+    The failure is re-worded ONLY when the weights were missing before the attempt: a
+    model already on disk that will not load failed for another reason, and dressing that
+    up as a download problem sends a person to check a network that is fine.
 
-    F225: while the download lasts, how much of it has arrived — the same measurement the
-    run screen and the setup wizard show, so a run started from a terminal is not the one
-    place left where 1.6 GB arrives in silence.
-
-    F229: and `progress` — the stage's own bar — says what the stage is doing meanwhile,
-    because the number it draws is a number of FRAMES and this stage has no model with
-    which to process one. The caption comes down again when the download is over, and the
-    frames are counted from zero honestly. Nothing here invents a percentage: how much has
-    arrived is the line printed above it.
+    F225 shows how much has arrived — the same measurement the run screen and the wizard
+    show. F229 puts the stage's own bar (`progress`) on the caption meanwhile, because the
+    number it draws counts FRAMES and this stage has no model to process one with; the
+    caption comes down when the download is over and the frames start from zero.
     """
     lang = _lang(cfg)
     pending = tiers.stage_downloads(stage)
@@ -524,15 +504,11 @@ def _build_clip(cfg, stage: str, progress: object | None = None) -> Classifier:
 
 
 class _LazySharedClassifier:
-    """Builds the real CLIP classifier on the FIRST call and reuses it between
-    landmarks and junk within one `run` (F19): their image features share the
-    `CachingFeatureClassifier` cache, so each photo is decoded+encoded once for the
-    whole run, not separately in landmarks, the junk classes, and the document pass.
-
-    Laziness preserves incrementality: a `run` with no new data (landmarks and junk
-    with no rows) does NOT invoke the classifier and the CLIP model is not loaded.
-    The factory is injected — in tests it is replaced with a fake without ML.
-    """
+    """Builds the real CLIP classifier on the FIRST call and reuses it between landmarks
+    and junk within one `run` (F19): their image features share the
+    `CachingFeatureClassifier` cache, so each photo is decoded and encoded once for the
+    whole run. Laziness preserves incrementality — a `run` with no new data never invokes
+    the classifier and never loads the model."""
 
     def __init__(self, factory: Callable[[], Classifier]) -> None:
         self._factory = factory
@@ -546,14 +522,10 @@ class _LazySharedClassifier:
     def features(self, paths: list[str]) -> list[np.ndarray | None]:
         """The CLIP vectors of the paths already scored — see `ui._LazyClassifierHolder`.
 
-        F146: the hole was found on the UI wrapper, and this one is built on the same
-        pattern, so it is closed on both rather than only where it was noticed. The junk
-        stage looks for `features` on the object it was handed to decide whether it can
-        fill `clip_embeddings`; a wrapper that forwards `__call__` alone switches that
-        half off without a word.
-
-        Laziness is untouched: an unbuilt classifier has scored nothing and so has no
-        vector to hand back, which is exactly what None per path means here.
+        F146: the junk stage looks for `features` on the object it was handed to decide
+        whether it can fill `clip_embeddings`, so a wrapper that forwards `__call__` alone
+        switches that half off without a word. Laziness is untouched — an unbuilt
+        classifier has scored nothing, which is what None per path says.
         """
         features_of = getattr(self._real, "features", None)
         if not callable(features_of):
@@ -561,17 +533,15 @@ class _LazySharedClassifier:
         return list(features_of(paths))
 
 
-# F53/#39: faces and events — the heaviest/longest steps, not needed for the basic
-# scenario (cities + dupes) — opt-in via --faces/--events, default off.
-# `_pipeline_steps()` still builds the FULL list; filtering is up to the caller
-# (`_cmd_run`), see below.
+# F53/#39: faces and events are the heaviest steps and the basic scenario (cities +
+# dupes) does not need them, so they are opt-in. `_pipeline_steps()` still builds the
+# FULL list; the filtering is `_cmd_run`'s.
 #
-# F222: `landmarks` joins them, and it is the first of the three that a config file can
-# decide (`features.landmarks`) — faces and events are per-run flags with no key behind
-# them. The stage had no switch of any kind: it ran on every run, fetched 1.6 GB of CLIP
-# weights the first time and produced 0.55% of the places of the owner's collection. Same
-# mechanism as the other two on purpose — a second way of skipping a stage is a second
-# way of getting it wrong.
+# F222: `landmarks` joins them and is the first a config file can decide
+# (`features.landmarks`). It had no switch of any kind: it ran on every run, fetched
+# 1.6 GB of CLIP weights the first time and produced 0.55% of the owner's places. The same
+# mechanism as the other two, because a second way of skipping a stage is a second way of
+# getting it wrong.
 _OPTIONAL_STAGES = ("landmarks", "faces", "events")
 
 
@@ -582,24 +552,19 @@ def _pipeline_steps() -> list[tuple[str, object]]:
     faces before junk (junk uses the face-presence signal). landmarks and junk share
     ONE lazy CLIP classifier (F19) — a shared image-feature cache for the whole run.
 
-    F165: `classify` is the front half of `junk` — the verdicts, which depend on nothing
-    here — and it runs before `faces` so that the faces stage can skip the screenshots and
-    the documents instead of detecting on them first and being told afterwards. The back
-    half keeps its place after `faces`, because everything left in it (the quality cascade,
-    `face_sharpness`, the animal cascade) reads the table that stage writes. Both halves
-    share the classifier with `landmarks` for the same F19 reason: within one run the
-    second call scores frames the first one already encoded.
+    F165: `classify` is the front half of `junk` — the verdicts — and runs before `faces`
+    so that stage can skip the screenshots and the documents instead of detecting on them
+    first. The back half stays after `faces`, because everything left in it reads the
+    table that stage writes. Both halves share the classifier with `landmarks` (F19).
     """
     shared: dict[str, _LazySharedClassifier] = {}
-    # F222: which stage asked last. The classifier is shared by three of them (F19) and
-    # built by whichever gets there first, so the sentence about the download has to name
-    # that one rather than a stage picked at definition time.
+    # F222: which stage asked last. Three of them share the classifier (F19) and whichever
+    # gets there first builds it, so the sentence about the download has to name that one
+    # rather than a stage picked at definition time.
     asked_by = {"stage": "landmarks"}
 
-    # F229: ...and the bar that stage is drawing, for the same reason: whichever of the
-    # three gets to the factory first is the one whose frame counter has to say what it is
-    # waiting for. Kept beside `asked_by` rather than captured, because the factory is
-    # built once and asked from three different stages.
+    # F229: and the bar that stage is drawing, for the same reason. Kept beside `asked_by`
+    # rather than captured, because the factory is built once and asked from three stages.
     asked_by_bar: dict[str, object] = {"progress": None}
 
     def _clip(cfg, stage: str, progress: object | None = None) -> _LazySharedClassifier:
@@ -660,25 +625,15 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
              faces: bool = False, events: bool = False,
              src: str | None = None, pets: bool | None = None,
              landmarks: bool | None = None) -> None:
-    """`deep`/`geo` (F50/#34) — an opt-in override for THIS run, not written to
-    config.yaml: `deep` -> `naming.vlm_enabled`, `geo` ("offline"|"online") ->
-    `geo.provider`. None (flag not passed) -> the value stays from config.
+    """Overrides for THIS run, never written to config.yaml. `deep` -> `naming.vlm_enabled`
+    and `geo` -> `geo.provider` (F50/#34); None means the config keeps deciding. `src`
+    (F59) replaces config.sources for the run. `faces`/`events` (F53/#39) are opt-in steps,
+    off by default, so a basic run builds index/geo/landmarks/classify/junk only. `pets`
+    (F127) is an override of the frame-quality cascade rather than a stage.
 
-    `src` (F59) — the source directory for this run, overrides config.sources (like
-    the positional src of `index`).
-
-    `faces`/`events` (F53/#39) — opt-in steps, default off: the basic run builds only
-    `index/geo/landmarks/classify/junk`, the heaviest/longest steps are skipped.
-    Independent of each other and of `deep`/`geo`.
-
-    `pets` (F127) — the same kind of per-run override as `deep`, on the frame-quality
-    cascade (see `_quality_overrides`). NOT a stage: it changes what the `junk` stage
-    computes and leaves the list of steps as it was.
-
-    `landmarks` (F222) — an opt-in step like `faces`/`events`, with one difference: None
-    means the config decides (`features.landmarks`), so `--landmarks/--no-landmarks` moves
-    it in both directions and a file that switches the stage on keeps running it without
-    anybody passing a flag."""
+    `landmarks` (F222) is an opt-in step with one difference: None means the config
+    decides (`features.landmarks`), so the flag moves it in both directions and a file
+    that switches the stage on keeps it running with no flag at all."""
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
@@ -819,19 +774,12 @@ def _stub(name: str, doc: str, lang: Lang):
 
 
 # --- F216: which tiers this machine actually has ----------------------------
-# `doctor` is the check screen the wizard calls (F211) and the command a person is
-# pointed at when something is missing — and it answered everything about the install
-# except what the install is MADE of. The installer ships one tier and offers four, so
-# "which of them are here" is the first question both a person and the installer
-# workflow have, and answering it used to mean reading a directory listing.
-#
-# F217 moved the probe itself into `sorta/tiers.py`: the web app says the same thing
-# next to the checkbox a person ticks, and it cannot import this module (typer, numpy
-# and every stage come with it, and `sorta/ui/` avoids the cycle on purpose). What is
-# imported below is the probe, unchanged — a second implementation of it would disagree
-# with this one within a release, which is the F211 precedent this whole area is built
-# on. The three names nothing here calls are re-exported for the same reason `doctor`
-# reads them: they are the probe's own parts, and the suite checks them where they are.
+# `doctor` is the check screen the wizard calls (F211), and it answered everything about
+# the install except what the install is MADE of. F217 moved the probe into
+# `sorta/tiers.py`, because the web app says the same thing next to its checkbox and
+# cannot import this module (typer, numpy and every stage come with it). What is imported
+# below is that probe, unchanged; the names nothing here calls are re-exported because
+# they are its own parts and the suite checks them where they are.
 
 # How many names of a long list are printed before it turns into a count. The gpu tier
 # names eight packages, and a `doctor` line that wraps three times is one nobody reads.
@@ -839,27 +787,21 @@ _MISSING_SHOWN = 4
 
 
 # --- F213: what `uv tool install` leaves broken on a clean machine ----------
-# There is no Linux installer and there will not be one — one line of terminal is the
-# supported path there, which makes `doctor` the whole of the install experience after
-# it. So the three things that actually go wrong on a machine that had nothing on it
-# are ANSWERED here, in words, rather than described in a guide nobody reads at the
-# moment they happen:
+# There is no Linux installer, so `doctor` is the whole install experience there and the
+# three things that go wrong are ANSWERED in words rather than in a guide nobody reads:
 #
-# * `sorta: command not found` — `uv tool install` writes its commands into
-#   `~/.local/bin`, which a default shell profile does not have on PATH. The person who
-#   hits this cannot run `doctor` by that name either, so the line is written for the
-#   one who reached it some other way (a full path, `uv run`, an activated venv) and it
-#   names the directory and the command that fixes it;
-# * no `exiftool` — Sorta falls back to Pillow and stops reading HEIC/RAW/video dates,
-#   GPS and orientation, which on a phone collection is most of what it sorts by. It
-#   fails as an EMPTY result, never as an error, so nothing else would ever say it;
+# * `sorta: command not found` — `uv tool install` writes into `~/.local/bin`, which a
+#   default shell profile does not have on PATH. Whoever hits it cannot run `doctor` by
+#   name either, so the line is for the one who reached it another way and it names the
+#   directory and the command that fixes it;
+# * no `exiftool` — the reader falls back to Pillow and stops reading HEIC/RAW/video
+#   dates, GPS and orientation. It fails as an EMPTY result, never as an error, so
+#   nothing else would ever say it;
 # * a preview cache other local accounts can read. F210 creates it 0700 and refuses to
-#   repair a directory that already exists — deliberately, that is somebody else's
-#   directory — so a cache made before that rule (or by a hand-run `mkdir`) is still
-#   0755, and this is the only place that can tell its owner.
+#   repair a directory that already exists (it is somebody else's), so a cache made
+#   before that rule is still 0755 and this is the only place that can tell its owner.
 #
-# CUDA is the fourth case of the brief and is already answered by `gpu_health()` below,
-# which is why nothing about it is written here.
+# CUDA is the fourth case and is already answered by `gpu_health()` below.
 
 # The permission bits that make the cache readable by another local account. Group and
 # other, both, and any of them is enough: a shared group is exactly how a family machine
@@ -902,20 +844,15 @@ def _doctor_install_lines(lang: Lang, *, command: str | None, scripts: Path,
                           kind: str | None = None) -> list[str]:
     """The `sorta`-on-PATH and `exiftool` lines, in the state this machine has them.
 
-    F226 added the two states an INSTALLED copy is in, and both of them used to be
-    described as failures of a machine that had installed nothing: `exiftool` is on the
-    disk (`bundled`), and the command is not on PATH because it was never supposed to be
-    (`installed_python` — the interpreter the payload carries, which is how that copy is
-    run). A checkout passes neither and every line below it is what it always was.
+    F226 added the two states an INSTALLED copy is in, both of which used to read as
+    failures of a machine that had installed nothing: `exiftool` is on the disk
+    (`bundled`), and the command is not on PATH because it never was supposed to be
+    (`installed_python`). A checkout passes neither.
 
-    F230: the repair for a command that is not on PATH is chosen by INSTALL KIND, through
-    the one answer in `sorta.install`, and no longer by whether the manifest happened to
-    name a python. `uv tool update-shell` is the fix for a `uv tool install` and for
-    nothing else — in a checkout the commands were never meant to be on PATH, and telling
-    a developer to repair their shell profile over it is advice for somebody else's
-    machine. The exiftool line below stays keyed by PLATFORM, deliberately: which package
-    manager installs it is a property of the operating system and is true of all three
-    installs (`_exiftool_hint_key`).
+    F230: the repair for a command that is not on PATH is chosen by INSTALL KIND through
+    `sorta.install`, not by whether the manifest named a python — `uv tool update-shell`
+    fixes a `uv tool install` and nothing else. The exiftool line stays keyed by PLATFORM:
+    which package manager installs it is a property of the operating system.
     """
     if kind is None:
         kind = install.install_kind()
@@ -939,13 +876,9 @@ def _doctor_install_lines(lang: Lang, *, command: str | None, scripts: Path,
 
 
 def _directory_mode(directory: Path) -> int | None:
-    """The POSIX permission bits of `directory`, or None when there is no question.
-
-    None on Windows (NTFS ignores the bits entirely — `%LOCALAPPDATA%` inherits the ACL
-    of the account that owns it) and None for a directory that does not exist yet: the
-    first run creates it 0700, and warning about a cache nobody has written would be a
-    statement about nothing.
-    """
+    """The POSIX permission bits of `directory`, or None when there is no question —
+    Windows (NTFS ignores them) and a directory that does not exist yet, which the first
+    run will create 0700."""
     if os.name == "nt":
         return None
     try:
@@ -955,13 +888,9 @@ def _directory_mode(directory: Path) -> int | None:
 
 
 def _doctor_cache_lines(lang: Lang, directory: Path, mode: int | None) -> list[str]:
-    """A warning when the preview cache is not private to its owner — otherwise nothing.
-
-    Nothing, because the path itself is already printed a line above and a second line
-    saying "and it is fine" is noise on every healthy machine. Decoded photographs of a
-    whole collection sit in there, one of which may be a passport (F210), so the only
-    state worth a sentence is the one that needs an answer.
-    """
+    """A warning when the preview cache is not private to its owner — otherwise nothing,
+    because the path is already printed above and "and it is fine" is noise on every
+    healthy machine. Decoded photographs sit there, one of which may be a passport."""
     if mode is None or not mode & _CACHE_OPEN_TO_OTHERS:
         return []
     return [_t("cli.doctor.cache_open", lang, path=directory, mode=f"{mode:03o}")]
@@ -1000,16 +929,13 @@ def _doctor_tier_lines(lang: Lang, states: list[TierState], *,
 
 
 def _cmd_doctor(config_path: str, states: list[TierState] | None = None) -> None:
-    """F112: `--config` is here only to know the output language — the command still
-    works without a readable config (`_lang_of` falls back to the default), it just
-    prints in the default language then. The two health summaries below come from
-    diagnostics.py, which this feature does not own, so they stay as that module
-    writes them.
+    """F112: `--config` is here only for the output language — without a readable config
+    the command still works and prints in the default one.
 
-    F225: `states` is a probe somebody has already taken — the wizard's, which prints
-    this block and then its own answer about the same tiers. Without it the two probe the
-    disk one after the other, and one output was caught stating both "ViT-L-14 downloads
-    on the first run" and "already in place" about the same machine.
+    F225: `states` is a probe somebody has already taken (the wizard's, which prints this
+    block and then its own answer about the same tiers). Without it the two read the disk
+    one after the other, and one output was caught saying both "ViT-L-14 downloads on the
+    first run" and "already in place" about one machine.
     """
     lang = _lang_of(config_path)
     # F211: name the environment BEFORE the health lines. An installed copy ships its
@@ -1065,10 +991,9 @@ def _cache_models(lang: Lang, *, clear: bool,
     """F224: the model weights of the tier catalog, as this disk holds them.
 
     The list is printed BEFORE the question in both modes — «frees 1.9 GB» is an answer,
-    «clear the cache» is a riddle — and the question itself is injected the way
-    `_cmd_reset` injects it: it belongs to typer, and this function has to stay callable
-    where typer is not installed. None means nothing is asked, which is what `--yes`
-    does and the only way the Windows uninstaller can call it.
+    «clear the cache» is a riddle. The question is injected as `_cmd_reset` injects it, so
+    this stays callable where typer is not installed; None asks nothing, which is what
+    `--yes` does and the only way the Windows uninstaller can call it.
     """
     found = weights.downloaded()
     if not found:
@@ -1263,17 +1188,12 @@ def _cmd_search(config_path: str, query: str, limit: int | None = None,
                 words: bool = False) -> None:
     """F129: print the CLIP ranking for a query — paths and scores, best first.
 
-    The scores are printed because they are the only thing that tells a reader how far down
-    the list stopped being about their words: this ranks, it does not classify, so the line
-    where a query runs out is something only a human can see. The lines themselves carry no
-    words in any language (a rank, a score, a path — data, like the landmark names in
-    `_summarize_landmarks`); the sentence around them goes through the catalog.
+    The scores are printed because this RANKS and does not classify: where a query runs
+    out is a line only a human can see.
 
-    F189: one query string, one behaviour, whichever entry point it was typed into — so
-    this command asks `search.match_person` first, exactly as `GET /api/search` does. A
-    name gives the person's frames and says so; anything else goes on to the ranking
-    untouched. `--words` is the way back for a name that is also an ordinary word: the
-    second answer must not disappear because the first one exists.
+    F189: one query string, one behaviour, whichever entry point it was typed into, so
+    this asks `search.match_person` first exactly as `GET /api/search` does. `--words` is
+    the way back for a name that is also an ordinary word.
     """
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
@@ -1351,15 +1271,11 @@ def _cmd_undo(config_path: str, batch: int | None = None) -> None:
 
 
 # --- Typer interface (primary) ----------------------------------------------
-# A factory instead of a module-level application (F114): the help of an option is
-# written inside `typer.Option(...)`, which runs when this module is imported — too
-# early for anything to know the language. So the interface is assembled here, once,
-# after the language has been read. Nothing else about it moved: the same commands,
-# the same flags, the same guards raising typer's own errors.
-#
-# The bodies live in the `_cmd_*` functions above. What is left in each shell is the
-# part that IS the interface: the flags, and the two or three checks that have to
-# answer with `typer.BadParameter` before any work starts.
+# A factory instead of a module-level application (F114): the help of an option is written
+# inside `typer.Option(...)`, which runs at import — too early to know the language. The
+# bodies live in the `_cmd_*` functions above; what is left in each shell is the part that
+# IS the interface, the flags and the checks that answer with `typer.BadParameter` before
+# any work starts.
 
 
 def build_app(lang: Lang) -> typer.Typer:
