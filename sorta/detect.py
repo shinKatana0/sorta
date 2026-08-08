@@ -11,22 +11,18 @@ same sample F122/F152 were scored on, detector confidence 0.5):
 
     the price of a pass: 83.8 ms/frame -> 30.8 minutes over 22 096 photographs
 
-**The detector earns its keep on exactly one slice of three**, and both halves of that
-sentence are the feature:
-
-* animals are where it wins, and clearly. 87% recall against the 33% the CLIP label
-  reaches, while marking 21 frames out of 200 — this is what a detector is taken for. It
-  sees the cat in the corner of the frame; CLIP compares the picture to a text AS A WHOLE
-  and a cat that is not the subject of the shot is not what the picture is "of".
-* people are where it loses outright. 42% precision against ~100% from faces: it finds a
-  "person" where a person would not — backs in a crowd, figures in the distance, a hand.
-  The people slice stays on the face boxes (F152) and this module has no person class.
-* food is a failure of the label set rather than of the model. COCO has no `food`: it has
-  a banana, a sandwich, a pizza. "A meal on a table" is not any of them, and 20% precision
-  at 15% recall is what asking anyway produces. Food stays a query (F151).
+**The detector earns its keep on exactly one slice of three.** Animals are what a
+detector is taken for — it marked 21 frames of the 200 and it sees the cat in the corner
+of the frame, while CLIP compares the picture to a text AS A WHOLE and a cat that is not
+the subject of the shot is not what the picture is "of". On people it finds a "person"
+where a person would not — backs
+in a crowd, figures in the distance, a hand — so that slice stays on the face boxes
+(F152) and this module has no person class. Food is a failure of the label set rather
+than of the model: COCO has a banana, a sandwich, a pizza, and "a meal on a table" is
+none of them, so food stays a query (F151).
 
 Nobody may add the other two "while we are here" — the classes below are the boundary the
-measurement drew, and `ANIMAL_CLASSES` says so again where the boundary lives.
+measurement drew.
 
 WHY A CASCADE AND NOT A STAGE. A full pass is 31 minutes for a signal that helps one
 slice. The candidates come from a query over the vectors the junk stage already stores
@@ -39,10 +35,10 @@ which have paid off:
 Recall is then bounded by the query's recall at that depth (87% on the sample above), and
 precision rises from the query's own (43%) to the detector's (62%).
 
-This module is a leaf: the model, the classes, the query, the ranking and the cascade rule.
-The pipeline half — which frames are candidates in a live index, what is written where and
-what a repeated run skips — is `junk._DetectorPass`, next to every other pass of that
-stage. The direction of the import follows: `junk` imports this, never the other way round.
+This module is a leaf: the model, the classes, the query, the ranking and the cascade
+rule. The pipeline half — which frames are candidates in a live index, what is written
+where and what a repeated run skips — is `junk._DetectorPass`, and the direction of the
+import follows: `junk` imports this, never the other way round.
 """
 from __future__ import annotations
 
@@ -57,13 +53,8 @@ from . import accel
 from .config import Config, DetectConfig, FeaturesConfig, detector_allowed
 
 # The animal classes of COCO, by the 91-entry indexing torchvision's detection models use
-# (ids 16-25, contiguous). THIS LIST IS THE BOUNDARY OF THE FEATURE, and it is short for a
-# measured reason rather than for lack of time — see the module docstring for the three
-# rows of the table. `person` (id 1) is not here: the detector reaches 42% precision on it
-# against ~100% from the face boxes F152 already stores. `banana`, `sandwich`, `pizza` and
-# the rest of COCO's food (ids 52-61) are not here either: they are objects, and the slice
-# people ask for is a MEAL, which those labels miss at 20% precision.
-#
+# (ids 16-25, contiguous). THIS LIST IS THE BOUNDARY OF THE FEATURE: `person` (id 1) and
+# COCO's food (ids 52-61) are left out for the measured reason the module docstring gives.
 # Adding either back is not a small edit — it is a claim that the measurement changed, and
 # it needs its own table from `scripts/measure_detector.py` first.
 ANIMAL_CLASSES: dict[int, str] = {
@@ -82,18 +73,17 @@ ANIMAL_CLASSES: dict[int, str] = {
 # table holds the class names and not COCO's ids.
 ANIMAL_LABELS = frozenset(ANIMAL_CLASSES.values())
 
-# Boxes weaker than this are not stored at all. It is a floor and NOT the decision
-# threshold: `features.detector_threshold` decides what counts as an animal, and it is
-# chosen from a table (scripts/measure_detector.py). Storing well below it is what makes
-# re-choosing free — the same reason `frame_quality.pet_score` is written whether or not it
-# reached its threshold. Below 0.05 a detector's output is noise by the hundred boxes.
+# Boxes weaker than this are not stored at all. A floor and NOT the decision threshold:
+# `features.detector_threshold` decides what counts as an animal, and storing well below
+# it is what makes re-choosing free — the same reason `frame_quality.pet_score` is written
+# whether or not it reached its threshold. Below 0.05 a detector's output is noise by the
+# hundred boxes.
 STORE_FLOOR = 0.05
 
 # The query that selects the candidates, over the CLASSIFICATION vectors (`clip_embeddings`
-# — the space `naming.clip.*` produced, which is what those rows hold). Several short
-# prompts and the best of them per frame, not one sentence: CLIP does single subjects well
-# and compound phrases badly (F129), and a frame is a candidate if it looks like ANY of
-# these. The list is deliberately about the animals COCO can then confirm.
+# — the space `naming.clip.*` produced). Several short prompts and the best of them per
+# frame, not one sentence: CLIP does single subjects well and compound phrases badly
+# (F129). The list is deliberately about the animals COCO can then confirm.
 ANIMAL_QUERY_PROMPTS: tuple[str, ...] = (
     "a photo of a cat",
     "a photo of a dog",
@@ -108,10 +98,10 @@ ANIMAL_QUERY_PROMPTS: tuple[str, ...] = (
 class Detection:
     """One box the detector returned: what it is, how sure it is, and where.
 
-    The coordinates are the detector's own — pixels of the frame as it was given to the
-    model, `(x1, y1, x2, y2)`. They are stored rather than dropped because there is
-    nowhere else they could come from later, and a slice that wants to crop to the animal
-    (or to say why a frame is in it) has to read them from somewhere.
+    The coordinates are the detector's own — pixels of the frame AS IT WAS GIVEN TO THE
+    MODEL, `(x1, y1, x2, y2)`, not of the file on disk. They are stored rather than
+    dropped because there is nowhere else they could come from later, and a slice that
+    wants to crop to the animal has to read them from somewhere.
     """
 
     label: str
@@ -133,10 +123,9 @@ class DetectorSettings:
     measurement script drives the pipeline's own functions off this object, so a table it
     prints cannot describe a cascade the stage does not have.
 
-    `enabled` is BOTH switches already ANDed together — `detect.enabled` (may a detector be
-    loaded at all, the F145 rule) and `features.detector` (is the cascade wanted). A caller
-    that reads one and forgets the other is exactly the failure F145 was written about, so
-    there is one field and no way to ask for half of it.
+    `enabled` is BOTH switches already ANDed together — `detect.enabled` (may a detector
+    be loaded at all, the F145 rule) and `features.detector` (is the cascade wanted). One
+    field, so a caller cannot read one and forget the other.
     """
 
     enabled: bool
@@ -164,10 +153,10 @@ def query_scores(vectors: dict[int, np.ndarray],
     """file_id -> how much this frame looks like ANY of the animal prompts.
 
     A dot product, because both sides are unit vectors (`junk.pack_embedding` normalizes
-    what it stores and `junk.unit_rows` the prompt rows), so the number IS a cosine and
-    nothing is normalized per frame. A vector of another width is not scored at all rather
-    than scored across two spaces: a number computed that way looks exactly like a real
-    one, which is the single thing a selection signal must never do.
+    what it stores and `junk.unit_rows` the prompt rows), so the number IS a cosine. A
+    vector of another width is not scored at all rather than scored across two spaces: a
+    number computed that way looks exactly like a real one, which is the single thing a
+    selection signal must never do.
     """
     if features.ndim != 2 or not features.size:
         return {}
@@ -180,14 +169,13 @@ def rank_candidates(vectors: dict[int, np.ndarray], features: np.ndarray,
                     depth: int) -> list[int]:
     """The `depth` frames the query likes best, best first — the detector's whole population.
 
-    A RANKING AND NOT A THRESHOLD, and that is what `features.detector_candidates` means:
-    the score orders frames against each other and says nothing in absolute terms (the
-    reason `features.search_limit` is a sample size and not a cutoff, F129). Depth is what
-    the feature costs — 2 000 frames at 83.8 ms is ~3 minutes — and what bounds its recall.
+    A RANKING AND NOT A THRESHOLD, which is what `features.detector_candidates` means: the
+    score orders frames against each other and says nothing in absolute terms (F129).
+    Depth is what the feature costs — 2 000 frames at 83.8 ms is ~3 minutes — and what
+    bounds its recall.
 
     Ties are broken by file_id, so a repeated run selects the same frames: a candidate list
-    that reshuffles between runs cannot be measured, and measuring it is a condition of
-    this feature.
+    that reshuffles between runs cannot be measured.
     """
     scored = query_scores(vectors, features)
     if depth <= 0 or not scored:
@@ -201,9 +189,9 @@ def rank_candidates(vectors: dict[int, np.ndarray], features: np.ndarray,
 def animal_boxes(found: Sequence[Detection], threshold: float) -> list[Detection]:
     """The animal boxes at or above `threshold`, best first — people and food never here.
 
-    The class filter is applied by the detector itself (see `torchvision_detector`), and
-    repeated here as the last word on it: this is the one function the label is read off,
-    and a caller handing it a `person` box must not be able to turn it into an animal.
+    The class filter is applied by the detector itself (see `torchvision_detector`) and
+    repeated here: this is the one function the label is read off, and a caller handing it
+    a `person` box must not be able to turn it into an animal.
     """
     return sorted((d for d in found
                    if d.label in ANIMAL_LABELS and d.score >= threshold),
@@ -220,31 +208,27 @@ def cascade_label(found: Detection | None, examined: bool, verified: bool,
                   previous: str | None, animal: str) -> str | None:
     """The animal label of one frame once the detector has had its say — the whole rule.
 
-    The order of precedence, and each step is a measurement rather than a preference:
+    The order of precedence:
 
     * a frame the detector never examined (below the candidate depth, the toggle off, the
       model unavailable, an error on that one frame) keeps `previous` — the F130 cascade's
-      own answer. A refusal is never read as "no animal": the fallback tier surviving the
-      failure of the expensive one is the rule this whole stage is built on;
+      own answer. A refusal is never read as "no animal";
     * a frame the VLM has already answered about (`verified`) keeps `previous` too. That
       answer is to a question this detector cannot be asked — "is the animal alive, or is
       it a drawing, a plush toy, a print on a shirt" — and a box detector says `cat` to
       every one of those, which is the exact error F130 exists to remove;
-    * otherwise the detector OVERRIDES THE CLIP LABEL, in both directions. An animal found
-      where the score was below `features.pet_threshold` is labelled (this is the 87%
-      recall against 33%), and a frame CLIP called an animal with nothing detected on it
-      loses the label (this is the precision half).
+    * otherwise the detector OVERRIDES THE CLIP LABEL, in both directions: an animal found
+      below `features.pet_threshold` is labelled (the 87% recall against 33%), and a frame
+      CLIP called an animal with nothing detected on it loses the label (the precision
+      half).
 
     `animal` is the label value itself, passed in rather than repeated here: it belongs to
-    `junk.PET_CLASS`, the column's one meaning (F122), and two spellings of one fact is how
-    a consumer ends up with a slice that misses half its frames.
+    `junk.PET_CLASS`, the column's one meaning (F122).
 
-    This is the rule the STAGE writes with. The readers of the animal slice derive their
-    own since F137 (`sorter.animal_auto_sql`, over `pet_score`/`pet_vlm`, so that a
-    threshold moved in the config moves the slice without a run), and F160 wrote this tier
-    into it — with the same order, the boxes re-read at the threshold in force now, and a
-    case table run through both spellings so they cannot drift apart again. See the junk
-    module docstring.
+    TRAP: this is the rule the STAGE writes with, and the readers of the animal slice
+    derive their own (`sorter.animal_auto_sql`, F137/F160, so a threshold moved in the
+    config moves the slice without a run). The two spellings are held together by a case
+    table run through both.
     """
     if not examined or verified:
         return previous
@@ -254,10 +238,9 @@ def cascade_label(found: Detection | None, examined: bool, verified: bool,
 def pack_boxes(found: Sequence[Detection]) -> str:
     """The boxes of one frame as the stored JSON: `[[label, score, x1, y1, x2, y2], ...]`.
 
-    A list of lists and not a list of objects: this column is read by a slice query and by
-    a human debugging one, and the short form keeps the row small (a frame with a crowd of
-    animals is a few hundred bytes). Rounded to what a detector's numbers actually mean —
-    three decimals of a score and one of a pixel — so the same frame produces the same text.
+    A list of lists and not a list of objects: the short form keeps the row small (a frame
+    with a crowd of animals is a few hundred bytes). Rounded to what a detector's numbers
+    mean, so the same frame produces the same text.
     """
     return json.dumps([[d.label, round(float(d.score), 4),
                         *(round(float(v), 1) for v in d.box)]
@@ -267,10 +250,9 @@ def pack_boxes(found: Sequence[Detection]) -> str:
 def unpack_boxes(text: str | None) -> list[Detection]:
     """The stored JSON back into boxes; anything unreadable is no boxes at all.
 
-    Lenient on purpose. This column is the incrementality marker's payload, and a row that
-    cannot be parsed must cost the frame its stored answer (it is examined again next run),
-    never the stage — the same "a broken row is not a reason to fail" rule
-    `search.search` applies to a truncated vector.
+    Lenient on purpose: this column is the incrementality marker's payload, so a row that
+    cannot be parsed costs the frame its stored answer (it is examined again next run) and
+    never the stage.
     """
     try:
         rows = json.loads(text) if text else []
@@ -299,16 +281,12 @@ def torchvision_detector(model_name: str,
     No new dependency — torchvision is installed for the CLIP side already, and only the
     COCO weights are downloaded. The model is resolved BY NAME through
     `torchvision.models.detection`, so `detect.model` can point at another checkpoint of
-    the same family without a code change, and the weights come from the matching
-    `*_Weights.DEFAULT` enum rather than from a hard-coded URL.
+    the same family without a code change.
 
-    The frame is taken from the shared preview cache (`imaging.decode_rgb_preview`), like
-    every other model in this pipeline: a 1536px preview is what the detector sees, decoded
-    once for the whole run and shared with the CLIP, OCR and VLM passes (F67).
-
-    Boxes below `floor` are dropped here rather than stored: at 0.05 a detector is already
-    returning noise by the hundred, and the threshold that DECIDES is applied later, over
-    the stored scores (see `animal_boxes`).
+    The frame is the 1536 px preview every other model in this pipeline sees, decoded once
+    for the whole run and shared with the CLIP, OCR and VLM passes (F67). Boxes below
+    `floor` never reach the caller; the threshold that DECIDES is applied later, over the
+    stored scores (see `animal_boxes`).
     """
     import torch
     from torchvision.models import detection as tv_detection
@@ -324,13 +302,11 @@ def torchvision_detector(model_name: str,
     model = builder(weights=weights).to(device)
     model.eval()
 
-    # F220: the weights and the frame have to be on ONE device, and after a retreat that
-    # is a different device than the one this function started on — so the frame is placed
-    # inside the call, on whatever `run` is handed, rather than on a `device` captured
-    # here. Wrapped because this is a cascade over thousands of candidates: MPS has no
-    # kernel for everything a torchvision detection model asks of it and says so at the
-    # first frame, and a pass that dies at frame 900 loses the 899 before it. Never fires
-    # on CUDA (see accel.CpuFallback).
+    # F220 TRAP: the weights and the frame have to be on ONE device, and after a retreat
+    # that is not the device this function started on — so the frame is placed inside the
+    # call, on whatever `run` is handed, and never on a `device` captured here. Wrapped at
+    # all because this is a cascade over thousands of candidates and a pass that dies at
+    # frame 900 loses the 899 before it. Never fires on CUDA (see accel.CpuFallback).
     fallback = accel.CpuFallback(device, lambda dev: model.to(dev),
                                  what="detect: the torchvision detector")
 
@@ -358,10 +334,10 @@ def torchvision_detector(model_name: str,
 def _weights_enum_name(model_name: str) -> str:  # pragma: no cover — ML
     """`fasterrcnn_mobilenet_v3_large_fpn` -> `FasterRCNN_MobileNet_V3_Large_FPN_Weights`.
 
-    torchvision spells its weight enums in a case its model functions do not, and there is
-    no lookup from one to the other — so the mapping is written out for the models this
-    feature was measured with, and anything else falls back to pretrained=None (which is a
-    detector that finds nothing, loudly, rather than a wrong checkpoint quietly).
+    torchvision spells its weight enums in a case its model functions do not and offers no
+    lookup between them, so the mapping is written out for the models this feature was
+    measured with. Anything else falls back to pretrained=None — a detector that finds
+    nothing, loudly, rather than a wrong checkpoint quietly.
     """
     known = {
         "fasterrcnn_mobilenet_v3_large_fpn":
@@ -379,8 +355,7 @@ def _animals_from(result: Any, floor: float) -> list[Detection]:  # pragma: no c
 
     The class filter is applied HERE, at the model's edge, and not only at the label rule:
     a `person` box that never enters the process cannot be stored, cannot be counted and
-    cannot be turned into an animal by a later reader. That is the boundary the measurement
-    drew, and it is cheaper to keep at one point than to remember at three.
+    cannot be turned into an animal by a later reader.
     """
     labels = result["labels"].tolist()
     scores = result["scores"].tolist()

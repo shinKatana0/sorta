@@ -543,6 +543,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing, and a request sent past the interface meets the same 409.
 
 ### Changed
+- **The last five modules with dense prose are cut to what they have to say** (F231f).
+  The tail of the audit: `config`, `restore`, `detect`, `install` and `accel`, which
+  waves A–C and F231d had reached only in part. **1 557 → 1 382 lines of prose (−11%)**
+  — `config.py` 817 → 766, `restore.py` 300 → 248, `detect.py` 200 → 175, `install.py`
+  109 → 91, `accel.py` 131 → 102, and `tests/prose_budgets.txt` carries the new numbers
+  so none of them can grow back without a diff that says why. Every measurement stayed
+  where it was: the 320-frame pet cutoffs and the 500-frame detector rows, the two blur
+  tables and the 22 095-photograph megapixel distribution, the eyelid geometry, the
+  26 137 frames behind the landmark switch, the VLM thread sweep, the 7-11 verdicts of
+  300 that F105's attention kernel moved, the 81 orphaned `_restored` files, the 83.8 ms
+  a detected frame costs. What went is the retelling of the code, the F185 defect
+  recounted three times on the way to the code that fixes it, the F222 story spread over
+  a comment block and two docstrings, the accelerator rules restated once per rung, and
+  the detector's boundary table printed in `config.py` as well as in the module that owns
+  it. The cut is smaller than the rest of the audit's, and deliberately: most of what
+  `config.py` holds is a measurement table or the meaning of a key somebody has to be
+  able to look up, and the two small modules explain why an install marker and an
+  accelerator order were chosen the way they were — which is the kind of comment the rule
+  exists to keep.
 - **The gate uses the machine it runs on: 30 minutes → 6 min 45 s** (F219). Not a
   product change — a tooling one, written down because the price of `scripts/check.py`
   decides how many features a day get through the process, and it had quietly become the

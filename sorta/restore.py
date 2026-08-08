@@ -3,12 +3,12 @@
 Two measurements decided this feature, on eight and then six frames from the 10-90
 sharpness band (blurred but not hopeless — below 10 there is nothing left to restore).
 The first run compared the original, an unsharp mask and `swin2SR-classical-sr-x2` and
-the mask won; that run was set up wrong, and the backlog says why — "classical" is
-trained on clean bicubic downscaling, a degradation this archive does not contain. The
-second run compared the original, the mask, `swin2SR-realworld-sr-x4` and model+mask,
-and the real-world model won outright. The price is ~400 MB of weights and ~1 second per
-frame on the card this was measured on: nothing for an action a person asks for, on one
-frame they are looking at.
+the mask won; that run was set up wrong — "classical" is trained on clean bicubic
+downscaling, a degradation this archive does not contain. The second run compared the
+original, the mask, `swin2SR-realworld-sr-x4` and model+mask, and the real-world model
+won outright. The price is ~400 MB of weights and ~1 second per frame on the card this
+was measured on: nothing for an action a person asks for, on one frame they are looking
+at.
 
 THE MODEL DOES NOT BRING BACK WHAT WAS LOST — IT DRAWS SOMETHING PLAUSIBLE. For an
 archive that is more dangerous than the blur: a smeared frame is honestly smeared, while
@@ -18,20 +18,17 @@ from that:
 * the original is never touched (principle #5) — the result is a NEW file;
 * the copy is marked in its NAME (`…_restored.jpg`) and in the interface. Not "your
   photograph got better" but "here is a processed copy";
-* there is no bulk anything. The button acts on ONE frame a person opened and chose;
-  there is no stage, no CLI command and no route that takes a list. The addressees are a
-  handful of frames, and batch processing would turn an archive into a collection of
-  plausible forgeries.
+* there is no bulk anything: no stage, no CLI command and no route that takes a list.
+  Batch processing would turn an archive into a collection of plausible forgeries.
 
 The weights are loaded ON FIRST USE and kept for the life of the process
-(`shared_upscaler`, the same arrangement as `naming.shared_vlm`) — a 400 MB download at
+(`shared_upscaler`, the arrangement `naming.shared_vlm` has) — a 400 MB download at
 server start, for a button most sessions never press, is not a trade anybody asked for.
-A load that fails is not cached: it propagates to the caller, which turns it into a
-reason a person can read. Offline is an ordinary state for this product (the weights come
-from the network), so "the model is not there" has to be an answer, never an empty result.
+Offline is an ordinary state for this product, so "the model is not there" has to be an
+answer, never an empty result.
 
-F169: THE CEILING ON THE WAY IN, AND WHY IT IS SAID OUT LOUD
-------------------------------------------------------------
+F169: THE CEILING ON THE WAY IN
+-------------------------------
 The model is x4 and the transformer computes at the UPSCALED resolution, so a full 4000
 px frame would be 16 000 px on the way through and fit on no card here. The frame is
 therefore scaled to `features.restore_max_edge` first, and for a big frame that is a
@@ -41,48 +38,30 @@ trade nobody was told about:
 
 The same size out — through a quarter and back. For a SMALL frame (a downloaded picture,
 an old scan) the ceiling never fires and the gain is pure, which is the case F149 was
-built for. For a full-sized one the true detail of the original is dropped and the model
-draws something plausible in its place, and the copy can look sharper while holding less
-of what was there.
-
-Two things follow, and they are the whole of this module's F169 change:
-
-* the ceiling is a SETTING (`features.restore_max_edge`) and not a constant in the code,
-  because it is the single number that decides what a person gets back;
-* every answer states what the model was actually shown (`source_edge` / `input_edge`,
-  and `rebuilt` from the two). A copy rebuilt from a reduced frame is not a silent
-  outcome: the interface says so beside the frame, in the same breath as "done".
+built for. For a full-sized one the true detail is dropped and the model draws something
+plausible in its place. Hence the ceiling is a SETTING and not a constant — it is the
+single number that decides what a person gets back — and every answer states what the
+model was actually shown (`source_edge` / `input_edge`, and `rebuilt` from the two).
 
 What to DO about a frame above the ceiling — tile it in native resolution, supersample
 back down, or refuse the action altogether — is not decided here. It is decided by the
 measurement `scripts/measure_restore.py` prints, on the three populations separately,
-with a human looking at blind pairs. Guessing that was the mistake F149's first probe
-already made once.
+with a human looking at blind pairs.
 
 F185: THE FILE APPEARS AFTER THE ROW, NOT BEFORE IT
 ---------------------------------------------------
-The copy used to be written under its final name and the row inserted by a SEPARATE
-call, so an insert that failed left a file the index had never heard of. That is not a
-cosmetic leak: the next `index` run reads such a file as a NEW photograph, and the
-collection gains a near-duplicate nobody made. It happened for real — 81 `_restored`
-files on the owner's archive, none of them in the index.
-
-So the copy is now written to a staging name beside its destination, the row is written
-while the file is still called that, and only then is it renamed into place (a rename
-inside one directory is atomic). Every way out of that sequence that is not "the row is
-in" takes the staging file with it. The other order — write, insert, delete on failure —
+The copy is written to a staging name beside its destination, the row is written while
+the file is still called that, and only then is it renamed into place (a rename inside
+one directory is atomic). Every way out of that sequence that is not "the row is in"
+takes the staging file with it. The other order — write, insert, delete on failure —
 would also work; this one is preferred because it never deletes anything that could
-already have been seen, and because the failure it guards against is the one that leaves
-rubbish rather than the one that leaves nothing.
-
-The failure itself is a CODE like all the others (`ERROR_DATABASE_BUSY`). SQLite lets one
-writer in at a time and an index stage can be running from the terminal, so a busy index
-is an ordinary state of this program, not a defect — and the caller was getting it as a
-stack trace out of a request handler.
+already have been seen. The leak it closed was real: 81 `_restored` files on the owner's
+archive that the index had never heard of, each of which the next `index` run reads as a
+NEW photograph.
 
 A caller that KEEPS the copy has one entry point for all of that: `restore_and_record`.
 `restore_frame` on its own still writes a file and says nothing about the index, which is
-what the measurement scripts want — and is exactly how the 80 orphans before it got there.
+what the measurement scripts want — and is exactly how those orphans got there.
 """
 from __future__ import annotations
 
@@ -106,31 +85,22 @@ _log = logging.getLogger(__name__)
 DEFAULT_RESTORE_MODEL = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
 
 # The default of `features.restore_max_edge` — the longer side the frame is scaled to
-# BEFORE the model. A COMPROMISE, not an optimum: the model is x4, so a full 4000 px frame
-# would come out at 16000 px and eat memory on the way there (the transformer works on the
-# upscaled resolution). 1024 -> 4096 is a frame nobody's screen is short of, computed in
-# about a second.
-#
-# It lives HERE only as the default of the setting (the shape `DEFAULT_RESTORE_MODEL` has
-# above), because a threshold in the code is a threshold nobody can change: this one
-# decides, alone, whether a person gets their own detail back or a plausible redrawing of
-# it. Raising it costs memory as the SQUARE of the number, on the x4 output — see the
-# table `scripts/measure_restore.py` prints before touching it.
+# BEFORE the model. A COMPROMISE, not an optimum: 1024 -> 4096 is a frame nobody's screen
+# is short of, computed in about a second. Raising it costs memory as the SQUARE of the
+# number, on the x4 output — see the table `scripts/measure_restore.py` prints first.
 DEFAULT_RESTORE_MAX_EDGE = 1024
 
 # What the copy is called and how it is written. JPEG regardless of what the original was
-# (the model's output is RGB pixels, and a HEIC/RAW source has nothing left to preserve
-# by the time it gets here) — the name says `.jpg` so what a person sees and what is on
-# disk agree. 95 is visually lossless at this size and keeps the copy comparable to the
-# original in the same viewer.
+# (the model's output is RGB pixels, and a HEIC/RAW source has nothing left to preserve by
+# the time it gets here). 95 is visually lossless at this size and keeps the copy
+# comparable to the original in the same viewer.
 RESTORED_SUFFIX = "_restored"
 JPEG_QUALITY = 95
 
-# F185: what the copy is called while it is being written and before the index knows
-# about it. It ends in something that is plainly not a photograph, so a file left behind
-# by a killed process reads as debris rather than as a frame — and, more concretely, so
-# `restored_path`'s "never over an existing file" scan cannot mistake one for a copy that
-# is already there.
+# F185: what the copy is called while it is being written and before the index knows about
+# it. Plainly not a photograph, so a file left behind by a killed process reads as debris —
+# and so `restored_path`'s "never over an existing file" scan cannot mistake one for a copy
+# that is already there.
 STAGING_SUFFIX = ".part"
 
 # The reasons, as codes rather than sentences: the interface translates them (three
@@ -139,10 +109,10 @@ STAGING_SUFFIX = ".part"
 ERROR_MODEL_UNAVAILABLE = "model_unavailable"
 ERROR_DECODE_FAILED = "decode_failed"
 ERROR_WRITE_FAILED = "write_failed"
-# F185. Deliberately `_BUSY` and not `_FAILED`: this one is TEMPORARY. Nothing is broken —
-# an index stage holds the single writer SQLite allows and it will let go, so the same
-# press works a minute later. The interface reads the difference off the name to decide
-# whether offering "try again" is honest, which a shared `write_failed` would hide.
+# F185. Deliberately `_BUSY` and not `_FAILED`: this one is TEMPORARY. An index stage
+# holds the single writer SQLite allows and it will let go, so the same press works a
+# minute later, and the interface reads the difference off the name to decide whether
+# offering "try again" is honest.
 ERROR_DATABASE_BUSY = "database_busy"
 
 # SQLite's primary result codes for "somebody else is writing" (SQLITE_BUSY) and "the
@@ -165,17 +135,15 @@ class RestoreResult:
     path: Path | None = None
     error: str | None = None
     detail: str | None = None
-    # F169: what the model was actually shown. `source_edge` is the longer side of the
-    # frame as it lies on disk, `input_edge` the longer side of what went into the model —
-    # equal whenever the ceiling did not fire, which is the ordinary case this action was
-    # built for. Both are carried on the result rather than logged, because the caller has
-    # to be able to SAY it: a copy silently rebuilt from a reduced frame is exactly the
-    # trade a person did not agree to.
+    # F169: what the model was actually shown — the longer side of the frame on disk and
+    # of what went into the model, equal whenever the ceiling did not fire. Carried on the
+    # result rather than logged, because the caller has to be able to SAY it: a copy
+    # silently rebuilt from a reduced frame is the trade a person did not agree to.
     source_edge: int = 0
     input_edge: int = 0
-    # F185: the `files.id` of the row the copy was indexed under, when the caller asked
-    # for the copy to be indexed at all (`restore_and_record`). 0 otherwise — a plain
-    # `restore_frame` writes a file and makes no claim about the index.
+    # F185: the `files.id` of the row the copy was indexed under, when the caller asked for
+    # it to be indexed at all (`restore_and_record`). 0 otherwise — a plain `restore_frame`
+    # makes no claim about the index.
     file_id: int = 0
 
     @property
@@ -186,10 +154,9 @@ class RestoreResult:
     def rebuilt(self) -> bool:
         """True when the copy came out of a REDUCED frame rather than the original one.
 
-        Not "the copy is worse" — nobody has measured that yet, and the measurement is a
-        person looking at blind pairs (`scripts/measure_restore.py`). It is the narrower
-        fact the interface owes: the detail of the original was dropped on the way in and
-        what replaced it was drawn.
+        Not "the copy is worse" — nobody has measured that yet. It is the narrower fact
+        the interface owes: the detail of the original was dropped on the way in and what
+        replaced it was drawn.
         """
         return self.input_edge > 0 and self.source_edge > self.input_edge
 
@@ -202,18 +169,16 @@ _UPSCALERS: dict[str, UpscaleFn] = {}
 def load_swin2sr(model_name: str) -> UpscaleFn:  # pragma: no cover — ML, smoke test
     """Load Swin2SR through transformers -> upscale(image) -> image.
 
-    Lazy-import, like every other model in this project (`naming.load_qwen`): the module
-    imports without transformers installed, and the failure happens HERE, where the
-    caller is already wrapping it into a reason. `transformers` lives in the `vlm` extra,
-    so on a base install this raises ImportError and the interface says so.
+    Lazy-import, like every other model in this project: the module imports without
+    transformers installed, and the failure happens HERE, where the caller is already
+    wrapping it into a reason. `transformers` lives in the `vlm` extra, so on a base
+    install this raises ImportError and the interface says so.
 
     F220: the device comes from `accel` (CUDA -> MPS -> CPU) and is NOT wrapped in
-    `accel.CpuFallback`, unlike the batch stages. This is one frame per press of a button,
+    `accel.CpuFallback`, unlike the batch stages. This is one frame per press of a button
     with a person waiting on it, and a Swin2SR pass over a full-size frame on the CPU is
-    minutes rather than the seconds a card takes. A refusal here means the model has no
-    Metal kernel for this work — that is an answer the caller already turns into a reason
-    a person can read (nothing is cached on failure, the next press retries), and it is a
-    better one than a button that silently starts taking four minutes.
+    minutes rather than seconds — a reason a person can read is a better answer than a
+    button that silently starts taking four of them.
     """
     import numpy as np
     import torch
@@ -239,10 +204,9 @@ def shared_upscaler(model_name: str,
                     loader: Callable[[str], UpscaleFn] | None = None) -> UpscaleFn:
     """The single process-wide upscaler of `model_name`, built on first use.
 
-    Cached by model name so the second press of the button costs no load. A build FAILURE
-    is deliberately not cached — it propagates to the caller, which decides how to
-    degrade, and a machine that has just been given the weights must not have to restart
-    the server to use them.
+    A build FAILURE is deliberately not cached — it propagates to the caller, and a
+    machine that has just been given the weights must not have to restart the server to
+    use them.
     """
     upscale = _UPSCALERS.get(model_name)
     if upscale is None:
@@ -267,13 +231,11 @@ def reset_upscalers() -> None:
 def restored_path(src: Path) -> Path:
     """Where the copy of `src` goes — beside it, and never over an existing file.
 
-    Beside the original rather than in a folder of restored frames, and that choice is
-    the one `config.example.yaml` records: the copy is an ordinary member of the
-    collection (it is indexed, it goes into the layout, it can be gathered into an
-    album), so a service folder would be a second place to look for a photograph. The
-    `_1`, `_2` fallback is the sorter's rule (`sorter._resolve_dst`) for the same reason
-    it has one — nothing this program writes may land on top of something that is
-    already there.
+    Beside the original rather than in a folder of restored frames: the copy is an
+    ordinary member of the collection (indexed, in the layout, gatherable into an album),
+    so a service folder would be a second place to look for a photograph. The `_1`, `_2`
+    fallback is the sorter's rule (`sorter._resolve_dst`) — nothing this program writes
+    may land on top of something that is already there.
     """
     base = src.with_name(f"{src.stem}{RESTORED_SUFFIX}.jpg")
     candidate = base
@@ -287,9 +249,9 @@ def restored_path(src: Path) -> Path:
 def _staging_path(dest: Path) -> Path:
     """A unique, obviously-temporary neighbour of `dest` for the copy to be written into.
 
-    In the SAME directory, and that is the whole point: a rename within one directory is
-    a single atomic operation, so the copy never exists under its real name in a
-    half-written state and never has to be copied across a device boundary to get there.
+    In the SAME directory, and that is the whole point: a rename within one directory is a
+    single atomic operation, so the copy never exists under its real name half-written and
+    never crosses a device boundary to get there.
     """
     fd, name = tempfile.mkstemp(dir=str(dest.parent), prefix=f".{dest.stem}.",
                                 suffix=STAGING_SUFFIX)
@@ -300,9 +262,9 @@ def _staging_path(dest: Path) -> Path:
 def _discard(staged: Path) -> None:
     """Remove the staging file if it is still there — the exit route of every failure.
 
-    Silent about its own failure on purpose: it is called while another problem is being
-    reported, and a file that could not be removed must not replace the reason a person
-    is waiting for. It is a `.part` next to the frame either way, not a photograph.
+    Quiet about its own failure on purpose: it is called while another problem is being
+    reported, and a file that could not be removed must not replace the reason a person is
+    waiting for. It is a `.part` next to the frame either way, not a photograph.
     """
     try:
         staged.unlink(missing_ok=True)
@@ -327,10 +289,9 @@ def _is_database_busy(exc: sqlite3.OperationalError) -> bool:
 def source_edge(src: Path) -> int:
     """The longer side of the frame AS IT LIES ON DISK; 0 if the file will not open.
 
-    Read off the header (`Image.open` does not decode the pixels), because the decode
-    below is already scaled to the ceiling and so cannot say what was given up on the way
-    in. Orientation is not consulted on purpose: a rotation swaps the two sides, it does
-    not change which of them is longer.
+    Read off the header, because the decode below is already scaled to the ceiling and so
+    cannot say what was given up on the way in. Orientation is not consulted on purpose: a
+    rotation swaps the two sides, it does not change which of them is longer.
     """
     try:
         with Image.open(src) as im:
@@ -346,26 +307,23 @@ def restore_frame(src: Path, model_name: str, *,
     """Process ONE frame and write the copy; the original is never opened for writing.
 
     The decode comes FIRST on purpose: a frame that will not read costs no 400 MB model
-    load, and a person who pointed at a broken file gets the honest answer instead of a
-    minute of waiting followed by the same one. Everything that can fail — a missing
-    package, weights that are not on disk with no network to fetch them from, a decode,
-    the write itself — becomes a `RestoreResult.error` rather than an exception: this is
-    called from a request handler, and a stack trace is not a reason a person can act on.
+    load. Everything that can fail — a missing package, weights that are not on disk with
+    no network to fetch them from, a decode, the write itself — becomes a
+    `RestoreResult.error` rather than an exception: this is called from a request handler,
+    and a stack trace is not a reason a person can act on.
 
-    `max_edge` is `features.restore_max_edge` and arrives from the caller (F169). A frame
-    at or below it is handed to the model UNTOUCHED — that is the case where this action
-    is a pure gain and nothing here narrows it. A frame above it is still processed, and
-    the result says it was rebuilt from a reduced copy of itself; what else should happen
-    to such a frame is the measurement's decision, not this function's.
+    `max_edge` is `features.restore_max_edge` (F169). A frame at or below it is handed to
+    the model UNTOUCHED; a frame above it is still processed, and the result says it was
+    rebuilt from a reduced copy of itself.
 
-    F185: `record` indexes the copy, and is called while the copy is still under its
-    STAGING name — the file takes its real name only once that call has returned. If it
-    raises, the staging file goes and nothing is left on disk for the next `index` run to
-    read as a photograph of its own. A busy index is answered like every other
-    foreseeable state, with a code (`ERROR_DATABASE_BUSY`); anything else the recorder
-    raises is a genuine defect and propagates, cleaned up but not swallowed. Without
-    `record` this writes a file and says nothing about the index — which is what the
-    measurement scripts want and NOT what a caller keeping the copy should do.
+    F185: `record` indexes the copy and is called while the copy is still under its
+    STAGING name — the file takes its real name only once that call has returned, so a
+    recorder that raises leaves nothing on disk for the next `index` run to read as a
+    photograph of its own. A busy index is answered with a code
+    (`ERROR_DATABASE_BUSY`); anything else the recorder raises is a genuine defect and
+    propagates, cleaned up but not swallowed. Without `record` this writes a file and says
+    nothing about the index — what the measurement scripts want, and NOT what a caller
+    keeping the copy should do.
     """
     original_edge = source_edge(src)
     image = imaging.decode_rgb(src, max_edge, apply_orientation=True)
@@ -413,8 +371,7 @@ def restore_frame(src: Path, model_name: str, *,
                                  detail=f"{type(exc).__name__}: {exc}")
     finally:
         # Every way out of the block above other than the rename — a reason returned, an
-        # exception on its way to the caller — leaves the archive as it was found. Once
-        # the rename has happened there is nothing here to remove.
+        # exception on its way to the caller — leaves the archive as it was found.
         _discard(staged)
     if original_edge > input_edge:
         _log.info("restore: %s is %d px and the ceiling is %d — the copy is rebuilt from "
@@ -425,9 +382,8 @@ def restore_frame(src: Path, model_name: str, *,
 
 
 # --- the copy as a member of the collection -----------------------------------------
-# The question this feature had to answer: once the copy "appears right there and can be
-# kept", it stops being an export and becomes a candidate for the archive. Decided by the
-# user on 2026-08-02, and every consequence of that is closed here rather than "later":
+# Decided by the user on 2026-08-02: once the copy "appears right there and can be kept",
+# it stops being an export and becomes a candidate for the archive. Three consequences:
 #
 # 1. THE COPY IS INDEXED, like any other file — so it goes into the layout, into the
 #    slices, into albums. "Kept" that meant only "the file was not deleted" would leave a
@@ -438,13 +394,11 @@ def restore_frame(src: Path, model_name: str, *,
 #    leaves derived files out of the groups. Without that, the next `phash` run would put
 #    every restored frame back in front of the person who made it, forever.
 #
-# The row is written HERE and not by the indexer, and the reason is the capture date. The
-# copy is not SCANNED, it is DERIVED: it carries the same photograph as its source, and
-# reading its metadata off a re-encoded JPEG (which has none) would date it by mtime,
-# i.e. today — and file it under this year's folder instead of the year in the picture.
-# So the copy inherits the facts of the frame from the row of its source, and every
-# downstream stage (`geo`, `junk`, `faces`) computes its own tables for it on the next
-# run, exactly as it would for any other file.
+# The row is written HERE and not by the indexer because of the capture date: the copy is
+# DERIVED and not scanned, and reading the metadata of a re-encoded JPEG (which has none)
+# would date it by mtime — this year's folder instead of the year in the picture. So it
+# inherits the facts of the frame from the row of its source, and every downstream stage
+# computes its own tables for it on the next run.
 
 _CLONE_COLUMNS = (
     "taken_at", "taken_at_source", "taken_at_confidence", "gps_lat", "gps_lon",
@@ -455,8 +409,8 @@ _CLONE_COLUMNS = (
 def _dimensions(path: Path) -> tuple[int, int]:
     """(width, height) of the written copy; (0, 0) if it will not open.
 
-    Read off the file rather than off the PIL image in memory, for the same reason the
-    hash is: what the index records has to be what is on disk.
+    Read off the file rather than off the PIL image in memory, like the hash: what the
+    index records has to be what is on disk.
     """
     try:
         with Image.open(path) as im:
@@ -471,18 +425,16 @@ def record_restored(conn: sqlite3.Connection, source_id: int, dest: Path, *,
     """Index the copy and record where it came from. Returns the new `files.id`.
 
     One transaction: a file row without its `restored_files` row would be a derived frame
-    nothing knows is derived, which is exactly the near-duplicate pair this feature exists
-    not to create. `orientation` is NULL because the decode already applied it, and
-    `phash` is NULL because the next run computes it (and never groups it — see `dedup`).
+    nothing knows is derived, which is the near-duplicate pair this feature exists not to
+    create. `orientation` is NULL because the decode already applied it, and `phash`
+    because the next run computes it (and never groups it — see `dedup`). The hash IS
+    computed here: the exact-duplicate pass and the sorter's copy verification both read
+    it, and a row without one is a file those two quietly skip.
 
-    The hash IS computed here, on a file of a few megabytes: it is what the exact-duplicate
-    pass and the sorter's copy verification both read, and a row without one is a file
-    those two quietly skip.
-
-    F185: `measured_from` is where the bytes are RIGHT NOW — the staging file the copy is
-    written to before the index has heard of it. `dest` is what the row says either way:
-    that is the name the file will carry, and the rename that puts it there preserves its
-    size, its mtime and every byte the hash was taken over.
+    F185: `measured_from` is where the bytes are RIGHT NOW — the staging file. `dest` is
+    what the row says either way: that is the name the file will carry, and the rename
+    that puts it there preserves its size, its mtime and every byte the hash was taken
+    over.
     """
     stamp = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
     written = Path(measured_from) if measured_from is not None else Path(dest)
@@ -519,16 +471,13 @@ def restore_and_record(conn: sqlite3.Connection, source_id: int, src: Path,
                        now: str | None = None) -> RestoreResult:
     """F185: the whole action — process the frame, index the copy, put it in place.
 
-    THE ONE ENTRY POINT FOR A CALLER THAT KEEPS THE COPY. The two halves used to be two
-    calls, and a caller that made the first and lost the second left a file in somebody's
-    archive that the index had never heard of; the next run then read it as a new
-    photograph. Joined here so the order cannot be got wrong from outside: the row goes in
-    while the copy is still staged, and the copy takes its name only afterwards.
+    THE ONE ENTRY POINT FOR A CALLER THAT KEEPS THE COPY: the two halves were two calls,
+    and a caller that made the first and lost the second left an orphan in the archive.
+    Joined here so the order cannot be got wrong from outside.
 
     Retries are NOT done here, on purpose. Waiting for the index to free up inside a
     request handler means holding a connection and a thread for as long as an index stage
-    takes; whether to ask again — and whether to say so first — belongs to whoever pressed
-    the button.
+    takes; whether to ask again belongs to whoever pressed the button.
     """
     def record(dest: Path, staged: Path) -> int:
         return record_restored(conn, source_id, dest, model=model_name, now=now,
@@ -541,9 +490,8 @@ def existing_copy(conn: sqlite3.Connection, source_id: int,
                   model: str) -> tuple[int, str] | None:
     """(file_id, path) of the copy this source already has from this model, or None.
 
-    Pressing the button twice must not make a second copy — repeating the same work on
-    the same frame with the same model has the same answer, and two identical redraws
-    beside one photograph is the mess this looks up to avoid.
+    Pressing the button twice must not make a second copy: two identical redraws beside
+    one photograph is the mess this lookup avoids.
     """
     row = conn.execute(
         """SELECT f.id, f.path FROM restored_files r JOIN files f ON f.id = r.file_id
