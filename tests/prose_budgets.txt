@@ -7,7 +7,7 @@
 sorta/__init__.py     1
 sorta/accel.py        102
 sorta/cli.py          391
-sorta/config.py       817
+sorta/config.py       765
 sorta/dates.py        17
 sorta/db/__init__.py  97
 sorta/dedup.py        191
