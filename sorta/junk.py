@@ -1539,18 +1539,12 @@ def insightface_eye_landmarks() -> EyeLandmarkFn:  # pragma: no cover — ML
     return landmark
 
 
-# F186: the frame-quality prompt is gone, and with it the last of the three questions it
-# once carried. F122 measured the "accidental" one out (5% precision, and the frames the
-# model called DELIBERATE held twice that rate), F177 dropped "is there a subject" by
-# inspection (212 subjectless frames out of 6 111, all of them ordinary photographs), and
-# the eyes were the one left. F179 answered them without a model at all — the spread of an
-# eyelid contour the faces stage already fits — at 62% precision over 48% recall against
-# the model's 60% over 9% on the same 249 hand labels. The replacement shipped and the
-# question stayed behind it; this is where it is taken out.
-#
-# The three ANSWER COLUMNS stay and stay NULL. That is the same decision F122 and F177
-# already made for the other two: NULL is exactly what "not asked" means in that table,
-# and a documented empty column is cheaper than a rebuild of it.
+# F186: the frame-quality prompt is gone and so are all three of its questions. F122
+# measured the "accidental" one out (5% precision, and the frames the model called
+# DELIBERATE held twice that rate), F177 dropped "is there a subject" by inspection (212
+# subjectless frames of 6 111, all ordinary photographs), and F179 answered the eyes off
+# eyelid geometry instead. The three ANSWER COLUMNS stay and stay NULL: that is what "not
+# asked" means in that table, and a documented empty column is cheaper than a rebuild.
 _NON_WORD_RE = re.compile(r"[^a-z]+")
 
 
@@ -1559,25 +1553,16 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
                     max_new_tokens: int) -> Callable[[str], str]:
     """One prompt over one frame, over an ALREADY LOADED runtime (naming.shared_vlm).
 
-    The decode goes through the shared preview cache, Unicode/HEIC-safe, exactly as
-    everywhere else here; a frame that will not decode gets an empty answer, which parses
-    to "not asked".
-
     Shared by the two questions this stage still asks a frame (the pet check, F130; the
     rescue, F140) because they differ in the prompt and the token budget and in nothing
-    else — a second copy of the decode would be a second place for the cache key to go
-    wrong.
+    else. A frame that will not decode gets an empty answer, which both parsers read as
+    "not asked".
 
-    F206: and it comes back with its HALVES when the runtime has them, exactly like
-    `vlm_classifier_from` above. This used to be "deliberately the plain, serial path",
-    on the argument that these populations are a candidate list rather than a whole
-    collection and the pipeline would cost more reading than it saves seconds. The
-    argument was measured out of date by the run of 2026-08-05: 4 281 frames through
-    these two questions at 0.42 frames/s against the deep tier's pipelined 1.4, i.e.
-    116 minutes a run. The halves are what `_vlm_labels` needs to overlap the CPU half
-    of one frame with the GPU half of the previous one, and it is the same machinery,
-    the same window and the same order guarantee the deep tier has run on since F101 —
-    a question whose prompt, token budget and input size are untouched by any of it.
+    F206: it comes back with its HALVES when the runtime has them, like
+    `vlm_classifier_from` above, so `_vlm_labels` can overlap these two questions the way
+    it overlaps the tier's. This used to be the serial path on the argument that a
+    candidate list is too short to be worth pipelining; the run of 2026-08-05 measured
+    that out of date at 0.42 frames/s against the tier's 1.4.
     """
     def decode(path: str) -> Image.Image | None:
         try:
@@ -1599,9 +1584,8 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
 
     def prepare(path: str) -> PreparedFrame:
         img = decode(path)
-        # An empty answer IS the answer here (both parsers read it as "not asked"), so a
-        # frame that never reaches the model carries it through the pipeline as a ready
-        # label — the GPU half then stays free of file-system branches, as in the tier.
+        # An empty answer IS the answer, so a frame that never reaches the model carries it
+        # through as a ready label and the GPU half stays free of file-system branches.
         if img is None:
             return PreparedFrame(label="")
         return PreparedFrame(inputs=split.prepare([img], prompt))
@@ -1617,19 +1601,17 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
 # --- F130: the pet check --------------------------------------------------------------
 #
 # path -> the model's raw answer about the animal in one frame (parsed by
-# `parse_pet_answer`). The same shape as QualityAskFn on purpose: both are one prompt over
-# one frame, and both are injected by the suite so no test loads a model.
+# `parse_pet_answer`), injected by the suite so that no test loads a model.
 PetAskFn = Callable[[str], str]
 
-# ONE question with three outcomes, and the species is deliberately not among them. F122
-# retired the species labels by measurement — the binary call was 92% right and the
-# `cat`/`dog`/`pet` assignment on top of it was not — and bringing them back through a
-# different model without a new measurement would be an unmeasured label that looks like
-# data. If a consumer ever needs the species, that is a feature with its own measurement.
+# ONE question with three outcomes, and the species is deliberately not among them: F122
+# retired the species labels by measurement (the binary call was 92% right, the
+# `cat`/`dog`/`pet` assignment on top of it was not), and bringing them back through a
+# different model would be an unmeasured label that looks like data.
 #
 # The wording names what the collection actually got wrong (F120/F121: drawn cats, plush
-# toys, a fur coat, a picture on a screen), because those are the frames the check exists
-# to catch, and "a picture of a cat" is not a category a model volunteers unprompted.
+# toys, a fur coat, a picture on a screen) — "a picture of a cat" is not a category a model
+# volunteers unprompted.
 _PET_VLM_PROMPT = (
     "Look at this photo and answer with exactly one word from this list:\n"
     "real — a living animal is actually present in the photo;\n"
@@ -1639,15 +1621,11 @@ _PET_VLM_PROMPT = (
     "none — there is no animal in the photo at all.\n"
     "Answer with one word: real, depiction or none."
 )
-# One word, like the deep tier's label: a larger budget only buys the model room to
-# explain itself, which the parser below would then have to wade through.
 _PET_VLM_MAX_NEW_TOKENS = 8
 
-# Keyword -> stored value, IN PRIORITY ORDER, and the order is a decision rather than an
-# accident. `real` is the word a model reaches for while EXPLAINING one of the other two
-# ("not a real animal", "no real animal here"), so a scan that met it first would read
-# half the rejections as agreement — the same trap `_QUALITY_KEYWORDS` used to avoid by
-# putting `no_subject` before `subject`, until F177 retired that question.
+# Keyword -> stored value, IN PRIORITY ORDER, and the order is a decision: `real` is the
+# word a model reaches for while EXPLAINING one of the other two ("not a real animal"), so
+# a scan that met it first would read half the rejections as agreement.
 _PET_VLM_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("depiction", PET_VLM_DEPICTION),
     ("none", PET_VLM_NONE),
@@ -1658,14 +1636,13 @@ _PET_VLM_KEYWORDS: tuple[tuple[str, str], ...] = (
 def parse_pet_answer(answer: str) -> str | None:
     """The model's answer -> real | depiction | none; None when nothing was recognized.
 
-    Read as leniently as `parse_quality_answer` reads its keywords, and for the same
-    reason (the F96 lesson: asked for a composite format the model answers in prose
-    anyway) — everything that is not a letter is a separator, and the word is looked for
-    anywhere in the line rather than as the whole answer.
+    Read leniently, the F96 lesson: asked for a composite format the model answers in
+    prose anyway, so everything that is not a letter is a separator and the word is looked
+    for anywhere in the line.
 
-    None is NOT `none`. An answer nobody could read means the question was effectively not
-    asked, so the frame falls back to the unverified rule; reading it as "no animal" would
-    be guessing, and guessing here silently deletes a label the cheap tier was right about.
+    None is NOT `none`. An unreadable answer means the question was effectively not asked
+    and the frame falls back to the unverified rule; reading it as "no animal" would
+    silently delete a label the cheap tier was right about.
     """
     text = "_" + _NON_WORD_RE.sub("_", (answer or "").lower()) + "_"
     return next((value for keyword, value in _PET_VLM_KEYWORDS
@@ -1692,29 +1669,25 @@ def qwen_vlm_pet_factory(max_edge: int) -> Callable[[str], PetAskFn]:
 
 # --- F140: the question asked of a rescue candidate ------------------------------------
 #
-# path -> the model's raw answer about one candidate (parsed by `parse_junk_rescue_answer`).
-# The same shape as PetAskFn, and injected by the suite for the same reason: no test loads
-# a model.
+# path -> the model's raw answer about one candidate (parsed by
+# `parse_junk_rescue_answer`), injected by the suite like PetAskFn above.
 JunkAskFn = Callable[[str], str]
 
 # Query strings -> one text feature per string, in the same order. The real one is
-# `search.text_encoder` — the project's own open_clip, because the query has to land in the
-# space the stored vectors live in — and it is resolved lazily, only for a run that has
-# frames to score.
+# `search.text_encoder` (the query has to land in the space the stored vectors live in),
+# resolved lazily, only for a run that has frames to score.
 TextEncoder = Callable[[Sequence[str]], np.ndarray]
 
-# The three answers, and they are the `media_class.verdict` values on purpose: this
-# question exists to correct a verdict, so an answer that had to be translated into one
-# would be a second vocabulary for the same fact.
+# The three answers, and they are the `media_class.verdict` values on purpose: an answer
+# that had to be translated into one would be a second vocabulary for the same fact.
 JUNK_RESCUE_SCREENSHOT = "screenshot"
 JUNK_RESCUE_DOCUMENT = "document"
 JUNK_RESCUE_PHOTO = "photo"
 
-# A question about the KIND of picture, not about its quality, and asked separately from
-# the deep tier's own 3-way prompt (personal_photo/document/product) rather than by widening
-# it: that prompt has no screenshot among its answers — the deep tier never had to detect
-# one, it is the fast tier's job — and adding a fourth class there would move the verdicts
-# of every frame it sees, including on runs where this feature is off.
+# Asked separately from the deep tier's own 3-way prompt rather than by widening it: that
+# prompt has no screenshot among its answers (detecting one is the fast tier's job), and a
+# fourth class there would move the verdicts of every frame it sees, on runs where this
+# feature is off included.
 _JUNK_RESCUE_PROMPT = (
     "Classify this image into exactly one category: screenshot, document, or photo.\n"
     "screenshot = a screen capture, or a photograph of a phone, monitor or TV screen, or "
@@ -1724,14 +1697,11 @@ _JUNK_RESCUE_PROMPT = (
     "photo = an ordinary photograph of people, places, pets or everyday life.\n"
     "Answer with exactly one word: screenshot, document, or photo."
 )
-# One word, like the other labels of this stage: a larger budget only buys the model room
-# to explain itself, which the parser below would then have to wade through.
 _JUNK_RESCUE_MAX_NEW_TOKENS = 8
 
-# Keyword -> answer, IN PRIORITY ORDER, and the order is the same decision `_PET_VLM_KEYWORDS`
-# documents: `photo` is the word a model reaches for while describing one of the other two
-# ("a photo of a receipt", "a photo of a screen"), so a scan that met it first would read
-# half the rejections as agreement.
+# Keyword -> answer, IN PRIORITY ORDER, the same decision `_PET_VLM_KEYWORDS` documents:
+# `photo` is the word a model reaches for while describing one of the other two ("a photo
+# of a receipt"), so a scan that met it first would read half the rejections as agreement.
 _JUNK_RESCUE_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("screenshot", JUNK_RESCUE_SCREENSHOT),
     ("screen", JUNK_RESCUE_SCREENSHOT),
@@ -1746,11 +1716,10 @@ _JUNK_RESCUE_KEYWORDS: tuple[tuple[str, str], ...] = (
 def parse_junk_rescue_answer(answer: str) -> str | None:
     """The model's answer -> screenshot | document | photo; None when nothing was read.
 
-    Lenient in the two ways every answer of this stage is read (the F96 lesson), and None
-    is NOT `photo`: an unreadable answer means the question was effectively not asked, so
-    the frame keeps the verdict the fast tier gave it. Reading it as a junk class would
-    delete a photograph on the strength of a resemblance score — the one thing the whole
-    feature is arranged to avoid.
+    Lenient the way every answer of this stage is read (the F96 lesson), and None is NOT
+    `photo`: an unreadable answer means the question was effectively not asked, so the
+    frame keeps its fast verdict. Reading it as a junk class would delete a photograph on
+    the strength of a resemblance score — what this whole feature is arranged to avoid.
     """
     text = "_" + _NON_WORD_RE.sub("_", (answer or "").lower()) + "_"
     return next((value for keyword, value in _JUNK_RESCUE_KEYWORDS
@@ -1779,37 +1748,24 @@ def qwen_vlm_junk_rescue_factory(max_edge: int) -> Callable[[str], JunkAskFn]:
 def clip_text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML
     """The default text encoder of the rescue score — the search engine's own (F129).
 
-    Imported here and not at module scope because `search` imports this module, and built
-    only when a run actually has frames to score: it loads the model, and a stage that has
-    nothing to ask must not pay for one (`_JunkRescuePass` calls this lazily, the same
-    rule `_unused_classifier` states for the image side).
+    Imported here and not at module scope because `search` imports this module, and called
+    lazily because it loads a model: a run with nothing to ask must not pay for one.
     """
     from .search import text_encoder
 
     return text_encoder(s)
 
 
-# --- F132/F186: the keeper of a near-duplicate group, and why nothing asks about it -----
-#
-# The comparative question ("which of these five is the one to keep") is gone. It was
-# measured on 2026-08-04 against 111 groups the owner labelled BLIND — the frames shuffled,
-# the model's answer hidden — and it agreed with the person on 32% of them. Picking a frame
-# at random agrees on 30.4% (20 000 shuffles say 30.3%), and sharpness, arithmetic and a
-# cascade all land on 27-28%. Nothing here is a replacement, because there was nothing to
-# buy: 451 seconds of GPU a run for the accuracy of a coin.
-#
-# What STAYS is the mechanism, in dedup.py: `group_keeper`, `KEEPER_SOURCE_SHARPNESS`,
-# `store_group_keeper` and the ranking the Duplicates tab has always shown. Only the
-# question to the model left, so the interface behaves exactly as it did.
-
-
 @dataclass(frozen=True)
 class QualitySettings:
     """Everything the cascade reads out of the config, resolved once per run.
 
-    Same shape and same reason as GateSettings: the measurement script sweeps these
-    numbers, and it can only price the real cascade if it drives the same functions off
-    the same object the pipeline uses.
+    Same shape and same reason as GateSettings: the measurement script can only price the
+    real cascade if it drives the same functions off the same object the pipeline uses.
+
+    The fields below `exclude_classes` are DEFAULTED so that a caller building these by
+    hand — the measurement script, the suite — keeps working when the check they belong to
+    is not what it is asking about.
     """
     pets: bool
     pet_threshold: float
@@ -1818,15 +1774,11 @@ class QualitySettings:
     subject_score_min: float
     # F120: media classes no VLM is shown (`vlm.exclude_classes`).
     exclude_classes: frozenset[str] = frozenset()
-    # F130: the pet check — its own toggle, and the second, much lower threshold that
-    # decides who is shown to the model. Defaulted (unlike the two fields above them in
-    # the class) so a caller that built these settings by hand — the measurement script,
-    # the suite — keeps working unchanged when the check is not what it is asking about.
+    # F130: the pet check, and the second and much lower threshold deciding who is shown
+    # to the model.
     pets_verify: bool = False
     pet_candidate_threshold: float = 0.3
-    # F140: the rescue score — its own toggle, and the threshold that decides who is shown
-    # to the model. Defaulted for the same reason the two fields above are: a caller that
-    # built these settings by hand keeps working when this is not what it is asking about.
+    # F140: the rescue score, and the threshold deciding who is shown to the model.
     junk_rescue: bool = False
     junk_rescue_threshold: float = 0.02
 
@@ -1849,20 +1801,17 @@ def quality_settings(cfg: Config) -> QualitySettings:
     )
 
 
-# F120: the quality questions — is there a pet, are the eyes open, was this shot an
-# accident — are questions about a PERSONAL PHOTOGRAPH (of the three, only the pet one is
-# still put to a model — see F186 above). Asked of a screenshot or a product shot they
-# produce an answer that means nothing, and the first live run showed
-# what that costs: 45% of the `dog` class and 45% of the sharpest frames were not
-# photographs at all. Screenshots are also structurally "sharper" than any photo (hard
-# edges and text: mean laplacian 2854 against 1253), so a global sharpness ranking put
-# them on top by construction.
+# F120: every quality question is a question about a PERSONAL PHOTOGRAPH, and asked of a
+# screenshot or a product shot it produces an answer that means nothing. The first live run
+# priced that: 45% of the `dog` class and 45% of the sharpest frames were not photographs
+# at all — screenshots are structurally sharper than any photo (hard edges and text, mean
+# laplacian 2854 against 1253), so a global sharpness ranking put them on top by
+# construction.
 QUALITY_VERDICT = "photo"
 
-# The `faces` row that means "this file was processed and no face was found in it" (see
-# the faces module docstring) — a bookkeeping marker, not a face. Every question about
-# REAL faces has to exclude it: on the live collection 24 195 files out of 24 196 carry
-# one, so a predicate that forgets it answers "all of them".
+# The `faces` row meaning "processed, no face found" — a bookkeeping marker, not a face.
+# Every question about REAL faces has to exclude it: 24 195 files of 24 196 on the live
+# collection carry one, so a predicate that forgets it answers "all of them".
 NO_FACES_BBOX = "[]"
 
 
@@ -1870,16 +1819,15 @@ def uncertain_band(sharpness: float | None, subject_score: float,
                    q: QualitySettings) -> bool:
     """Is this frame one the cheap tiers did NOT settle?
 
-    Two independent ways in, either of them enough: sharpness inside the band where it
-    decides nothing (clearly blurred is below it, clearly sharp above), or a junk-group
-    CLIP probability of "a photograph" low enough that CLIP is saying it does not know
-    what it is looking at. A frame that did not decode has no sharpness signal and is
-    judged on the second condition alone.
+    Two independent ways in, either enough: sharpness inside the band where it decides
+    nothing, or a junk-group probability of "a photograph" low enough that CLIP is saying
+    it does not know what it is looking at. A frame that did not decode is judged on the
+    second alone.
 
-    F186: this used to select the population of the quality VLM, and that question is
-    retired. The band itself is kept because it is what `scripts/measure_frame_quality.py`
-    prices the cascade over, and `features.sharpness_band_*` / `features.subject_score_min`
-    are the thresholds it sweeps — the stage asks nothing of it.
+    F186 retired the question this selected the population of. It is kept because
+    `scripts/measure_frame_quality.py` prices the cascade over it and sweeps
+    `features.sharpness_band_*` / `features.subject_score_min`; the stage asks nothing
+    of it.
     """
     low, high = q.sharpness_band
     if sharpness is not None and low <= sharpness <= high:
@@ -1890,22 +1838,12 @@ def uncertain_band(sharpness: float | None, subject_score: float,
 def faces_stage_ran(conn: sqlite3.Connection) -> bool:
     """Has the faces stage ever found a face in this index? One real row is enough.
 
-    `bbox = '[]'` is not a face but the marker "this file was processed and had none"
-    (faces module docstring), so it says nothing about the stage having run usefully and
-    everything about it having run at all — which is why every question about REAL faces
-    has to exclude it. On the live collection 24 195 files out of 24 196 carry such a row.
+    Answers whether an absent face is a fact or an absence of evidence (F121). `bbox =
+    '[]'` is excluded for the NO_FACES_BBOX reason.
     """
     return bool(conn.execute(
         "SELECT EXISTS(SELECT 1 FROM faces WHERE bbox != ?)", (NO_FACES_BBOX,)
     ).fetchone()[0])
-
-
-# F186 took `quality_scope_ready` and `quality_scope_ids` out with the question they
-# served. They chose WHO the quality VLM was asked about — the frames of a near-duplicate
-# group, of an event, with a face on them, or the whole collection — and there is no longer
-# anybody to ask. Nothing replaced them: `faces_stage_ran` above is the one piece of that
-# machinery with a second consumer (F121, whether an absent face is a fact or an absence of
-# evidence), and it stays for that consumer alone.
 
 
 @dataclass(frozen=True)
