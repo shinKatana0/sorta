@@ -2944,11 +2944,9 @@ class _JunkRescuePass:
                 report.step(i + 1)
 
 
-# F154: who the animal query may rank at all. Canonical photographs the stage calls a
-# photograph, plus the ones it has not classified yet (a first run has settled nothing, and
-# that is not a reason to withhold a frame) — the F120 population. The detector never sees
-# anything outside this list, and
-# the ranking then cuts it down to `features.detector_candidates`.
+# F154: who the animal query may rank at all — the F120 population, plus the frames the
+# stage has not classified yet (a first run has settled nothing). The ranking then cuts it
+# down to `features.detector_candidates`, and the detector never sees anything else.
 _DETECTOR_POPULATION_SQL = """SELECT f.id, f.path FROM files f
     LEFT JOIN media_class mc ON mc.file_id = f.id
     WHERE f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'
@@ -2959,29 +2957,26 @@ _DETECTOR_POPULATION_SQL = """SELECT f.id, f.path FROM files f
 class _DetectorPass:
     """F154: the object detector, over the candidates a query selects — never over a pass.
 
-    The pipeline half of `detect.py`, and it owns the three things every other pass here
-    owns: who the candidates are (the top `features.detector_candidates` frames of a
-    zero-shot animal query over the vectors F128 already stores, inside the F120 population
-    of personal photographs), which of them still need the model (its own incrementality —
-    a row in `detections` written by the same detector means "already examined", and that
-    covers a frame it found nothing on), and what the answer then decides
-    (`frame_quality.pet`, through `detect.cascade_label`). It writes on the caller's thread
-    inside its own transactions — SQLite stays single-writer, as everywhere in this stage.
+    The pipeline half of `detect.py`, owning the three things every pass here owns: who the
+    candidates are (the top `features.detector_candidates` frames of a zero-shot animal
+    query over the vectors F128 stores, inside the F120 population), which of them still
+    need the model (its own incrementality — a `detections` row of the same detector means
+    "already examined", a frame it found nothing on included), and what the answer decides
+    (`frame_quality.pet`, through `detect.cascade_label`).
 
-    THERE IS NO CODE PATH THAT RUNS THE DETECTOR OVER EVERYTHING. That is the feature, not
-    a safeguard: 83.8 ms per frame is 30.8 minutes over 22 096 photographs, for a signal
-    that beats what the pipeline already has on exactly one slice out of three. Without
-    stored vectors there are no candidates and the stage says so instead of falling back to
-    a pass — a fallback nobody asked for is how three minutes become thirty-one.
+    WHY A CASCADE. Measured on 200 hand-labelled frames (2026-08-02, confidence 0.5), a
+    COCO detector is 62% precision / 87% recall on animals against the CLIP label's 71% /
+    33% — but 42% precision on people where the face boxes are ~100% (F152), and 20% / 15%
+    on food, which COCO has no class for. It earns its keep on one slice of three, and a
+    pass over the collection is 83.8 ms x 22 096 = 30.8 minutes against ~3 for the top
+    2 000. So THERE IS NO CODE PATH THAT RUNS IT OVER EVERYTHING: without stored vectors
+    there are no candidates and the stage says so, because a fallback nobody asked for is
+    how three minutes become thirty-one.
 
-    Three failures leave every label exactly as the cheaper tiers wrote it, and none of
-    them is ever read as "no animal": no vectors to query (the reason is logged), an
-    encoder or a detector that will not build (the graceful fallback every optional half of
-    this stage has), and an error on one frame (that frame keeps its label and is examined
-    again next run, because no row is written for it).
-
-    Both the encoder and the detector are built LAZILY, inside `run`, and only when there
-    is work: each loads a model, and a run with nothing to ask must not pay for one.
+    Three failures leave every label as the cheaper tiers wrote it and none is read as "no
+    animal": no vectors to query (logged), an encoder or detector that will not build (the
+    graceful fallback every optional half here has), an error on one frame (no row, so it
+    is examined again next run). Both models are built LAZILY, inside `run`.
     """
 
     def __init__(self, conn: sqlite3.Connection, s: DetectorSettings, model: str,
@@ -3008,9 +3003,8 @@ class _DetectorPass:
         todo = [(file_id, path) for file_id, path in candidates if file_id not in stored]
         found = dict(stored)
         found.update(self._examine(todo, report))
-        # Counted over the candidates that HAVE an answer, this run's and the stored ones
-        # alike: the number a user compares against the folder they get does not depend on
-        # which run happened to ask the question.
+        # Over every candidate that HAS an answer, this run's and the stored ones alike: the
+        # number a user compares against their folder must not depend on which run asked.
         self._stats.detector_found = sum(
             1 for boxes in found.values()
             if best_animal(boxes, self._s.threshold) is not None)
@@ -3019,14 +3013,12 @@ class _DetectorPass:
     def _candidates(self) -> list[tuple[int, str]]:
         """The frames the animal query ranks highest — (file_id, path), best first.
 
-        The query runs over `clip_embeddings`, the CLASSIFICATION vectors: those are the
-        rows this pipeline's prompts live in the space of, and the model filter inside
-        `read_clip_embeddings` is what keeps a vector of another model out of the ranking.
+        Over `clip_embeddings`, the CLASSIFICATION vectors: those are the rows this
+        pipeline's prompts live in the space of.
 
         An empty table is a REASON and not an empty list (the F134 rule): "no candidates"
         and "nobody has ever computed a vector here" read identically in a count of zero,
-        and only one of them is fixed by running the junk stage with
-        `features.store_embeddings` on. So it is said, in the log, and nothing is asked.
+        and only one of them is fixed by a junk run with `features.store_embeddings` on.
         """
         rows = self._conn.execute(_DETECTOR_POPULATION_SQL, (QUALITY_VERDICT,)).fetchall()
         paths = {int(r["id"]): str(r["path"]) for r in rows}
@@ -3046,8 +3038,7 @@ class _DetectorPass:
     def _text_features(self) -> np.ndarray | None:
         """The animal prompts as unit rows; None — the encoder could not be had.
 
-        The same graceful fallback the model halves of this stage have, and for the same
-        reason: an optional signal that cannot be computed must cost the run nothing.
+        The graceful fallback of `_JunkRescuePass._text_features`, for the same reason.
         """
         try:
             rows = np.asarray(self._encoder()(list(ANIMAL_QUERY_PROMPTS)),
@@ -3062,10 +3053,9 @@ class _DetectorPass:
     def _stored(self, candidates: Sequence[tuple[int, str]]) -> dict[int, list[Detection]]:
         """What THIS detector already answered about these frames — incrementality.
 
-        Keyed by the model, like every other marker in this stage: boxes from another
-        detector are not this one's answer, so such a frame is examined again rather than
-        trusted. A row that exists with no boxes in it is an answer too — "looked, found
-        nothing" — and it is the reason a repeated run asks nothing at all.
+        Keyed by the model, like every other marker here: boxes from another detector are
+        not this one's answer. A row with no boxes in it is an answer too — "looked, found
+        nothing" — and it is what makes a repeated run ask nothing at all.
         """
         out: dict[int, list[Detection]] = {}
         for part in batched([file_id for file_id, _path in candidates], 500):
@@ -3080,10 +3070,9 @@ class _DetectorPass:
                  report: _PhaseProgress) -> dict[int, list[Detection]]:
         """Run the detector over the frames that have no answer yet, and store what it saw.
 
-        A frame the model raises on gets NO ROW: it keeps whatever label it had and is
-        examined again next run. That is the same "no row rather than a wrong row" rule
-        `_EmbeddingPass.store` states, and here it also keeps one bad frame from being
-        recorded as a frame with no animal on it.
+        A frame the model raises on gets NO ROW — `_EmbeddingPass.store`'s "no row rather
+        than a wrong row", which here also keeps a bad frame from being recorded as a frame
+        with no animal on it.
         """
         if not todo:
             return {}
@@ -3105,9 +3094,9 @@ class _DetectorPass:
                     _log.warning(
                         "junk: детектор не ответил по file_id=%s (%s) — кадр остаётся "
                         "с прежней меткой и попадёт в следующий прогон", file_id, exc)
-                    # Outside the `else` for the F100 reason: a frame the model failed on
-                    # is a frame this pass is done with, and a bar one short of its total
-                    # for good is worse than an honest step.
+                    # Outside the `else` for the F100 reason: a frame the model failed on is
+                    # a frame this pass is done with, and a bar one short of its total for
+                    # good is worse than an honest step.
                     report.step(i + 1)
                     continue
                 kept = animal_boxes(boxes, STORE_FLOOR)
@@ -3125,16 +3114,15 @@ class _DetectorPass:
                  found: dict[int, list[Detection]]) -> None:
         """Write the label the cascade decides — for the frames the detector examined.
 
-        Read before written, and only the rows that change are touched: this pass runs over
-        candidates the earlier tiers have already labelled, and the great majority of them
-        keep exactly what they had. `stats.pets_found` follows every change, so the number
-        a run reports is the one the cascade ended on and not the fast tier's (see the
-        counter's own note below for the one case where that difference is floored).
+        Read before written, and only rows that change are touched: this pass runs over
+        candidates the earlier tiers have already labelled, and most keep what they had.
+        `stats.pets_found` follows every change, so a run reports the number the cascade
+        ended on rather than the fast tier's.
 
         A candidate with no `frame_quality` row is skipped rather than given one: that
-        table's population is written by the quality half, under its own incrementality,
-        and a detection is not a reason to invent a row with no sharpness in it. The boxes
-        are stored either way — they are a fact about the frame, not about the label.
+        table's population belongs to the quality half, and a detection is not a reason to
+        invent a row with no sharpness in it. The boxes are stored either way — they are a
+        fact about the frame, not about the label.
         """
         ids = [file_id for file_id, _path in candidates if file_id in found]
         rows = read_frame_quality(self._conn, ids)
@@ -3148,11 +3136,9 @@ class _DetectorPass:
                 if after == row.pet:
                     continue
                 self._conn.execute(_PET_DETECTOR_UPDATE, (after, self._now, file_id))
-                # `pets_found` counts the animals THIS RUN ended up marking, and unlike
-                # the F130 check this pass does not select from the frames the run
-                # measured: on a collection that is otherwise up to date it has none. So a
-                # label taken off such a frame cannot push the count below zero — there
-                # was nothing there to subtract from.
+                # Floored: unlike the F130 check this pass does not select from the frames
+                # the run measured, so on a collection that is otherwise up to date there
+                # is nothing for a removed label to subtract from.
                 self._stats.pets_found = max(
                     0, self._stats.pets_found
                     + (after is not None) - (row.pet is not None))
@@ -3160,10 +3146,8 @@ class _DetectorPass:
     def purge(self) -> None:
         """Drop the boxes of everything this run decided is not a personal photograph.
 
-        The same statement and the same reason as `_EmbeddingPass.purge`: incrementality
-        skips a frame whose row already looks current, so a frame examined before its
-        verdict moved to `document` would keep its boxes PRECISELY because they are up to
-        date — and a document is the one class this project takes care not to describe.
+        `_EmbeddingPass.purge`'s reason, and here a document is the one class this project
+        takes care not to describe.
         """
         if not self._s.enabled:
             return  # the detector is off: the table is not this run's business
@@ -3174,31 +3158,26 @@ class _DetectorPass:
 
 # --- F210: the preview of a sensitive frame does not stay on disk ---------------------
 #
-# Refusing to SHOW a document (slices.py withholds `thumb_url` for it) protects the
-# screen and not the disk: the preview is written by the very stage that decides what the
-# frame is — `decode_rgb_preview` decodes everything it is handed, deliberately, and by
-# the time a verdict exists the JPEG is already in the cache. So the run that names a
-# frame is the run that has to take its derivative away, exactly as it already drops the
-# frame's quality row, its vector and its boxes (`_QualityPass`/`_EmbeddingPass`/
-# `_DetectorPass.purge`).
+# Refusing to SHOW a document (slices.py withholds `thumb_url`) protects the screen and not
+# the disk: `decode_rgb_preview` decodes everything it is handed, deliberately, so by the
+# time a verdict exists the JPEG is already in the cache. The run that names a frame is
+# therefore the run that takes its derivative away, exactly as it drops that frame's
+# quality row, its vector and its boxes.
 #
-# Which classes are sensitive is decided by the LIVE `vlm.exclude_classes` and by nothing
-# else. There is no list written down here: `_JUNK_NO_PREVIEW` in the UI is the default of
-# a parameter for direct calls, not a source of truth, and an EMPTY setting is an
-# instruction rather than an oversight — somebody whose config says `exclude_classes: []`
-# has said that no class is private, and for them this sweep must remove nothing at all.
+# Which classes are sensitive is the LIVE `vlm.exclude_classes` and nothing else — the UI's
+# `_JUNK_NO_PREVIEW` is the default of a parameter, not a source of truth — and an EMPTY
+# setting is an instruction rather than an oversight: somebody whose config says
+# `exclude_classes: []` has said no class of theirs is private.
 
 
 def sweep_previews(conn: sqlite3.Connection, classes: frozenset[str]) -> int:
     """Remove the disk previews of every frame whose verdict is one of `classes`.
 
-    Returns the number of preview files removed — a number for the caller's log, not a
+    Returns how many preview files were removed — a number for the caller's log and not a
     promise: a preview a reader holds open stays, and the next sweep gets it.
 
-    An empty `classes` returns 0 without touching the database. That is the whole of
-    requirement 4 of the brief: absence and emptiness are different wishes here as much as
-    they are in `config._as_exclude_classes`, and the empty list is the one that says "no
-    class of mine is private".
+    An empty `classes` returns 0 without touching the database (see above: absence and
+    emptiness are different wishes, as in `config._as_exclude_classes`).
     """
     if not classes:
         return 0
@@ -3220,13 +3199,10 @@ def sweep_previews_for_new_classes(conn: sqlite3.Connection,
                                    before: Sequence[str], after: Sequence[str]) -> int:
     """The sweep a CHANGED `vlm.exclude_classes` calls for — over the ADDED classes only.
 
-    The list is edited while the tool runs, and that is the moment the cleanup matters
-    most: switching the protection on has to reach the previews ALREADY on disk, or the
-    whole archive of documents survives it and the feature covers nothing but frames
-    classified from now on.
-
-    A class that LEFT the list sweeps nothing. Its previews are an ordinary cache entry
-    again and are rebuilt on demand — there is nothing to remove and nothing lost.
+    The list is edited while the tool runs, and that is when the cleanup matters most:
+    switching the protection on has to reach the previews ALREADY on disk, or the whole
+    archive of documents survives it. A class that LEFT the list sweeps nothing — its
+    previews are an ordinary cache entry again, rebuilt on demand.
     """
     return sweep_previews(conn, frozenset(after) - frozenset(before))
 
