@@ -37,14 +37,23 @@ class TaskProgress:
         if self._update is not None:
             self._update(completed=done, total=total)
 
-    def phase(self, name: str) -> None:
+    def phase(self, name: Optional[str]) -> None:
         """Append the caption of phase `name` to the bar's description.
 
         An unknown key is shown as-is: a raw identifier next to the bar is still
         better than a bar that stands there saying nothing.
+
+        F229: `None` — no phase any more, the description goes back to the bare name of
+        the step. The same meaning `_ProcessState.set_phase(None)` has always had on the
+        other screen; a caption that can be put up and never taken down would leave
+        "waiting for the model" standing over the frames the stage went on to count.
         """
-        if self._update is not None:
-            self._update(description=f"{self._description} · {self._labels.get(name, name)}")
+        if self._update is None:
+            return
+        if name is None:
+            self._update(description=self._description)
+            return
+        self._update(description=f"{self._description} · {self._labels.get(name, name)}")
 
 
 @contextmanager

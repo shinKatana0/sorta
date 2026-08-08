@@ -45,6 +45,7 @@ import time
 import unittest
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from sorta import junk, runlog
@@ -450,6 +451,13 @@ class TestTheWorkIsNotDoubled(unittest.TestCase):
         self.assertEqual(len(parallel), len(set(parallel)))
 
 
+# Both subclasses below price a frame by SLEEPING for it — 8 ms of "prepare" against 2 ms
+# of "generate" — and then assert about the ratio of the two. That is an assertion about
+# time, and a machine running eight test processes and a worker session slows the
+# pipelined path as readily as the serial one, which compresses the ratio and fails the
+# claim on a run where nothing is wrong. Caught on 2026-08-08 in a gate for a feature that
+# touches neither askers nor timing.
+@pytest.mark.serial
 class PhaseRatioCase(unittest.TestCase):
     """The shared arithmetic of the watchdog: seconds per frame, phase against phase."""
 

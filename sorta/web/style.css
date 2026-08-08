@@ -200,6 +200,34 @@ details .table-wrap { margin: 0.3rem 0 0.8rem var(--space-md); width: calc(100% 
       background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .quit-done-box svg { width: 28px; height: 28px; color: var(--muted); }
 
+/* --- F227: the waiting screen of a launch that is still finishing -----------------
+   The bar is INDETERMINATE by design: a launch has a handful of steps whose lengths
+   differ by two orders of magnitude, so a percentage would sit at 71% for the four
+   seconds of the torch import. What moves says "working"; what is written says which
+   step. --- */
+.startup { position: fixed; inset: 0; z-index: 3100; display: flex; align-items: center;
+      justify-content: center; padding: var(--space-xl); background: rgba(10,14,22,.92); }
+.startup[hidden] { display: none; }
+.startup-box { display: flex; flex-direction: column; align-items: center; gap: var(--space-sm);
+      max-width: 46ch; padding: var(--space-xl); text-align: center; color: var(--ink);
+      background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.startup-box .brand-mark { width: 34px; height: 34px; color: var(--accent); }
+.startup-title { margin: 0; font-size: 17px; font-weight: 600; }
+.startup-step { margin: 0; color: var(--muted); font-size: 13.5px; min-height: 1.2em; }
+.startup-bar { position: relative; width: 100%; height: 4px; margin: var(--space-sm) 0;
+      overflow: hidden; background: var(--chip); border-radius: 2px; }
+.startup-bar-run { position: absolute; top: 0; left: 0; width: 38%; height: 100%;
+      background: var(--accent); border-radius: 2px; animation: startup-sweep 1.4s ease-in-out infinite; }
+@keyframes startup-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+/* Somebody who asked the system for less motion gets a bar that is simply there. */
+@media (prefers-reduced-motion: reduce) {
+  .startup-bar-run { animation: none; width: 100%; opacity: .5; }
+}
+.startup-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+
 /* --- tabs --------------------------------------------------------------- */
 .tabs { display: flex; gap: 4px; margin-bottom: var(--space-lg); border-bottom: 1px solid var(--line);
       overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }

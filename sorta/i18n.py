@@ -704,6 +704,16 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  …{done} of {size} so far",
         "ja": "  …{size} 中 {done} まで取得",
     },
+    # F229: what the stage itself is doing meanwhile — said in words, and used as the
+    # caption of the stage's progress bar. That bar counts FRAMES, and until the weights
+    # are on disk not one frame can be processed, so its number sits at zero for the whole
+    # download: the right number in the wrong unit, which reads as a hang exactly the way
+    # the run screen did. No percentage here — how much has arrived is the line above.
+    "cli.download.waiting": {
+        "ru": "жду модель — кадры пойдут, когда она скачается",
+        "en": "waiting for the model — frames start once it is downloaded",
+        "ja": "モデルを待機中 — ダウンロードが終わるとコマの処理が始まります",
+    },
     # The one a person actually meets. What they used to get was
     # `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` — no stage, no model, no
     # size, nothing to do about it. The traceback stays in the log.
@@ -991,6 +1001,16 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ru": "sorta: не удалось завершить программу (ответ {status})",
         "en": "sorta: could not close the program (answer {status})",
         "ja": "sorta: プログラムを終了できませんでした（応答 {status}）",
+    },
+    # F227: the only line of the window that goes up while the program is still starting.
+    # One sentence, and it has to answer the question the person is actually asking after
+    # a double-click that did nothing — "did it hear me?" — without promising a duration
+    # nobody has measured on their disk. The window itself carries the product name; this
+    # is the line under it.
+    "cli.tray.starting": {
+        "ru": "Запускается — первый запуск дольше остальных…",
+        "en": "Starting — the first launch takes longer than the rest…",
+        "ja": "起動中です — 初回は時間がかかります…",
     },
     # F211: the first-run wizard of the Windows installer (`sorta-setup`). Everything a
     # person who never opens a terminal is asked at install time, and the one place the

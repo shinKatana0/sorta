@@ -384,6 +384,19 @@ class _ProcessState:
             self.download_weights = weights
             self.download_done = done if weights else 0
 
+    def _waiting_for_download_locked(self) -> bool:
+        """F229: the current stage cannot count frames — its model is still arriving.
+
+        No new state: both fields it reads are the ones F222/F225 already keep, and the
+        question is asked here so that the run screen and this module cannot come to two
+        different answers about one run. The stage line draws a FRAME counter, and a
+        stage whose weights are not on disk has not processed one frame and cannot —
+        "0 of 8" standing still for the whole download is what the owner read as a hang
+        on a collection of eight photographs. The number was true; the unit was not.
+        """
+        return (self.running and bool(self.download_weights)
+                and self.download_stage == self.stage)
+
     def set_skipped_notes(self, notes: Sequence[str]) -> None:
         """F222: what this run left out while the file still configures it."""
         with self._lock:
@@ -485,6 +498,11 @@ class _ProcessState:
                               "mb": weights_size_mb(self.download_weights),
                               "done_mb": megabytes(self.download_done)}
                              if self.download_weights else None),
+                # F229: ...and that THIS stage is waiting for it, which is what turns the
+                # frame counter next to the line above off. False for a download that
+                # belongs to another stage and for every run that needs none — then the
+                # counter is the most useful thing on the screen and stays.
+                "stage_waiting_download": self._waiting_for_download_locked(),
                 # F222: the stages this run skipped whose settings the file still holds.
                 # Almost always empty — a note on every run is noise, and noise is what
                 # gets learned and then not read.

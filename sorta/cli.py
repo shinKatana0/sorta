@@ -242,6 +242,31 @@ def _junk_phase_labels(lang: Lang) -> dict[str, str]:
     }
 
 
+# F229: the one phase that belongs to no stage in particular — waiting for the weights.
+# Any of the three CLIP stages can be the one that pays for the 1.6 GB (whichever asks
+# first, F19), and while it does, its bar goes on counting frames it cannot possibly have
+# processed. The key is a phase like the others so that the bar is relabelled through the
+# channel that already exists, and taken back down the moment the download is over.
+_DOWNLOAD_PHASE = "download"
+
+
+def _download_phase_labels(lang: Lang) -> dict[str, str]:
+    return {_DOWNLOAD_PHASE: _t("cli.download.waiting", lang)}
+
+
+def _say_phase(progress: object | None, name: str | None) -> None:
+    """Relabel the stage bar `progress` draws, when there is one to relabel (F229).
+
+    Whatever the stage was handed: a rich bar in a terminal, a no-op object in a pipe, a
+    plain callable in a test. Anything without a `phase` channel is left alone — the
+    sentence has been printed either way, and a missing bar is not a reason to fail a
+    download.
+    """
+    phase = getattr(progress, "phase", None)
+    if callable(phase):
+        phase(name)
+
+
 def _summarize_faces(face_stats, cl_stats, lang: Lang) -> str:
     lines = [
         _t("cli.faces.detected", lang, files=face_stats.files_processed,
@@ -361,13 +386,14 @@ def _cmd_landmarks(config_path: str) -> None:
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
     conn = connect(cfg.database)
-    with progress_task(_t("cli.progress.landmarks", lang)) as cb:
+    with progress_task(_t("cli.progress.landmarks", lang),
+                       phase_labels=_download_phase_labels(lang)) as cb:
         # F222: through the announcing factory, so this command says what it downloads
         # too. Still lazy — a run with no unknown places builds no model and prints no
         # sentence about one.
         stats = detect_landmarks(
             cfg, conn, classifier=_LazySharedClassifier(
-                lambda: _build_clip(cfg, "landmarks")), progress=cb)
+                lambda: _build_clip(cfg, "landmarks", cb)), progress=cb)
     print(_summarize_landmarks(stats, lang))
 
 
@@ -406,9 +432,10 @@ def _cmd_junk(config_path: str, *, pets: bool | None = None) -> None:
     lang = _lang(cfg)
     conn = connect(cfg.database)
     with progress_task(_t("cli.progress.junk", lang),
-                       phase_labels=_junk_phase_labels(lang)) as cb:
+                       phase_labels={**_junk_phase_labels(lang),
+                                     **_download_phase_labels(lang)}) as cb:
         stats = classify_junk(cfg, conn, classifier=_LazySharedClassifier(
-            lambda: _build_clip(cfg, "junk")), progress=cb)
+            lambda: _build_clip(cfg, "junk", cb)), progress=cb)
     print(_summarize_junk(stats, lang))
 
 
@@ -423,9 +450,10 @@ def _cmd_classify(config_path: str) -> None:
     lang = _lang(cfg)
     conn = connect(cfg.database)
     with progress_task(_t("cli.progress.classify", lang),
-                       phase_labels=_junk_phase_labels(lang)) as cb:
+                       phase_labels={**_junk_phase_labels(lang),
+                                     **_download_phase_labels(lang)}) as cb:
         stats = classify_junk(cfg, conn, classifier=_LazySharedClassifier(
-            lambda: _build_clip(cfg, "classify")), verdicts_only=True, progress=cb)
+            lambda: _build_clip(cfg, "classify", cb)), verdicts_only=True, progress=cb)
     print(_summarize_junk(stats, lang))
 
 
@@ -456,7 +484,7 @@ def _cmd_events(config_path: str) -> None:
 # the run screen, where its 400 MB is stated before anything starts.
 
 
-def _build_clip(cfg, stage: str) -> Classifier:
+def _build_clip(cfg, stage: str, progress: object | None = None) -> Classifier:
     """The CLIP classifier for `stage`, with the download said out loud on both sides.
 
     The failure is re-worded ONLY when the weights were actually missing before the
@@ -467,16 +495,27 @@ def _build_clip(cfg, stage: str) -> Classifier:
     F225: while the download lasts, how much of it has arrived — the same measurement the
     run screen and the setup wizard show, so a run started from a terminal is not the one
     place left where 1.6 GB arrives in silence.
+
+    F229: and `progress` — the stage's own bar — says what the stage is doing meanwhile,
+    because the number it draws is a number of FRAMES and this stage has no model with
+    which to process one. The caption comes down again when the download is over, and the
+    frames are counted from zero honestly. Nothing here invents a percentage: how much has
+    arrived is the line printed above it.
     """
     lang = _lang(cfg)
     pending = tiers.stage_downloads(stage)
     if not pending:
         return clip_classifier(naming_settings(cfg))
     print(tiers.download_notice(stage, pending, lang))
+    print(_t("cli.download.waiting", lang))
+    _say_phase(progress, _DOWNLOAD_PHASE)
     built: list[Classifier] = []
-    failure = tiers.watch_download(
-        lambda: built.append(clip_classifier(naming_settings(cfg))),
-        lambda done: print(tiers.download_progress(pending, done, lang)))
+    try:
+        failure = tiers.watch_download(
+            lambda: built.append(clip_classifier(naming_settings(cfg))),
+            lambda done: print(tiers.download_progress(pending, done, lang)))
+    finally:
+        _say_phase(progress, None)
     if failure is not None:
         _log.error("не удалось скачать веса для стадии %r", stage, exc_info=failure)
         raise SystemExit(
@@ -557,12 +596,19 @@ def _pipeline_steps() -> list[tuple[str, object]]:
     # that one rather than a stage picked at definition time.
     asked_by = {"stage": "landmarks"}
 
-    def _clip(cfg, stage: str) -> _LazySharedClassifier:
+    # F229: ...and the bar that stage is drawing, for the same reason: whichever of the
+    # three gets to the factory first is the one whose frame counter has to say what it is
+    # waiting for. Kept beside `asked_by` rather than captured, because the factory is
+    # built once and asked from three different stages.
+    asked_by_bar: dict[str, object] = {"progress": None}
+
+    def _clip(cfg, stage: str, progress: object | None = None) -> _LazySharedClassifier:
         asked_by["stage"] = stage
+        asked_by_bar["progress"] = progress
         clf = shared.get("clip")
         if clf is None:
             clf = shared["clip"] = _LazySharedClassifier(
-                lambda: _build_clip(cfg, asked_by["stage"]))
+                lambda: _build_clip(cfg, asked_by["stage"], asked_by_bar["progress"]))
         return clf
 
     def _index(cfg, conn, cb) -> str:
@@ -575,7 +621,8 @@ def _pipeline_steps() -> list[tuple[str, object]]:
 
     def _landmarks(cfg, conn, cb) -> str:
         return _summarize_landmarks(
-            detect_landmarks(cfg, conn, classifier=_clip(cfg, "landmarks"), progress=cb),
+            detect_landmarks(cfg, conn, classifier=_clip(cfg, "landmarks", cb),
+                             progress=cb),
             _lang(cfg))
 
     def _faces(cfg, conn, cb) -> str:
@@ -589,12 +636,12 @@ def _pipeline_steps() -> list[tuple[str, object]]:
 
     def _classify(cfg, conn, cb) -> str:
         return _summarize_junk(
-            classify_junk(cfg, conn, classifier=_clip(cfg, "classify"),
+            classify_junk(cfg, conn, classifier=_clip(cfg, "classify", cb),
                           verdicts_only=True, progress=cb), _lang(cfg))
 
     def _junk(cfg, conn, cb) -> str:
         return _summarize_junk(
-            classify_junk(cfg, conn, classifier=_clip(cfg, "junk"), progress=cb),
+            classify_junk(cfg, conn, classifier=_clip(cfg, "junk", cb), progress=cb),
             _lang(cfg))
 
     return [
@@ -670,7 +717,8 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
             with stage_timer(name) as stage, progress_task(
                     name,
                     phase_labels={**_cluster_phase_labels(lang),
-                                  **_junk_phase_labels(lang)}) as cb:
+                                  **_junk_phase_labels(lang),
+                                  **_download_phase_labels(lang)}) as cb:
                 # F166: the run log reads the same callback the bar does, so a stage
                 # with no phases of its own (index, geo, faces, ...) also says where it
                 # is while it runs instead of only where it ended.

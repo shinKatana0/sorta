@@ -296,6 +296,54 @@
 
   initQuit();
 
+  // --- F227: the tab opens before the launch has finished --------------------
+  //
+  // `sorta-tray` binds the port FIRST and does its diagnostics afterwards, because none
+  // of them is needed to answer a request (`warn_if_gpu_mismatch` alone is 3.76 s of
+  // torch). That is what makes the tab open in the first second — and it means the tab
+  // can open onto a program that is still getting ready. So this asks, says which step
+  // the launch is on, and shows the app when the answer says ready. No reload: the app
+  // has been booting behind the screen all along, and the background work only writes
+  // the run log.
+  //
+  // A server started any other way (`sorta ui`) answers `ready: true` and this screen is
+  // never seen. So does a failure to ask at all: an overlay nobody can dismiss is worse
+  // than a page whose first fetch went missing.
+  var STARTUP_POLL_MS = 500;
+
+  function startupStepText(state) {
+    var step = state.step;
+    if (!step) return I18N.startup_step_other;
+    var words = I18N["startup_step_" + step] || I18N.startup_step_other;
+    var steps = state.steps || [];
+    var at = steps.indexOf(step);
+    if (at === -1) return words;
+    return words + " — " + fmt(I18N.startup_step_counter,
+                               { step: at + 1, total: steps.length });
+  }
+
+  function initStartup() {
+    var box = document.getElementById("startup");
+    if (!box) return;
+    var stepEl = document.getElementById("startup-step");
+
+    function poll() {
+      fetch("/api/startup")
+        .then(function (r) { return r.json(); })
+        .then(function (state) {
+          if (!state || state.ready) { box.hidden = true; return; }
+          box.hidden = false;
+          if (stepEl) stepEl.textContent = startupStepText(state);
+          window.setTimeout(poll, STARTUP_POLL_MS);
+        })
+        .catch(function () { box.hidden = true; });
+    }
+
+    poll();
+  }
+
+  initStartup();
+
   // F65: the "Folder language" selector (Cities tab) — the OUTPUT language of
   // folders/names, separate from the interface language. Reads the current value
   // from /api/config, and on change persists it (POST /api/config/language) and
@@ -3376,6 +3424,24 @@
         bar.max = 1;
         bar.removeAttribute("value");
         statusEl.textContent = I18N.process_cancel_requested;
+        return;
+      }
+      // F229: the stage is waiting for its model, so it says that instead of counting
+      // frames. The counter measures frames and the stage cannot process one until the
+      // weights are on disk — "0 of 8", unchanged for the twenty minutes of a 1.6 GB
+      // download, is what the owner read as a hang on a collection of eight photographs.
+      // What has arrived is the F225 line right above; it is NOT repeated in the counter,
+      // because two different quantities in one place stop being told apart. The frame
+      // counter comes back by itself on the first tick after the download ends.
+      if (data.stage_waiting_download) {
+        bar.classList.add("indeterminate");
+        bar.max = 1;
+        bar.removeAttribute("value");
+        statusEl.textContent = fmt(I18N.process_stage_waiting_model, {
+          stage: processStageLabel(data.stage),
+          index: data.stage_index,
+          total: data.stage_total,
+        });
         return;
       }
       // #37: total>0 -> determinate progress (it fills); total<=0 (indexing, the total

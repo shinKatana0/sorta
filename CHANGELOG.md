@@ -57,6 +57,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `onnxruntime-gpu` unpack into the same directory, F76), so its summary gained one line:
   **`install profile: gpu|cpu|mixed|unknown`**, read off the installed builds, and the
   wizard sends people to it.
+- **The first launch says that it is launching** (F227). Reported off the same clean
+  virtual machine on 2026-08-08: *"the first launch is very slow, the person has to be
+  able to see that it is loading, and not start ten copies of it."* Measured with the
+  interpreter from the installer payload, on a **fast** machine:
+
+  | step | seconds |
+  | --- | --- |
+  | `import sorta.tray` | 1.53 |
+  | `warn_if_gpu_mismatch` (the torch import) | 3.76 |
+  | config + index connect | 0.16 |
+  | `ui.build_server` | 0.20 |
+  | **total to a bound port** | **5.65** |
+
+  On a VM with a slow disk that is tens of seconds, and for every one of them **nothing at
+  all was on the screen**: the shortcut runs `pythonw`, so there is no console, the tray
+  icon does not exist yet and no tab is open. So the person clicks again — and the second
+  click was the expensive one. The "are we already running" question stood inside
+  `tray.start()`, i.e. **after** the config had been read, `warn_if_gpu_mismatch()` called
+  and the index opened, so the surplus instance imported torch in full before finding out
+  it was surplus. Ten clicks on a weak VM were ten concurrent torch imports, after which
+  the machine could not finish the first one either. Three changes, all of them to the
+  **order**:
+  **1. The port is asked about first.** Before the index, before anything heavy, with only
+  the config read in front of it — so a second click now costs a TCP connect and gives
+  back a tab of the server that is already running. The machinery is the one F207 already
+  wrote (`port_holder`, `sorta_is_serving`, `_busy_port`); what moved is where it is asked.
+  **2. The diagnostics moved behind the bind.** `log_environment`, `warn_if_gpu_mismatch`
+  and `warn_if_geo_data_missing` are diagnostics, not service — not one of them is needed
+  to answer an HTTP request, and together they were **3.9 s of the 5.65**. They now run on
+  a thread of a program that is already serving, writing the same lines into the same log.
+  The property is checked as a fact rather than as a stopwatch: in a subprocess, at the
+  moment the port is bound, `sys.modules` holds neither `torch` nor `onnxruntime` — and a
+  surplus launch imports neither of them at all and never opens the index.
+  **3. Something is on the screen while the rest happens.** A window with the product name
+  and one line — a separate process, for the same reason the folder dialog is one
+  (tkinter wants a main thread, and this one is about to be taken by the tray icon's
+  `icon.run()`); it goes away as soon as the tab has been asked for. The tab then carries
+  the waiting on: `GET /api/startup` says which step the launch is on, the page names it
+  in words in all three languages and **shows the program by itself** when the last step is
+  done, with nothing to reload. Deliberately **no percentage** — the steps differ in length
+  by two orders of magnitude, and a bar stuck at 71% through four seconds of a torch import
+  is worse than the sentence "checking the graphics card". It is also not the model
+  download of F222/F225, which has its own line, its own megabytes and its own failure.
+  Finally, every step writes `startup step=<name> elapsed=<sec>` into the run log, in
+  `runlog`'s own shape, so the next *"why is it slow"* is answered out of the file instead
+  of by measuring somebody else's machine again. A machine with no tray still serves
+  without an icon, exactly as before.
 - **A download is carried to the end, and it is on screen while it happens** (F225). Four
   defects of one line, found in a clean virtual machine on 2026-08-08 — the third attempt
   to check the installer.
@@ -532,6 +579,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **A stage waiting for a download says so, instead of showing a frozen counter** (F229).
+  Reported off the same virtual machine on 2026-08-08: *"Stage verdicts (4/7): 0 of 8 —
+  what is going on? there are only 8 photographs in the test, and as a user I do not
+  understand what is stuck and what is happening."* Nothing was stuck: 1.6 GB of CLIP
+  weights were coming down, and the line beside them counted **frames** — of which not one
+  can be processed while the model is missing. The number was true; the **unit** was not.
+  Eight frames is what makes it plain: the cost of the download is a one-off and does not
+  depend on the size of the collection, so on a small test it takes the *whole* run and the
+  frozen counter is literally the entire screen. F225 put the megabytes on that screen and
+  stopped half way — the counter that cannot move stayed right next to them, and a person
+  reads both and concludes the program has hung.
+  **The stage line now names the state in words** — "waiting for the model — frames start
+  once it is downloaded" — for exactly the stretch of time in which frames are impossible,
+  with the F225 line beside it saying how many megabytes have arrived. The moment the
+  weights are on disk the frame counter is back, counting from zero honestly.
+  **No new machinery**: the answer is derived from the download state F222/F225 already
+  keeps (`stage_waiting_download` in the status snapshot is true while `download` is
+  non-empty and belongs to the stage that is running), so the run screen and the pipeline
+  cannot come to two different answers about one run. A download that belongs to another
+  stage leaves that stage's counter alone.
+  **The same thought in a terminal**: `sorta run` prints the sentence and puts it on the
+  stage's own progress bar, whose unit is frames for the same reason — and takes it down
+  again when the download ends, including when it ends in a refusal.
+  **No invented percentage.** How much has arrived is the F225 line and is not repeated in
+  the frame counter: two different quantities in one place stop being told apart within a
+  month. And the counter is not hidden or replaced by an endless animation in general —
+  once frames are going, their number is the most useful thing on the screen.
 - **A windowed Sorta no longer opens consoles nobody asked for** (F228). Found on
   2026-08-08 in a virtual machine: *"a console opened, but the download progress is not
   visible in it — that is deeply counter-intuitive."* The shortcut runs `pythonw.exe`, a
