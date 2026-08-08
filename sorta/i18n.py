@@ -515,6 +515,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Environment manager uv: {path}",
         "ja": "環境マネージャ uv: {path}",
     },
+    # An installed copy carries `uv.exe` and the wizard installs tiers with it by absolute
+    # path, so "not on PATH" was true and useless — and it stood one line above an
+    # exiftool that names its own shipped copy.
+    "cli.doctor.uv_bundled": {
+        "ru": "Менеджер окружения uv: {path} (поставляется с программой)",
+        "en": "Environment manager uv: {path} (ships with the program)",
+        "ja": "環境マネージャ uv: {path}（本体に同梱）",
+    },
     "cli.doctor.uv_missing": {
         "ru": "Менеджер окружения uv: не найден в PATH",
         "en": "Environment manager uv: not on PATH",

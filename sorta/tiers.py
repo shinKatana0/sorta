@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from . import i18n, install, wizard
-from .offline import hf_cache_dir
+from .offline import hf_cache_dir, hf_xet_cache_dir
 
 _INSIGHTFACE_MODELS = Path.home() / ".insightface" / "models"
 
@@ -352,12 +352,15 @@ def downloaded_bytes(cache: Path | None = None) -> int:
 
     Whole caches rather than one model's directory: what a library names the folder it is
     filling is its own business, and a measurement that depends on those names reports
-    zero the day one changes. BOTH of them, too — insightface never touches the hub, so
-    watching one reported `0 MB of 400 MB` for a whole download.
+    zero the day one changes. ALL THREE of them, and each was found by a download that
+    read `0 MB of …` from start to finish: insightface never touches the hub, and
+    huggingface_hub 1.27 fetches through hf_xet, which fills `<HF_HOME>/xet` and only
+    materialises the file in `hub/` at the last chunk.
     """
     if cache is not None:
         return _bytes_under(cache)
-    return _bytes_under(hf_cache_dir()) + _bytes_under(_INSIGHTFACE_MODELS)
+    return (_bytes_under(hf_cache_dir()) + _bytes_under(hf_xet_cache_dir())
+            + _bytes_under(_INSIGHTFACE_MODELS))
 
 
 def _bytes_under(directory: Path) -> int:

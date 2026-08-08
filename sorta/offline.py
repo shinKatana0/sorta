@@ -35,6 +35,22 @@ def hf_cache_dir() -> Path:
     return base / "hub"
 
 
+def hf_xet_cache_dir() -> Path:
+    """Where hf_xet stages the chunks it is downloading.
+
+    huggingface_hub 1.27 fetches through hf_xet, and hf_xet writes into `<HF_HOME>/xet`,
+    materialising the file in `hub/` only when the last chunk has arrived. A progress line
+    watching `hub/` therefore reports 0 for the whole download and the full size at the
+    end — which is what a 1.6 GB fetch looked like on 2026-08-08.
+    """
+    value = os.environ.get("HF_XET_CACHE", "").strip()
+    if value:
+        return Path(value)
+    home = os.environ.get("HF_HOME", "").strip()
+    base = Path(home) if home else Path.home() / ".cache" / "huggingface"
+    return base / "xet"
+
+
 def models_are_cached(cache_dir: Path | None = None) -> bool:
     """True if the hub cache holds at least one downloaded model.
 

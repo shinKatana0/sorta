@@ -350,8 +350,26 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
         it too — what it does is unchanged."""
         with mock.patch.object(tiers, "hf_cache_dir",
                                return_value=Path("nowhere-at-all")), \
+             mock.patch.object(tiers, "hf_xet_cache_dir",
+                               return_value=Path("nowhere-at-all-either")), \
              mock.patch.object(tiers, "_INSIGHTFACE_MODELS", Path("nowhere-either")):
             self.assertEqual(tiers.downloaded_bytes(), 0)
+
+    def test_the_measurement_sees_the_chunks_hf_xet_stages(self):
+        """`0 MB of 1.6 GB` for a whole CLIP download, met in a virtual machine
+        2026-08-08: huggingface_hub 1.27 fetches through hf_xet, which fills
+        `<HF_HOME>/xet` and materialises the file in `hub/` only at the last chunk."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            chunks = Path(tmp) / "chunk-cache"
+            chunks.mkdir(parents=True)
+            (chunks / "part-0000").write_bytes(b"x" * 4096)
+            with mock.patch.object(tiers, "hf_cache_dir",
+                                   return_value=Path("nowhere-at-all")), \
+                 mock.patch.object(tiers, "hf_xet_cache_dir", return_value=Path(tmp)), \
+                 mock.patch.object(tiers, "_INSIGHTFACE_MODELS", Path("nowhere-either")):
+                self.assertEqual(tiers.downloaded_bytes(), 4096)
 
     def test_the_measurement_sees_the_cache_insightface_fills(self):
         """`0 MB of 400 MB` for a whole download, met in a virtual machine 2026-08-08:
@@ -365,6 +383,8 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
             (models / "det_10g.onnx").write_bytes(b"x" * 2048)
             with mock.patch.object(tiers, "hf_cache_dir",
                                    return_value=Path("nowhere-at-all")), \
+                 mock.patch.object(tiers, "hf_xet_cache_dir",
+                                   return_value=Path("nowhere-at-all-either")), \
                  mock.patch.object(tiers, "_INSIGHTFACE_MODELS", Path(tmp) / "models"):
                 self.assertEqual(tiers.downloaded_bytes(), 2048)
 

@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
@@ -63,6 +65,9 @@ _MANIFEST_LEVELS = 4
 EXIFTOOL_BUNDLED = "bundled"
 EXIFTOOL_ON_PATH = "on_path"
 EXIFTOOL_ABSENT = "absent"
+
+_CARRIAGE_RETURN = chr(13)
+_ERASE_LINE = chr(27) + "[2K"
 
 _SETUP_PREFIX = "cli.setup."
 
@@ -382,6 +387,63 @@ def show_doctor(config_path: str, states: Sequence[TierState] | None = None) -> 
     _cmd_doctor(config_path, states=None if states is None else list(states))
 
 
+def say_progress(text: str) -> None:
+    """One line that rewrites itself, where there is a console to rewrite it on.
+
+    Nine lines of "...0 MB of 1.6 GB so far" scrolling past a foreign progress bar is
+    what the owner met on 2026-08-08. On a terminal the line is redrawn in place;
+    anywhere else (a pipe, a log, a windowed launch) it is dropped: a rewritten line in
+    a file is just the same line again.
+    """
+    stream = sys.stdout
+    if stream is None or not getattr(stream, "isatty", lambda: False)():
+        return
+    try:
+        # Carriage return, then "erase the line": a shorter number must not leave the
+        # tail of a longer one standing behind it.
+        stream.write(_CARRIAGE_RETURN + _ERASE_LINE + text)
+        stream.flush()
+    except (OSError, ValueError, UnicodeEncodeError):
+        pass
+
+
+def end_progress() -> None:
+    """Close the rewritten line so the next sentence starts on one of its own."""
+    stream = sys.stdout
+    if stream is None or not getattr(stream, "isatty", lambda: False)():
+        return
+    try:
+        stream.write(chr(10))
+        stream.flush()
+    except (OSError, ValueError):
+        pass
+
+@contextmanager
+def quiet_downloads():
+    """Silence what the download libraries say about themselves while we say it better.
+
+    huggingface_hub draws its own bar (and hf_xet a second one, in chunks), and both
+    interleave with the line above: one download reported by three counters, none of which
+    agrees with the others. The nag about HF_TOKEN goes with them — nothing here can act
+    on it, and it arrives once per file.
+    """
+    previous = {name: os.environ.get(name)
+                for name in ("HF_HUB_DISABLE_PROGRESS_BARS", "HF_XET_HIGH_PERFORMANCE")}
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    http_logger = logging.getLogger("huggingface_hub.utils._http")
+    was_disabled = http_logger.disabled
+    http_logger.disabled = True
+    try:
+        yield
+    finally:
+        http_logger.disabled = was_disabled
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def say_console(text: str) -> None:
     """Print — on a console that may not encode every character of the catalog.
 
@@ -565,7 +627,8 @@ def download_weights(tier: Tier, lang: i18n.Lang, config_path: str = "config.yam
                      say: Callable[[str], None] = say_console,
                      fetch: Callable[[Tier, str], None] = fetch_weights,
                      measure: Callable[[], int] | None = None,
-                     tick: float | None = None) -> bool:
+                     tick: float | None = None,
+                     progress_say: Callable[[str], None] | None = None) -> bool:
     """Fetch the tier's weights now, saying how it goes. True when they are on disk.
 
     A refusal by the network is not an error of the install: everything else stays as it
@@ -587,15 +650,30 @@ def download_weights(tier: Tier, lang: i18n.Lang, config_path: str = "config.yam
                       weights=", ".join(tier.weights),
                       size=human_size(tier.download_mb, lang)))
 
-    def progress(done: int) -> None:
-        say(i18n.cli_text(f"{_SETUP_PREFIX}weights_progress", lang,
-                          done=human_size(done // _MB, lang),
-                          size=human_size(tier.download_mb, lang)))
+    # The progress line is the one thing that REPLACES itself, so it gets a channel of
+    # its own — chosen HERE and not passed in: `download` is an injected callback, and a
+    # new keyword on it breaks every double that stands in for it. Our own console gets
+    # the line redrawn in place; anyone collecting lines (the suite, another screen) keeps
+    # receiving them one by one through `say`.
+    if progress_say is not None:
+        tell_progress = progress_say
+    elif say is say_console:
+        tell_progress = say_progress
+    else:
+        tell_progress = say
 
-    error = watch_download(
-        lambda: fetch(tier, config_path), progress,
-        measure=downloaded_bytes if measure is None else measure,
-        tick=PROGRESS_SECONDS if tick is None else tick)
+    def progress(done: int) -> None:
+        tell_progress(i18n.cli_text(f"{_SETUP_PREFIX}weights_progress", lang,
+                                    done=human_size(done // _MB, lang),
+                                    size=human_size(tier.download_mb, lang)))
+
+    with quiet_downloads():
+        error = watch_download(
+            lambda: fetch(tier, config_path), progress,
+            measure=downloaded_bytes if measure is None else measure,
+            tick=PROGRESS_SECONDS if tick is None else tick)
+    if tell_progress is say_progress:
+        end_progress()
     if error is not None:
         say(i18n.cli_text(f"{_SETUP_PREFIX}weights_failed", lang,
                           weights=", ".join(tier.weights),

@@ -944,17 +944,26 @@ def _cmd_doctor(config_path: str, states: list[TierState] | None = None) -> None
     # own python and its own `uv`, and a shadowed PATH turns every later line into a
     # statement about the wrong installation.
     print(_t("cli.doctor.python", lang, path=sys.executable))
-    uv_path = shutil.which("uv")
-    print(_t("cli.doctor.uv", lang, path=uv_path) if uv_path
-          else _t("cli.doctor.uv_missing", lang))
+    # The manifest before PATH, as for exiftool below: an installed copy ships `uv.exe`
+    # and the wizard installs tiers with it by absolute path, so "not on PATH" was true
+    # and useless — said one line above an exiftool that names its shipped copy.
+    manifest = install.load_manifest()
+    shipped_uv = install.tool_path(manifest, "uv")
+    uv_path = shipped_uv if shipped_uv and Path(shipped_uv).is_file() else shutil.which("uv")
+    if uv_path and uv_path == shipped_uv:
+        print(_t("cli.doctor.uv_bundled", lang, path=uv_path))
+    elif uv_path:
+        print(_t("cli.doctor.uv", lang, path=uv_path))
+    else:
+        print(_t("cli.doctor.uv_missing", lang))
     # F213: ...and the two things `uv tool install` leaves broken on a clean Linux
     # machine — the command it put somewhere PATH does not look, and the `exiftool` it
     # does not install at all.
     # F226: both of those answers are different on an installed copy, and both of them
     # used to be wrong there. The exiftool named is the one the READER will really use —
     # the same resolution, not a second lookup that can disagree with it — and the
-    # manifest says whether that one came in the installer.
-    manifest = install.load_manifest()
+    # manifest says whether that one came in the installer. The manifest is the one read
+    # for the uv line above: two reads could answer differently about one install.
     exiftool = exif.resolve_exiftool(which=shutil.which, manifest=manifest)
     shipped = install.tool_path(manifest, "exiftool")
     # F230: one reading of the manifest, one answer about which install this is, handed to
