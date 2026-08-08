@@ -20,13 +20,16 @@ beside it, the manifest, the relative path inside it — is what the build write
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sorta import cli, exif, i18n, install, wizard
@@ -299,7 +302,7 @@ class TestAMachineWithNeither(TheInstalledCopy):
         with patch.object(exif, "_resolved", (None,)):
             self.assertFalse(exif.exiftool_available())
             with patch.object(exif, "read_one_pillow",
-                              lambda path: exif.ExifData(make="pillow")) as _:
+                              lambda _path: exif.ExifData(make="pillow")):
                 out = exif.read_batch([self.root / "a.heic"])
         self.assertEqual(next(iter(out.values())).make, "pillow")
 
@@ -375,11 +378,6 @@ class TestDoctorNamesTheExiftoolItWillActuallyUse(TheInstalledCopy):
     def test_doctor_prints_it(self):
         """The wiring: every helper above is pure, so without this the command could
         print none of them and the suite would stay green."""
-        from types import SimpleNamespace
-
-        import io
-        from contextlib import redirect_stdout
-
         health = SimpleNamespace(summary="health", available=True)
         buffer = io.StringIO()
         with patch.object(cli.shutil, "which", lambda _name: None), \
