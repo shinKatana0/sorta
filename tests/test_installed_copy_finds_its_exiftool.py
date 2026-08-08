@@ -328,7 +328,11 @@ class TestDoctorNamesTheExiftoolItWillActuallyUse(TheInstalledCopy):
             return cli._doctor_install_lines(
                 lang, command=None, scripts=Path("/bin"), exiftool=exiftool,
                 bundled=exiftool == self.bundled(),
-                installed_python=install.tool_path(self.manifest, "python"))
+                installed_python=install.tool_path(self.manifest, "python"),
+                # F230: which install this is comes from `install.install_kind`, and here
+                # it is stated rather than probed — the manifest below describes a copy the
+                # Windows installer made, while the suite itself runs in a checkout.
+                kind=install.KIND_INSTALLED)
 
     def test_it_names_the_path_of_the_bundled_binary(self):
         self.assertIn(self.bundled(), self._lines()[-1])
@@ -362,10 +366,19 @@ class TestDoctorNamesTheExiftoolItWillActuallyUse(TheInstalledCopy):
         self.assertIn(str(self.root / builder.PAYLOAD_PYTHON_EXE), printed)
         self.assertIn("-m sorta.cli", printed)
 
-    def test_a_checkout_keeps_the_advice_that_is_right_for_it(self):
-        lines = cli._doctor_install_lines("en", command=None, scripts=Path("/bin"),
-                                          exiftool="/usr/bin/exiftool")
-        self.assertIn("uv tool update-shell", lines[1])
+    def test_a_tool_install_keeps_the_advice_that_is_right_for_it(self):
+        """F230 split what F226 called "a checkout" in two: `uv tool update-shell` repairs
+        a `uv tool install`, and a checkout of the sources gets `uv run sorta` instead —
+        its commands were never meant to be on PATH."""
+        tool = cli._doctor_install_lines("en", command=None, scripts=Path("/bin"),
+                                        exiftool="/usr/bin/exiftool",
+                                        kind=install.KIND_TOOL)
+        self.assertIn("uv tool update-shell", tool[1])
+        checkout = cli._doctor_install_lines("en", command=None, scripts=Path("/bin"),
+                                            exiftool="/usr/bin/exiftool",
+                                            kind=install.KIND_CHECKOUT)
+        self.assertIn("uv run sorta", checkout[1])
+        self.assertNotIn("uv tool update-shell", checkout[1])
 
     def test_every_new_line_exists_in_three_languages(self):
         rendered = {lang: self._lines(lang) for lang in _LANGS}
@@ -382,7 +395,7 @@ class TestDoctorNamesTheExiftoolItWillActuallyUse(TheInstalledCopy):
         buffer = io.StringIO()
         with patch.object(cli.shutil, "which", lambda _name: None), \
                 patch.object(cli.install, "load_manifest", lambda: self.manifest), \
-                patch.object(cli, "gpu_health", lambda: health), \
+                patch.object(cli, "gpu_health", lambda **_kw: health), \
                 patch.object(cli, "geo_data_health", lambda: health), \
                 patch.object(cli, "tier_states", lambda: []), \
                 patch.object(cli, "default_log_path", lambda: "run.log"), \

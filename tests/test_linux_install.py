@@ -34,7 +34,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sorta import cli, i18n
+from sorta import cli, i18n, install
 from tests.test_docs_guides import GUIDES, read
 
 _LANGS: tuple[i18n.Lang, ...] = ("ru", "en", "ja")
@@ -44,9 +44,15 @@ _ROOT = Path(__file__).resolve().parent.parent
 def _install_lines(lang: i18n.Lang = "en", *, command: str | None = "/usr/bin/sorta",
                    scripts: str = "/home/me/.local/bin",
                    exiftool: str | None = "/usr/bin/exiftool",
-                   hint: str | None = None) -> list[str]:
+                   hint: str | None = None,
+                   # F230: the machine this whole file is about is a `uv tool install`,
+                   # which is one of three install kinds now and the only one for which
+                   # `uv tool update-shell` is the right answer. Stated rather than probed:
+                   # the suite runs in a checkout, and a case about Linux must not change
+                   # its verdict with the directory it happens to run from.
+                   kind: str = install.KIND_TOOL) -> list[str]:
     return cli._doctor_install_lines(lang, command=command, scripts=Path(scripts),
-                                     exiftool=exiftool, hint_key=hint)
+                                     exiftool=exiftool, hint_key=hint, kind=kind)
 
 
 class TestTheCommandThatIsNotOnPath(unittest.TestCase):
@@ -125,18 +131,24 @@ class TestEveryLineExistsInThreeLanguages(unittest.TestCase):
                     self.assertTrue(all(text.strip() for text in texts))
 
     def test_the_way_out_of_a_missing_tier_is_the_one_this_machine_has(self):
-        """F216 named the Start menu, which exists only where the installer put it."""
-        self.assertEqual(cli._tier_hint_key("nt"), "cli.doctor.tier_hint")
-        self.assertEqual(cli._tier_hint_key("posix"), "cli.doctor.tier_hint_posix")
-        posix = i18n.cli_text("cli.doctor.tier_hint_posix", "en")
-        self.assertIn("sorta-setup", posix)
-        self.assertNotIn("Start menu", posix)
+        """F216 named the Start menu, which exists only where the installer put it.
+
+        F230: and the choice is by INSTALL KIND rather than by operating system — a
+        `uv tool install` on Windows has no Start menu item either, which is exactly what
+        the OS-keyed version of this could not say."""
+        self.assertEqual(cli._tier_hint_key(install.KIND_TOOL),
+                         "cli.doctor.tier_hint.tool")
+        self.assertEqual(cli._tier_hint_key(install.KIND_INSTALLED),
+                         "cli.doctor.tier_hint.installed")
+        tool = i18n.cli_text("cli.doctor.tier_hint.tool", "en")
+        self.assertIn("sorta-setup", tool)
+        self.assertNotIn("Start menu", tool)
 
     def test_the_hint_the_tier_block_prints_follows_this_machine(self):
         states = [cli.TierState("faces", missing_weights=("buffalo_l",))]
-        with patch.object(cli, "_tier_hint_key", lambda: "cli.doctor.tier_hint_posix"):
-            self.assertEqual(cli._doctor_tier_lines("en", states)[-1],
-                             i18n.cli_text("cli.doctor.tier_hint_posix", "en"))
+        self.assertEqual(
+            cli._doctor_tier_lines("en", states, kind=install.KIND_TOOL)[-1],
+            i18n.cli_text("cli.doctor.tier_hint.tool", "en"))
 
 
 class TestThePreviewCacheIsPrivateToItsOwner(unittest.TestCase):
@@ -211,7 +223,9 @@ class TestDoctorPrintsAllOfIt(unittest.TestCase):
                  "uv": "/usr/bin/uv", **which}
         buffer = io.StringIO()
         with patch.object(cli.shutil, "which", lambda name: found.get(name)), \
-                patch.object(cli, "gpu_health", lambda: health), \
+                patch.object(cli, "gpu_health", lambda **_kw: health), \
+                patch.object(cli.install, "install_kind",
+                             lambda *_a, **_kw: install.KIND_TOOL), \
                 patch.object(cli, "geo_data_health", lambda: health), \
                 patch.object(cli, "tier_states", lambda: []), \
                 patch.object(cli, "default_log_path", lambda: "run.log"), \
@@ -325,7 +339,11 @@ class TestTheGuidesDescribeTheInstallThatExists(unittest.TestCase):
         those answers ends in is read out of the catalog, in that reader's language, and
         required to be the one the guide teaches. Editing one of them now breaks the
         other until it follows."""
-        for key, fix in (("cli.doctor.command_hint", "uv tool update-shell"),
+        # F230: the PATH fix is now one of three, and the one this section is about is the
+        # `uv tool install`'s — the other two installs have no shell profile to repair.
+        for key, fix in ((install.advice_key("cli.doctor.command_hint",
+                                             install.KIND_TOOL),
+                          "uv tool update-shell"),
                          ("cli.doctor.exiftool_linux", "libimage-exiftool-perl"),
                          ("cli.doctor.cache_open", "chmod 700")):
             for lang, path in GUIDES.items():

@@ -26,7 +26,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sorta import i18n, tiers, wizard
+from sorta import i18n, install, tiers, wizard
 
 _LANGS = ("ru", "en", "ja")
 
@@ -137,7 +137,7 @@ class TestRefusingEverything(unittest.TestCase):
 
     def test_the_person_is_told_the_product_works(self):
         self.assertIn(i18n.cli_text("cli.setup.works_anyway", "en"), self.screen.said)
-        self.assertIn(i18n.cli_text("cli.setup.rerun", "en"), self.screen.said)
+        self.assertIn(i18n.cli_text(wizard.rerun_key(), "en"), self.screen.said)
 
     def test_each_refusal_says_what_stays_unavailable(self):
         for tier in wizard.OPTIONAL_TIERS:
@@ -454,7 +454,15 @@ class TestTheTierCatalogReadsAsWords(unittest.TestCase):
                   wizard.EXIFTOOL_ABSENT)}
         self.assertGreaterEqual(len(used), 15)  # the catalog is actually wired up
         for key in sorted(used):
-            self.assertIn(key, i18n._CLI_STRINGS, key)
+            with self.subTest(key=key):
+                # F230: two of these are BASES of an install-kind family (`rerun`,
+                # `cpu_back`) — the sentence differs between a checkout and an installed
+                # copy, and `install.advice_key` picks. Then all three have to exist.
+                if key in install.INSTALL_ADVICE:
+                    for variant in install.advice_keys(key):
+                        self.assertIn(variant, i18n._CLI_STRINGS, variant)
+                    continue
+                self.assertIn(key, i18n._CLI_STRINGS, key)
 
 
 if __name__ == "__main__":
