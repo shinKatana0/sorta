@@ -18,15 +18,12 @@ from __future__ import annotations
 from .. import i18n, tiers, wizard
 
 
-# F133: the tabs are named after what a person DOES, not after the code that computed
-# the numbers. Three things can be done to a collection and they differ by what they do
-# to the file system: one canon (a physical move), any number of slices (hardlinks, free
-# to make and to drop) and the junk (a subtraction, and the dangerous one). "Overview"
-# holds the state of the collection and the run that produces it — one question asked at
-# two moments in time.
+# F133: the tabs are named after what a person DOES. Three things can be done to a
+# collection and they differ in what they do to the file system: one canon (a physical
+# move), any number of slices (hardlinks, free to make and to drop) and the junk (a
+# subtraction, and the dangerous one).
 _UI_STRINGS: dict[str, dict[str, str]] = {
-    # F126: the tab is the workspace, not one of its slices — duplicates are the first
-    # of four things a person opens it to go through.
+    # F126: the tab is the workspace, not one of its slices.
     "tab_review": {"ru": "Разбор", "en": "Review", "ja": "仕分け"},
     "tab_layout": {"ru": "Раскладка", "en": "Layout", "ja": "振り分け"},
     "tab_slices": {"ru": "Срезы", "en": "Slices", "ja": "スライス"},
@@ -34,14 +31,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "tab_event": {"ru": "События", "en": "Events", "ja": "イベント"},
     "tab_animal": {"ru": "Животные", "en": "Animals", "ja": "動物"},
     "tab_moves": {"ru": "Перемещения", "en": "Moves", "ja": "移動"},
-    # F175: the slice used to be called "Not personal photos", and that name was wrong
-    # twice over. A photograph of a receipt, a screenshot of a conversation with your
-    # wife and a passport are all personal — they are simply not photographs taken FOR
-    # MEMORY, which is a different thing; and read as "not personal" the slice invites
-    # deleting it, while a thousand of the frames in it are documents that must not be
-    # deleted. The old name also sat one letter away from `files.not_personal`, the flag
-    # for downloaded films (three files of 38 485), which is about where a file came
-    # from and not about what is in the frame — see the note in i18n._FOLDERS.
+    # F175: called "Not personal photos" before. A receipt, a screenshot and a passport
+    # are all personal — they are simply not taken FOR MEMORY — and the old name invited
+    # deleting a slice holding a thousand documents that must not be deleted. It also sat
+    # one letter from `files.not_personal`, the flag for downloaded films (three files of
+    # 38 485), which is about where a file came from and not what is in the frame.
     "tab_junk": {"ru": "Служебные кадры", "en": "Utility frames",
                  "ja": "実用目的のコマ"},
     "process_intro": {
@@ -62,17 +56,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Глубокий анализ (VLM)", "en": "Deep analysis (VLM)",
         "ja": "詳細分析（VLM）",
     },
-    # F161: the hint used to open with "Slower", and that stopped being true here. The
-    # checkbox is permission and nothing else since the deep tier became a line of its
-    # own below it: what is slow are the lines it unlocks, each of which now says its own
-    # price. Leaving "slower" on the master would price the same hours twice and leave
-    # the one thing this switch really decides — whether a model may be raised at all —
-    # unsaid.
-    # F217: the hint used to end in `uv sync --extra vlm`, a command for a checkout of the
-    # sources — and the person reading it installed the program with an installer and has
-    # no sources. The requirement itself is still stated, because it is true and it is
-    # what explains the automatic fall back; WHICH tier is missing and how to add it is
-    # said underneath, by the note that knows the answer for this machine.
+    # F161: the hint no longer opens with "Slower" — the checkbox is permission and
+    # nothing else since the deep tier became a line of its own below it, and each of
+    # those lines says its own price. F217: it no longer ends in `uv sync --extra vlm`
+    # either, a command for a checkout of the sources the reader does not have; WHICH
+    # tier is missing and how to add it is said underneath, by the note that knows the
+    # answer for this machine.
     "process_deep_hint": {
         "ru": "Разрешает поднимать модель. Сам по себе не считает ничего: время "
               "показано у строк под ним. Нужен ярус установки «Глубокий ярус (VLM)» "
@@ -84,16 +73,14 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "下の各項目に表示されます）。インストールティア「ディープティア（VLM）」が"
               "必要です（なければ自動的に高速分析にフォールバックします）。",
     },
-    # F161: the effect that used to be the master switch's own, given its name back. It
-    # is deliberately named after what it PRODUCES and not after how: "deep analysis" is
-    # a technology, and 85% of what that technology did on the live run of 2026-07-28 was
-    # find products (2 202 verdicts of 2 592).
+    # F161: named after what it PRODUCES, not after how — "deep analysis" is a
+    # technology, and 85% of what it did on the live run of 2026-07-28 was find products
+    # (2 202 verdicts of 2 592).
     "process_products_label": {
         "ru": "Распознавание товаров", "en": "Product recognition", "ja": "商品の認識",
     },
-    # And the hint says what a person GETS, in the two places they will look for it. The
-    # last sentence is the one that matters: the fast tier does not produce the class at
-    # all, so without this line the products slice is not thin — it is empty.
+    # The last sentence is the one that matters: the fast tier does not produce the
+    # class at all, so without it the products slice is not thin — it is empty.
     "process_products_hint": {
         "ru": "Отсюда берутся папка «_Товары» в раскладке и одноимённый срез: снимки "
               "вещей на продажу отделяются от снимков на память. Без этой строки "
@@ -106,25 +93,19 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "商品は少ないのではなく、ゼロです。",
     },
     # F217: what this checkbox does when the tier behind it is not on the machine. The
-    # note used to say `uv sync --extra vlm`, which is a command for a checkout of the
-    # sources — the person who ticked the box has an installed program and no sources, so
-    # it named a way out they cannot take. The state itself now comes from the same probe
-    # `sorta doctor` uses, and the way out is `tier_add_hint`, appended by the script.
-    #
-    # "Install tier" and not "tier": the word already means the classification tier on
-    # this very screen ("the fast tier (CLIP)"), and two meanings of one word in two
-    # sentences of one note is a real way to lose a reader.
+    # note used to say `uv sync --extra vlm`, a command for sources the reader does not
+    # have. "Install tier" and not "tier": the word already means the classification tier
+    # on this very screen, and two meanings of one word in two sentences loses a reader.
     "process_deep_falls_back": {
         "ru": "Прогон посчитает быстрым ярусом (CLIP) — сама галочка ничего не изменит.",
         "en": "The run will be computed on the fast tier (CLIP) — the checkbox itself "
               "changes nothing.",
         "ja": "実行は高速ティア（CLIP）で計算され、このチェック自体は何も変えません。",
     },
-    # F217: and the half that matters more — the person who has ALREADY run it. The fall
+    # F217: the half that matters more — the person who has ALREADY run it. The fall
     # back to the fast tier is silent by design (junk.py catches the whole classifier
-    # build, so a missing package cannot kill a four-hour run), which left the run
-    # finishing, the collection unchanged, and the reason in a log file. `media_class.tier`
-    # has known which tier handled a frame since schema v11; this says it out loud.
+    # build, so a missing package cannot kill a four-hour run), which left the reason in
+    # a log file and nowhere else.
     "process_deep_fell_back": {
         "ru": "Глубокий анализ был отмечен, но им не обработан ни один кадр — прогон "
               "прошёл на быстром ярусе (CLIP).",
@@ -133,9 +114,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "詳細分析にチェックが入っていましたが、それで処理されたコマはありません。"
               "実行は高速ティア（CLIP）で行われました。",
     },
-    # The state itself, for any tier that installs packages. What is MISSING by name is
-    # not repeated here: `sorta doctor` lists the distributions because a person repairing
-    # an install by hand needs them, and this screen names the wizard instead.
+    # What is MISSING by name is not repeated here: `sorta doctor` lists the
+    # distributions for a person repairing by hand, and this screen names the wizard.
     "tier_absent_note": {
         "ru": "Ярус установки «{name}» не добавлен.",
         "en": "The “{name}” install tier has not been added.",
@@ -169,10 +149,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Разбор по событиям", "en": "Detect events",
         "ja": "イベントの検出",
     },
-    # F123: the hint has one job — to say that this checkbox is NOT another long step.
-    # It stands next to faces (17 minutes) and deep analysis (hours), and read as one of
-    # them it simply never gets ticked; the animals ride on the CLIP pass the junk stage
-    # makes anyway.
+    # F123: the hint has one job — to say this checkbox is NOT another long step. It
+    # stands next to faces (17 minutes) and deep analysis (hours), and read as one of
+    # them it never gets ticked; the animals ride on the CLIP pass junk makes anyway.
     "process_pets_label": {
         "ru": "Искать животных", "en": "Detect animals",
         "ja": "動物の検出",
@@ -187,8 +166,7 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # F222: the stage that never had a tick. It ran on every run, fetched 1.6 GB the
     # first time and produced 143 of the 26 137 places of the owner's collection — 0.55%,
-    # practically one trip. The caption says what it gives and what it costs, because a
-    # box that is cleared by default has to be worth ticking on purpose.
+    # practically one trip. A box cleared by default has to be worth ticking on purpose.
     "process_landmarks_label": {
         "ru": "Узнавать места по виду", "en": "Recognise places by sight",
         "ja": "見た目で場所を判定",
@@ -208,9 +186,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "コマは通常、近くのコマと時刻から救われます。初回実行時に重み 1.6 GB を"
               "ダウンロードします。",
     },
-    # F222 §7: the landmark check is a question ABOUT the landmark stage, so it goes dead
-    # with it — a subordinate of a stage that is not in the run is one more control that
-    # does nothing, which is exactly what F211 forbids.
+    # F222 §7: a question ABOUT the landmark stage, so it goes dead with it — a
+    # control that does nothing is what F211 forbids.
     "process_needs_landmarks_hint": {
         "ru": "Работает только вместе с «Узнавать места по виду» — без этой стадии "
               "проверять нечего.",
@@ -227,15 +204,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "時間と場所に基づいて旅行やイベントにグループ化します"
               "（位置情報が必要）。イベントごとの整理やアルバムに使います。",
     },
-    # --- F138: the run budget — the block that turns six switches into an estimate ---
-    # The list has to MEAN something, or moving four expensive knobs here is just the
-    # console of toggles F133 removed. The meaning is the price on every line and the
-    # sum under them, right where the eye is already going to the button.
+    # --- F138: the run budget — six switches turned into an estimate ------------------
+    # A price on every line and the sum under them, where the eye is already going to the
+    # button; without that, moving four expensive knobs here is the console F133 removed.
     "costs_title": {
         "ru": "Что посчитать", "en": "What to compute", "ja": "何を計算するか",
     },
-    # The estimate says it is an estimate, in the block itself. A wrong exact number is
-    # worse than an honest approximate one: promise twenty minutes, take two hours, and
+    # The estimate says it is an estimate: promise twenty minutes, take two hours, and
     # no figure on this screen is believed again.
     "costs_estimate_note": {
         "ru": "Время — оценка по этой коллекции: замеренная скорость на число кадров "
@@ -247,10 +222,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "のコマ数）。約束ではありません。ダッシュは「このインデックスでは算出でき"
               "ない」という意味です。",
     },
-    # F159: where the numbers came from, said next to them. A person deciding whether to
-    # wait four hours needs to tell "this is how it went for YOU last time" from "this is
-    # how it went for the developer" — the second is an honest guess, and calling it one
-    # is what keeps the first believable.
+    # F159: where the numbers came from, said next to them. "This is how it went for
+    # YOU last time" and "this is how it went for the developer" are different claims,
+    # and calling the second a guess is what keeps the first believable.
     "costs_source_measured": {
         "ru": "Числа — по вашему прошлому прогону ({date}).",
         "en": "The numbers come from your own last run ({date}).",
@@ -285,17 +259,15 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "costs_free": {
         "ru": "почти бесплатно", "en": "almost free", "ja": "ほぼ無料",
     },
-    # F145: what a line under a cleared master switch costs. Not "almost free" — that is
-    # said about a stage that RUNS and is cheap; this one does not run at all, and the
-    # number says so plainly because the sum below has to add up with it.
+    # F145: not "almost free" — that is said about a stage that RUNS and is cheap. This
+    # one does not run at all, and the sum below has to add up with it.
     "costs_off": {
         "ru": "0 — не выполняется", "en": "0 — does not run",
         "ja": "0 — 実行されません",
     },
-    # F161: and what the MASTER switch costs, which is also nothing — for the opposite
-    # reason. A line under a cleared master does not run; this one has nothing to run.
-    # Both numbers are zero and saying so with one string would hide the difference the
-    # feature is about: permission is not work.
+    # F161: the master switch also costs nothing, for the opposite reason — a line
+    # under a cleared master does not run; this one has nothing to run. One string for
+    # both zeros would hide the difference the feature is about: permission is not work.
     "costs_permission_only": {
         "ru": "0 — только разрешение", "en": "0 — permission only",
         "ja": "0 — 許可のみ",
@@ -322,14 +294,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "候補を 1 枚ずつモデルに見せます（実際の動物か、その画像か、いないか）。"
               "精度は上がりますが、コマごとにモデルへ問い合わせます。",
     },
-    # F204: the two questions that were asked without anybody being told. The rescue
-    # (F140) reads the score the junk stage computes for every photograph and shows the
-    # frames above `features.junk_rescue_threshold` to the model — on the run of
-    # 2026-08-04 it moved 441 frames into the screenshots slice, and 41% of them were
-    # ordinary photographs of the owner (the F171 measurement, 350 frames). That number
-    # is in the caption on purpose: this option takes personal pictures out of the city
-    # layout, and a person switching it on is entitled to know the price in both
-    # directions before the run rather than after it.
+    # F204: the rescue (F140) shows the frames above `features.junk_rescue_threshold` to
+    # the model — on the run of 2026-08-04 it moved 441 frames into the screenshots
+    # slice, and 41% of them were ordinary photographs of the owner (the F171
+    # measurement, 350 frames). That number is in the caption on purpose: this option
+    # takes personal pictures out of the city layout.
     "process_junk_rescue_label": {
         "ru": "Искать экранное среди фотографий",
         "en": "Find screen captures among the photographs",
@@ -349,9 +318,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "移ります。2026-08-04 の測定: 見つかった 441 コマのうち 41% は普通の"
               "写真で、それらも都市ごとの振り分けから外れます。",
     },
-    # F131 on screen. The hint says what the check does AND why it is worth a model call:
-    # the F75 rule — a wrong city is worse than no city, so a proposal nobody corroborated
-    # leaves the frame where it is instead of moving it somewhere else.
+    # F131 on screen. The hint says why the check is worth a model call: the F75 rule —
+    # a wrong city is worse than no city, so an uncorroborated proposal moves nothing.
     "process_landmarks_verify_label": {
         "ru": "Проверять узнанные места моделью",
         "en": "Verify the recognised places with the model",
@@ -371,11 +339,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "コマを別の都市へ移さず、場所なしのままにします。",
     },
     # --- F222: what this run will download, said above the button ---------------------
-    # F217 hung a note on two checkboxes; this is the sum, over the lines that will
-    # actually run — the ones with no checkbox included, because those are the ones
-    # nobody could have been warned about. The person it is written for cleared the
-    # "set it up at the end" box in the installer and starts a run without opening
-    # anything else: this block is the only place they can learn that 1.6 GB is coming.
+    # The sum, over the lines that will actually run — the ones with no checkbox
+    # included, because those are the ones nobody could have been warned about. For the
+    # person who cleared "set it up at the end" in the installer, this block is the only
+    # place they can learn that 1.6 GB is coming.
     "download_title": {
         "ru": "Этот прогон скачает {size}",
         "en": "This run will download {size}",
@@ -394,18 +361,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "ダウンロードは不要です: この実行に必要なモデルはすべてディスク上に"
               "あります。",
     },
-    # The stages nobody ticks, named in the summary the way the run screen names them
-    # everywhere else. Without this line the sum reads as belonging to the checkboxes
-    # alone, and the 1.6 GB of the classification is exactly what it does not belong to.
+    # Without this line the sum reads as belonging to the checkboxes alone, and the
+    # 1.6 GB of the classification is exactly what it does not belong to.
     "download_always_part": {
         "ru": "классификация кадров (без галочки)",
         "en": "frame classification (no checkbox)",
         "ja": "コマの分類（チェックなし）",
     },
-    # F222 §3: while it is coming down. 1.6 GB with nothing on screen is
-    # indistinguishable from a hang — the report this feature comes from says "it hung on
-    # landmarks", and nothing had hung. How much has arrived is known to the download
-    # library and not to us; a named model and a size beat a silent hour.
+    # F222 §3: 1.6 GB with nothing on screen is indistinguishable from a hang — the
+    # report this comes from says "it hung on landmarks", and nothing had hung. How much
+    # has arrived is known to the download library and not to us.
     "download_running": {
         "ru": "Скачивается модель для этапа «{stage}»: {weights} ({size}). "
               "Это первый раз, дальше она берётся с диска.",
@@ -414,20 +379,18 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "「{stage}」ステージ用のモデルをダウンロード中: {weights}（{size}）。"
               "初回のみで、以降はディスクから読み込まれます。",
     },
-    # F225: ...and how far it has got, because a line that names a model and then never
-    # changes is read as a hang exactly the way silence was. The number is measured on the
-    # disk (`tiers.downloaded_bytes`) and refreshed at least every five seconds — the same
-    # measurement the setup wizard prints in its console, so the two cannot disagree.
+    # F225: a line that names a model and then never changes reads as a hang exactly the
+    # way silence did. The number is measured on the disk (`tiers.downloaded_bytes`) and
+    # refreshed at least every five seconds — the same measurement the wizard prints.
     "download_progress": {
         "ru": "Скачано {done} из {size}.",
         "en": "{done} of {size} so far.",
         "ja": "{size} 中 {done} をダウンロード済み。",
     },
-    # F222 §6b: the tier is absent, so the option cannot do anything at all — and an
-    # option that cannot act is a control that does nothing, which F211 forbids in as
-    # many words. It goes dead, with the reason and the way out beside it (the wizard's
-    # own line, `tier_add_hint`), and the SAVED value stays visible: somebody who ticked
-    # this a month ago and then cleared a cache must not find their setting quietly gone.
+    # F222 §6b: the tier is absent, so the option cannot act — a control that does
+    # nothing is what F211 forbids. It goes dead with the reason and the way out beside
+    # it, and the SAVED value stays visible: somebody who ticked this a month ago and
+    # then cleared a cache must not find their setting quietly gone.
     "tier_unavailable_note": {
         "ru": "Пункт недоступен, пока ярус не добавлен. Сохранённая настройка цела — "
               "прогон идёт на быстром ярусе.",
@@ -437,9 +400,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "ままで、実行は高速ティアで行われます。",
     },
     # F145: said next to every option that asks the SAME model the "Deep analysis"
-    # checkbox loads. With the checkbox clear each of them costs nothing and does
-    # nothing — the line says which switch turns it back on, so a dead option does not
-    # read as a missing feature.
+    # checkbox loads. The line names which switch turns it back on, so a dead option does
+    # not read as a missing feature.
     "process_needs_deep_hint": {
         "ru": "Работает только с «Глубоким анализом (VLM)» — без него модель не "
               "поднимается и этот пункт ничего не делает.",
@@ -449,12 +411,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "れず、この項目は何もしません。",
     },
     # --- F81/F82: the three blocks of the first tab + the exclusion tree ------
-    # F82: the two mechanisms are now side by side in one tree, so the wording carries
-    # the whole difference between them — "do not SCAN" (the files never enter the index
-    # at all) and "do not LAY OUT" (`sort.exclude_dirs`: indexed, searched, deduplicated,
-    # simply left where they are). Each gets a one-line explanation, because this is
-    # exactly the distinction a live user got wrong. The F77 per-file corrections
-    # ("leave alone") are a third thing and live on the "Cities" tab.
+    # F82: the wording carries the whole difference between the two mechanisms — "do not
+    # SCAN" (the files never enter the index) and "do not LAY OUT" (`sort.exclude_dirs`:
+    # indexed, searched, deduplicated, simply left where they are). This is exactly the
+    # distinction a live user got wrong.
     "step_source_title": {"ru": "Источник", "en": "Source", "ja": "ソース"},
     "step_options_title": {
         "ru": "Параметры запуска", "en": "Run options", "ja": "実行オプション",
@@ -582,20 +542,14 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "{stage} — 処理: {processed} 件、処理済みのためスキップ: {skipped} 件",
     },
     # F217: this banner used to end in `uv tool install --force ".[gpu]"`, and for the
-    # person it is written for not one word of that works: an installed copy has no `uv`
-    # on PATH (the installer deliberately puts nothing there), no sources for `.` to point
-    # at, and the installer lays the packages into a directory of its own rather than as a
-    # tool of `uv` — so even the verb is the wrong one. A named way out that cannot be
-    # taken is worse than silence — the person concludes they are broken, not the hint.
-    # The way out is now the wizard's, in the wizard's own words
-    # (`tier_add_hint`, appended in the markup), and the tier is named the way
-    # `sorta-setup` and `sorta doctor` name it, so a person can find the line they are
-    # being sent to.
+    # person it is written for not one word of it works — an installed copy has no `uv`
+    # on PATH, no sources for `.` to point at, and the installer lays packages into a
+    # directory of its own rather than as a tool of `uv`. The way out is now the
+    # wizard's, in the wizard's own words, and the tier is named the way `sorta-setup`
+    # and `sorta doctor` name it.
     #
-    # The banner is also shown to fewer people now: only to the one who HAS an NVIDIA card
-    # (F217, `gpu_present`). Without a card the CPU profile is the right install and there
-    # is nothing to advise — the old banner sent those 2.5 GB of CUDA wheels to a machine
-    # that cannot use them.
+    # Shown to fewer people now: only to the one who HAS an NVIDIA card (`gpu_present`).
+    # The old banner sent 2.5 GB of CUDA wheels to machines that cannot use them.
     "env_cpu_warning": {
         "ru": "Видеокарта NVIDIA есть, но установлен CPU-профиль: распознавание людей, "
               "VLM и большие коллекции считаются на процессоре и заметно медленнее. "
@@ -620,12 +574,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "ステージ {stage}（{index}/{total}）: {done}/{all}",
     },
     # F229: what the stage line says while the model it needs is still coming down. The
-    # counter it replaces measures FRAMES, and until the weights are on disk not one frame
-    # can be processed — so "0 of 8" was the right number in the wrong unit, and it stood
-    # still for the whole download. On eight photographs that download IS the whole run,
-    # which is how the owner came to read a working program as a hung one. No percentage
-    # here on purpose: how much has arrived is the F225 line right beside this one, and
-    # two different quantities in one place stop being told apart within a month.
+    # counter it replaces measures FRAMES, and until the weights are on disk not one can
+    # be processed — "0 of 8" was the right number in the wrong unit and stood still for
+    # the whole download. No percentage here on purpose: how much has arrived is the F225
+    # line right beside this one, and two quantities in one place stop being told apart.
     "process_stage_waiting_model": {
         "ru": "Этап {stage} ({index}/{total}): жду модель — кадры пойдут, когда она "
               "скачается",
@@ -640,10 +592,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "ステージ {stage}（{index}/{total}）: {done} 件処理済み",
     },
     # F191: the collapsed stage row. Nine chips in a line ran wider than the cards
-    # above them, and the number of stages is not a constant — so what is always on
-    # screen is these captions and a counter, and the per-stage list is behind a
-    # disclosure. None of them may name a stage: `{stage}` is filled from the
-    # `process_stage_*` entries below, whatever the pipeline currently holds.
+    # above them, and the number of stages is not a constant. None of these captions may
+    # name a stage: `{stage}` is filled from the `process_stage_*` entries below.
     "process_stage_current": {
         "ru": "идёт: {stage}", "en": "running: {stage}", "ja": "実行中: {stage}",
     },
@@ -704,11 +654,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "クラスタ: 保存中",
     },
     # F100: the sub-phases of the `junk` stage. Keys: junk.CLASSIFY_PHASE_*. All four
-    # are measurable, the deep one included (the VLM gate knows its candidates before
-    # the loop starts), so the caption is shown next to the real N / M — the
-    # process_phase_elapsed form below is for phases that have no percent at all.
-    # The stage line right above already says "классификация", so these captions name
-    # only the phase — the same reason the clustering ones say "кластеры" and not "лица".
+    # are measurable, the deep one included (the VLM gate knows its candidates before the
+    # loop starts), so these show a real N / M — `process_phase_elapsed` is for phases
+    # with no percent at all. The captions name only the phase: the stage line above
+    # already says which stage it is.
     "process_phase_junk_clip": {
         "ru": "быстрый разбор (CLIP)", "en": "fast pass (CLIP)",
         "ja": "高速判定 (CLIP)",
@@ -722,9 +671,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "詳細解析 (VLM)",
     },
     # F205: the animal check and the rescue, each under its own name since the measured
-    # price of the three model passes turned out to differ threefold. The captions name
-    # the question rather than the model: three lines all reading "deep analysis (VLM)"
-    # would tell the reader of the bar exactly as much as the one name did.
+    # price of the three model passes differs threefold. The captions name the question
+    # rather than the model — three lines reading "deep analysis (VLM)" say nothing.
     "process_phase_junk_pets_vlm": {
         "ru": "проверка животных (VLM)", "en": "animal check (VLM)",
         "ja": "動物の確認 (VLM)",
@@ -737,19 +685,16 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "запись вердиктов", "en": "saving verdicts",
         "ja": "判定を保存中",
     },
-    # F141: the second CLIP pass — the search index. Named apart from the fast pass above
-    # because it is what `features.search_index` costs and nothing else, and a caption
-    # saying "fast pass" over ten minutes of a second encode would be the wrong sentence.
+    # F141: the second CLIP pass — the search index. Named apart from the fast pass
+    # because it is what `features.search_index` costs and nothing else.
     "process_phase_junk_search": {
         "ru": "поисковый индекс (CLIP)", "en": "search index (CLIP)",
         "ja": "検索インデックス (CLIP)",
     },
-    # F154: the object detector over the candidates of the animal query. A caption of its
-    # own for the reason the search index has one: it is a second model over a short list,
-    # neither the fast CLIP pass nor the VLM tier, and its minutes are what
-    # `features.detector` costs. (The only line this feature adds to this file — a phase
-    # without a string surfaces as a raw identifier, which tests/test_ui_junk_phase.py
-    # requires it not to.)
+    # F154: the object detector over the candidates of the animal query, named apart for
+    # the reason the search index is: a second model over a short list, and its minutes
+    # are what `features.detector` costs. A phase without a string surfaces as a raw
+    # identifier, which tests/test_ui_junk_phase.py requires it not to.
     "process_phase_junk_detect": {
         "ru": "детектор объектов", "en": "object detector",
         "ja": "物体検出",
@@ -762,9 +707,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_stage_index": {"ru": "индексация", "en": "indexing", "ja": "インデックス作成"},
     "process_stage_geo": {"ru": "гео", "en": "geo", "ja": "位置情報"},
     "process_stage_landmarks": {"ru": "места", "en": "landmarks", "ja": "ランドマーク"},
-    # F165: the two halves of the classification, and the chips have to tell them apart —
-    # the first one decides WHAT a frame is (and lets the faces stage skip what is not a
-    # photograph), the second one measures the photographs it left.
+    # F165: the first half decides WHAT a frame is (and lets the faces stage skip what
+    # is not a photograph), the second measures the photographs it left.
     "process_stage_classify": {"ru": "вердикты", "en": "verdicts", "ja": "判定"},
     "process_stage_faces": {"ru": "лица", "en": "faces", "ja": "顔"},
     "process_stage_events": {"ru": "события", "en": "events", "ja": "イベント"},
@@ -784,9 +728,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # F93: the geo cache survives "Start over" — the name of a point on the map does
     # not depend on which files the user keeps, and re-asking the provider costs ~10
-    # minutes of network. But an invisible unresettable thing must not exist, so the
-    # way out lives exactly where the user already decided to erase something. Default
-    # UNCHECKED: the cache is normally what makes the next run fast.
+    # minutes of network. But an invisible unresettable thing must not exist, so the way
+    # out lives where the user already decided to erase something. Default UNCHECKED.
     "process_reset_clear_geo_label": {
         "ru": "Также очистить кэш геоданных",
         "en": "Also clear the geo cache",
@@ -820,12 +763,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_reset_error_prefix": {
         "ru": "Не удалось сбросить: ", "en": "Failed to reset: ", "ja": "リセットできません: ",
     },
-    # F94: the caches were reachable only from `sorta cache`, while the web app is
-    # advertised as a full entry point — so on a live collection 12 GB of previews had
-    # no way out for anyone who does not use the terminal. Sizes are shown and both
-    # clears are offered. F117 added a ceiling, and it does not change that stance: it
-    # is 0 by default, so nothing is ever deleted unless a person sets a number — the
-    # ceiling answers "my disk filled up", it is not a policy applied on their behalf.
+    # F94: the caches were reachable only from `sorta cache`, so on a live collection
+    # 12 GB of previews had no way out for anyone who does not use the terminal. F117
+    # added a ceiling and it is 0 by default: nothing is deleted unless a person sets a
+    # number — the ceiling answers "my disk filled up", it is not a policy.
     "cache_title": {"ru": "Кэши", "en": "Caches", "ja": "キャッシュ"},
     # F117: shown next to the size, because a size without its bound says nothing.
     "cache_limit": {
@@ -952,15 +893,14 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "The plan is empty — nothing to lay out.",
         "ja": "プランは空です — 整理する対象がありません。",
     },
-    # --- F173: the three captions of the shared pager (`makePager`) --------------------
-    # One button, one counter, one warning, for every ordered slice there is and every one
-    # there will be. They are not per-slice keys because the fifth copy of "Показать ещё"
-    # is how a new slice ships without the button at all: a slice that has to add a string
-    # to get one has a reason to skip it, and search shipped without one for that reason.
+    # --- F173: the three captions of the shared pager (`makePager`) -------------------
+    # One button, one counter, one warning, for every ordered slice there is. Not
+    # per-slice keys: a slice that has to add a string to get a button has a reason to
+    # skip it, and search shipped without one for exactly that reason.
     "slice_load_more": {"ru": "Показать ещё", "en": "Show more", "ja": "さらに表示"},
-    # THE fix of the counter. "Показано 200" is indistinguishable from "нашлось ровно 200",
-    # and for a ranking the second is almost never true — so the denominator is the length
-    # of the list, always, and the numerator only says how far down it the reader is.
+    # THE fix of the counter: "shown 200" is indistinguishable from "there are exactly
+    # 200", and for a ranking the second is almost never true — so the denominator is the
+    # length of the list, always.
     "slice_shown_label": {
         "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
         "ja": "{total} 件中 {shown} 件を表示",
@@ -1033,15 +973,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Кластеры лиц не найдены.", "en": "No face clusters found.",
         "ja": "顔クラスターが見つかりません。",
     },
-    # F194: the three tiers of sameness, in the three captions they need. F148's badges
-    # ("recommended to keep · by the model" / "· by sharpness") are gone with the thing
-    # they named: measured blind on 111 groups, neither judge beats a coin, and a caption
-    # calling one frame of a burst the one to keep is advice that makes a person choose
-    # worse than at random.
-    #
-    # The first tier is a NUMBER. Half a real archive is byte-identical copies, and the
-    # sentence has to say both what happened to them (they left the screen) and what did
-    # NOT (they are still on disk) — collapsing a list is not deleting files.
+    # F194: three tiers of sameness in three captions. F148's badges ("recommended to
+    # keep · by the model" / "· by sharpness") are gone with the thing they named:
+    # measured blind on 111 groups, neither judge beats a coin. The first tier is a
+    # NUMBER, and its sentence has to say both what happened to those copies (they left
+    # the screen) and what did NOT (they are still on disk).
     "dupe_exact_note": {
         "ru": "Одинаковых по байтам копий свёрнуто: {copies} (оригиналов: {originals}). "
               "Выбирать не из чего — файлы те же. Ничего не удалено, файлы на месте.",
@@ -1052,11 +988,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "{originals} 件）。ファイルは同一なので選ぶ余地はありません。削除は"
               "行われず、ファイルはそのまま残っています。",
     },
-    # F199: the tier NAMED, on the group that is in it. Both tiers behaved correctly and
-    # neither said so: two outwardly identical pairs, a suggestion on one and none on the
-    # other, and the reason printed nowhere. A person is right to read that as randomness
-    # — and then to distrust the suggestion in the one tier where it holds. One line per
-    # group; the sentences below it fold out on request (F199 requirement 5).
+    # F199: the tier NAMED, on the group that is in it. Two identical-looking pairs with
+    # a suggestion on one and none on the other read as randomness. One line per group;
+    # the sentences below it fold out on request.
     "dupe_tier_same_image": {
         "ru": "Та же картинка в разных файлах",
         "en": "The same picture in different files",
@@ -1082,14 +1016,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "★ самый большой файл", "en": "★ largest file", "ja": "★ 最大のファイル",
     },
     # The third tier, and the only caption in the product that says the program cannot
-    # do something. It says it because the alternative is a highlighted frame, which
-    # reads as an answer: a person following it chooses worse than by pointing blindly
-    # and never finds out.
-    # F199 gives it the MEASURED number, in the form F171 set for the other slices: the
-    # sentence that says the program cannot choose is worth more than the fact behind it,
-    # and the fact is that on 111 groups labelled blind not one rule beat a coin. The
-    # second sentence answers what the owner actually asked on 2026-08-05 — the files
-    # weigh different amounts here too, and the weight is not what the tier is read from.
+    # do something — the alternative is a highlighted frame, which reads as an answer, and
+    # a person following it chooses worse than by pointing blindly. F199 gives it the
+    # measured fact: on 111 groups labelled blind not one rule beat a coin. The second
+    # sentence answers what the owner asked on 2026-08-05 — the files weigh different
+    # amounts here too, and the weight is not what the tier is read from.
     "dupe_similar_note": {
         "ru": "Заранее не выбран ни один: на 111 группах, размеченных вслепую, ни одно "
               "правило не обыграло случайный выбор — 27–32% против 30.4% у монетки, так "
@@ -1130,9 +1061,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Move all frames in group {n} to trash, except the selected one?",
         "ja": "選択したもの以外、グループ{n}のすべてのフレームをごみ箱に移動しますか?",
     },
-    # F194: "at least one", because keeping several is now the normal answer — and
-    # because deleting a whole group is the one thing the screen must not be able to do
-    # by a slip of the hand.
+    # F194: "at least one", because keeping several is the normal answer now — and
+    # deleting a whole group is what the screen must not do by a slip of the hand.
     "alert_choose_keeper": {
         "ru": "Отметьте хотя бы один кадр, который нужно оставить.",
         "en": "Tick at least one frame to keep.",
@@ -1199,9 +1129,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Идёт сбор альбома...", "en": "Gathering album...", "ja": "アルバムを収集中...",
     },
     # --- F193: one offer for every slice — pick some frames, name the folder, gather ---
-    # The tick on a card and the line beside the button. "Only the selected" is a state a
-    # person can be in by accident (tick three, untick three), so the count is always on
-    # screen and the refusal below is reachable rather than theoretical.
+    # "Only the selected" is a state a person can be in by accident (tick three, untick
+    # three), so the count is always on screen and the refusal below is reachable.
     "album_select_label": {
         "ru": "Выбрать", "en": "Select", "ja": "選択",
     },
@@ -1209,9 +1138,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Только выбранные ({n})", "en": "Selected only ({n})",
         "ja": "選択したものだけ（{n}）",
     },
-    # Stands beside the button whenever the scope is OFF — which is both "nothing is
-    # ticked yet" and "the scope was switched off by hand", and the sentence has to be
-    # true of both: it states what the button will gather, not why.
+    # Stands beside the button whenever the scope is OFF — both "nothing ticked yet" and
+    # "switched off by hand" — so it states what the button will gather, not why.
     "album_selection_hint": {
         "ru": "В папку пойдёт весь срез.",
         "en": "The whole slice goes into the folder.",
@@ -1222,9 +1150,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "No frames are selected: tick some frames or clear «selected only».",
         "ja": "フレームが選択されていません: フレームを選ぶか「選択したものだけ」を外してください。",
     },
-    # Why a slice cannot be gathered, one sentence per reason the server sends. A refusal
-    # is a sentence and never a missing button: a control the page does not draw forbids
-    # nothing and explains nothing.
+    # One sentence per reason the server sends. A refusal is a sentence and never a
+    # missing button: a control the page does not draw forbids nothing.
     "album_blocked_documents": {
         "ru": "Документы в папку не собираются: паспорта, медицинские и банковские "
               "бланки не складываются в один каталог одним нажатием. "
@@ -1290,11 +1217,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Folder language saved — the plan was recomputed.",
         "ja": "フォルダの言語を保存しました — プランを再計算しました。",
     },
-    # F104: `sort_confirm_summary` (F43) lived here — the single line of a window.confirm
-    # that said only "N files, M folders". It is gone with that dialog: the summary is
-    # built from `sort_summary_*` below, off /api/sort/summary, and names the volume, the
-    # review folders and what is already in the destination as well.
-    # F97: the text used to send the user to the terminal (`sorta undo`) — there is a
+    # F104: `sort_confirm_summary` (F43) is gone with the window.confirm it belonged to
+    # — the summary is built from `sort_summary_*` off /api/sort/summary now.
+    # F97: the text used to send the user to the terminal (`sorta undo`); there is a
     # button on the "Moves" tab now, so it points at the button.
     "sort_confirm_move": {
         "ru": "ВНИМАНИЕ: оригиналы будут ПЕРЕМЕЩЕНЫ. "
@@ -1416,9 +1341,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "ここで変更すると config.yaml に保存されます。`sorta ui` の再起動は不要 — "
               "次の処理から新しい値が使われます。",
     },
-    # F138: the column says out loud that the expensive knobs are not missing but
-    # elsewhere — a person who used to switch the deep tier on from here has to be told
-    # where it went, not left looking for it.
+    # F138: the column says out loud that the expensive knobs moved rather than went
+    # missing — a person who switched the deep tier on from here has to be told where.
     "settings_costs_moved_hint": {
         "ru": "Здесь то, что не стоит времени прогона: пороги, модель, потоки. Что "
               "стоит часов — глубокий разбор, качество кадров, животные, лучший кадр "
@@ -1454,8 +1378,7 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "写真内の細かい文字は読み取りにくくなります。",
     },
     # F119: the F113 quality cascade. Each signal is taken by the cheapest instrument
-    # that answers it, and the hints say which — a person deciding whether to switch
-    # something on needs to know what it will cost, not only what it does.
+    # that answers it, and the hints say which — the cost is what a person decides on.
     "settings_quality_title": {
         "ru": "Качество кадра", "en": "Frame quality", "ja": "コマの品質",
     },
@@ -1554,10 +1477,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Frame size for the sharpness measure, px",
         "ja": "鮮鋭度を測るコマのサイズ (px)",
     },
-    # F117: the ceiling belongs in the settings column rather than next to the cache
-    # sizes, because it is a stored preference and the numbers next to the buttons are
-    # a measurement. 0 is spelled out in the hint: an empty-looking limit is the one
-    # value a person is most likely to misread.
+    # F117: the ceiling is a stored preference and the numbers next to the cache buttons
+    # are a measurement, which is why they are not in one place. 0 is spelled out in the
+    # hint: an empty-looking limit is the value a person is most likely to misread.
     "settings_preview_max_gb_label": {
         "ru": "Потолок кэша превью, ГБ",
         "en": "Preview cache ceiling, GB",
@@ -1594,9 +1516,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "A run is in progress — settings do not change mid-run. Wait for it to end.",
         "ja": "処理の実行中です — 途中で設定は変更できません。終了までお待ちください。",
     },
-    # F145: the same statement for everything else that writes — marks, the trash, an
-    # album, a layout. The server has always answered 409; this is the sentence that
-    # says so BEFORE the click instead of after it.
+    # F145: the server has always answered 409; this is the sentence that says so BEFORE
+    # the click instead of after it.
     "actions_busy": {
         "ru": "Идёт прогон — действия, меняющие данные, недоступны. "
               "Вернутся сами по окончании.",
@@ -1678,8 +1599,7 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Перенести в…", "en": "Move to…", "ja": "移動先…",
     },
     # F203: the field is typed into now, and the placeholder is the only place that says
-    # so. «Папка раскладки» read as "pick one of these", which is exactly the limit the
-    # feature removes — the folders of the plan are a suggestion, not the whole answer.
+    # so — "layout folder" read as "pick one of these", which is the limit F203 removes.
     "override_target_placeholder": {
         "ru": "папка раскладки или новая…", "en": "layout folder, or a new one…",
         "ja": "振り分け先フォルダ（新規も可）…",
@@ -1726,9 +1646,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "「Россия」は国のルート、「Россия/Карелия/2019」は新しいディレクトリです。"
               "実際の作成は振り分けの実行時です。",
     },
-    # Why a typed folder is not a folder name, one sentence per reason the server sends.
-    # Four reasons and not one because the remedies differ — fill the field in, drop the
-    # separator, stay inside the destination, retype the name by hand.
+    # One sentence per reason the server sends. Four and not one because the remedies
+    # differ — fill the field in, drop the separator, stay inside the destination, retype.
     "override_target_bad_empty": {
         "ru": "Пустое имя папки: впишите, куда перенести.",
         "en": "The folder name is empty: type where the files should go.",
@@ -1759,17 +1678,15 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось сохранить правку: ", "en": "Could not save the correction: ",
         "ja": "修正を保存できません: ",
     },
-    # F85c: assigning a place to a whole group by hand
-    # F202: the field takes a region too, and the placeholder says so — a person who
-    # reads "city or country" does not type «Карелия», which is the one name they know
-    # for the 7 492 frames this feature exists for.
+    # F85c: assigning a place to a whole group by hand.
+    # F202: the field takes a region too, and the placeholder says so — a person reading
+    # "city or country" does not type the one name they know for those 7 492 frames.
     "place_search_placeholder": {
         "ru": "Город, область или страна", "en": "City, region or country",
         "ja": "都市・地域・国",
     },
-    # F202: the word that tells a region option from a city one in the list. One name is
-    # regularly both — «Алтай» is a Russian republic and two Mongolian towns — and the
-    # level is the whole difference between «Россия/Алтай/2023» and «Монголия/…».
+    # F202: the word that tells a region option from a city one. One name is regularly
+    # both, and the level is the whole difference between two layouts.
     "place_kind_region": {"ru": "область", "en": "region", "ja": "地域"},
     "place_assign_button": {
         "ru": "Назначить место", "en": "Assign place", "ja": "場所を指定",
@@ -1782,9 +1699,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "元フォルダの場所",
     },
     # F201: the picker answers while the name is typed, so an empty list has two
-    # meanings and they must not share one message. "Nothing starts with this" is only
-    # said once the search actually ran; until then the field asks for more letters
-    # instead of blaming the spelling of a word that is simply not finished.
+    # meanings that must not share one message. "Nothing starts with this" is only said
+    # once the search actually ran.
     "place_not_found": {
         "ru": "В базе нет места с таким началом названия.",
         "en": "The bundled data has no place whose name starts with this.",
@@ -1855,13 +1771,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Не удалось назначить место: ", "en": "Could not assign the place: ",
         "ja": "場所を指定できません: ",
     },
-    # F103: the "Utility frames" view — the buckets the classifier carries out of
-    # the collection, and the bulk way back for the frames it got wrong.
-    # F175: the caption of the WHOLE slice names no percentage, and deliberately. Behind
-    # one name lie four buckets measured separately (products 78%, screenshots 59%,
-    # documents and memes not measured at all), and a single number over them would be
-    # honest about none of them. What it does say is the thing a person has to know
-    # before ticking everything: one of the four is not to be deleted.
+    # F103: the "Utility frames" view — the buckets the classifier carries out of the
+    # collection, and the bulk way back for the frames it got wrong.
+    # F175: the caption of the WHOLE slice names no percentage. Four buckets are measured
+    # separately (products 78%, screenshots 59%, documents and memes not at all), and one
+    # number over them would be honest about none. What it does say is what a person has
+    # to know before ticking everything: one of the four is not to be deleted.
     "junk_intro": {
         "ru": "Кадры, снятые не ради памяти: товары, скриншоты, документы, мемы. Это "
               "четыре разные корзины с разной надёжностью — откройте любую, и подпись "
@@ -1881,11 +1796,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "チェックを入れて戻すと、再び都市ごとに振り分けられます。モデルの"
               "判定自体は書き換えません。",
     },
-    # F175: precision belongs to a CLASS, not to the slice. Each line below is one
-    # measurement with its date and its sample size, shown when that bucket is the one
-    # open. A class nobody has measured gets `junk_accuracy_unmeasured` — the lookup in
-    # the client falls back to it, so a class added later says "not measured" instead of
-    # quietly inheriting somebody else's number.
+    # F175: precision belongs to a CLASS, not to the slice — each line below is one
+    # measurement with its date and sample size. A class nobody has measured falls back
+    # to `junk_accuracy_unmeasured` rather than inheriting somebody else's number.
     "junk_accuracy_product": {
         "ru": "Точность 78% при полноте 81% (замер 2026-08-03, 999 кадров): примерно "
               "каждый пятый кадр здесь — не товар.",
@@ -1894,12 +1807,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "精度 78%、再現率 81%（2026-08-03、999 コマで測定）: ここにあるコマの"
               "およそ 5 枚に 1 枚は商品ではありません。",
     },
-    # F171: this bucket states an OPINION and has to be read as one. The rescue of
-    # 2026-08-04 added 441 frames to it (1 782 against 1 341) and 41% of what it adds is
-    # an ordinary photograph — about 181 personal pictures leaving the city layout for a
-    # bucket a person reads as "these are your screenshots" and does not look through.
-    # So the caption names the model as the author of the verdict, and names returning a
-    # frame as the ordinary next step rather than as the repair of a rare mistake.
+    # F171: the rescue of 2026-08-04 added 441 frames to this bucket (1 782 against
+    # 1 341) and 41% of what it adds is an ordinary photograph — about 181 personal
+    # pictures leaving the city layout for a bucket a person does not look through. So
+    # the caption names the model as the author of the verdict, and returning a frame as
+    # the ordinary next step.
     "junk_accuracy_screenshot": {
         "ru": "Модель считает эти кадры экранными — это её оценка, а не факт. Точность "
               "59% при полноте 83% (замер 2026-08-03, 350 кадров): каждый "
@@ -1925,10 +1837,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "このバケットの精度は測定されていません — 誤りがどれだけあるかは"
               "分かりません。",
     },
-    # F171: appended to the caption of the bucket that is open, and ONLY where the server
-    # says the page was actually ordered by the model's own estimate (`ordered_by_score`).
-    # A promise about the order that is true on one collection and silent on another is
-    # the F157 rule: the sentence appears exactly where the ordering it describes does.
+    # F171: appended ONLY where the server says the page really was ordered by the
+    # model's own estimate (`ordered_by_score`) — the F157 rule, that a sentence appears
+    # exactly where the thing it describes does.
     "junk_order_hint": {
         "ru": " Список идёт от кадров, в которых модель уверена больше, к сомнительным: "
               "читайте сверху и остановитесь, где сходство кончилось.",
@@ -1974,10 +1885,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "junk_document_no_preview": {
         "ru": "без превью", "en": "no preview", "ja": "プレビューなし",
     },
-    # F175: the hint says what a document IS before it says how it is shown. This slice
-    # reads as "junk, select all, delete", and the frames the sentence is about are the
-    # ones a person needs most — so the warning has to arrive above the grid, before the
-    # selection, and not as an explanation of a missing thumbnail.
+    # F175: the hint says what a document IS before it says how it is shown. The warning
+    # has to arrive above the grid, before the selection, and not as an explanation of a
+    # missing thumbnail: this slice reads as "junk, select all, delete".
     "junk_document_hint": {
         "ru": "Документы здесь — не на удаление: это паспорта, справки, чеки и "
               "медицинские бланки, и они помечены отдельно. Sorta их не открывает и не "
@@ -2004,11 +1914,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "バケットを読み込めません: ",
     },
     # --- F174: the action names its destination ---------------------------------------
-    # ONE name for one intention. "This is not an animal" and "return to the photos" are
-    # the same movement to the person making it — the frame does not belong in this slice
-    # — so the button reads the same in both, and what differs (a real transfer versus a
-    # membership) is said UNDER it, in `dest_goes_to` / `dest_stays_in`. Two buttons for
-    # one intention was the whole complaint.
+    # ONE name for one intention: "this is not an animal" and "return to the photos" are
+    # the same movement to the person making it. What differs — a real transfer versus a
+    # membership — is said UNDER the button, in `dest_goes_to` / `dest_stays_in`.
     "slice_return_button": {
         "ru": "Вернуть в раскладку", "en": "Return to the layout", "ja": "振り分けに戻す",
     },
@@ -2080,13 +1988,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "в другие папки", "en": "into other folders", "ja": "その他のフォルダーへ",
     },
     # --- F123: the "Animals" tab -----------------------------------------------------
-    # F160: the caption states BOTH measurements, because the slice is two different
-    # promises and a config switch chooses between them. The cascade alone is 82%
-    # precision at 64% recall; with the object detector on (`features.detector` +
-    # `detect.enabled`) it is 62% at 87% — a quarter more animals found and a fifth of the
-    # confidence given up for them. A caption naming one number while the other rule is in
-    # force buys recall with the reader's trust, which is the mistake F158 measured on the
-    # very same line.
+    # F160: the caption states BOTH measurements, because a config switch chooses between
+    # two different promises. The cascade alone is 82% precision at 64% recall; with the
+    # object detector on it is 62% at 87% — a quarter more animals for a fifth of the
+    # confidence. Naming one number while the other rule is in force buys recall with the
+    # reader's trust.
     "animals_intro": {
         "ru": "Кадры с животными, сверху — те, в которых модель уверена больше. "
               "Точность около 82% при полноте 64%; с включённым детектором объектов "
@@ -2121,10 +2027,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     # --- F124: taking a false mark off a frame (and putting a missing one back) --------
     # The two buttons are one toggle: the card offers the answer the frame does NOT have
     # right now. The third string is the way back to the automatic verdict, which is a
-    # different thing from "not an animal" and therefore says so in words.
-    # F174: the "take it off this frame" half is `slice_return_button` now — the same
-    # words the junk view uses, because it is the same intention. What the two do differ
-    # in is stated under the button (`dest_stays_in` here, `dest_goes_to` there).
+    # different thing from "not an animal" and says so in words.
+    # F174: the "take it off" half is `slice_return_button` now — the same words the junk
+    # view uses, because it is the same intention.
     "animals_mark_animal": {
         "ru": "Это животное", "en": "This is an animal", "ja": "これは動物",
     },
@@ -2145,14 +2050,13 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "マークを保存できません: ",
     },
     # --- F126: the "Review" workspace -------------------------------------------------
-    # The switcher labels are the slices; the duplicates one keeps the wording the tab
-    # had, because that is what the user has been calling it since U3.
+    # The duplicates label keeps the wording the tab had: that is what the user has been
+    # calling it since U3.
     "review_slice_dupes": {"ru": "Дубли", "en": "Duplicates", "ja": "重複"},
     "review_slice_blurred": {"ru": "Размытые", "en": "Blurred", "ja": "ぼやけ"},
     "review_slice_eyes": {"ru": "Закрытые глаза", "en": "Closed eyes", "ja": "目を閉じた"},
     # F150: named after the FACT and never after a judgement. "Bad" or "junk" would be a
-    # verdict the program has no business passing on a picture somebody was sent once and
-    # never got again.
+    # verdict on a picture somebody was sent once and never got again.
     "review_slice_low_resolution": {
         "ru": "Низкое разрешение", "en": "Low resolution", "ja": "低解像度",
     },
@@ -2201,9 +2105,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "「しきい値以下をすべて削除」というボタンはなく、既定では何も削除しません。",
     },
     # F155 + F157: shown only where `frame_quality.face_sharpness` exists, because only
-    # there is it true. It is the answer to "why is this sharp-looking street above that
-    # soft portrait": the frames with a face are ordered by a different number, measured
-    # inside the face, which finds 62% of the blurred ones against 15% for the whole frame.
+    # there is it true. It answers "why is this sharp-looking street above that soft
+    # portrait": the face number finds 62% of the blurred frames against 15%.
     "review_hint_blurred_faces": {
         "ru": " Кадры с лицами идут первыми и упорядочены по резкости самого лица — "
               "по кадру целиком этот признак их почти не находит.",
@@ -2212,11 +2115,10 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": " 顔のあるコマが先に並び、顔の内側で測った鮮鋭度で順序づけられます。"
               "コマ全体で測ると、この指標はそれらをほとんど拾えません。",
     },
-    # F179: the caption states the MEASURED PRECISION and not a count. "Found 730 frames"
-    # reads as a verdict about 730 photographs; on 249 hand-labelled frames this list is
-    # right about 62% of what it points at, which is the one thing a person needs to know
-    # before opening it. The list is ordered from the most closed, so the top is where the
-    # 62% lives and "show more" walks into the doubtful part on purpose.
+    # F179: the caption states the MEASURED PRECISION and not a count. "Found 730
+    # frames" reads as a verdict about 730 photographs; on 249 hand-labelled frames this
+    # list is right about 62% of what it points at. It is ordered from the most closed,
+    # so the top is where the 62% lives and "show more" walks into the doubtful part.
     "review_hint_eyes": {
         "ru": "Кадры, на которых у людей, скорее всего, закрыты глаза: посчитано по "
               "геометрии век самого крупного лица, а не спрошено у модели. На 249 "
@@ -2244,10 +2146,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "データがありません。顔ステージが実行されておらず、目の計測は顔が検出された"
               "コマにのみ行われます。顔ステージを実行してから、この区分を開いてください。",
     },
-    # F150: the whole boundary of the slice, said out loud. Three things a person has to
-    # know before pressing anything here: it is a fact and not a verdict (the frame may be
-    # the only copy of something), megapixels say nothing about a big frame ruined by
-    # compression, and videos are not in this list at all.
+    # F150: the whole boundary of the slice, said out loud. It is a fact and not a
+    # verdict (the frame may be the only copy of something), megapixels say nothing about
+    # a big frame ruined by compression, and videos are not in this list at all.
     "review_hint_low_resolution": {
         "ru": "Кадры меньше {mp} мегапикселя, сначала самые мелкие. Это факт из индекса, "
               "а не оценка: ширина и высота записаны при индексации, ничего не "
@@ -2293,9 +2194,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # --- F149: "try to improve" — the third action, on one frame ----------------------
     # Every string here says PROCESSED, never "improved". The model draws something
-    # plausible instead of bringing back what was lost, and an interface that calls that
-    # an improvement is the one thing this feature must not do: a person has to know at
-    # every moment which of the two pictures in front of them is the photograph.
+    # plausible instead of bringing back what was lost, and a person has to know at every
+    # moment which of the two pictures in front of them is the photograph.
     "review_restore": {
         "ru": "Попробовать улучшить", "en": "Try to improve", "ja": "補正を試す",
     },
@@ -2347,9 +2247,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # F169: the sentence a full-sized frame is owed. The model is x4 and cannot be shown
     # the whole frame, so a big one is REDUCED first and blown back up to about its own
-    # size — the copy comes out the same size and holds less of what was really there.
-    # Said next to "done", every time it happens, because it is the one outcome a person
-    # cannot see by looking: the copy usually looks sharper, and sharper is not truer.
+    # size. Said next to "done" every time, because it is the one outcome a person cannot
+    # see by looking: the copy usually looks sharper, and sharper is not truer.
     "review_restore_rebuilt": {
         "ru": "Внимание: кадр больше предела ({max_edge} px по длинной стороне, здесь "
               "{source_edge}). Копия пересобрана из уменьшенной: настоящая детализация "
@@ -2368,9 +2267,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "features.restore_max_edge で変えられます。",
     },
     # --- F168: the same action, reached from the expanded frame in any slice ----------
-    # The hint says the same things as `review_restore_hint` minus the one sentence that
-    # belongs to the Review grid ("select exactly one"): here the frame IS the one being
-    # looked at, and there is nothing to select.
+    # The hint says what `review_restore_hint` says minus "select exactly one": here the
+    # frame IS the one being looked at, and there is nothing to select.
     "review_restore_expanded_hint": {
         "ru": "Модель НЕ возвращает утраченное — она дорисовывает правдоподобное. Рядом "
               "с оригиналом появится помеченная копия, а оригинал останется как есть. "
@@ -2383,13 +2281,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "ため元の写真の隣には印の付いた複製が現れ、元の写真はそのまま残ります。"
               "初回は重み (約 400 MB) を取得し、その後は 1 枚あたり約 1 秒です。",
     },
-    # F168/F169/F198: why a big frame is REFUSED. The gain the measurement found belongs to
-    # small frames (66% under 640 px, a coin toss by 1280), and above the ceiling the copy
-    # would be rebuilt from a quarter of the original — 35/35/30 on blind pairs, i.e.
-    # nothing. So this is one sentence in two places: under the withdrawn button on the
-    # expanded frame, and as the answer of the route when the press arrives anyway. It
-    # names the limit, the size of THIS frame and the key that moves the limit, because a
-    # person who disagrees with the threshold has to be able to see that it is theirs.
+    # F168/F169/F198: why a big frame is REFUSED. The measured gain belongs to small
+    # frames (66% under 640 px, a coin toss by 1280), and above the ceiling the copy would
+    # be rebuilt from a quarter of the original — 35/35/30 on blind pairs, i.e. nothing.
+    # One sentence in two places: under the withdrawn button, and as the answer of the
+    # route when the press arrives anyway. It names the limit, this frame and the key.
     "review_restore_error_too_large": {
         "ru": "Кадр крупнее предела ({max_edge} px по длинной стороне, здесь "
               "{source_edge}): копию пришлось бы пересобирать из уменьшенной, а на таких "
@@ -2405,10 +2301,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "効果が確認できませんでした。そのためここでは実行せず、何も作成されて"
               "いません。上限は features.restore_max_edge で変えられます。",
     },
-    # The copy is a canonical file: it lies in the city folder beside its source and turns
-    # up in every slice the source does. Wherever it is opened it says what it is and
-    # which frame it was made from — otherwise it reads as a second similar photograph
-    # that came from nowhere.
+    # The copy is a canonical file: it lies in the city folder beside its source and
+    # turns up in every slice the source does. Wherever it is opened it says what it is,
+    # or it reads as a second similar photograph that came from nowhere.
     "review_restore_source_badge": {
         "ru": "обработано моделью из {name}",
         "en": "processed by a model from {name}",
@@ -2466,10 +2361,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Показано {shown} из {total}", "en": "Showing {shown} of {total}",
         "ja": "{total} 件中 {shown} 件を表示",
     },
-    # F157: the counter of a ranking says how long the LIST is and never how many blurred
-    # frames there are. "Showing 2 210" read as "you have 2 210 blurred photographs" —
-    # a claim the signal cannot make (four of five frames on that page are not blurred),
-    # and one that grows or shrinks the moment somebody edits a number in the config.
+    # F157: the counter of a ranking says how long the LIST is, never how many blurred
+    # frames there are. "Showing 2 210" read as "you have 2 210 blurred photographs" — a
+    # claim the signal cannot make (four of five frames on that page are not blurred).
     "review_shown_ranked": {
         "ru": "Показано {shown}; дальше по списку резкость растёт",
         "en": "Showing {shown}; further down the list the sharpness grows",
@@ -2485,10 +2379,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     # --- F108: the "Overview" tab ---------------------------------------------------
     "tab_overview": {"ru": "Обзор", "en": "Overview", "ja": "概要"},
-    # F145: the caption over the SAME rows of counters, drawn with dashes. It replaced an
-    # invitation with a button, which was a block of a different height: it was swapped
-    # for the full one in the middle of a run, right after the `index` stage, and
-    # everything below — the run options among them — jumped down the page.
+    # F145: the caption over the SAME rows of counters, drawn with dashes. It replaced
+    # an invitation with a button, a block of a different height, which got swapped for
+    # the full one mid-run and jumped everything below it down the page.
     "overview_empty": {
         "ru": "Данных пока нет: ниже — то, что появится после прогона. "
               "Укажите папку с фото и нажмите «Обработать».",
@@ -2497,10 +2390,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "まだデータがありません。以下は処理後に表示される項目です。"
               "写真フォルダを指定して「処理する」を押してください。",
     },
-    # F190: the caption of the indicator that stands INSIDE the reserved area while the
-    # numbers are on their way. Its own string rather than the shared `loading`: it is
-    # read over a full grid of empty cells, and it has to say that the cells are the ones
-    # being filled — not that the tab is still deciding what to draw.
+    # F190: the caption of the indicator INSIDE the reserved area while the numbers are
+    # on their way. Its own string rather than the shared `loading`: it has to say the
+    # cells are being filled, not that the tab is still deciding what to draw.
     "overview_loading": {
         "ru": "Загрузка обзора…", "en": "Loading the overview…", "ja": "概要を読み込み中…",
     },
@@ -2643,19 +2535,17 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "search_button": {"ru": "Найти", "en": "Search", "ja": "検索"},
     # Shown until the first answer about the index arrives. Not "search is unavailable":
-    # the state is not known yet, and guessing it in either direction is a lie that lasts
-    # exactly as long as the request.
+    # the state is not known yet, and guessing either way is a lie.
     "search_state_checking": {
         "ru": "Проверяем индекс поиска…", "en": "Checking the search index…",
         "ja": "検索インデックスを確認しています…",
     },
-    # THE state of this feature: nothing was ever encoded. An empty result list would read
-    # as "you have no photographs like that", which is a conclusion about somebody's own
-    # archive drawn from a table that was never filled.
-    # F141 corrected this sentence: the index is no longer a by-product of an ordinary
-    # run. It is a second CLIP pass with a multilingual model, ~10.5 minutes per 20 000
-    # frames, behind `features.search_index` — so the setting has to be named, or the
-    # reader follows an instruction that will not fill the table.
+    # THE state of this feature: nothing was ever encoded. An empty result list would
+    # read as "you have no photographs like that", a conclusion about somebody's own
+    # archive drawn from a table that was never filled. F141: the index is no longer a
+    # by-product of an ordinary run but a second CLIP pass with a multilingual model,
+    # ~10.5 minutes per 20 000 frames behind `features.search_index` — so the setting has
+    # to be named, or the reader follows an instruction that will not fill the table.
     "search_state_empty": {
         "ru": "Искать пока не по чему: индекс поиска пуст. Включите "
               "features.search_index: true и запустите обработку коллекции — это "
@@ -2667,10 +2557,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "features.search_index: true を有効にしてコレクションを処理してください — "
               "多言語モデルによる別途の CLIP パスです（2 万コマあたり約 10.5 分）。",
     },
-    # The other unavailable state, and deliberately a different sentence: the fix is the
-    # same run, but the reason is that the stored vectors belong to another model and are
-    # not comparable with this query. Mixing them silently would produce a plausible
-    # ranking that nothing on screen marks as wrong.
+    # The other unavailable state, deliberately a different sentence: the fix is the same
+    # run, but the reason is that the stored vectors belong to another model. Mixing them
+    # silently would produce a plausible ranking nothing on screen marks as wrong.
     "search_state_other_model": {
         "ru": "Индекс поиска посчитан другой моделью ({model}): её векторы несравнимы с "
               "текущей, поэтому выдача была бы правдоподобной чушью. Нужен повторный "
@@ -2682,9 +2571,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "互換性がなく、もっともらしい誤った結果になります。コレクションを再度"
               "処理してください。",
     },
-    # Available, and honest about the denominator: an incremental run is the normal way to
-    # live with a growing archive, and a person must be able to tell "it is not in the
-    # collection" from "it is not in the index yet".
+    # Available, and honest about the denominator: a person must be able to tell "it is
+    # not in the collection" from "it is not in the index yet".
     "search_state_partial": {
         "ru": "Ищем по {n} из {all} фотографий: остальные попадут в индекс на следующем "
               "прогоне.",
@@ -2701,9 +2589,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "search_goto_overview": {
         "ru": "К «Обзору»", "en": "Go to Overview", "ja": "「概要」へ",
     },
-    # No threshold exists and none will (search.py): the score orders frames against each
-    # other and says nothing in absolute terms. The line says so instead of promising an
-    # accuracy nobody has measured.
+    # No threshold exists and none will (search.py): the score orders frames against
+    # each other and says nothing in absolute terms.
     "search_ranking_hint": {
         "ru": "Это ранжирование, а не фильтр: список отсортирован по близости к запросу, "
               "порога «точно оно» нет. Смотрите сверху вниз и остановитесь, где кончится "
@@ -2718,17 +2605,15 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "search_score_label": {
         "ru": "близость {score}", "en": "closeness {score}", "ja": "近さ {score}",
     },
-    # F173: the numerator AND the denominator. The old wording ("{n} frames") was true of
-    # the page and read as a fact about the collection — «200 кадров» for a query whose
-    # ranking is four thousand long, with the half that matters below the fold.
+    # F173: the numerator AND the denominator. "{n} frames" was true of the page and
+    # read as a fact about the collection, with the half that matters below the fold.
     "search_shown_label": {
         "ru": "Запрос «{q}»: показано {shown} из {total}, от самого близкого",
         "en": "Query “{q}”: showing {shown} of {total}, closest first",
         "ja": "クエリ「{q}」: {total} 件中 {shown} 件を表示（近い順）",
     },
-    # An available index always ranks everything it holds, so an empty list means the
-    # index itself is empty of frames a search may return — never "there are no such
-    # photographs".
+    # An available index ranks everything it holds, so an empty list means the index
+    # holds no frame a search may return — never "there are no such photographs".
     "search_no_frames": {
         "ru": "Ранжировать нечего: в индексе поиска нет ни одного кадра, который можно "
               "показать.",
@@ -2741,9 +2626,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "検索を実行できません: ",
     },
     # --- F189: the same line, answering with a person ----------------------------------
-    # Said in front of the index's own reason rather than instead of it: the ranking still
-    # cannot run and the way to fix that is still on screen — what changes is that the
-    # field is not dead while there is somebody to find in it.
+    # Said in FRONT of the index's own reason rather than instead of it: the ranking still
+    # cannot run, and what changes is that the field is not dead meanwhile.
     "search_state_names_only": {
         "ru": "Имя названного человека здесь найдётся и без индекса — наберите имя.",
         "en": "The name of a person you have labelled is found here without the index — "
@@ -2751,9 +2635,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "名前を付けた人物は、インデックスがなくてもここで見つかります — "
               "名前を入力してください。",
     },
-    # The caption is the feature as much as the selection is. A reader who cannot tell an
-    # exact answer from the top of a ranking has been handed one thing and shown another,
-    # so this sentence says what it is and the ranking's sentence stays where it was.
+    # A reader who cannot tell an exact answer from the top of a ranking has been handed
+    # one thing and shown another, so this sentence says which it is.
     "search_person_shown_label": {
         "ru": "Кадры человека: {name} — показано {shown} из {total}",
         "en": "Frames of a person: {name} — showing {shown} of {total}",
@@ -2777,8 +2660,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Further on is the same list continued: the frames do not get less certain.",
         "ja": "この先も同じ一覧の続きです。コマの確かさが下がることはありません。",
     },
-    # Requirement 4 on screen: a name can be an ordinary word («Роза», «Марк»), and the
-    # other answer is one click away instead of gone.
+    # Requirement 4 on screen: a name can also be an ordinary word, and the other answer
+    # is one click away instead of gone.
     "search_person_words_link": {
         "ru": "Искать «{q}» по картинке",
         "en": "Search for “{q}” as an image",
@@ -2800,15 +2683,14 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "ファイルです。",
     },
     # --- F152: the three face slices ---------------------------------------------------
-    # The labels are deliberately not the label of the cluster slice next to them: "Люди"
-    # there answers "who is this", these answer "is anybody in the frame".
+    # Not the label of the cluster slice next to them: that one answers "who is this",
+    # these answer "is anybody in the frame".
     "face_slice_people": {"ru": "С людьми", "en": "With people", "ja": "人物あり"},
     "face_slice_group": {"ru": "Групповые", "en": "Group photos", "ja": "集合写真"},
     "face_slice_portrait": {"ru": "Портреты", "en": "Portraits", "ja": "ポートレート"},
     # THE line that has to differ from the caption of an approximate slice. A query slice
     # is a ranking and says so; this one is a fact of the detector, and the sentence says
-    # what the fact is and where its errors come from, without a percentage nobody
-    # measured.
+    # what the fact is and where its errors come from, without a percentage nobody has.
     "face_slices_intro": {
         "ru": "Эти срезы — не оценка: кадр в них потому, что детектор нашёл на нём лицо. "
               "Порога «похоже на человека» здесь нет, ошибки бывают только у самого "
@@ -2839,9 +2721,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "顔がちょうど 1 つで、写真の {share}% 以上を占めます"
               "（features.portrait_face_share）。",
     },
-    # F125's rule: the reason, never a zero. Without a faces run nothing was measured, and
-    # "0 photographs with people" is a statement about somebody's archive that no table
-    # in this index supports.
+    # F125's rule: the reason, never a zero. "0 photographs with people" is a statement
+    # about somebody's archive that no table in this index supports.
     "face_no_faces_run": {
         "ru": "Стадия «лица» не запускалась — считать нечего. Запустите обработку с "
               "галочкой «Разбор по лицам», и срезы наполнятся сами.",
@@ -2860,26 +2741,23 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "лиц: {n}", "en": "{n} faces", "ja": "顔 {n}",
     },
     # F173: the shared pager's button and counter here too. What this slice does NOT take
-    # from it is `slice_depth_hint` — nothing is ranked here (a frame is in the slice
-    # because the detector found a face), so there is no precision to trade for depth and
-    # a line saying otherwise would be a warning about a risk this list does not carry.
+    # is `slice_depth_hint` — nothing is ranked here, so there is no precision to trade
+    # for depth and that line would warn about a risk this list does not carry.
     "error_loading_face_slices": {
         "ru": "Не удалось загрузить срезы по лицам: ",
         "en": "Could not load the face slices: ",
         "ja": "顔のスライスを読み込めません: ",
     },
     # --- F151: the pinned queries ------------------------------------------------------
-    # The labels of the three slices `features.saved_slices` ships with. A name that is not
-    # in this catalog is shown as it stands in the config — the row must not refuse to draw
-    # a slice somebody added, and a made-up translation would be worse than the key itself.
+    # A name that is not in this catalog is shown as it stands in the config: the row must
+    # not refuse to draw a slice somebody added, and an invented translation is worse.
     "query_slice_children": {"ru": "Дети", "en": "Children", "ja": "子ども"},
     "query_slice_products": {"ru": "Товары", "en": "Products", "ja": "商品"},
     "query_slice_animals": {"ru": "Животные", "en": "Animals", "ja": "動物"},
-    # THE caption rule of this feature. «Животные» the pin and «Животные» the pet label are
-    # two different slices of one archive — 60% precision against 71%, a ranking against a
-    # verdict a model checked — and with the same label a reader would take the estimate for
-    # the fact. So every pinned query wears the mark, including the ones with no exact
-    # counterpart: what is marked is the METHOD, not the collision.
+    # THE caption rule of this feature. The pinned "animals" and the pet label are two
+    # different slices of one archive — 60% precision against 71%, a ranking against a
+    # verdict a model checked — and with the same label a reader would take the estimate
+    # for the fact. Every pinned query wears the mark: what is marked is the METHOD.
     "query_slice_pin": {
         "ru": "{name} · по запросу", "en": "{name} · by query", "ja": "{name}・クエリ",
     },
@@ -2904,10 +2782,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "60%、倍の深さで約 90% を拾えます。だからこそ「さらに表示」が主役の"
               "ボタンです。",
     },
-    # What the slice actually asked, on screen — the half that makes "editable without
-    # code" real rather than stated. The phrases stay English whatever `language:` says:
-    # they go to a CLIP text tower and not to a reader, and the measured numbers were
-    # produced by this wording.
+    # What the slice actually asked, on screen. The phrases stay English whatever
+    # `language:` says: they go to a CLIP text tower and not to a reader, and the measured
+    # numbers were produced by this wording.
     "query_slice_phrases": {
         "ru": "Запрос среза: {phrases}. Правится в features.saved_slices; формулировки "
               "английские — язык интерфейса на выдачу не влияет.",
@@ -2927,23 +2804,21 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "クエリのスライスを読み込めません: ",
     },
     # --- F156: pinning a query of one's own --------------------------------------------
-    # The product stops guessing which facets matter (the sample of 200 says there is no
-    # such thing as "the" facets: ten candidate slices covered 26% of the unclassed frames
-    # at best), so these strings are all about one act — a person saving THEIR query.
+    # The sample of 200 says there is no such thing as "the" facets: ten candidate slices
+    # covered 26% of the unclassed frames at best. So these strings are about one act.
     "pin_slice_button": {
         "ru": "Закрепить как срез", "en": "Pin as a slice", "ja": "スライスとして固定",
     },
-    # The name is asked for, with the query itself offered: the query is usually the best
-    # name there is, and a dialog that demands a different one is a dialog that gets «мое1».
+    # The name is asked for with the query itself offered: the query is usually the best
+    # name there is, and a dialog demanding a different one gets "mine1".
     "pin_slice_prompt": {
         "ru": "Название среза (запрос: {query})",
         "en": "Name of the slice (the query: {query})",
         "ja": "スライスの名前（クエリ: {query}）",
     },
-    # THE warning of this feature, and it is said BEFORE the pin rather than afterwards.
-    # The phrases go to the model as they stand and the search index is English until F141
-    # reaches this collection, so a Russian or Japanese pin will rank badly — a person who
-    # learns that a week later concludes the feature is broken.
+    # THE warning of this feature, said BEFORE the pin rather than afterwards. The
+    # phrases go to the model as they stand and the index is English until F141 reaches
+    # this collection, so a person who learns that a week later concludes it is broken.
     "pin_slice_language_warning": {
         "ru": "Запрос не на английском. Индекс пока английский, поэтому такой срез будет "
               "работать заметно хуже — формулировка уходит в модель как есть.",
@@ -2995,14 +2870,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "残ります。",
     },
     # Pinned slices sit as tabs in a ROW, so the direction is horizontal. The captions
-    # said "up" and "down" from F156 on, while the code beside them knew better ("where
-    # this slice sits in the row"): they were named after how the list is held in memory,
+    # said "up" and "down" from F156 on — named after how the list is held in memory,
     # where an index does go up and down, rather than after what a person is looking at.
     "pin_move_left": {"ru": "Левее", "en": "Move left", "ja": "左へ"},
     "pin_move_right": {"ru": "Правее", "en": "Move right", "ja": "右へ"},
-    # The album gathers what a single query ranks (`sorta album query`), and a slice asking
-    # several phrases is ranked by their average — one selector cannot reproduce it, so the
-    # button is not offered rather than gathering a different list under the same name.
+    # The album gathers what a SINGLE query ranks; a slice asking several phrases is
+    # ranked by their average, which one selector cannot reproduce.
     "pin_album_one_query": {
         "ru": "Альбом собирается по одной формулировке, а этот срез спрашивает несколько. "
               "Оставьте в features.saved_slices одну — и кнопка появится.",
@@ -3012,11 +2885,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
               "ため、features.saved_slices に 1 つだけ残すとボタンが表示されます。",
     },
     # --- F156: why a built-in slice is empty -------------------------------------------
-    # The `frame_quality` rule of F125, said out loud on a whole slice: a zero with no
-    # explanation reads as "there are none of these in your archive", and far more often
-    # the truth is that nobody has looked yet. The counterpart answer — "it was computed
-    # and there is nothing" — is the slice's own existing line ("События не найдены."),
-    # which is why only this half needed writing.
+    # The F125 rule said out loud on a whole slice: a zero with no explanation reads as
+    # "there are none of these in your archive", and far more often nobody has looked yet.
+    # The other answer — "computed, and there is nothing" — the slices already had.
     "slice_not_computed": {
         "ru": "Это не считалось: стадия, которая наполняет срез, не запускалась. "
               "Пусто здесь означает «не спрашивали», а не «в архиве нет».",
@@ -3055,9 +2926,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "К «Разбору»", "en": "Go to Review", "ja": "「仕分け」へ",
     },
     # --- F192: the layout screen is a workplace, not a control panel -------------------
-    # Thirteen controls held the top of the tab and two of them were needed every time.
-    # These are the two, and they are named as questions rather than as fields, because
-    # that is how a person arrives at this tab: where do I put it, and by what.
+    # Thirteen controls held the top of the tab and two were needed every time. These are
+    # the two, named as questions: where do I put it, and by what.
     "layout_where_title": {
         "ru": "Куда раскладывать", "en": "Where to lay it out", "ja": "どこへ振り分けるか",
     },
@@ -3084,10 +2954,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Year / event; frames outside any event go by date.",
         "ja": "年 / イベント。イベントに属さないコマは日付順になります。",
     },
-    # The one sentence that keeps the two relationships to the file system apart. The
-    # layout MOVES the originals; an album is a set of links built beside them and is
-    # gathered on another tab. Both can be asked for "by person", which is exactly why
-    # the difference has to be written down where the choice is made.
+    # The one sentence that keeps the two relationships to the file system apart: the
+    # layout MOVES the originals, an album is a set of links beside them. Both can be
+    # asked for "by person", which is why the difference is written where the choice is.
     "layout_moves_hint": {
         "ru": "Раскладка перемещает сами файлы. Альбом — ссылки рядом с каноном, он "
               "собирается на вкладке «Срезы» и ничего не перемещает.",
@@ -3130,9 +2999,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "settings_close_button": {
         "ru": "Закрыть", "en": "Close", "ja": "閉じる",
     },
-    # F209: closing the program. The captions live in the header rather than beside the
-    # run controls: this is pressed once a day, and next to the buttons pressed all day
-    # it would be pressed by accident.
+    # F209: the captions live in the header rather than beside the run controls — this
+    # is pressed once a day, and next to the daily buttons it would go by accident.
     "quit_button": {
         "ru": "Завершить работу", "en": "Quit", "ja": "終了する",
     },
@@ -3144,8 +3012,7 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "Sorta を終了します。プログラムは閉じますが、ファイルはそのまま残ります",
     },
     # The refusal the server sends while something is running, asked back as a question.
-    # It names what would be lost — a pass over a real collection counts for hours, and
-    # "are you sure?" is not enough to make that decision on.
+    # It names what would be lost: a pass over a real collection counts for hours.
     "quit_running_confirm": {
         "ru": "Идёт обработка. Если завершить работу сейчас, она будет прервана и "
               "посчитанное за этот прогон придётся считать заново. Прервать и выйти?",
@@ -3190,15 +3057,11 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "終了できませんでした。プログラムは動作を続けています。",
     },
     # --- F227: the waiting screen, while the launch finishes behind it -----------------
-    #
-    # The tab now opens the moment the port answers, which is BEFORE the diagnostics are
-    # done (`sorta/tray.py`), so the page has to be able to say what it is standing on. One
-    # caption per launch step, named in words rather than as a percentage: the steps differ
-    # in length by two orders of magnitude, and a bar stuck at 71% for four seconds of a
-    # torch import is worse than the sentence "checking the graphics card".
-    #
-    # These are NOT about downloading a model (F222/F225) and they must never read as if
-    # they were: that has its own line, its own megabytes and its own way of failing.
+    # The tab opens the moment the port answers, which is BEFORE the diagnostics are done
+    # (`sorta/tray.py`). One caption per launch step, named in words rather than as a
+    # percentage: the steps differ in length by two orders of magnitude, and a bar stuck
+    # at 71% through four seconds of a torch import is worse than "checking the graphics
+    # card". These are NOT about downloading a model (F222/F225) and must not read as if.
     "startup_title": {
         "ru": "Sorta запускается", "en": "Sorta is starting", "ja": "Sorta を起動中",
     },
@@ -3253,16 +3116,12 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
 
 # --- F217: the install tiers, in the words the rest of the product already uses -------
 #
-# These captions are NOT written here. They are taken from the catalog `sorta-setup` and
-# `sorta doctor` answer from, because the run screen and the check screen must not name
-# the same tier, the same download size or the same way out differently — the whole
-# feature exists because the one place that DID name a way out named one that cannot be
-# taken. A translation added to `sorta/i18n.py` arrives here on its own; a second copy
-# could not.
-#
-# The way out is platform-dependent for the reason F213 found: the Start menu belongs to
-# the Windows installer, and an install that came from `uv tool install` has no such
-# entry. `tiers._tier_hint_key` is the one place that decides, and `doctor` reads it too.
+# These captions are NOT written here: they are taken from the catalog `sorta-setup` and
+# `sorta doctor` answer from, so the run screen and the check screen cannot name the same
+# tier, download size or way out differently. A translation added to `sorta/i18n.py`
+# arrives here on its own; a second copy could not. The way out is platform-dependent
+# (F213): the Start menu belongs to the Windows installer, and an install that came from
+# `uv tool install` has no such entry. `tiers._tier_hint_key` is the one place deciding.
 
 _TIER_LANGS: tuple[i18n.Lang, ...] = ("ru", "en", "ja")
 
@@ -3296,10 +3155,8 @@ def _tier_strings() -> dict[str, dict[str, str]]:
         "tier_add_hint": {lang: _doctor_line(tiers._tier_hint_key(), lang)
                           for lang in _TIER_LANGS},
         # F222: the two size templates, so the browser can print a sum it computed
-        # itself — the download of a run is the sizes of the models it is missing added
-        # up, and which those are depends on the checkboxes. Generated from the wizard's
-        # own catalog for the same reason as everything else here: a second spelling of
-        # "3.0 GB" would be a second answer about the same file.
+        # itself. Generated from the wizard's own catalog for the same reason as
+        # everything else here: a second spelling of "3.0 GB" would be a second answer.
         "tier_size_mb": {lang: i18n.cli_text("cli.setup.size_mb", lang, mb="{mb}")
                          for lang in _TIER_LANGS},
         "tier_size_gb": {lang: i18n.cli_text("cli.setup.size_gb", lang, gb="{gb}")
