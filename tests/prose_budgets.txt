@@ -11,7 +11,7 @@ sorta/config.py       817
 sorta/dates.py        17
 sorta/db/__init__.py  97
 sorta/dedup.py        191
-sorta/detect.py       200
+sorta/detect.py       174
 sorta/diagnostics.py  122
 sorta/events.py       100
 sorta/exif.py         92
