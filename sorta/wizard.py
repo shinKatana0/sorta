@@ -431,20 +431,18 @@ def ask_console(question: str, default: bool = False) -> bool:
     return stripped in _YES_ANSWERS
 
 
-# --- F223: the weights the wizard fetches while somebody is watching ------------------
+# --- F223/F225: the weights the wizard fetches while somebody is watching -------------
 #
-# Until now the wizard installed PACKAGES and left every model file to the first run of
-# the stage that needed it. That is still right for a tier somebody may never use — but
-# not for the one the layout needs: there the download happens anyway, and doing it here
-# is what buys the two things a run cannot give. A person is at the screen, so a refusal
-# can be explained on the spot; and the 1.6 GB does not arrive in the middle of a run
-# that looks, from outside, exactly like a hang.
+# The wizard used to install PACKAGES and leave every model file to the first run of the
+# stage that needed it. F223 took that away from one tier and F225 from all of them: the
+# download happens anyway, and doing it here is what buys the two things a run cannot
+# give. A person is at the screen, so a refusal can be explained on the spot; and the
+# gigabytes do not arrive in the middle of a run that looks, from outside, exactly like
+# a hang.
 #
 # Progress is not optional. 1.6 GB with no line on screen is what cost the owner an hour
-# on 2026-08-07. How much has arrived is huggingface_hub's to know and reaching into its
-# progress bars from here would be a fragile way to learn it — so what is printed is the
-# one number this side can measure honestly: how much bigger the hub cache has grown
-# since the download started.
+# on 2026-08-07 — and a line that never changes cost him the same hour again on
+# 2026-08-08.
 
 # F225: the measurement itself moved to `sorta/tiers.py` — the run screen needs the same
 # number and could not see it here (`tiers.downloaded_bytes`, `tiers.watch_download`).
