@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The prose ratchet takes in the suite as well** (F231g). The count that started F231d
+  was run over `tests/` too and came back with as much prose as the entire package:
+  **13 540 lines across 236 files, against the package's 13 510 across 45**, at a third of
+  the density (0.22 lines of prose per line of code against 0.66). The density is
+  defensible — a test's docstring is usually the statement of the requirement it checks, so
+  it passes the rule of 2026-08-08 on its own — but nothing was holding the total in place,
+  which is exactly how the package's grew. So the suite is now a **second scope of the same
+  watchdog**: `tests/prose_budgets_tests.txt` holds one number per `tests/**/*.py`, and
+  `tests/test_prose_budget.py` fails the gate on a file that grew, naming the file, its
+  budget, the number now and which of the two budget files to edit. **Nothing was cleaned
+  and no number went down**: the budgets were fixed as the fact stood, as a ceiling rather
+  than a target. One counter serves both scopes — a second implementation of "what is
+  prose" would disagree with the first inside a month. The numbers live in a file of their
+  own rather than in more lines of `prose_budgets.txt` so that features editing the two
+  scopes in parallel merge without touching the same lines.
 - **A budget for the prose of every module, with a ratchet on it** (F231d). The rule that
   a comment stays only when it carries a measurement, a decision that reads against the
   obvious, or a trap the next edit would spring was written down on 2026-08-08 — and
