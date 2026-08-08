@@ -897,7 +897,8 @@ def run_setup(lang: i18n.Lang, *,
         # cost of a stray Enter falls the other way — hours of every run on the processor
         # of a machine that has an idle GPU in it. And the price of a no is stated in the
         # unit a person plans in, which megabytes are not.
-        default_yes = tier.default_yes or (tier.key == GPU_TIER_KEY and card is not None)
+        default_yes = tier.default_yes or (tier.key == GPU_TIER_KEY
+                                           and card is not None and card.usable)
         if tier.key == GPU_TIER_KEY and card is not None:
             say(i18n.cli_text(f"{_SETUP_PREFIX}card_refusal_cost", lang))
         if chosen is None:

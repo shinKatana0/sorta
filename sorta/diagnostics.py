@@ -102,7 +102,7 @@ def fix_ort(kind: str | None = None) -> str:
     return _FIX_ORT[install.install_kind() if kind is None else kind]
 
 
-def _mismatch_problem(kind: str | None) -> str:
+def _mismatch_problem(kind: str) -> str:
     return (
         "torch is a CPU-only build while onnxruntime offers CUDA — CLIP and OCR will run "
         "on the CPU and the GPU will sit idle, a large collection then takes hours. "
@@ -111,7 +111,7 @@ def _mismatch_problem(kind: str | None) -> str:
     )
 
 
-def _torch_ignores_gpu_problem(kind: str | None) -> str:
+def _torch_ignores_gpu_problem(kind: str) -> str:
     return (
         "an NVIDIA GPU is present but torch is a CPU-only build — the [cpu] profile is "
         "installed, so CLIP and OCR will run on the CPU. Fix: reinstall with the [gpu] "
@@ -119,14 +119,17 @@ def _torch_ignores_gpu_problem(kind: str | None) -> str:
     )
 
 
-def _ort_ignores_gpu_problem(kind: str | None) -> str:
+def _ort_ignores_gpu_problem(kind: str) -> str:
+    # The `--no-deps` warning belongs to the pip command and to nothing else: it is what
+    # keeps pip from pulling the CPU-only build back in, and on the two installs that are
+    # told to run the wizard instead there is no pip in the sentence to warn about.
+    tail = (" — --no-deps is mandatory, without it pip pulls the CPU build back."
+            if kind == install.KIND_CHECKOUT else ".")
     return (
         "an NVIDIA GPU is present but onnxruntime exposes no CUDA provider — face and "
         "junk detection will fall back to CPUExecutionProvider (insightface pulls the "
         "CPU-only onnxruntime into the same site-packages/onnxruntime/ as "
-        f"onnxruntime-gpu, and whichever unpacks last wins). Fix: {fix_ort(kind)}"
-        + (" — --no-deps is mandatory, without it pip pulls the CPU build back."
-           if (kind or install.install_kind()) == install.KIND_CHECKOUT else ".")
+        f"onnxruntime-gpu, and whichever unpacks last wins). Fix: {fix_ort(kind)}{tail}"
     )
 
 
