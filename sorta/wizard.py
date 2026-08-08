@@ -2,34 +2,28 @@
 
 An installer carrying everything would be 12-15 GB of download — torch with the CUDA
 wheels, Qwen2.5-VL-3B, ViT-L-14, XLM-RoBERTa, buffalo_l — and nobody installs that. The
-product is already built in tiers ("heavy behind a flag", a stage that refuses in words
-instead of a traceback), so the INSTALL lies on the same tiers: the installer carries the
-base one whole and works with no network afterwards, and everything else is offered here,
-once, with its real size and its real benefit.
+product is already built in tiers, so the INSTALL lies on the same tiers: the base one
+ships whole and works offline, everything else is offered here, once, with its real size
+and its real benefit.
 
-Two things this module is careful about.
+Three rules this module is careful about:
 
 * **Refusing is a normal answer, never a dead end.** A person who says no to all of it
   keeps a working product — index, EXIF, geo, duplicates, sorting by city — and is told
-  so in as many words. That is the difference between an honest install and a trimmed
-  one: no button is left on screen that does nothing.
-* **The check screen is `sorta doctor`.** It is written, it already answers what was
-  found and what is missing, so the wizard CALLS it (`show_doctor` below) instead of
-  growing a second one that will disagree with it by the next release.
+  so in as many words. No button is left on screen that does nothing.
+* **The check screen is `sorta doctor`.** It already answers what was found and what is
+  missing, so the wizard CALLS it instead of growing a second one that will disagree with
+  it by the next release.
+* **A question is asked knowing the answer where the answer is knowable** (F230). The
+  acceleration tier was offered to a machine with an RTX 4080 in the words a machine with
+  no card got, defaulting to no, so its owner pressed Enter and stayed on the CPU profile
+  for hours per run. The card is probed once (`accelerator`), and what it says decides
+  whether the tier is offered, which way Enter goes, and whether the sentence is about
+  gigabytes or about a driver that has to be updated first.
 
-F230 adds a third thing, and it belongs next to the first two: **a question is asked
-knowing the answer where the answer is knowable.** The acceleration tier was offered to a
-machine with an RTX 4080 in exactly the words a machine with no card at all got, defaulting
-to no — so its owner pressed Enter and stayed on the CPU profile for hours per run. The
-card is probed once now (`accelerator`), and what the card says decides whether the tier is
-offered at all, which way Enter goes, and whether the sentence on screen is about
-gigabytes or about a driver that has to be updated first.
-
-The tier catalog is here rather than in `packaging/` because it is read at RUN time: the
-wizard ships inside the wheel and the packaging directory does not. `scripts/build_installer.py`
-reads the same tuple, so the installer and the wizard can never describe different tiers,
-and a watchdog test pairs it with the extras of `pyproject.toml` — an extra added to the
-project and forgotten here fails the gate.
+The catalog is here and not in `packaging/` because it is read at RUN time: the wizard
+ships inside the wheel and the packaging directory does not. `scripts/build_installer.py`
+reads the same tuple, and a watchdog test pairs it with the extras of `pyproject.toml`.
 """
 from __future__ import annotations
 
@@ -55,19 +49,17 @@ if TYPE_CHECKING:  # `sorta.tiers` imports THIS module, so the probe is imported
 # instead of assumed.
 MANIFEST_NAME = "sorta-install.json"
 ENV_MANIFEST = "SORTA_INSTALL_MANIFEST"
-# Paths inside the manifest are written RELATIVE to it, and this key is where the
-# directory it was read from is remembered. The build cannot know where a person will
-# install the program, and rewriting a JSON file from an installer script to teach it
-# its own address is a step that can fail; a relative path cannot.
+# Paths inside the manifest are RELATIVE to it, and this key remembers the directory it
+# was read from. The build cannot know where a person will install the program, and
+# rewriting a JSON file from an installer script to teach it its own address can fail.
 MANIFEST_ROOT = "root"
 # How far up from the running interpreter to look for it: the install layout is
 # `{app}\python\python.exe` and the manifest sits at `{app}\sorta-install.json`.
 _MANIFEST_LEVELS = 4
 
-# What the person is told about metadata, by what the machine actually has. The third
-# answer is the one the brief insists on being SAID: without exiftool the reader falls
-# back to Pillow, and HEIC/RAW/video metadata is simply not read — a person must not be
-# left guessing why the dates of their phone photographs are missing.
+# What the person is told about metadata. The third answer has to be SAID: without
+# exiftool the reader falls back to Pillow and HEIC/RAW/video metadata is not read, and
+# nobody must be left guessing why the dates of their phone photographs are missing.
 EXIFTOOL_BUNDLED = "bundled"
 EXIFTOOL_ON_PATH = "on_path"
 EXIFTOOL_ABSENT = "absent"
@@ -79,12 +71,10 @@ _SETUP_PREFIX = "cli.setup."
 class Tier:
     """One step of the install: what it adds, what it weighs, what it buys.
 
-    `extras` are extras of `pyproject.toml` — the packages `uv` installs, and the only
-    part of a tier that is a command. `weights` are model files the stages download
-    themselves on first use; they are named and priced here because they are most of
-    what a tier costs, and a size nobody states is a size nobody agreed to.
-    `index_url` is for the profile that needs a package index of its own (the CUDA
-    wheels), and it is checked against `pyproject.toml` by the suite.
+    `extras` are extras of `pyproject.toml`, the only part of a tier that is a command.
+    `weights` are model files the stages download on first use, named and priced here
+    because they are most of what a tier costs and a size nobody states is a size nobody
+    agreed to. `index_url` is the CUDA profile's own package index, pinned by the suite.
     """
 
     key: str
@@ -102,18 +92,15 @@ class Tier:
     # said is "without that one this does nothing": search by words encodes the pictures
     # with ViT-L-14 and the words with XLM-RoBERTa, so half of it lives in another tier.
     requires: tuple[str, ...] = ()
-    # F223: what pressing Enter answers. Every tier before this one defaulted to no —
-    # nothing multi-gigabyte should arrive because somebody wanted the screen gone — and
-    # that stays true of every tier a person may simply not want. It is not true of a
-    # tier the MAIN TASK needs: without the verdicts the screenshots, the documents and
-    # the product shots ride into the city folders among the photographs.
+    # F223: what pressing Enter answers. Every tier defaults to no — nothing
+    # multi-gigabyte should arrive because somebody wanted the screen gone — except one
+    # the MAIN TASK needs: without the verdicts the screenshots, the documents and the
+    # product shots ride into the city folders among the photographs.
     default_yes: bool = False
-    # F225 took a field away from here: `preload`, which said whether the weights are
-    # fetched during the install or left to the first run of the stage. Exactly one tier
-    # of four carried it, so the other three answered "yes, add it" and downloaded
-    # NOTHING — "in `sorta setup` I choose what to download, and where is the download
-    # itself?" (the owner, 2026-08-08). A yes is a yes for every tier now, so there is
-    # nothing left for the field to say.
+    # F225 took `preload` away from here (fetch the weights during the install, or leave
+    # them to the first run). One tier of four carried it, so the other three answered
+    # "yes, add it" and downloaded NOTHING — "in `sorta setup` I choose what to download,
+    # and where is the download itself?" (the owner, 2026-08-08). A yes is a yes now.
 
     def name(self, lang: i18n.Lang) -> str:
         return i18n.cli_text(f"{_SETUP_PREFIX}tier.{self.key}.name", lang)
@@ -137,19 +124,17 @@ PYTORCH_CU130_INDEX = "https://download.pytorch.org/whl/cu130"
 # it carries are accounted for.
 TIERS: tuple[Tier, ...] = (
     Tier("base", extras=("cpu", "tray"), optional=False),
-    # F223: ViT-L-14 used to sit inside the tier below, named after ONE of the things it
-    # buys — and a person who did not want to search by words switched off the
-    # classification without being told. The two models are separated here and each is
-    # named by what it DOES: 1 631 MB that every run needs against 1 397 MB that only
+    # F223: ViT-L-14 used to sit inside the tier below, named after ONE thing it buys, so
+    # a person who did not want to search by words switched off the classification without
+    # being told. Split by what each DOES: 1 631 MB every run needs against 1 397 MB only
     # search does, which the single 3.0 GB line could not say.
     Tier("vision", weights=("ViT-L-14",), download_mb=1600, default_yes=True),
     Tier("faces", weights=("buffalo_l",), download_mb=400),
     Tier("search", weights=("XLM-RoBERTa",), download_mb=1400, requires=("vision",)),
-    # The one tier that replaces rather than adds: the CUDA builds of torch and
-    # onnxruntime take the place of the CPU ones the installer carried. `onnxruntime` and
-    # `onnxruntime-gpu` unpack into the SAME directory (the F76 trap), and here that works
-    # in our favour — the GPU build is written last — but it is exactly why the wizard
-    # ends by pointing at `sorta doctor`, which is the thing that can tell.
+    # The one tier that replaces rather than adds: the CUDA builds take the place of the
+    # CPU ones. `onnxruntime` and `onnxruntime-gpu` unpack into the SAME directory (the
+    # F76 trap) and here the GPU build is written last, which is why the wizard ends by
+    # pointing at `sorta doctor` — the thing that can tell.
     Tier("gpu", extras=("gpu",), download_mb=2500, index_url=PYTORCH_CU130_INDEX,
          reinstall=True),
     Tier("deep", extras=("vlm",), weights=("Qwen2.5-VL-3B",), download_mb=7000),
@@ -163,16 +148,13 @@ TIERS_BY_KEY: dict[str, Tier] = {tier.key: tier for tier in TIERS}
 # below has to match on a string (F230).
 GPU_TIER_KEY = "gpu"
 
-# F230: the way back, and the reason it is not in `TIERS`. The acceleration tier is the
-# only one installed with `--reinstall`, so saying yes to it REPLACES the working CPU
-# profile — and until this feature there was nothing in the catalog to return to: a
-# machine where the CUDA stack turned out to be wrong had no way out but reinstalling the
-# whole program. This is that way out, and it is deliberately NOT an entry of `TIERS`:
-# the catalog is the list of things a person is OFFERED, and a rollback offered to
-# everybody, on every run of the setup, in front of somebody who has no CUDA profile to
-# roll back from, is noise in the one screen that must not have any. It is reached by
-# name instead — `sorta-setup --restore-cpu` — which is a command the wizard prints the
-# moment it changes the profile, and which `doctor` can send a person to as well.
+# F230: the way back from the one tier installed with `--reinstall`, which REPLACES the
+# working CPU profile — before this, a machine where the CUDA stack turned out wrong had
+# no way out but reinstalling the program. Deliberately NOT an entry of `TIERS`: the
+# catalog is what a person is OFFERED, and a rollback shown to everybody who has no CUDA
+# profile to roll back from is noise in the one screen that must not have any. It is
+# reached by name, `sorta-setup --restore-cpu`, which the wizard prints the moment it
+# changes the profile and `doctor` can send a person to.
 CPU_PROFILE = Tier("cpu_profile", extras=("cpu",), optional=False, reinstall=True)
 
 # The extras that are deliberately NOT part of any tier, and why. The watchdog test reads
@@ -205,11 +187,9 @@ def with_requirements(accepted: Sequence[Tier], have: Sequence[str] = ()
                       ) -> tuple[tuple[Tier, ...], tuple[tuple[Tier, Tier], ...]]:
     """(what will be added, what pulled what in) — the tiers a yes implies.
 
-    `have` is what this machine already has, so a requirement that is in place is
-    satisfied silently: telling somebody that a tier they never asked about was added,
-    when nothing will be downloaded for it, is noise in the one screen that must not have
-    any. Everything else is SAID by the caller — a wizard that quietly turns a 1.4 GB
-    answer into a 3.0 GB one is the defect this feature exists against, one level down.
+    A requirement `have` already satisfies is added silently: naming a tier nothing will
+    be downloaded for is noise. Everything else the caller SAYS — a wizard that quietly
+    turns a 1.4 GB answer into a 3.0 GB one is the defect this exists against.
     """
     satisfied = {tier.key for tier in accepted} | set(have)
     chosen = {tier.key for tier in accepted}
@@ -261,12 +241,9 @@ def manifest_path(explicit: str | Path | None = None) -> Path | None:
 
 
 def load_manifest(explicit: str | Path | None = None) -> dict:
-    """The manifest as a dict; an empty one when there is none or it is unreadable.
-
-    A broken manifest may not stop the wizard: everything read out of it has a probe
-    behind it, and a person who ran the setup again is not the person to show a parse
-    error to.
-    """
+    """The manifest as a dict; an empty one when there is none or it is unreadable. A
+    broken manifest may not stop the wizard — everything read out of it has a probe behind
+    it, and a parse error is not what somebody running the setup came for."""
     path = manifest_path(explicit)
     if path is None:
         return {}
@@ -297,10 +274,7 @@ def manifest_path_of(manifest: dict, key: str) -> str | None:
 def exiftool_state(manifest: dict, *,
                    which: Callable[[str], str | None] | None = None) -> str:
     """Bundled with the program, found on PATH, or absent — the three honest answers.
-
-    `which` is resolved at CALL time rather than bound as a default, so a caller (and
-    the suite) can answer for a machine other than this one.
-    """
+    `which` resolves at CALL time so a caller can answer for another machine."""
     if manifest.get("exiftool"):
         return EXIFTOOL_BUNDLED
     finder = shutil.which if which is None else which
@@ -308,12 +282,9 @@ def exiftool_state(manifest: dict, *,
 
 
 def uv_binary(manifest: dict) -> str:
-    """The `uv` that installs the tiers — the bundled one, or whatever is on PATH.
-
-    One mechanism and not two: `uv` already resolves our extras, our conflicting cpu/gpu
-    profiles and our indexes, and a second resolver written for the installer would
-    disagree with the first one inside a month (the boundary the brief draws).
-    """
+    """The `uv` that installs the tiers — the bundled one, or whatever is on PATH. One
+    mechanism and not two: `uv` already resolves our extras, our conflicting cpu/gpu
+    profiles and our indexes, and a second resolver would disagree within a month."""
     return manifest_path_of(manifest, "uv") or shutil.which("uv") or "uv"
 
 
@@ -325,11 +296,10 @@ def python_binary(manifest: dict) -> str:
 def lib_directory(manifest: dict) -> str | None:
     """Where the packages live: `{app}\\lib`, installed with `uv pip install --target`.
 
-    A plain directory tree and not a virtualenv, and that is the whole reason the payload
-    can simply be COPIED to wherever a person installs it: a venv records the absolute
-    path of the interpreter it was made from, and a `--target` tree records nothing at
-    all. `{app}\\python` finds it through one `.pth` file, and a tier added later has to
-    land in the same place — hence this being part of the install command below.
+    A plain tree and not a virtualenv, which is why the payload can simply be COPIED
+    wherever a person installs it: a venv records the absolute path of the interpreter it
+    was made from and a `--target` tree records nothing. `{app}\\python` finds it through
+    one `.pth` file, and a tier added later has to land in the same place.
     """
     return manifest_path_of(manifest, "lib")
 
@@ -337,11 +307,9 @@ def lib_directory(manifest: dict) -> str | None:
 def tier_requirements(tier: Tier, *, distribution: str = "sorta") -> tuple[str, ...]:
     """The requirement strings of the tier's extras, read off the installed metadata.
 
-    The single source stays `pyproject.toml`: what is read here is what the build put
-    into the wheel from it, so a version bound edited in the project reaches the wizard
-    without anything being copied by hand. A distribution that cannot be found (running
-    from a checkout that was never installed) yields nothing, and the caller says so
-    rather than inventing a version.
+    The single source stays `pyproject.toml` — this reads what the build put into the
+    wheel from it — so a bound edited in the project reaches the wizard uncopied. A
+    distribution that cannot be found yields nothing and the caller says so.
     """
     if not tier.extras:
         return ()
@@ -399,17 +367,15 @@ def run_install(command: Sequence[str]) -> int:
 
 
 def show_doctor(config_path: str, states: Sequence[TierState] | None = None) -> None:
-    """The check screen, which IS `sorta doctor` (requirement 3 of the brief).
+    """The check screen, which IS `sorta doctor`.
 
-    Imported inside the call on purpose: `sorta.cli` pulls in the whole command line
-    (typer, numpy, every stage module), and a wizard that only wanted to print two health
-    lines has no business paying for that at import time.
+    Imported inside the call: `sorta.cli` pulls in typer, numpy and every stage module,
+    and a wizard printing two health lines should not pay that at import time.
 
-    F225: `states` is the probe the wizard has ALREADY taken, handed over so that the two
-    screens of one window cannot describe two different machines. They used to probe one
-    after the other and the owner's run of 2026-08-08 caught them disagreeing inside a
-    single output — the doctor saying ViT-L-14 would be downloaded on the first run of the
-    stage, the wizard saying, four lines later, that it was already in place.
+    F225: `states` is the probe the wizard has ALREADY taken, so the two screens of one
+    window cannot describe two machines. Probing one after the other let the owner's run
+    of 2026-08-08 catch them disagreeing four lines apart — ViT-L-14 both "will be
+    downloaded on the first run" and "already in place".
     """
     from .cli import _cmd_doctor
 
@@ -419,11 +385,10 @@ def show_doctor(config_path: str, states: Sequence[TierState] | None = None) -> 
 def say_console(text: str) -> None:
     """Print — on a console that may not encode every character of the catalog.
 
-    The catalog is Russian, English and Japanese, and a Windows console still runs on a
-    legacy code page unless it is told otherwise (the installer starts this with
-    `-X utf8`, which is the real fix). Where it was not, a sentence with a character the
-    code page has no room for must still APPEAR — losing the line about exiftool because
-    of an em dash would be the worst way to fail.
+    The catalog is Russian, English and Japanese, and a Windows console runs on a legacy
+    code page unless told otherwise (the installer's `-X utf8` is the real fix). Where it
+    was not, the sentence must still APPEAR: losing the line about exiftool over an em
+    dash would be the worst way to fail.
     """
     try:
         print(text)
@@ -440,15 +405,10 @@ def say_console(text: str) -> None:
 def ask_console(question: str, default: bool = False) -> bool:
     """One yes/no question. An empty answer is `default`; EOF is always a no.
 
-    A default of NO is the shape of almost the whole wizard: nothing multi-gigabyte is
-    downloaded because somebody pressed Enter to make the screen go away. F223 adds the
-    one exception and it is deliberate — the tier the LAYOUT needs, where the cost of a
-    stray Enter falls the other way (screenshots and documents in the city folders).
-
-    EOF keeps the old answer whatever the default is, and that is not an inconsistency:
-    a stream that is closed means nobody is at this screen, and the point of downloading
-    the weights here is precisely that somebody is. Unwatched, the stage fetches them on
-    its first run and says so (F222).
+    EOF answers no whatever the default is, and that is not an inconsistency: a closed
+    stream means nobody is at this screen, and downloading the weights here is worth doing
+    precisely because somebody is. Unwatched, the stage fetches them on its first run and
+    says so (F222).
     """
     try:
         answer = input(f"{question} ")
@@ -463,24 +423,18 @@ def ask_console(question: str, default: bool = False) -> bool:
 # --- F223/F225: the weights the wizard fetches while somebody is watching -------------
 #
 # The wizard used to install PACKAGES and leave every model file to the first run of the
-# stage that needed it. F223 took that away from one tier and F225 from all of them: the
-# download happens anyway, and doing it here is what buys the two things a run cannot
-# give. A person is at the screen, so a refusal can be explained on the spot; and the
-# gigabytes do not arrive in the middle of a run that looks, from outside, exactly like
-# a hang.
+# stage. The download happens anyway, and doing it here buys the two things a run cannot:
+# somebody is at the screen, so a refusal can be explained on the spot, and the gigabytes
+# do not arrive in the middle of a run that looks from outside exactly like a hang.
 #
-# Progress is not optional. 1.6 GB with no line on screen is what cost the owner an hour
-# on 2026-08-07 — and a line that never changes cost him the same hour again on
-# 2026-08-08.
-
-# F225: the measurement itself moved to `sorta/tiers.py` — the run screen needs the same
-# number and could not see it here (`tiers.downloaded_bytes`, `tiers.watch_download`).
-# What stayed is this side's sentences, which are a console's and not a browser's.
+# Progress is not optional. 1.6 GB with no line on screen cost the owner an hour on
+# 2026-08-07, and a line that never changed cost the same hour again on 2026-08-08. The
+# measurement itself lives in `sorta/tiers.py`, because the run screen needs the same
+# number; what stayed here is a console's sentences rather than a browser's.
 #
-# A download nobody should be surprised by twice: past this many megabytes the wait is
-# tens of minutes on an ordinary line, and a person is told so BEFORE the window goes
-# quiet. 5 GB is under the deep tier's 7 000 and far above every other tier of the
-# catalog, so the line belongs to the one tier that earns it.
+# Past this many megabytes the wait is tens of minutes on an ordinary line, and a person
+# is told so BEFORE the window goes quiet. 5 GB sits under the deep tier's 7 000 and far
+# above every other tier, so the line belongs to the one tier that earns it.
 SLOW_DOWNLOAD_MB = 5000
 _MB = 1_000_000
 
@@ -488,10 +442,9 @@ _MB = 1_000_000
 def clip_weight_names(config_path: str = "config.yaml") -> tuple[str, str]:
     """The CLIP the classification stage will load: `(architecture, weights)`.
 
-    Read out of the config rather than repeated here, so a machine whose owner changed
-    `naming.clip.model` preloads the model that machine will actually use. A config that
-    cannot be read yet — the ordinary state of a fresh install — gives the defaults,
-    which is what such a machine will load too.
+    Read out of the config rather than repeated, so a machine whose owner changed
+    `naming.clip.model` preloads what that machine will really use. An unreadable config —
+    the ordinary state of a fresh install — gives the defaults, which is what it will load.
     """
     from .config import NamingConfig, load_config
 
@@ -656,26 +609,23 @@ def download_weights(tier: Tier, lang: i18n.Lang, config_path: str = "config.yam
 
 # --- F223: the window may not close over the answer it was opened for ------------------
 #
-# The owner started "Sorta setup" from the Start menu, chose the deep tier — and the
-# window shut. Not on an error: on the END. The only `input()` in this module was the
-# tier question, so after the last answer `run_setup` returned, `main` returned, the
-# process ended and Windows destroyed the console it had created for it, taking the whole
-# summary with it. A refusal disappeared exactly as fast as a success, which is why the
-# certificate failure of F221 was invisible for as long as it was.
+# The owner started "Sorta setup" from the Start menu, chose the deep tier, and the window
+# shut — not on an error, on the END: the last `input()` was the tier question, so `main`
+# returned and Windows destroyed the console it had created, taking the summary with it. A
+# refusal disappeared as fast as a success, which is why the certificate failure of F221
+# stayed invisible as long as it did.
 #
-# Waiting is right only when the console is OURS. Typed into a terminal that was already
-# open, `sorta-setup` must return to the prompt like any other command, and a pause there
-# is one more keystroke for nothing. What tells the two apart on Windows is the number of
-# processes attached to the console: a window created for this process has one.
+# Waiting is right only when the console is OURS: typed into a terminal, `sorta-setup` has
+# to return to the prompt like any other command. What tells the two apart on Windows is
+# the number of processes attached to the console — a window created for this one has one.
 
 
 def owns_console(os_name: str = os.name) -> bool:
     """Would this console die with this process? Then the last screen has to be held.
 
-    Anything that cannot be asked is a no, and that is the safe direction: a wizard that
-    pauses where it should not is a hang to whoever is waiting for the command to finish,
-    while one that does not pause where it should have loses a screen a person can get
-    back by running the setup again.
+    Anything unanswerable is a no, the safe direction: a wizard that pauses where it
+    should not reads as a hang, while one that fails to pause loses a screen somebody can
+    get back by running the setup again.
     """
     if os_name != "nt":
         return False
@@ -706,30 +656,22 @@ def hold_console(lang: i18n.Lang, *, say: Callable[[str], None] = say_console,
 
 # --- F230: the acceleration tier, asked of a machine whose card is known ---------------
 #
-# The wizard knew nothing about the graphics card. A person with an RTX 4080 was shown
-# exactly what a machine with no card at all was shown — "2.5 GB to download … needs an
-# NVIDIA card with a CUDA 13 driver", answer defaulting to no — pressed Enter as on every
-# other question, and silently stayed on the CPU profile, where the model stages take
-# hours. The knowledge existed one module away (`diagnostics` runs `nvidia-smi`, `doctor`
-# prints "NVIDIA GPU in the machine: yes"); it just never reached the question.
-#
 # Three answers, three different sentences, and the difference between them is the point:
 # a card whose driver fits is offered with YES as the default and the cost of a refusal
 # said in hours; a driver too old is named as such, with "update it" as the action, and
-# the tier is not offered — CUDA 13 wheels do not import on an older driver, so those
-# 2.5 GB would buy a traceback; and no card at all is said out loud rather than answered
-# with a question nobody can act on.
+# the tier is NOT offered, because CUDA 13 wheels do not import on an older driver and
+# those 2.5 GB would buy a traceback; and no card at all is said out loud rather than
+# answered with a question nobody can act on.
+#
+# The knowledge always existed one module away — `diagnostics` runs `nvidia-smi` — it just
+# never reached the question, so an RTX 4080 was offered what a machine with no card was.
 
 
 def accelerator(probe: Callable[[], NvidiaCard] | None = None
                 ) -> NvidiaCard:
-    """What card this machine has — one `nvidia-smi` call, injectable, never raising.
-
-    The import is inside the call for the reason every import in this module is: the
-    wizard is started by an installer on a machine where torch may not be there yet, and
-    `diagnostics` is a module whose whole job is to survive that. `probe` is what the
-    tests hand in.
-    """
+    """What card this machine has — one `nvidia-smi` call, injectable, never raising. The
+    import is inside the call for the reason every import here is: the wizard runs on a
+    machine where torch may not be there yet."""
     from . import diagnostics
 
     return (probe or diagnostics.nvidia_card)()
@@ -769,10 +711,8 @@ def rerun_key() -> str:
 def cpu_back_key() -> str:
     """Which way back to the CPU profile is true here — `--restore-cpu` or `uv sync`.
 
-    In a checkout the profile is an extra of the project and `uv sync --extra cpu` is what
-    sets it; `restore_cpu` below would `uv pip install` into a synced environment, which
-    the next `uv sync` rewrites. So the command a developer is given is theirs, and the
-    flag is what the other two installs are told about.
+    In a checkout the profile is an extra of the project, and `restore_cpu` below would
+    `uv pip install` into an environment the next `uv sync` rewrites.
     """
     from . import install
 
@@ -784,10 +724,9 @@ def restore_cpu(lang: i18n.Lang, manifest: dict | None = None, *,
                 install: Callable[[Sequence[str]], int] = run_install) -> int:
     """Put the CPU profile back — `sorta-setup --restore-cpu`. 0 when it is back.
 
-    The mirror image of the acceleration tier and installed the same way: the `cpu` extra
-    of `pyproject.toml`, with `--reinstall` (without it `uv` sees `torch>=2.10.0` already
-    satisfied by the CUDA wheel and does nothing) and with no CUDA index, so the plain
-    wheels take the place of the cu130 ones.
+    The mirror of the acceleration tier: the `cpu` extra with `--reinstall` (without it
+    `uv` sees `torch>=2.10.0` satisfied by the CUDA wheel and does nothing) and no CUDA
+    index, so the plain wheels take the place of the cu130 ones.
     """
     manifest = load_manifest() if manifest is None else manifest
     name = i18n.cli_text(f"{_SETUP_PREFIX}tier.{CPU_PROFILE.key}.name", lang)
@@ -825,12 +764,9 @@ class Outcome:
 
 
 def probe_tiers() -> list[TierState]:
-    """What this machine has of each tier — the probe `sorta doctor` reads.
-
-    Imported inside the call because `sorta.tiers` imports this module: one probe and not
-    two is the F216/F217 rule, and the direction of the import is the price of keeping the
-    catalog where the wizard is.
-    """
+    """What this machine has of each tier — the probe `sorta doctor` reads. Imported
+    inside the call because `sorta.tiers` imports this module, which is the price of
+    keeping the catalog where the wizard is."""
     from .tiers import tier_states
 
     return tier_states()
@@ -854,18 +790,16 @@ def run_setup(lang: i18n.Lang, *,
     With it None every optional tier is offered one by one, and the answer defaults to
     what the tier itself states (no, except for the one the layout needs).
 
-    `card` is what `nvidia-smi` said about this machine (F230), probed once by `main` and
-    handed in. None means nobody asked — and then the acceleration tier is offered exactly
-    as it was before F230, because a wizard that announced "no NVIDIA card was found"
-    without having looked would be the same defect as the one this feature closes, with the
-    sign flipped.
+    `card` is what `nvidia-smi` said (F230), probed once by `main` and handed in. None
+    means nobody asked, and then the acceleration tier is offered as it was before F230:
+    announcing "no NVIDIA card was found" without having looked would be this feature's
+    own defect with the sign flipped.
     """
     manifest = load_manifest() if manifest is None else manifest
     say(i18n.cli_text(f"{_SETUP_PREFIX}title", lang))
     say(i18n.cli_text(f"{_SETUP_PREFIX}checking", lang))
-    # F225: ONE probe, taken here and shown to both screens. The check screen used to make
-    # its own, and a disk read twice a second apart is a disk that can answer twice — see
-    # `show_doctor`.
+    # F225: ONE probe, taken here and shown to both screens — a disk read twice a second
+    # apart is a disk that can answer twice (see `show_doctor`).
     probed = list(probe_tiers() if states is None else states)
     doctor(config_path, probed)
     say(i18n.cli_text(f"{_SETUP_PREFIX}exiftool_{exiftool_state(manifest)}", lang))
@@ -879,19 +813,16 @@ def run_setup(lang: i18n.Lang, *,
     for tier in tiers:
         state = machine.get(tier.key)
         if state is not None and state.ready:
-            # Everything this tier consists of is already on the disk. Offering it would
-            # be offering a download of nothing, and a person who reinstalled over a full
-            # cache would take it (the acceptance criterion this feature carries).
+            # Already on the disk in full: offering it would offer a download of nothing,
+            # which somebody reinstalling over a full cache would accept.
             in_place.append(tier.key)
             outcome.present.append(tier.name(lang))
             say(i18n.cli_text(f"{_SETUP_PREFIX}in_place", lang, name=tier.name(lang)))
             continue
-        # F230: the hardware question, asked before the offer rather than after it. A card
-        # that cannot run these wheels means the tier is not offered at all — 2.5 GB that
-        # will not import is not a choice, it is a download with a traceback at the end of
-        # it — and the reason is said out loud in place of the question. This holds for
-        # `--tiers gpu` too, on purpose: an install command must not put wheels on a
-        # machine that cannot load them, whoever asked for it.
+        # F230: the hardware question comes before the offer. A card that cannot run these
+        # wheels means the tier is not offered at all — 2.5 GB that will not import is a
+        # download with a traceback at the end, not a choice — and the reason is said in
+        # place of the question. True for `--tiers gpu` too, whoever asked for it.
         if tier.key == GPU_TIER_KEY and card is not None:
             say(card_line(card, lang, tier))
             if not card.usable:
@@ -900,10 +831,8 @@ def run_setup(lang: i18n.Lang, *,
         say(i18n.cli_text(f"{_SETUP_PREFIX}offer", lang, name=tier.name(lang),
                           size=human_size(tier.download_mb, lang),
                           benefit=tier.benefit(lang)))
-        # A card that WILL work turns the answer round: Enter means yes here, because the
-        # cost of a stray Enter falls the other way — hours of every run on the processor
-        # of a machine that has an idle GPU in it. And the price of a no is stated in the
-        # unit a person plans in, which megabytes are not.
+        # A card that WILL work turns the answer round: Enter means yes, because a stray
+        # Enter otherwise costs hours of every run on a machine with an idle GPU in it.
         default_yes = tier.default_yes or (tier.key == GPU_TIER_KEY
                                            and card is not None and card.usable)
         if tier.key == GPU_TIER_KEY and card is not None:
@@ -940,18 +869,13 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
                say: Callable[[str], None],
                install: Callable[[Sequence[str]], int],
                download: Callable[..., bool] = download_weights) -> None:
-    """Install what was said yes to: packages now, weights now or on first use.
+    """Install what was said yes to — packages and weights, both HERE.
 
-    F225: "or on first use" is gone. A tier somebody answered yes to is downloaded HERE,
-    whatever it carries — "in `sorta setup` I choose what to download, and where is the
-    download itself? why does the window simply close on Enter instead of downloading
-    what was chosen?" (the owner, 2026-08-08). F223 had built the mechanism for exactly
-    one tier of four; the other three printed "it will download some time later" and
-    closed, so the promise "agree in the wizard and the rest is offline" held for a
-    quarter of the catalog.
-
-    A refusal by the network still leaves the install as it was — the tier goes to
-    `skipped`, the exit code stays 0, and the stage fetches the model on its first run.
+    F225: F223 had built the download for one tier of four, and the other three printed
+    "it will arrive some time later" and closed, so "agree in the wizard and the rest is
+    offline" held for a quarter of the catalog. A refusal by the network still leaves the
+    install as it was: the tier goes to `skipped`, the exit code stays 0, and the stage
+    fetches the model on its first run.
     """
     uv = uv_binary(manifest)
     python = python_binary(manifest)
