@@ -1,256 +1,113 @@
 """F6 (Phase 5, FR-7): junk classification of canonical photos.
 
-Contract: reads files (+faces as a signal), writes ONLY into media_class
-(schema v3). Deletes and moves NOTHING — the layout into _Unsorted/junk is done
-by F5-sorter based on this table.
+Contract: reads `files` (+`faces` as a signal), writes `media_class`, `frame_quality`,
+`clip_embeddings`, `search_embeddings` and `detections`. Deletes and moves NOTHING — the
+layout into _Unsorted/junk is the sorter's job, off this table.
 
-Two-stage scheme (conservative — brief F13, junk is costlier for a missed piece of
-trash than a real photo in the trash):
-a) heuristics (fast, no ML) — only an explicit Screenshot_/"снимок экрана" name,
-   source='heuristic';
-b) CLIP zero-shot (the same model as landmarks, in a batch) — 3 classes, threshold
-   naming.junk_threshold, source='clip', score is written. A file with camera EXIF/
-   GPS OR detected faces — a veto, the CLIP verdict does not override it.
-   Below the threshold — the heuristic verdict stays, but the row is marked
-   source='clip' (the file was checked by CLIP and is not recomputed again —
-   incrementality).
-Files with verdict='photo' are also written (a "checked" mark).
+THE FAST TIER, in the order the branches run (`clip_verdict`): an explicit
+Screenshot_/«снимок экрана» name (F13, source='heuristic'), then a high document score
+(F15 — BEFORE the camera/GPS veto, because a photographed document carries camera EXIF,
+and never for a frame with faces), then the veto itself (camera EXIF, GPS or a detected
+face: messengers strip EXIF, so a face is the third condition), then the three junk classes
+over `naming.junk_threshold`. Conservative throughout: a real photo in the trash costs more
+than junk left among the city folders.
 
-F15: verdict='document' — a separate review category (not junk), detected
-BEFORE the camera/GPS veto (a photographed document has camera EXIF — the target
-case), but ONLY if the photo has no detected faces (portraits — the main FP source
-from F13, they never contain documents). A separate CLIP run over the
-document prompts (its own softmax normalization, does not interfere with the
-junk_threshold of the main 3 classes) and a separate, higher threshold
-naming.document_threshold (not yet typed in config.py — read via cfg.raw). For
-files with faces the document-CLIP is not computed at all (the veto is
-unconditional, saving a pass).
+F37-A hangs a text-density signal (easyocr, the fraction of the frame under text boxes) on
+the document<->photo pair alone, and only for frames without faces: below `text_frac_min` a
+document goes back to being a photo, above `text_frac_document` a photo CLIP scored low
+becomes a document. source='ocr' means, and only means, that OCR moved the verdict.
 
-F37 (Phase A): CLIP zero-shot document is unreliable both ways (FP on scenes
-with signs/menus, FN on genuinely photographed documents with a low CLIP score).
-After the CLIP-stage verdict is computed, a text-density signal is applied
-(easyocr, the fraction of the frame area under text boxes, `text_frac`) — only
-to the document↔photo pair, only for files without faces (the same veto as the
-document-CLIP above):
-- FP gate: verdict='document', but text_frac < naming.text_frac_min → 'photo'
-  (a beach/scene without dense text comes back from _Documents);
-- FN rescue: verdict='photo', but text_frac >= naming.text_frac_document →
-  'document', even if the CLIP score was low (catches photographed documents
-  that CLIP missed).
-In both cases source='ocr', score=text_frac. Screenshot/meme are not touched
-(OCR is applied only if the verdict is already 'document' or 'photo'). The
-thresholds — `getattr(cfg.naming, "text_frac_min"/"text_frac_document", default)`:
-the fields are not yet typed in NamingConfig (getattr fallback, like
-document_threshold once was).
+F37-B adds the DEEP TIER: one VLM (Qwen2.5-VL) over the candidates the fast tier doubts,
+answering personal_photo/document/product, opt-in and off by default. Screenshots stay the
+fast tier's job — the deep tier has no such answer. Every model in this file is optional in
+the strong sense: a factory that will not build is caught around the BUILD, logged, and the
+run goes on with the verdicts the tier below it gave.
 
-F38 (validating F37-A on real data found 3 bugs): (1) the detector decodes
-via `imaging.decode_rgb` (Unicode/HEIC-safe) + downscale before
-`reader.detect()` — cv2 silently failed to read non-ASCII paths/HEIC, the box area
-is now relative to the downscaled frame; (2) the FN rescue (the `verdict==
-'photo'` branch) calls `text_detector` ONLY if `doc_score[i] >=
-cfg.naming.text_rescue_docscore_min` — clear scenes (doc_score≈0) do not run
-OCR, many fewer calls; the FP gate (`verdict=='document'`) is not gated, as
-before. (3) the `text_frac_document` default was lowered 0.35 -> 0.15
-(a real document at an angle gave text_frac=0.247 < 0.35 → the FN was not fixed).
+F68: incrementality runs on `media_class.tier`, not on `source`. `source` is WHAT decided
+(heuristic | clip | ocr | vlm — user-facing, read by sorter.py), `tier` is WHICH TIER
+walked the row (heuristic | clip | vlm). They do not coincide — the OCR gate rewrites
+source, and the deep tier deliberately leaves clear photographs on 'clip' — and under the
+old source-based marker both kinds of row were reclassified on EVERY run.
 
-F37 (Phase B): the deep tier, opt-in, default OFF (`naming.vlm_enabled`). Instead of
-the CLIP+OCR pipeline (fast tier, Phase A, above), canonical photos are classified
-by a VLM (Qwen2.5-VL, lazy-import — like easyocr above) with a 3-way prompt:
-personal_photo/document/product -> verdict photo/document/product, source='vlm'.
-An explicit Screenshot_ name (heuristic) still overrides the VLM — the deep tier
-does not detect screenshots/memes, that stays the fast tier's job. GRACEFUL FALLBACK
-(critical for an optional tier on weak hardware): a model-factory failure
-(transformers not installed, the model does not load, not enough VRAM) is caught
-ENTIRELY around building the classifier — a silent fall back to the fast tier (CLIP),
-the error is only logged (`_log.warning`), `classify()` does not crash.
+F48/F67: every decode here comes from the shared disk preview cache
+(`imaging.decode_rgb_preview`), never from the original. Before F67 the second decode
+inside OCR was 315 ms a frame, ~80% of the whole stage.
 
-F68: incrementality runs on its OWN column `media_class.tier` (schema v11), not on
-`source`. The two mean different things: `source` is WHAT decided the verdict
-(heuristic | clip | ocr | vlm — user-facing, read by sorter.py), `tier` is WHICH
-TIER processed the row (heuristic | clip | vlm — the incrementality marker). They
-do not coincide: the OCR gate/rescue rewrites source to 'ocr' inside the fast pass,
-and the VLM gate deliberately leaves clear personal photos on source='clip' — under
-the old `source`-based marker both kinds of rows failed the "already processed"
-check and were reclassified on EVERY run (with the deep tier on, that meant the
-whole collection). `classify()` computes `active_tier` (see below) and writes it to
-every row it touches; `todo` is the rows whose `tier` differs from it, so a
-fast<->deep switch (either direction) reprocesses instead of losing rows, and a
-repeated run with the same tier processes nothing.
+THE THREE MODEL PASSES ARE PIPELINED, all of them through `_vlm_labels`: `vlm.workers`
+threads prepare frames (decode + the processor's preprocessing) while this thread generates
+and writes. F101 built it for the deep tier off a profile that ruled batching out — ~0.6 s
+of CPU then ~0.19 s of GPU per frame, strictly alternating, 0.84 cores of 24 busy, the card
+at ~26% — and F206 moved the other two questions onto it after the run of 2026-08-05 priced
+them apart:
 
-F48 (#28, V1 profile): the junk-stage bottleneck is not the models but the SECOND
-decode of the frame inside OCR (`imaging.decode_rgb(path, max_edge=1280)` — 315
-ms/frame, ~80% of the junk stage). Reason: the default JPEG-draft headroom in
-decode_rgb (margin=2×, see imaging.py) on typical camera frames (~4000px) does not
-pass the first halving threshold for max_edge=1280 -> draft silently does not fire,
-the full frame is decoded. `easyocr_text_frac_detector` now passes
-`draft_margin=imaging._DRAFT_MARGIN_AGGRESSIVE` (1.0, an opt-in parameter of
-decode_rgb) — draft kicks in, the decode is many times cheaper; `text_frac` (the
-fraction of area under text) does not change from this, the document/photo verdict
-accuracy is preserved (the ratio is scale-robust). Other decode_rgb consumers (thumbs
-in ui.py/sorter.py, the VLM decode) stay on the default margin — unaffected.
+    stage=classify phase=junk_vlm         7 951 frames    5 503 s   1.4 frames/s
+    stage=junk     phase=junk_pets_vlm  }
+    stage=junk     phase=junk_rescue_vlm }  4 281 frames  ~10 200 s  0.42
 
-F67 supersedes that decode path: OCR and VLM take the frame from the shared disk
-preview cache (`imaging.decode_rgb_preview`) instead of decoding the original, so
-the draft margin no longer matters here — a 1536px preview is cheap to decode by
-itself, and the cost is shared with the pHash/CLIP stages.
+Same model, same one frame per call, three times the price — 116 minutes a run. NO VERDICT
+MAY MOVE FOR IT: answers come back in the CANDIDATE order (a FIFO of futures, not whatever
+finishes first), the model still sees one frame per call with the same prompt and the same
+greedy decode, the writes still happen on this thread alone, and a frame whose preparation
+fails keeps its cheap-tier answer and still steps the progress bar.
+`tests/test_junk_asker_pipeline.py` prices the animal phase AGAINST the deep tier's phase
+of the same run: seconds per frame are a statement about a machine, a ratio between two
+phases asking one model one question is a statement about this stage.
 
-F73: with the decode that cheap, what is left of the junk stage is `reader.detect`
-itself — and it used to run strictly serially on the pipeline thread (py-spy on a
-live 24.5k-frame run: 4.27 files/s, every decode worker idle). The detect calls are
-independent, so they now go through `_OcrPool`: K threads, each with its OWN easyocr
-Reader (a Reader holds a torch model and its buffers — sharing one is not safe, the
-same reason F12.1 gives every faces worker its own FaceAnalysis). The per-chunk loop
-is split into three phases — the pre-OCR verdict, the parallel text_frac, then the
-verdicts and the DB writes — and only the middle one leaves the caller's thread, so
-SQLite stays single-writer. This is a perf change only: the gate `run_ocr`, the
-thresholds and the order in which verdicts are applied are untouched, so the
-classification is byte-for-byte what K=1 produces.
+The OCR half has a pool of its own (`_OcrPool`, F73): K threads, each with its OWN easyocr
+Reader — a Reader holds a torch model and its buffers, the same reason F12.1 gives every
+faces worker its own FaceAnalysis. Serially it ran at 4.27 files/s with every decode worker
+idle. Only that middle phase leaves the caller's thread, so SQLite stays single-writer.
 
-F95: the VLM weights are loaded by `naming.shared_vlm`, not by this module — the
-event-naming stage now runs the same Qwen2.5-VL and two copies do not fit in VRAM.
-Only the loading moved: the prompt, the decode, the label parsing and the graceful
-fallback around building the classifier are unchanged.
+F95: the VLM weights are loaded by `naming.shared_vlm` and not by this module — the naming
+stage runs the same model and two copies do not fit in VRAM (peak 20.5 GB).
 
-F90: OCR still runs on 28% of the frames and changes 2% of the verdicts (14:1), and
-`text_rescue_docscore_min` — the number that decides that ratio — was set by eye and
-never measured. The gate is worth its cost (it catches a real document CLIP scored
-low, and letting one of those into the city folders is the expensive error), so the
-threshold is not something a worker may quietly raise; it is a decision for the user
-in front of a table. The tool that prints that table is
-`scripts/measure_ocr_gate.py`, and for it to price the REAL gate the verdict/gate
-branches now live in functions of their own — `clip_verdict`, `ocr_gate_open`,
-`apply_text_frac`, over the thresholds of `gate_settings` — instead of inline in the
-classify() loop. classify() calls exactly those functions, so the measurement cannot
-drift away from the pipeline. Behaviour is unchanged; no threshold moved.
+F90: OCR runs on 28% of the frames and changes 2% of the verdicts (14:1), and
+`text_rescue_docscore_min` is the number that decides that ratio. It is a decision for a
+user in front of the table `scripts/measure_ocr_gate.py` prints, not something a worker
+raises quietly — so the verdict and gate branches live in functions of their own
+(`clip_verdict`, `ocr_gate_open`, `apply_text_frac`, over `gate_settings`) and the script
+drives exactly those, or it would price a gate the pipeline does not have.
 
-F100: the stage now names the phase it is in (CLASSIFY_PHASE_* below), through the
-same optional `progress.phase(name)` channel F84 built for clustering. It used to name
-nothing, and with the deep tier on that showed. Measured on the live run of
-2026-07-28 (24 196 frames, 7 896 of them past the candidate gate): the counter runs
-through the fast pass to 24 196/24 196 and then silently RE-BASES — `total` becomes
-7 896, `done` restarts at zero — with `"phase": null` throughout. The numbers were
-always honest; what was missing is the sentence explaining why the bar just jumped
-back to the start against a threefold smaller denominator. The VLM phase reports a
-real `(done, total)` over the gate's candidate list — unlike HDBSCAN it is
-measurable, because the candidates are known before the loop starts.
+F100/F205: the stage names the phase it is in (CLASSIFY_PHASE_* below) through the optional
+`progress.phase(name)` channel, and the three model passes have three names. A phase name
+IS the unit a measurement is filed under (runlog.measurement_unit), so one name over three
+prices that differ threefold prices none of them.
 
-The one place the bar could genuinely freeze is fixed here too: a VLM error used to
-`continue` PAST the progress call, so the counter stopped for exactly as many frames
-as the model failed on. Observability only: no verdict, threshold or gate is touched,
-and a callback without a `phase` channel (the CLI, quiet mode, tests) behaves exactly
-as it did.
+F113: the stage also fills `frame_quality`, and every signal there is taken with the
+CHEAPEST TOOL THAT CAN ANSWER IT — a laplacian over the preview for sharpness, a prompt
+group inside the CLIP call this stage already makes for animals, eyelid geometry for the
+eyes (F179; the VLM that used to answer them is retired). The next tier up is paid for only
+where the cheap one is not sure. This half keeps its OWN incrementality marker
+(`frame_quality.source`), because the two go stale independently: switching `features.pets`
+on changes no junk verdict, and a collection classified before the feature existed has no
+quality rows at all.
 
-F101: the deep tier earns its keep — on the live run of 2026-07-28 it changed 2 592 of
-24 196 verdicts (10.7%), 2 202 of them into `product`, a class the fast tier does not
-produce at all — but it took ~95 minutes at 1.38 frames/s, which is a weekend job, not
-a default. The profile said the pass is not heavy but SEQUENTIAL: ~0.6 s of CPU
-(decode + the processor's image preprocessing) then ~0.19 s of GPU per frame, strictly
-alternating — 0.84 cores busy out of 24, the card at ~26%. Batching was ruled out by
-that same measurement (a starved GPU does not want bigger portions), so the lever is
-the one F87 used for faces: run the CPU half of several frames while the GPU half of
-the previous one is running. `_vlm_labels` does that — `vlm_workers` threads prepare,
-this thread generates and writes, and the queue is bounded so the frames in flight
-cannot grow into RAM (the prepared tensors stay on the CPU, see naming.qwen_runtime,
-so the VRAM peak is what it was).
+F128/F141: the CLIP vector of every frame this stage looks at is KEPT (`clip_embeddings`)
+where it used to be read for three scores and dropped, and behind `features.search_index` a
+SECOND vector from a multilingual model is computed beside it (`search_embeddings`). The
+first costs no model call at all — the vector comes out of the caching classifier that has
+just scored the chunk. Both tables write the model into every row, a mismatch means
+recompute rather than use, and both hold the F120 population.
 
-Not one verdict may move because of it: labels come back in the CANDIDATE ORDER (a
-FIFO of futures, not "whatever finishes first"), the model still sees one frame per
-call with the same prompt and the same greedy decode, the writes still happen on this
-thread alone, and a frame whose preparation fails still keeps its fast verdict with a
-warning and still steps the progress bar (F100).
+F130/F154: the animal label is a CASCADE — CLIP selects widely, the VLM answers whether the
+animal is alive, an object detector answers whether there is one at all. Each tier
+overrides the one below it and falls back to it, never to "no animal". WHERE THE ANSWER IS
+READ IS NOT HERE: since F137 the album, the "Animals" tab and the Overview counter derive
+the label as they read, through `sorter.animal_auto_sql`. F154 shipped without that branch
+and the gap was the worst kind — the stage ran, the boxes were in the database, and nothing
+a user looks at moved — so `pet_label` here and `animal_auto_sql` there are now run through
+one case table (`tests/test_detector_reaches_the_screen.py`).
 
-F113: this stage now also fills `frame_quality` — the per-frame signals a later consumer
-needs to pick the best frame of a burst and to recognize a shot nobody meant to take.
-Every signal is taken with the CHEAPEST TOOL THAT CAN ANSWER IT, and the next tier up is
-only paid for where the cheap one is not sure:
+F140: the search by words put memes and screenshots at the top of its results while all
+19 753 rows it searches carry the verdict `photo` — this stage being wrong about ~4% of
+what it calls a photograph, which nothing made visible until a query did. A zero-shot
+margin over the vectors F128 already stores SELECTS those frames and does not judge them;
+only the model's answer moves `media_class`. The same device as the F38 OCR gate, and
+cheaper: a matmul over a table that already exists.
 
-* sharpness — the variance of the laplacian over the shared preview. Milliseconds, no
-  model, no toggle: the data is wanted by every future consumer and costs nothing.
-* pets (cat/dog/pet) — a prompt group APPENDED to the main CLIP call of the stage, behind
-  `features.pets`. Not a second pass and not a second call. "Is there a cat in the frame"
-  is a question about an object, which is what CLIP does well; the CLIP failure measured
-  in F110 was about the PURPOSE of a frame, a different question. And the arithmetic is
-  not close: the same coverage through the VLM is 19 757 x 0.78 s = 4.3 hours.
-  `_group_probs` keeps the junk verdict exactly where it was — a renormalized slice of a
-  softmax IS the softmax over that slice — so `naming.junk_threshold` does not move under
-  a threshold that was measured against three prompts.
-* eyes open — the local VLM, behind `vlm.quality`, over an uncertain band inside a scope.
-  RETIRED BY F186, and the line stays here because the reasoning above it is what retired
-  it: the cheapest tool that can answer a question. F179 found one — the spread of an
-  eyelid contour the faces stage already fits — at 62% precision over 48% recall against
-  the model's 60% over 9% on the same 249 hand labels, for no call at all. See
-  `frame_quality.eye_openness` and the F179 note further down. The column `eyes_open`
-  stays and stays NULL, which is what "not asked" has always meant in that table.
-
-The quality half keeps its OWN incrementality marker (`frame_quality.source`), because the
-two halves go stale independently: switching `features.pets` on does not change a single
-junk verdict, and a collection classified before this feature existed has no quality rows
-at all.
-
-F128: the CLIP vector this stage computes for every frame it looks at is now KEPT
-(`clip_embeddings`), where it used to be read for three scores and dropped. Nothing is
-shown for it — the value is that the next feature of that class (search by words, an album
-from a query, scene clustering, "frames like this one") reads a table instead of paying
-for a full CLIP pass over the collection.
-
-It is deliberately not a fourth pass over anything: the vector comes out of the caching
-classifier that has just scored the chunk (`landmarks.CachingFeatureClassifier.features`),
-so the number of model calls a run makes is exactly what it was. Three properties of the
-row carry the reasoning, and the schema comment states them once more:
-
-* `model` is written always. Vectors of different models are not comparable, so a row
-  whose model differs from the current config is RECOMPUTED, never used — the same rule
-  the F120 prompt fingerprint applies to the quality answers.
-* the vector is stored L2-normalized in float32, little-endian. Normalized so cosine
-  similarity is a plain dot product for every consumer. float32 is a MEASURED decision and
-  not the obvious one: half precision would halve a table that reaches 920 MB at 300 000
-  photos, so the brief proposed it and made it conditional on the ranking surviving. It
-  does not — over 256 unit vectors of the real width, 18 of 20 queries come back in a
-  different order in float16 (tests/test_clip_embeddings.py keeps that measurement) — and
-  the pre-committed answer to that was float32 rather than a softer test.
-* the population is the one `frame_quality` has, by the F120 argument — the embedding of a
-  screenshot or a product shot is noise in a search over personal photographs — and this
-  half, like the other two, keeps its own incrementality marker (`clip_embeddings.model`).
-
-F141: and a SECOND vector next to it (`search_embeddings`), from a different model, for
-search alone. The one pass of this stage that encodes the same frames twice, and the
-justification is a measurement: `ViT-L-14` scores 22% at top-5 on Russian queries against
-98% for `xlm-roberta-base-ViT-B-32`, with four of eight concepts returning nothing at all.
-Swapping the model would be free and is exactly what must not happen — the landmark (F75),
-animal (F122) and cascade (F130) thresholds are calibrated on L14's numbers — so the
-search side pays for its own pass instead, behind `features.search_index`, off by default
-because ten and a half minutes per 20 000 frames is a cost a person agrees to. It keeps
-the F128 rules unchanged: the model in every row, a mismatch means recompute, and the F120
-population.
-
-F130: the animal question becomes a CASCADE — CLIP selects widely, the VLM checks
-(`features.pets_verify`, default off). F122 measured where the CLIP-only answer stands:
-92% precision at 0.70 and 54% recall, with ~466 animals sitting below 0.30 among 18 400
-frames, which no threshold reaches. The two halves of that have one cause and one fix:
-
-* the errors left at 92% are drawn cats, plush toys, fur coats and a hotdog — frames CLIP
-  is STRUCTURALLY unable to judge, because it compares a picture to a text as a whole and
-  a picture of a cat is a cat to it. "Alive, or a rendering?" is a question about the
-  meaning of the scene, and that is the one thing the VLM is better at;
-* and once something checks the answer, the SELECTION can be widened. 0.70 was high
-  precisely because nothing did. `features.pet_candidate_threshold` (0.30) decides who is
-  shown to the model — 1 331 frames of the live collection, ~17 minutes at 0.78 s each,
-  against 4.3 hours for asking about everything.
-
-The model outranks the score, and nothing else does: a frame whose answer did not parse,
-or whose answer never came, falls back to `pet_score >= pet_threshold` — never to "no".
-The answer is stored (`frame_quality.pet_vlm`) because "rejected" and "never asked" are
-different facts: without the column every later run would pay 0.78 s again for each of
-the ~500 frames the model already turned down, and the interface would have nothing to
-explain a removed label with.
-
-F132 had the stage answer the question the duplicates view has always had to guess — WHICH
-FRAME OF A NEAR-DUPLICATE GROUP IS THE ONE TO KEEP — comparatively, one call per group
-with the frames of that group in a single prompt (`dedup.keeper_vlm`, default off).
-
-F186 RETIRED IT, and the shape of that measurement is the point rather than the number.
-The owner labelled 111 groups BLIND on 2026-08-04 — the frames shuffled, the model's answer
-hidden — and the four candidate rules landed like this:
+F186 RETIRED THE COMPARATIVE QUESTION (F132) — which frame of a near-duplicate group is the
+one to keep. The owner labelled 111 groups BLIND on 2026-08-04, the frames shuffled and the
+model's answer hidden:
 
     way in                agreement with the person    calls    seconds
     sharpness                       27%                  0         0
@@ -260,247 +117,40 @@ hidden — and the four candidate rules landed like this:
 
     PICKING AT RANDOM               30.4%   (20 000 shuffles: 30.3%)
 
-28 of 88 guessed against a coin's ~27. Nothing was bought to replace it, because nothing
-was worth buying: a question no rule answers is not a question with a cheaper answer
-somewhere. What stays is the MECHANISM — `group_keeper`, `dedup.group_key`,
-`dedup.keeper_groups` and the sharpness ranking the Duplicates tab has always shown — so
-the interface behaves exactly as it did, and `dedup_choice` is what it has always been:
-the user's own decision, written by hand. No path of this stage has ever written it.
+Nothing was bought to replace it, because a question no rule answers is not a question with
+a cheaper answer somewhere. The MECHANISM stays in dedup.py (`group_keeper`,
+`dedup.group_key`, `dedup.keeper_groups` and the sharpness ranking the Duplicates tab
+shows), and `dedup_choice` is what it has always been: the user's own decision, which no
+path of this stage has ever written.
 
-F140: the search by words (F134) put memes and screenshots at the top of its results, and
-the table it searches is clean — all 19 753 rows of it carry the verdict `photo`. So this
-was not junk leaking into the index but THIS STAGE being wrong about ~4% of what it calls a
-photograph, an error nothing made visible until a query did. Those frames are laid out by
-city today, and they land in the duplicates, in the quality signals and in the albums.
-
-They are found by a zero-shot query over the vectors F128 already stores — no new pass over
-any model:
-
-    junk_score = max(similarity to screenshot/meme/text/receipt)
-               - max(similarity to a photograph)
-
-and the whole feature is what is NOT done with that number. Reviewed by eye on the live
-collection: above +0.05 the 93 frames are junk outright, but the band +0.02..+0.05 still
-holds ~17% real photographs. Applied as a verdict at 85% precision it would take ~150
-living pictures out of the layout — exactly the mistake F130 measured for animals, where a
-signal of 80-85% applied directly makes a 92% baseline worse. So the score SELECTS and does
-not judge:
-
-* it is computed for every photograph with a stored vector and kept
-  (`frame_quality.junk_score`); a frame without one (a heuristics-only run,
-  `store_embeddings: false`) gets NULL and is no candidate;
-* frames above `features.junk_rescue_threshold` (0.02, the measured row above — 955 frames,
-  ~12 minutes at 0.78 s each) are shown to the VLM, which answers with a verdict rather
-  than a resemblance, and only the model's answer moves `media_class`;
-* with the deep tier off nothing is reclassified at all, and with `features.junk_rescue`
-  off nothing is even computed. The score prompts and the model's question both enter
-  `quality_prompt_fingerprint`, so editing either invalidates the scores it produced (the
-  F120 rule).
-
-It is the same device as the OCR rescue gate (F38): a cheap signal decides who is worth an
-expensive check. Cheaper, in fact — this one is a matmul over a table that already exists.
-
-F154: the animal label gets a third tier — an OBJECT DETECTOR (`detect.py`), and the shape
-it takes is the whole decision. Measured on 200 hand-labelled frames (2026-08-02, at
-confidence 0.5), a COCO detector is 62% precision / 87% recall on animals against the CLIP
-label's 71% / 33% — but 42% precision on people where the face boxes are ~100% (F152), and
-20% / 15% on food, which COCO has no class for at all. It earns its keep on one slice of
-three, and a pass over the collection to get it is 83.8 ms x 22 096 = 30.8 minutes.
-
-So it is a CASCADE, the same device F130 and F140 already pay for: a zero-shot query over
-the stored vectors ranks the collection, the top `features.detector_candidates` (2 000)
-frames go to the detector, and ~3 minutes replace ~31. Recall is then bounded by the
-query's own at that depth, and precision rises from the query's 43% to the detector's 62%.
-`_DetectorPass` below is that pass; `detect.py` holds the model, the classes and the rule.
-
-Three properties are the feature rather than its implementation:
-
-* it is subordinate to a master switch of its own — `detect.enabled`, NOT `vlm.enabled`
-  (this is not a VLM), under the F145 rule that no subordinate key raises a model by
-  itself. Without stored vectors there are no candidates, and the stage says so instead of
-  falling back to a pass over everything;
-* the answer OVERRIDES the CLIP label in both directions, and falls back to the previous
-  rule — never to "no animal" — whenever the detector says nothing (see
-  `detect.cascade_label`, which also states why a frame the F130 check has answered about
-  keeps that answer: a box detector calls a drawn cat a cat);
-* what it found is stored with the class, the confidence and the box (`detections`),
-  because there is nowhere else those could come from. F122 closed the cat/dog split for
-  CLIP, which could not tell the species apart; a detector can, and the table is what makes
-  that a query rather than another pass.
-
-WHERE THE ANSWER IS ACTUALLY READ, because it is not here: since F137 the CONSUMERS of the
-animal slice — the album, the "Animals" tab, the Overview counter — do not read
-`frame_quality.pet` at all. They derive the verdict when they read, out of `pet_score`,
-`pet_vlm` and (F160) the `detections` row, through `sorter.animal_auto_sql`, so that a
-threshold moved in the config moves the slice without a run. F154 shipped without that
-branch and the gap was the worst kind: the stage ran, the boxes were in the database, and
-nothing a user looks at moved. F160 wrote the tier into that expression and made the two
-spellings of the rule — `pet_label` here, `animal_auto_sql` there — a case table that is
-run through both, so the fifth source of this label cannot repeat the silence.
-
-F155: the blur filter this stage feeds catches 6% of what a person calls blurred — 2 of 33
-on a hand-checked sample of 200 frames — and the reason is not the threshold. The variance
-of the laplacian over a whole frame answers "how much detail is in this picture", which is
-a different question from "is it in focus": a detailed sharp street and a smooth blurred
-face give the same number, and blurred frames sit in every band up to 400. Nothing about a
-whole frame is comparable across frames, so no cut through that number can be.
-
-A FACE IS COMPARABLE. It is the one object whose content is roughly constant from frame to
-frame, so the same variance measured inside it means the same thing twice. On the 68 frames
-of that sample that have a face (13 of them blurred): 62% recall at a threshold of 200,
-against 15% for the whole frame at 300, for a comparable number of frames flagged.
-
-`frame_quality.face_sharpness` is that number, and three properties of it are the feature:
-
-* it costs NO NEW PASS. `preview_sharpness_detector` decodes the shared preview once, as
-  before, and takes the second variance over a crop of the same array. What did change is
-  that the decode now applies the EXIF orientation — the boxes are written in the rotated
-  space — and the whole-frame number stands, because the laplacian kernel and its interior
-  are symmetric under every rotation and mirror an orientation can express (what the
-  resample leaves is ~0.01% on a rotated frame, four orders below the band it is read in);
-* THE COORDINATES ARE RESCALED (`face_crop_boxes`), and that is where the measurement this
-  feature is built on went wrong: `faces.bbox` is in pixels of the full original, the
-  preview is a few hundred pixels, and boxes used as written fell off the frame. 39 of 68
-  crops were dropped that way and the surviving 29 reported 100% recall instead of 62%. A
-  broken crop flatters the result rather than failing;
-* it RANKS AND DOES NOT JUDGE. ~25% precision at every threshold measured — three of four
-  flagged frames are not blurred — and it covers only the third of a collection that has a
-  face at all. So `features.face_sharpness_max` orders the blur list and nothing in this
-  stage reads it: no verdict, no threshold, no deletion. NULL means not measured, as
-  everywhere in `frame_quality`.
-
-F179: the third number off that same decode, and the first one in this file that a MODEL
-used to answer. "Are the eyes open" was asked of the local VLM for 92 minutes a run and
-came back 60% right about 9% of the frames it was meant to find; the question is gone
-(F177) and the ~948 frames it was about — 15.6% of everything with a face in it — did not
-go with it. Measured against the same 249 hand labels (F178, scripts/measure_eye_state.py):
-
-    way in                        threshold  precision  recall
-    the VLM (retired)                     —      60%       9%
-    eyelid geometry                    0.18      62%      48%
-    a classifier over the eye crop      0.9      46%      57%
-    CLIP over the eye crop              0.8      58%      49%
-
-Five times the recall at slightly better precision, out of ARITHMETIC over contour points
-— `eye_openness` is the spread of an eye's ring across its own long axis, so no threshold
-here depends on a network's opinion, only on where the contour landed. CLIP over the same
-crop lost while costing a pass of the network the stage already runs.
-
-Three properties, and they are the same three `face_sharpness` has, which is not an
-accident — it is the shape a signal in this table has to have:
-
-* NO NEW PASS and NO NEW WEIGHTS. `2d106det` is 4.8 MB inside the `buffalo_l` set the faces
-  stage already downloads, it is fitted to the box the crop above is taken from, and it is
-  built on the first face of a run and never on a run without one (`lazy_eye_landmarks`);
-* THE COORDINATES ARE RESCALED, through the very same `face_crop_boxes`. The F178
-  measurement lists this as the mistake F155 had already made once: `faces.bbox` is in
-  pixels of the full original and the preview is a few hundred pixels wide, and a box used
-  as written lands on empty sky. It does not raise — it flatters;
-* it RANKS AND DOES NOT JUDGE. 62% precision means one frame in three of that slice has its
-  eyes open, so `features.eye_openness_max` orders the list and opens it to a window a
-  person walks past; nothing in this stage deletes or reclassifies by it.
-
-The one rule that differs is which face answers: the LARGEST, where sharpness takes the
-sharpest. A frame where somebody at the back blinked is not a portrait with closed eyes,
-and a frame where one of several faces is in focus is a photograph that worked — each rule
-picks the face its own question is about.
-
-WHAT IS NOT FIXED HERE, written down because it will look like this feature's bug. F178
-reports that on a frame with EXIF orientation 6 the faces stage decodes through
-`cv2.imdecode` (which has already applied the rotation) and then rotates a second time, so
-`faces.bbox` is written in a SIDEWAYS frame — while this stage works in the upright one.
-If that holds, every box on a rotated photograph lands wrong here, and it lands wrong for
-`face_sharpness` in exactly the same way and has since F155. It is a finding about the
-faces stage, that stage is out of this feature's bounds, and the same script measures how
-often a stored box matches a fresh detection (`легли на бокс`) — so whoever owns it starts
-from a number rather than from this paragraph.
-
-F164: the first three levers pulled with the phase table of F147 in hand, and the first
-lesson is that a phase NAME is not a bill of costs. `junk_write` looked like 19,4 ms of
-SQLite per frame and turned out to be the laplacian — the writes are one transaction and
-cost 0,005 ms a row, measured (scripts/measure_junk_write.py, the table is at
-_MEDIA_CLASS_UPSERT). Nothing was batched, because there was nothing left to batch; what
-the phase is really made of is written down instead, so the next person starts from the
-right number.
-
-The other two levers are the same lever at both ends of the stage — a THREAD CEILING
-chosen before anything was measured — and both keep their value, for two different
-reasons. `vlm.workers` was measured and 4 turns out to be past the knee already: one
-frame's preparation uses about seven cores since F105 gave the runtime the fast image
-processor, so 6, 8 and 12 threads came back SLOWER than 4 on the live collection, and
-the card's 51% is what NO overlap looks like at 0,12 s of CPU per 0,19 s of GPU rather
-than a queue that is too short (config.default_vlm_workers holds that table).
-`_DEFAULT_OCR_WORKERS_CAP` is unmeasured on purpose: what it protects is VRAM — one
-easyocr Reader per thread — and only a free card can price it, so the tool ships
-(scripts/measure_ocr_workers.py) and the number waits for the run that earns it.
-
-Neither ceiling touches a verdict, and that is what the tests are about rather than the
-seconds: the OCR pool has always written on the caller's thread in chunk order (F73),
-the deep tier has always applied its labels in the candidate order (F101), and
-tests/test_worker_ceilings.py pins both across every thread count the sweeps went up to.
+F164: the two thread ceilings of the stage keep their values for two different reasons.
+`vlm.workers` was measured and 4 is past the knee already — one frame's preparation uses
+about seven cores since F105, so 6, 8 and 12 threads came back SLOWER on the live
+collection (config.default_vlm_workers holds that table). `_DEFAULT_OCR_WORKERS_CAP` is
+unmeasured on purpose: what it protects is VRAM, only a free card can price it, so the tool
+ships and the number waits for the run that earns it.
 
 F165: THE STAGE RUNS IN TWO HALVES, and `verdicts_only` is which one. The faces stage is
-46% of a full run and it walks 24 195 frames, 4 300 of which this stage already knows are
-screenshots, documents, memes or products — it just used to find out AFTER faces had paid
-for them. So the verdicts move ahead of faces (`sorta classify`, and the `classify` step of
-the pipeline) and everything that needs the face signal stays behind it (`sorta junk`):
+46% of a full run and used to walk 4 300 frames of 24 195 that this stage already knew were
+screenshots, documents, memes or products — so the verdicts move ahead of it:
 
     index -> geo -> landmarks -> classify -> faces -> events -> junk -> phash
 
-The split is by dependency and nothing else. `verdicts_only=True` runs the fast pass
-(heuristics, CLIP, the OCR gate), the deep tier and the stored vectors of F128 — none of
-which reads `frame_quality` — and leaves out every half that does: the quality cascade
-(`face_sharpness` is measured inside the boxes the faces stage writes, F155), the animal
-cascade, the rescue and the search index. Swapping the two stages instead of
-splitting them would have switched `face_sharpness` off silently on every first run, which
-is the failure this note exists to prevent someone re-inventing.
+The split is by dependency and nothing else: `verdicts_only=True` runs everything that does
+not read `frame_quality` (the fast pass, the deep tier, the stored vectors) and leaves the
+rest behind faces. Swapping the two stages instead of splitting them would have switched
+`face_sharpness` off silently on every first run. Both halves are the SAME function under
+the same incrementality, so the second call reclassifies nothing and `sorta junk` alone
+still does the whole thing.
 
-Both halves are the SAME function and the same incrementality: the second call finds
-`media_class.tier` already current and reclassifies nothing, so `sorta junk` alone still
-does the whole thing and the pipeline pays for the fast pass once. What the frames of the
-first call cost the second is one softmax over the cache the shared classifier already
-holds (F19) — no frame is decoded or encoded twice within a run.
-
-THE ONE THING THAT DOES CHANGE, stated where it will be found. The fast tier reads
-`has_faces` in four places (the F13 veto, the F15 document pass, the F38 OCR gate and the
-#14 VLM gate), and before the faces stage has ever run there is nothing to read: on a FIRST
-run with `--faces` a frame that CLIP calls a meme is no longer vetoed by the face in it.
-That is exactly what a default run (faces are opt-in, F53) has always done, and one run
-later the faces are in the database and the veto is back for every frame that still gets
-there — but a frame this stage calls junk is a frame `faces` now skips, so the veto cannot
-reach it afterwards. The brief accepted that trade for the 18% (F165, "Оговорки", 2 and 3);
-it is written down here because no test can show it and no log line will mention it.
-
-F206: THE OTHER HALF OF THAT SPLIT KEPT ASKING SERIALLY, and the phase names of F205 are
-what finally showed it. The run of 2026-08-05:
-
-    stage=classify phase=junk_vlm         7 951 frames    5 503 s   1.4 frames/s
-    stage=junk     phase=junk_pets_vlm  }
-    stage=junk     phase=junk_rescue_vlm }  4 281 frames  ~10 200 s  0.42
-
-Same model, same one frame per call, same card — three times the price, because the
-pipeline went to `classify` with the verdicts (F101 built it there) while `_frame_question`
-stayed the plain serial path. At the previous run's rate those 4 281 frames cost 3 243 s:
-116 minutes a run, and the balance of the two runs closes on that number exactly (6 041
-frames fewer saved ~76 min, the lost pipeline cost ~116, +40 against the +27 observed).
-
-The fix is a MOVE and not a design: `_frame_question` hands back its halves the way
-`vlm_classifier_from` does, and the two askers go through `_vlm_labels` — the same FIFO of
-futures, the same bounded window, the same "generation stays on the caller's thread". So
-the properties the deep tier has had since F101 are the ones these two questions get: the
-verdicts cannot move (the prompt, the token budget and the input size are untouched, and
-one frame is still one call), the answers arrive in the CANDIDATE order rather than in
-completion order, a frame whose preparation fails still keeps its cheap-tier answer, and
-the VRAM peak is one frame's inputs — the prepared tensors stay on the CPU
-(naming.qwen_runtime), which is what the window bounds.
-
-What was NOT done here, deliberately: no batching (that is F105, with a measurement of its
-own), no prompt, threshold or population touched, and no second optimization riding along —
-one edit, one effect, or the next run cannot say what helped. The guard against a third
-serial pass is a test rather than a comment: `tests/test_junk_asker_pipeline.py` prices the
-animal phase AGAINST the deep tier's phase of the same run, because a cost per frame in
-seconds is a statement about a machine and a RATIO between two phases asking one model one
-question about one frame is a statement about this stage.
+THE ONE THING THAT DOES CHANGE WITH IT, written here because no test can show it and no log
+line will mention it: the fast tier reads `has_faces` in four places (the F13 veto, the F15
+document pass, the F38 OCR gate, the #14 VLM gate), and before the faces stage has ever run
+there is nothing to read. On a FIRST run with `--faces` a frame CLIP calls a meme is no
+longer vetoed by the face in it — which is exactly what a default run has always done
+(faces are opt-in, F53) — and a frame this stage calls junk is a frame `faces` now skips,
+so the veto cannot reach it afterwards. The brief accepted that trade for the 18% (F165,
+«Оговорки», 2 and 3).
 """
 from __future__ import annotations
 
