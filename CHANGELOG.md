@@ -529,6 +529,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **A stage waiting for a download says so, instead of showing a frozen counter** (F229).
+  Reported off the same virtual machine on 2026-08-08: *"Stage verdicts (4/7): 0 of 8 —
+  what is going on? there are only 8 photographs in the test, and as a user I do not
+  understand what is stuck and what is happening."* Nothing was stuck: 1.6 GB of CLIP
+  weights were coming down, and the line beside them counted **frames** — of which not one
+  can be processed while the model is missing. The number was true; the **unit** was not.
+  Eight frames is what makes it plain: the cost of the download is a one-off and does not
+  depend on the size of the collection, so on a small test it takes the *whole* run and the
+  frozen counter is literally the entire screen. F225 put the megabytes on that screen and
+  stopped half way — the counter that cannot move stayed right next to them, and a person
+  reads both and concludes the program has hung.
+  **The stage line now names the state in words** — "waiting for the model — frames start
+  once it is downloaded" — for exactly the stretch of time in which frames are impossible,
+  with the F225 line beside it saying how many megabytes have arrived. The moment the
+  weights are on disk the frame counter is back, counting from zero honestly.
+  **No new machinery**: the answer is derived from the download state F222/F225 already
+  keeps (`stage_waiting_download` in the status snapshot is true while `download` is
+  non-empty and belongs to the stage that is running), so the run screen and the pipeline
+  cannot come to two different answers about one run. A download that belongs to another
+  stage leaves that stage's counter alone.
+  **The same thought in a terminal**: `sorta run` prints the sentence and puts it on the
+  stage's own progress bar, whose unit is frames for the same reason — and takes it down
+  again when the download ends, including when it ends in a refusal.
+  **No invented percentage.** How much has arrived is the F225 line and is not repeated in
+  the frame counter: two different quantities in one place stop being told apart within a
+  month. And the counter is not hidden or replaced by an endless animation in general —
+  once frames are going, their number is the most useful thing on the screen.
 - **A windowed Sorta no longer opens consoles nobody asked for** (F228). Found on
   2026-08-08 in a virtual machine: *"a console opened, but the download progress is not
   visible in it — that is deeply counter-intuitive."* The shortcut runs `pythonw.exe`, a

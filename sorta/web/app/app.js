@@ -3426,6 +3426,24 @@
         statusEl.textContent = I18N.process_cancel_requested;
         return;
       }
+      // F229: the stage is waiting for its model, so it says that instead of counting
+      // frames. The counter measures frames and the stage cannot process one until the
+      // weights are on disk — "0 of 8", unchanged for the twenty minutes of a 1.6 GB
+      // download, is what the owner read as a hang on a collection of eight photographs.
+      // What has arrived is the F225 line right above; it is NOT repeated in the counter,
+      // because two different quantities in one place stop being told apart. The frame
+      // counter comes back by itself on the first tick after the download ends.
+      if (data.stage_waiting_download) {
+        bar.classList.add("indeterminate");
+        bar.max = 1;
+        bar.removeAttribute("value");
+        statusEl.textContent = fmt(I18N.process_stage_waiting_model, {
+          stage: processStageLabel(data.stage),
+          index: data.stage_index,
+          total: data.stage_total,
+        });
+        return;
+      }
       // #37: total>0 -> determinate progress (it fills); total<=0 (indexing, the total
       // is not known) -> the running indeterminate stripe plus «обработано X».
       if (data.total > 0) {
