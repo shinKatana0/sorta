@@ -965,6 +965,16 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "sorta: could not close the program (answer {status})",
         "ja": "sorta: プログラムを終了できませんでした（応答 {status}）",
     },
+    # F227: the only line of the window that goes up while the program is still starting.
+    # One sentence, and it has to answer the question the person is actually asking after
+    # a double-click that did nothing — "did it hear me?" — without promising a duration
+    # nobody has measured on their disk. The window itself carries the product name; this
+    # is the line under it.
+    "cli.tray.starting": {
+        "ru": "Запускается — первый запуск дольше остальных…",
+        "en": "Starting — the first launch takes longer than the rest…",
+        "ja": "起動中です — 初回は時間がかかります…",
+    },
     # F211: the first-run wizard of the Windows installer (`sorta-setup`). Everything a
     # person who never opens a terminal is asked at install time, and the one place the
     # tiers are described in words: what each one costs to download, what it buys, and —

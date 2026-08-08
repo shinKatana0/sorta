@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The first launch says that it is launching** (F227). Reported off the same clean
+  virtual machine on 2026-08-08: *"the first launch is very slow, the person has to be
+  able to see that it is loading, and not start ten copies of it."* Measured with the
+  interpreter from the installer payload, on a **fast** machine:
+
+  | step | seconds |
+  | --- | --- |
+  | `import sorta.tray` | 1.53 |
+  | `warn_if_gpu_mismatch` (the torch import) | 3.76 |
+  | config + index connect | 0.16 |
+  | `ui.build_server` | 0.20 |
+  | **total to a bound port** | **5.65** |
+
+  On a VM with a slow disk that is tens of seconds, and for every one of them **nothing at
+  all was on the screen**: the shortcut runs `pythonw`, so there is no console, the tray
+  icon does not exist yet and no tab is open. So the person clicks again — and the second
+  click was the expensive one. The "are we already running" question stood inside
+  `tray.start()`, i.e. **after** the config had been read, `warn_if_gpu_mismatch()` called
+  and the index opened, so the surplus instance imported torch in full before finding out
+  it was surplus. Ten clicks on a weak VM were ten concurrent torch imports, after which
+  the machine could not finish the first one either. Three changes, all of them to the
+  **order**:
+  **1. The port is asked about first.** Before the index, before anything heavy, with only
+  the config read in front of it — so a second click now costs a TCP connect and gives
+  back a tab of the server that is already running. The machinery is the one F207 already
+  wrote (`port_holder`, `sorta_is_serving`, `_busy_port`); what moved is where it is asked.
+  **2. The diagnostics moved behind the bind.** `log_environment`, `warn_if_gpu_mismatch`
+  and `warn_if_geo_data_missing` are diagnostics, not service — not one of them is needed
+  to answer an HTTP request, and together they were **3.9 s of the 5.65**. They now run on
+  a thread of a program that is already serving, writing the same lines into the same log.
+  The property is checked as a fact rather than as a stopwatch: in a subprocess, at the
+  moment the port is bound, `sys.modules` holds neither `torch` nor `onnxruntime` — and a
+  surplus launch imports neither of them at all and never opens the index.
+  **3. Something is on the screen while the rest happens.** A window with the product name
+  and one line — a separate process, for the same reason the folder dialog is one
+  (tkinter wants a main thread, and this one is about to be taken by the tray icon's
+  `icon.run()`); it goes away as soon as the tab has been asked for. The tab then carries
+  the waiting on: `GET /api/startup` says which step the launch is on, the page names it
+  in words in all three languages and **shows the program by itself** when the last step is
+  done, with nothing to reload. Deliberately **no percentage** — the steps differ in length
+  by two orders of magnitude, and a bar stuck at 71% through four seconds of a torch import
+  is worse than the sentence "checking the graphics card". It is also not the model
+  download of F222/F225, which has its own line, its own megabytes and its own failure.
+  Finally, every step writes `startup step=<name> elapsed=<sec>` into the run log, in
+  `runlog`'s own shape, so the next *"why is it slow"* is answered out of the file instead
+  of by measuring somebody else's machine again. A machine with no tray still serves
+  without an icon, exactly as before.
 - **A download is carried to the end, and it is on screen while it happens** (F225). Four
   defects of one line, found in a clean virtual machine on 2026-08-08 — the third attempt
   to check the installer.

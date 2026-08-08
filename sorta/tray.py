@@ -27,6 +27,10 @@ Three things are borrowed rather than rewritten:
 A machine with no tray (a server, an SSH session, a Linux desktop without an indicator)
 keeps serving without an icon. Every step of building the icon is therefore allowed to
 fail into `TrayUnavailable`, and none of them may take the server down with it.
+
+F227 changed the ORDER of everything below, and only the order: the port is asked about
+first, a window says so while the rest happens, and the diagnostics run once the port
+already answers. See the note above `_SPLASH_NAME` for the measurement that asked for it.
 """
 from __future__ import annotations
 
@@ -35,15 +39,17 @@ import io
 import json
 import logging
 import socket
+import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
+from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from . import i18n, ui
 from .config import configure_logging, load_config
@@ -86,6 +92,86 @@ QUIT_QUESTION_KEYS: dict[str, str] = {
 # What to ask about an operation this build has no question for. A generic question is
 # still a question — the one thing that may not happen is interrupting without asking.
 QUIT_QUESTION_FALLBACK = "cli.tray.quit_running"
+
+# --- F227: the launch says it is launching ------------------------------------------
+#
+# Measured with the interpreter from the installer payload, on a fast machine:
+#
+#     import sorta.tray        1.53 s
+#     warn_if_gpu_mismatch     3.76 s      the torch import
+#     config + db connect      0.16 s
+#     ui.build_server          0.20 s
+#     total to a bound port    5.65 s
+#
+# On the owner's VM, with a slow disk, that is tens of seconds — and for every one of
+# them the shortcut showed NOTHING: `pythonw` has no console, the icon is not in the tray
+# yet and no tab is open. So the person clicks again, which used to be the expensive
+# mistake: the "are we already running" question stood in `start()`, AFTER `main()` had
+# read the config, called `warn_if_gpu_mismatch()` and opened the index. The second
+# instance imported torch in full and only then found out it was surplus. Ten clicks on a
+# weak VM were ten concurrent torch imports, after which the machine could not finish the
+# first one either.
+#
+# Three answers, and they are in the order the launch meets them:
+#
+# 1. the port question is FIRST (`main` below), before the index and before any heavy
+#    import, so a second click costs a TCP connect and opens a tab;
+# 2. a window appears while the rest happens (`open_splash`) — a separate process, for the
+#    same reason the folder dialog is one (`ui/process.py:_browse_for_folder`): tkinter
+#    wants a main thread and this one is about to be taken by `icon.run()`;
+# 3. the diagnostics move BEHIND the bind (`_finish_startup`). None of the three is needed
+#    to answer a request, and together they were 3.9 s of the 5.65; they now write their
+#    lines into the log and their steps into `ui.startup_state()`, which is what the
+#    waiting screen in the tab reads while it waits.
+#
+# The name and the line the window shows. `_SPLASH_NAME` is the product, not a translated
+# caption: it is the same word the tray tooltip, the page and the shortcut carry.
+_SPLASH_NAME = "Sorta"
+# How long to wait for the window to take the hint and close itself before ending it.
+# Short on purpose — the tab is already open by then, and nothing is lost by killing a
+# window that is about to be redundant.
+_SPLASH_CLOSE_TIMEOUT_S = 3.0
+# The window itself, in a process that has nothing else to do. Deliberately tiny and
+# import-light: `tkinter` plus `ttk` for the bar, no sorta module at all, so it draws
+# while THIS process is still importing whatever it imports.
+#
+# The bar is indeterminate because there is no honest percentage to show — see the note in
+# `ui/common.py`. It closes on EOF of its own stdin, which is how it goes away if the
+# program that opened it dies without asking.
+_SPLASH_SCRIPT = (
+    "import sys, threading, tkinter\n"
+    "from tkinter import ttk\n"
+    "root = tkinter.Tk()\n"
+    "root.title(sys.argv[1])\n"
+    "root.resizable(False, False)\n"
+    "frame = ttk.Frame(root, padding=28)\n"
+    "frame.pack()\n"
+    "ttk.Label(frame, text=sys.argv[1], font=('', 18, 'bold')).pack()\n"
+    "ttk.Label(frame, text=sys.argv[2]).pack(pady=(10, 14))\n"
+    "bar = ttk.Progressbar(frame, mode='indeterminate', length=280)\n"
+    "bar.pack()\n"
+    "bar.start(12)\n"
+    "def watch():\n"
+    "    try:\n"
+    "        sys.stdin.readline()\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "    root.after(0, root.destroy)\n"
+    "threading.Thread(target=watch, daemon=True).start()\n"
+    "try:\n"
+    "    root.attributes('-topmost', True)\n"
+    "    root.eval('tk::PlaceWindow . center')\n"
+    "except Exception:\n"
+    "    pass\n"
+    "root.mainloop()\n"
+)
+
+# The log line of one launch step. `runlog`'s shape (one line, INFO, key=value) so that a
+# launch is greppable the way a run already is — and deliberately `startup step=` rather
+# than `stage=`, because `runlog.read_measurements` reads `stage=<name> elapsed=` as a
+# timing to price the next run with, and a launch is not a stage of the pipeline.
+_STARTUP_LINE = "startup step=%s elapsed=%.3f"
+_STARTUP_READY_LINE = "startup ready elapsed=%.3f"
 
 
 class TrayUnavailable(RuntimeError):
@@ -217,6 +303,118 @@ def _say(text: str, *, error: bool = False) -> None:
         _LOG.error(text)
     else:
         _LOG.info(text)
+
+
+# --- F227 requirement 3: something on the screen before anything is measured ---------
+
+
+class _Splash:
+    """The "Sorta is starting" window — a handle on the process that draws it."""
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        self._process = process
+        self._closed = False
+
+    def close(self) -> None:
+        """Take the window away. Idempotent, and never raises at the caller.
+
+        EOF on its stdin first, because that asks the window to destroy ITSELF, which is
+        the only way tkinter likes to be shut down; `terminate` is the second line, for a
+        child that cannot read its stdin (a launcher that left it closed) or is wedged.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._process.stdin is not None:
+                self._process.stdin.close()
+        except OSError:
+            pass
+        try:
+            self._process.wait(timeout=_SPLASH_CLOSE_TIMEOUT_S)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        except OSError:  # the child is already gone
+            return
+        try:
+            self._process.terminate()
+        except OSError:
+            pass
+
+
+def _no_console_flag() -> int:
+    """`CREATE_NO_WINDOW` where the platform has it, 0 where it does not.
+
+    Without it a Sorta started from a terminal (`python -m sorta.tray`) would flash a
+    console next to the splash. Under `pythonw`, which is what the shortcut runs, there is
+    nothing to suppress; on POSIX there is no such flag and 0 is what `Popen` expects.
+    """
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def open_splash(lang: i18n.Lang) -> _Splash | None:
+    """Put a window on the screen now, and return the handle that closes it.
+
+    None means there is no window and the launch carries on exactly as it did before: a
+    machine without tkinter, without a display or without a window manager is a machine
+    where nobody can be shown anything, and that is never a reason not to start. tkinter
+    is in the installer payload, so on the machine this feature is for there is one.
+    """
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-c", _SPLASH_SCRIPT, _SPLASH_NAME,
+             i18n.cli_text("cli.tray.starting", lang)],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=_no_console_flag())
+    except Exception as exc:  # no interpreter to spawn, no permission, no tkinter
+        _LOG.warning("tray: could not show the starting window (%s)", exc)
+        return None
+    return _Splash(process)
+
+
+# --- F227 requirements 1 and 5: the steps, in order, with their durations -------------
+
+
+@contextmanager
+def _startup_step(step: str) -> Iterator[None]:
+    """Time one step of the launch — into the log, and into what the page reads.
+
+    The log line is requirement 5: "долго" was a guess about the owner's VM, and the next
+    person to ask why should get the answer out of the file instead of measuring somebody
+    else's machine by hand.
+    """
+    state = ui.startup_state()
+    state.enter(step)
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - started
+        state.leave(step, elapsed)
+        _LOG.info(_STARTUP_LINE, step, elapsed)
+
+
+def _finish_startup() -> None:
+    """The diagnostics, with the port already answering (requirement 1).
+
+    `log_environment`, `warn_if_gpu_mismatch` and `warn_if_geo_data_missing` are
+    diagnostics and not service: not one of them is needed to answer an HTTP request, and
+    together they were most of the silence. They run here, on a thread of a program that is
+    already serving — which is also why nothing they do may escape: a probe that fails is
+    a failed probe, not a failed launch.
+    """
+    for step, probe in ((ui.STARTUP_ENVIRONMENT, log_environment),
+                        (ui.STARTUP_GPU, warn_if_gpu_mismatch),
+                        (ui.STARTUP_GEO, warn_if_geo_data_missing)):
+        try:
+            with _startup_step(step):
+                probe()
+        except Exception:
+            _LOG.exception("tray: the %s check of the launch failed", step)
+    state = ui.startup_state()
+    state.ready()
+    _LOG.info(_STARTUP_READY_LINE, state.elapsed())
 
 
 def sorta_is_serving(port: int, *, timeout: float = PROBE_TIMEOUT) -> bool:
@@ -413,12 +611,19 @@ def start(cfg: Any, conn: Any, *, port: int = ui.DEFAULT_PORT,
           config_path: str | Path | None = None,
           open_browser: bool = True,
           ask: Callable[[str, str], bool] = ask_yes_no,
-          icon_factory: Callable[..., Any] = build_icon) -> int:
+          icon_factory: Callable[..., Any] = build_icon,
+          splash: _Splash | None = None) -> int:
     """Serve, with an icon in the tray if this machine has one. The exit code of `main`.
 
     `ask`/`icon_factory` are injected by the tests: what is worth pinning is that the
     question is asked and that a machine without a tray keeps serving, and neither of
     those is checkable through somebody else's desktop.
+
+    F227: the port question stays here even though `main` now asks it first. It is cheap
+    (a TCP connect), it is the only guard for a caller that reaches `start` directly, and
+    the bind below can still lose a race the earlier question won. `splash` is the window
+    `main` put on the screen; it is closed the moment the tab is opened, whichever way this
+    returns.
     """
     lang = i18n.normalize_lang(getattr(cfg, "language", None))
     try:
@@ -426,27 +631,40 @@ def start(cfg: Any, conn: Any, *, port: int = ui.DEFAULT_PORT,
         if holder != PORT_FREE:
             return _busy_port(port, lang, holder, open_browser=open_browser)
         try:
-            httpd = ui.build_server(cfg, conn, port=port, config_path=config_path)
+            with _startup_step(ui.STARTUP_SERVER):
+                httpd = ui.build_server(cfg, conn, port=port, config_path=config_path)
         except OSError as exc:
             # Somebody took the port between the question above and this bind. Rare, and
             # answered by asking the same question again rather than by guessing.
             _LOG.warning("tray: could not bind port %s (%s)", port, exc)
             return _busy_port(port, lang, port_holder(port), open_browser=open_browser)
-        log_environment()  # F69: one environment header per server start
-        warn_if_geo_data_missing()  # F65: an unreadable geo base empties every place
         port = httpd.server_port  # port=0 (the tests) -> whatever the OS handed out
         url = url_for(port)
         serving = threading.Thread(target=httpd.serve_forever, daemon=True)
         serving.start()
         try:
+            # F227: the port answers from here on, so the diagnostics that used to stand
+            # in front of it run beside it instead. F69 still gets its one environment
+            # header per server start and F65 its one geo warning — a few seconds later,
+            # and into the same log.
+            threading.Thread(target=_finish_startup, name="sorta-startup",
+                             daemon=True).start()
             if open_browser:
                 webbrowser.open(url)
+            # The window has done its job: the server answers and the tab is on its way,
+            # and from here the tab itself says what the launch is still doing.
+            if splash is not None:
+                splash.close()
             _serve_until_closed(port, lang, url, serving, ask=ask,
                                 icon_factory=icon_factory)
         finally:
             httpd.server_close()
         return 0
     finally:
+        # Every other way out of this function — a busy port, a bind that failed, a raise
+        # — must not leave a window nobody can close on somebody's desktop.
+        if splash is not None:
+            splash.close()
         conn.close()
 
 
@@ -509,6 +727,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="path to config.yaml (default: %(default)s)")
     parser.add_argument("--no-browser", action="store_true",
                         help="do not open the browser at start-up")
+    parser.add_argument("--no-splash", action="store_true",
+                        help="do not show the starting window (F227)")
     return parser
 
 
@@ -519,15 +739,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     F225: the streams first, before a single line of this is read or a single module of
     the pipeline is imported. This is the entry point of the windowed launcher, and from
     here on the process is one where any library may print — see `ensure_streams`.
+
+    F227: and then the ORDER, which is the feature. The port is asked about before the
+    index is opened and before anything heavy is imported, so a second click on the
+    shortcut costs a TCP connect and gives back a tab; the window goes up before the work
+    starts, so the first click stops looking like nothing happened; and
+    `warn_if_gpu_mismatch`, which is 3.76 s of torch, has moved behind the bind into
+    `_finish_startup`.
     """
     ensure_streams()
     args = build_parser().parse_args(argv)
-    cfg = load_config(args.config)
-    configure_logging(cfg.log_level)
-    warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
-    conn = connect(cfg.database)
-    return start(cfg, conn, port=args.port, config_path=args.config,
-                 open_browser=not args.no_browser)
+    state = ui.startup_state()
+    state.expect()
+    with _startup_step(ui.STARTUP_CONFIG):
+        cfg = load_config(args.config)
+        configure_logging(cfg.log_level)
+    lang = i18n.normalize_lang(cfg.language)
+    # Requirement 2: the FIRST question, not the fifth. The machinery is the one F207
+    # already wrote — what changed is that it is asked here instead of inside `start`,
+    # with nothing but the config read before it.
+    with _startup_step(ui.STARTUP_PORT):
+        holder = port_holder(args.port)
+    if holder != PORT_FREE:
+        state.ready()  # this process is not launching anything; the other one already did
+        return _busy_port(args.port, lang, holder, open_browser=not args.no_browser)
+    splash = None if args.no_splash else open_splash(lang)
+    try:
+        with _startup_step(ui.STARTUP_DATABASE):
+            conn = connect(cfg.database)
+        return start(cfg, conn, port=args.port, config_path=args.config,
+                     open_browser=not args.no_browser, splash=splash)
+    except BaseException:
+        # `start` closes the window itself on every path it owns; this covers the one it
+        # never reaches, an index that will not open.
+        if splash is not None:
+            splash.close()
+        raise
 
 
 if __name__ == "__main__":  # pragma: no cover — the console-script wrapper calls main()

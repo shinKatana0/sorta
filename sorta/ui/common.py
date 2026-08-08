@@ -17,6 +17,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Callable
@@ -419,3 +420,149 @@ def _is_under(path: str, directory: str) -> bool:
 # The population every per-file number is counted over — exactly the files the sorter
 # lays out (`plan_and_sort`), so a counter here matches what an apply will carry off.
 _OVERVIEW_LIVE = "f.dup_of IS NULL AND f.error IS NULL"
+
+
+# --- F227: what the launch is doing, while it is still doing it ----------------------
+#
+# The tray entry point binds the port FIRST and does its diagnostics afterwards, because
+# none of them is needed to answer an HTTP request: `warn_if_gpu_mismatch` alone was
+# 3.76 s of a 5.65 s start-up, all of it the torch import. What that buys is a tab that
+# opens in the first second. What it costs is a tab that opens onto a program still
+# getting ready — and a page that silently shows a half-warmed program is how "it is
+# broken" gets reported for something that was merely not finished.
+#
+# So the launch says where it is, and this is the object it says it into: the entry point
+# writes it (`sorta/tray.py`), `GET /api/startup` reads it, and the page shows itself when
+# the answer says ready. It lives in `common` because that is the bottom of this package
+# and both halves need it — a state the route owned would have to be handed backwards to
+# the code that runs before the route exists.
+#
+# Deliberately NO percentage. The steps differ in length by two orders of magnitude, so a
+# number derived from "step 5 of 7" would sit at 71% for the four seconds of the torch
+# import and then jump to done. A step NAMED, over a bar that only says "working", is the
+# same news without the lie in it.
+#
+# Also deliberately not the download of a model (F222/F225). That has its own line on the
+# run screen, its own megabytes and its own failure — and a person who cannot tell "the
+# program is starting" from "1.6 GB is coming over the network" has been told nothing.
+
+STARTUP_CONFIG = "config"
+STARTUP_PORT = "port"
+STARTUP_DATABASE = "database"
+STARTUP_SERVER = "server"
+STARTUP_ENVIRONMENT = "environment"
+STARTUP_GPU = "gpu"
+STARTUP_GEO = "geo"
+
+# The steps of a launch, in the order it walks them: the first four have to happen before
+# the port answers, the last three are the diagnostics that used to happen before it. The
+# page numbers the current step against this list, and the string catalog owes each name a
+# caption (both are pinned by the suite).
+STARTUP_STEPS: tuple[str, ...] = (
+    STARTUP_CONFIG, STARTUP_PORT, STARTUP_DATABASE, STARTUP_SERVER,
+    STARTUP_ENVIRONMENT, STARTUP_GPU, STARTUP_GEO,
+)
+
+
+class _StartupState:
+    """Which step of the launch is running now, and what each finished one cost.
+
+    Thread-safe because it is written by the launch and by the background thread that
+    finishes it, and read by request handlers on their own threads.
+
+    The default is READY, and that is the important half: `sorta ui` never declares a
+    launch, so a server started any other way answers "nothing is starting" and the page
+    never shows a waiting screen it would have no way out of.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._steps: tuple[str, ...] = ()
+        self._step: str | None = None
+        self._done: list[tuple[str, float]] = []
+        self._ready = True
+        self._started: float | None = None
+        self._total: float | None = None
+
+    def expect(self, steps: tuple[str, ...] = STARTUP_STEPS) -> None:
+        """This process is launching, and these are the steps it will take."""
+        with self._lock:
+            self._steps = tuple(steps)
+            self._step = None
+            self._done = []
+            self._ready = False
+            self._started = time.monotonic()
+            self._total = None
+
+    def enter(self, step: str) -> None:
+        """The launch has started `step`."""
+        with self._lock:
+            self._step = step
+            self._ready = False
+
+    def leave(self, step: str, seconds: float) -> None:
+        """`step` is over, and it took `seconds`."""
+        with self._lock:
+            self._done.append((step, float(seconds)))
+            if self._step == step:
+                self._step = None
+
+    def ready(self) -> None:
+        """Everything the launch had to do is done — the page may show the program."""
+        with self._lock:
+            self._step = None
+            self._ready = True
+            # Frozen here: from now on "how long did the launch take" is a fact about a
+            # launch that is over, not a clock that keeps running while the program serves.
+            self._total = self._seconds()
+
+    def reset(self) -> None:
+        """Back to "nothing is starting" — the state a fresh process opens with."""
+        with self._lock:
+            self._steps = ()
+            self._step = None
+            self._done = []
+            self._ready = True
+            self._started = None
+            self._total = None
+
+    def elapsed(self) -> float:
+        """Seconds since the launch was declared — its total once it is over."""
+        with self._lock:
+            return self._seconds()
+
+    def _seconds(self) -> float:
+        """The clock of the launch. Call under the lock."""
+        if self._total is not None:
+            return self._total
+        if self._started is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self._started)
+
+    def snapshot(self) -> dict:
+        """What `GET /api/startup` answers: the state, in one consistent read."""
+        with self._lock:
+            return {
+                "ready": self._ready,
+                "step": self._step,
+                "steps": list(self._steps),
+                "done": [{"step": name, "seconds": round(seconds, 3)}
+                         for name, seconds in self._done],
+                "elapsed": round(self._seconds(), 3),
+            }
+
+
+# One process, one launch — so one object, reached through the accessor rather than
+# imported by value: a module that held its own reference would keep answering about a
+# state the tests have since replaced.
+_startup_state = _StartupState()
+
+
+def startup_state() -> _StartupState:
+    """The launch state of THIS process."""
+    return _startup_state
+
+
+def _startup_payload() -> dict:
+    """The body of `GET /api/startup`."""
+    return _startup_state.snapshot()
