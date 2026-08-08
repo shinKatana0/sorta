@@ -898,7 +898,8 @@ def _doctor_install_lines(lang: Lang, *, command: str | None, scripts: Path,
                           exiftool: str | None,
                           hint_key: str | None = None,
                           bundled: bool = False,
-                          installed_python: str | None = None) -> list[str]:
+                          installed_python: str | None = None,
+                          kind: str | None = None) -> list[str]:
     """The `sorta`-on-PATH and `exiftool` lines, in the state this machine has them.
 
     F226 added the two states an INSTALLED copy is in, and both of them used to be
@@ -906,15 +907,27 @@ def _doctor_install_lines(lang: Lang, *, command: str | None, scripts: Path,
     disk (`bundled`), and the command is not on PATH because it was never supposed to be
     (`installed_python` — the interpreter the payload carries, which is how that copy is
     run). A checkout passes neither and every line below it is what it always was.
+
+    F230: the repair for a command that is not on PATH is chosen by INSTALL KIND, through
+    the one answer in `sorta.install`, and no longer by whether the manifest happened to
+    name a python. `uv tool update-shell` is the fix for a `uv tool install` and for
+    nothing else — in a checkout the commands were never meant to be on PATH, and telling
+    a developer to repair their shell profile over it is advice for somebody else's
+    machine. The exiftool line below stays keyed by PLATFORM, deliberately: which package
+    manager installs it is a property of the operating system and is true of all three
+    installs (`_exiftool_hint_key`).
     """
+    if kind is None:
+        kind = install.install_kind()
     if command:
         lines = [_t("cli.doctor.command", lang, path=command)]
-    elif installed_python:
+    elif kind == install.KIND_INSTALLED:
         lines = [_t("cli.doctor.command_installed", lang),
-                 _t("cli.doctor.command_hint_installed", lang, path=installed_python)]
+                 _t(install.advice_key("cli.doctor.command_hint", kind), lang,
+                    path=installed_python or sys.executable)]
     else:
         lines = [_t("cli.doctor.command_missing", lang, path=scripts),
-                 _t("cli.doctor.command_hint", lang)]
+                 _t(install.advice_key("cli.doctor.command_hint", kind), lang)]
     if exiftool and bundled:
         lines.append(_t("cli.doctor.exiftool_bundled", lang, path=exiftool))
     elif exiftool:
@@ -961,8 +974,13 @@ def _some_of(names: tuple[str, ...], limit: int = _MISSING_SHOWN) -> str:
     return ", ".join(names[:limit]) + f", +{len(names) - limit}"
 
 
-def _doctor_tier_lines(lang: Lang, states: list[TierState]) -> list[str]:
-    """The tier block of `doctor` — one line per tier, and a way out if one is missing."""
+def _doctor_tier_lines(lang: Lang, states: list[TierState], *,
+                       kind: str | None = None) -> list[str]:
+    """The tier block of `doctor` — one line per tier, and a way out if one is missing.
+
+    F230: `kind` is the install this output is being read on, so the way out is the one
+    that works here. Passed in rather than probed, because the command answers it once.
+    """
     lines = [_t("cli.doctor.tiers", lang)]
     for state in states:
         tier = wizard.TIERS_BY_KEY[state.key]
@@ -977,7 +995,7 @@ def _doctor_tier_lines(lang: Lang, states: list[TierState]) -> list[str]:
         else:
             lines.append(_t("cli.doctor.tier_ready", lang, name=name))
     if not all(state.ready for state in states):
-        lines.append(_t(_tier_hint_key(), lang))
+        lines.append(_t(_tier_hint_key(kind), lang))
     return lines
 
 
@@ -1011,17 +1029,22 @@ def _cmd_doctor(config_path: str, states: list[TierState] | None = None) -> None
     manifest = install.load_manifest()
     exiftool = exif.resolve_exiftool(which=shutil.which, manifest=manifest)
     shipped = install.tool_path(manifest, "exiftool")
+    # F230: one reading of the manifest, one answer about which install this is, handed to
+    # every line below that names a command. A second probe here is how the doctor would
+    # start disagreeing with itself inside one output.
+    kind = install.install_kind(manifest)
     for line in _doctor_install_lines(
             lang, command=shutil.which("sorta"), scripts=_scripts_dir(),
             exiftool=exiftool, bundled=exiftool is not None and exiftool == shipped,
-            installed_python=install.tool_path(manifest, "python")):
+            installed_python=install.tool_path(manifest, "python"), kind=kind):
         print(line)
     # F216: ...and what the install is made of. The installer ships one tier and offers
     # four, so both the person who installed it by hand and the workflow that installs
     # it on a clean machine ask this first.
-    for line in _doctor_tier_lines(lang, tier_states() if states is None else states):
+    for line in _doctor_tier_lines(lang, tier_states() if states is None else states,
+                                   kind=kind):
         print(line)
-    print(gpu_health().summary)
+    print(gpu_health(install_kind=kind).summary)
     # F65: the geo base failing to load is invisible at runtime (every coordinate just
     # resolves to an empty place), so the doctor has to state it outright.
     geo = geo_data_health()
@@ -1573,8 +1596,13 @@ def build_app(lang: Lang) -> typer.Typer:
     def run(
         by: str = typer.Option(None, "--by", help=h("cli.help.run.by")),
         dest: Path = typer.Option(None, "--dest", help=h("cli.help.run.dest")),
+        # F230: `{how}` is the way to GET the deep tier, and it is a different command on
+        # each of the three installs — the help used to name `uv sync --extra vlm` to all
+        # of them, which is a command for a checkout of the sources and nothing else.
         deep: bool = typer.Option(
-            None, "--deep/--no-deep", help=h("cli.help.run.deep")),
+            None, "--deep/--no-deep",
+            help=h("cli.help.run.deep",
+                   how=h(install.advice_key("cli.help.run.deep_how")))),
         geo: str = typer.Option(None, "--geo", help=h("cli.help.run.geo")),
         faces: bool = typer.Option(
             False, "--faces/--no-faces", help=h("cli.help.run.faces")),

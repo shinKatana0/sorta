@@ -16,7 +16,7 @@ from collections.abc import Collection
 from pathlib import Path
 from unittest.mock import patch
 
-from sorta import cli, i18n, wizard
+from sorta import cli, i18n, install, wizard
 
 _LANGS: tuple[i18n.Lang, ...] = ("ru", "en", "ja")
 
@@ -162,11 +162,14 @@ class TestTheLinesAPersonReads(unittest.TestCase):
     """Three states, three sentences, three languages."""
 
     def test_a_state_gets_the_sentence_that_belongs_to_it(self):
+        # F230: the way out at the end of the block is the one THIS install has, so the
+        # kind is stated here — the words are what this case is about, and the suite runs
+        # from a checkout while the sentence below belongs to an installed copy.
         lines = cli._doctor_tier_lines("en", [
             cli.TierState("base"),
             cli.TierState("faces", missing_weights=("buffalo_l",)),
             cli.TierState("deep", missing_packages=("transformers",)),
-        ])
+        ], kind=install.KIND_INSTALLED)
         self.assertEqual(lines[0], "Installed tiers:")
         self.assertIn("in place", lines[1])
         # The middle state says both what is missing and what it will cost — a size
@@ -219,7 +222,7 @@ class TestDoctorPrintsTheBlock(unittest.TestCase):
 
         health = SimpleNamespace(summary="health", available=True)
         buffer = io.StringIO()
-        with patch.object(cli, "gpu_health", lambda: health), \
+        with patch.object(cli, "gpu_health", lambda **_kw: health), \
                 patch.object(cli, "geo_data_health", lambda: health), \
                 patch.object(cli, "tier_states",
                              lambda: [cli.TierState("faces",

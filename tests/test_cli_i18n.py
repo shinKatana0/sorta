@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sorta import cli, i18n
+from sorta import cli, i18n, install
 from sorta.db import connect
 
 _LANGS = ("ru", "en", "ja")
@@ -257,20 +257,21 @@ class _Env:
         # has whatever it has, so the three states are fixed here and it is the SENTENCES
         # that are under test.
         # F213: `sorta` and `exiftool` join them for the same reason and are pinned the
-        # same way. The way out of a missing tier is pinned too: it names the Start menu
-        # on Windows and nothing but the command elsewhere, and this case is about the
-        # WORDS rather than about the machine the suite happens to run on. The cache mode
+        # same way. The way out of a missing tier is pinned too — to the sentence an
+        # INSTALLED copy gets (F230: the choice is by install kind now, and this case is
+        # about the WORDS rather than about the machine the suite happens to run on). The cache mode
         # is fixed to a private one — the warning that follows an open cache has its own
         # cases in test_linux_install.
         health = SimpleNamespace(summary="health", available=True)
         found = {"uv": "uv.exe", "sorta": "sorta.exe", "exiftool": "exiftool.exe"}
-        with patch.object(cli, "gpu_health", lambda: health), \
+        with patch.object(cli, "gpu_health", lambda **_kw: health), \
                 patch.object(cli, "geo_data_health", lambda: health), \
                 patch.object(cli, "tier_states", lambda: DOCTOR_TIERS), \
                 patch.object(cli, "default_log_path", lambda: "run.log"), \
                 patch.object(cli.sys, "executable", "python.exe"), \
                 patch.object(cli.shutil, "which", found.get), \
-                patch.object(cli, "_tier_hint_key", lambda: "cli.doctor.tier_hint"), \
+                patch.object(cli, "_tier_hint_key",
+                             lambda _kind=None: "cli.doctor.tier_hint.installed"), \
                 patch.object(cli, "_directory_mode", lambda _path: 0o700), \
                 patch("sorta.imaging.preview_cache_enabled", lambda: False):
             return self._cap(lambda: cli._cmd_doctor(cfg))
@@ -698,7 +699,16 @@ class TestEveryKeyTheCliAsksForExists(unittest.TestCase):
         used = set(re.findall(r'"(cli\.[a-z0-9_.]+)"', source))
         self.assertGreater(len(used), 50)  # the catalog is actually wired up
         for key in sorted(used):
-            self.assertIn(key, i18n._CLI_STRINGS, key)
+            with self.subTest(key=key):
+                # F230: a key of `install.INSTALL_ADVICE` is a BASE — the literal in the
+                # source names a family of three, one per install kind, and it is
+                # `install.advice_key` that turns it into the key that gets printed. All
+                # three have to exist, which is a stronger check than the one above.
+                if key in install.INSTALL_ADVICE:
+                    for variant in install.advice_keys(key):
+                        self.assertIn(variant, i18n._CLI_STRINGS, variant)
+                    continue
+                self.assertIn(key, i18n._CLI_STRINGS, key)
 
     def test_format_fields_are_named(self):
         # Requirement 5: substitutions go through NAMED fields — a positional `{}`

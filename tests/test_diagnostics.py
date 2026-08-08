@@ -320,7 +320,11 @@ class TestNvidiaGpuPresent(unittest.TestCase):
         run.assert_called_once()
         args, kwargs = run.call_args
         self.assertEqual(args[0][0], "nvidia-smi")
-        self.assertIn("--query-gpu=name", args[0])
+        # F230: the same one call brings the driver version back too — the setup wizard
+        # has to say "your driver is older than CUDA 13 needs" instead of installing
+        # wheels that will not import, and two calls would be two answers about one
+        # machine.
+        self.assertIn("--query-gpu=name,driver_version", args[0])
         self.assertGreater(kwargs["timeout"], 0)
         self.assertLessEqual(kwargs["timeout"], 5)
         self.assertFalse(kwargs["check"])

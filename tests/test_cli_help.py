@@ -31,7 +31,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sorta import __version__, cli, i18n
+from sorta import __version__, cli, i18n, install
 
 _LANGS = ("ru", "en", "ja")
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
@@ -408,7 +408,15 @@ class TestTheHelpHalfOfTheCatalogIsComplete(unittest.TestCase):
     def test_the_interface_asks_for_exactly_the_keys_that_exist(self):
         source = Path(cli.__file__).read_text(encoding="utf-8")
         used = set(re.findall(r'"(cli\.help\.[a-z0-9_.]+)"', source))
-        self.assertEqual(used, set(i18n.help_keys()))
+        # F230: a key of `install.INSTALL_ADVICE` is a BASE — the literal in the source
+        # stands for three keys, one per install kind, and `install.advice_key` turns it
+        # into the one that gets printed (the help of `--deep` names a different command
+        # in a checkout than on an installed copy).
+        asked = set()
+        for key in used:
+            asked.update(install.advice_keys(key) if key in install.INSTALL_ADVICE
+                         else {key})
+        self.assertEqual(asked, set(i18n.help_keys()))
 
     def test_a_translation_is_a_translation_and_not_a_copy(self):
         for key in i18n.help_keys():
@@ -420,10 +428,14 @@ class TestTheHelpHalfOfTheCatalogIsComplete(unittest.TestCase):
                 self.assertNotEqual(entry["en"], entry["ja"])
 
     def test_no_help_text_leaks_a_format_field_the_caller_does_not_pass(self):
-        # Only the application title takes a substitution; a stray `{...}` anywhere
-        # else would raise KeyError inside `cli_text` at the worst possible moment.
+        # Only the application title and the `--deep` help take a substitution; a stray
+        # `{...}` anywhere else would raise KeyError inside `cli_text` at the worst
+        # possible moment. F230: `cli.help.run.deep` carries `{how}`, filled with the way
+        # THIS install adds the deep tier — `uv sync --extra vlm` in a checkout, the
+        # wizard on an installed copy.
+        takes = {"cli.help.app": {"version"}, "cli.help.run.deep": {"how"}}
         for key in i18n.help_keys():
-            expected = {"version"} if key == "cli.help.app" else set()
+            expected = takes.get(key, set())
             for lang in _LANGS:
                 with self.subTest(key=key, lang=lang):
                     template = i18n._CLI_STRINGS[key][lang]

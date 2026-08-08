@@ -29,7 +29,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sorta import cli, i18n, tiers, ui, wizard
+from sorta import cli, i18n, install, tiers, ui, wizard
 from sorta.ui import strings as ui_strings
 from tests.test_ui_process import ProcessTestBase, _poll_until
 
@@ -181,31 +181,44 @@ class TestTheWayOutMatchesTheMachine(unittest.TestCase):
     """F213's pairing, one screen further out: the Start menu belongs to the Windows
     installer, and an install that came from `uv tool install` has no such entry."""
 
-    def test_the_platform_decides_which_line_is_offered(self):
-        self.assertEqual(tiers._tier_hint_key("nt"), "cli.doctor.tier_hint")
-        self.assertEqual(tiers._tier_hint_key("posix"), "cli.doctor.tier_hint_posix")
+    def test_the_install_decides_which_line_is_offered(self):
+        """F230: it used to be the PLATFORM that decided, and that was the defect — a
+        checkout on Windows was sent to a Start menu item it does not have. The page asks
+        the same question the doctor does, one screen further out."""
+        self.assertEqual(tiers._tier_hint_key(install.KIND_INSTALLED),
+                         "cli.doctor.tier_hint.installed")
+        self.assertEqual(tiers._tier_hint_key(install.KIND_TOOL),
+                         "cli.doctor.tier_hint.tool")
+        self.assertEqual(tiers._tier_hint_key(install.KIND_CHECKOUT),
+                         "cli.doctor.tier_hint.checkout")
 
-    def test_the_page_carries_the_line_of_this_platform_and_not_the_other(self):
-        for os_name, expected, other in (
-            ("nt", "cli.doctor.tier_hint", "cli.doctor.tier_hint_posix"),
-            ("posix", "cli.doctor.tier_hint_posix", "cli.doctor.tier_hint"),
-        ):
+    def test_the_page_carries_the_line_of_this_install_and_not_another(self):
+        for kind, other in ((install.KIND_INSTALLED, install.KIND_CHECKOUT),
+                            (install.KIND_TOOL, install.KIND_INSTALLED),
+                            (install.KIND_CHECKOUT, install.KIND_INSTALLED)):
+            expected = install.advice_key("cli.doctor.tier_hint", kind)
             with mock.patch.object(tiers, "_tier_hint_key", lambda _key=expected: _key):
                 generated = ui_strings._tier_strings()["tier_add_hint"]
             for lang in _LANGS:
-                with self.subTest(os=os_name, lang=lang):
+                with self.subTest(kind=kind, lang=lang):
                     self.assertEqual(generated[lang],
                                      i18n.cli_text(expected, lang).strip())
-                    self.assertNotEqual(generated[lang],
-                                        i18n.cli_text(other, lang).strip())
+                    self.assertNotEqual(
+                        generated[lang],
+                        i18n.cli_text(install.advice_key("cli.doctor.tier_hint", other),
+                                      lang).strip())
 
-    def test_the_windows_line_names_the_menu_item_and_the_other_one_does_not(self):
-        windows = i18n.cli_text("cli.doctor.tier_hint", "en")
-        posix = i18n.cli_text("cli.doctor.tier_hint_posix", "en")
-        self.assertIn("Start menu", windows)
-        self.assertNotIn("Start menu", posix)
-        for line in (windows, posix):
+    def test_only_the_installed_copy_names_the_menu_item(self):
+        installed = i18n.cli_text("cli.doctor.tier_hint.installed", "en")
+        tool = i18n.cli_text("cli.doctor.tier_hint.tool", "en")
+        checkout = i18n.cli_text("cli.doctor.tier_hint.checkout", "en")
+        self.assertIn("Start menu", installed)
+        for line in (tool, checkout):
+            self.assertNotIn("Start menu", line)
+        for line in (installed, tool):
             self.assertIn("sorta-setup", line)
+        # ...and the developer keeps the command that is true in a checkout.
+        self.assertIn("uv sync --extra", checkout)
 
     def test_the_note_of_an_absent_tier_ends_in_that_line(self):
         payload = ui.process._tiers_payload(
