@@ -1,38 +1,26 @@
 """F6 (Phase 5): places without GPS — CLIP zero-shot over a curated landmark list.
 
-Contract: reads files and places, writes ONLY into places and STRICTLY into rows
-with confidence='unknown' (exact_gps / session_inferred / trip_inferred / visual are
-not overwritten;
-run order: geo always before landmarks).
+Contract: reads files and places, writes ONLY into places and STRICTLY into rows with
+confidence='unknown'. Run order: geo always before landmarks.
 
 F75: a single CLIP score does not separate a real Charles Bridge from a nice photo of
-some other European street — measured on the live collection, the wrong cities scored
-0.980 against 0.991 for the right one, so no threshold splits them. Three independent
-signals do the job instead (see `_ANTI_PROMPTS`, `_group_minority`, `_folder_hint`):
-the score only ever proposes a match, and the two corroboration rules run between the
-proposal and the DB write.
+some other European street — on the live collection the wrong cities scored 0.980
+against 0.991 for the right one, so no threshold splits them. The score only ever
+PROPOSES; two corroboration rules (`_group_minority`, `_folder_hint`) run between the
+proposal and the write, and `_ANTI_PROMPTS` drains the mass a plain softmax leaves.
 
-F131: the proposal can additionally be put to the local VLM before corroboration sees
-it (`features.landmarks_verify`, default off) — CLIP proposes widely, the model says
-what place it is looking at, corroboration still decides. The order matters and is the
-whole safety argument: the model is a filter placed BEFORE F75, never a way around it.
-F145: that toggle is subordinate to `vlm.enabled` — with deep analysis off this stage
-raises no weights at all, whatever `landmarks_verify` says.
+F131 can put a proposal to the local VLM first (`features.landmarks_verify`, default
+off). The order is the whole safety argument: CLIP proposes -> the model filters ->
+corroboration decides. The model is a filter placed BEFORE F75, never a way around it,
+and F145 makes the toggle subordinate to `vlm.enabled`.
 
-F136: what CLIP found for a frame is remembered (see `_SCAN_KEY`), so a later run only
-looks at the frames whose answer could have changed — a new or edited file, a new
-landmark list, a moved threshold, a reworded prompt. Corroboration is NOT cached: it runs
-over the whole selection every time, with the proposals of the skipped files raised back
-out of the DB, because a group verdict is about the company a match keeps and would
-change under a thinned-out set (F75).
+F136 remembers what CLIP found for a frame (`_SCAN_KEY`), so a later run only looks at
+frames whose answer could have changed. Corroboration is NOT cached: it runs over the
+whole selection every time with the skipped files' proposals raised back out of the DB,
+because a group verdict is about the company a match keeps.
 
-The CLIP model (open_clip, the same as in junk.py) is mocked in tests via the
-classifier parameter; the real load happens only in clip_classifier(). The VLM is
-mocked the same way through the `asker` parameter — qwen_vlm_landmark() is the only
-place weights are loaded.
-GPU: torch is installed as a CPU wheel (the project's CUDA wheels are only for
-onnxruntime) — we run on the CPU, correctness over speed; the GPU variant will be
-finished in Phase 6.
+Both models are injected in tests (`classifier`, `asker`); `clip_classifier()` and
+`qwen_vlm_landmark()` are the only places weights are loaded.
 """
 from __future__ import annotations
 
@@ -64,36 +52,31 @@ from .naming import (
 
 _log = logging.getLogger(__name__)
 
-# (image paths, text prompts) -> softmax probabilities (n_img, n_prompt);
-# an unreadable image — a row of zeros. Replaced in tests.
+# (image paths, text prompts) -> softmax probabilities (n_img, n_prompt); an unreadable
+# image is a row of zeros. Replaced in tests.
 Classifier = Callable[[list[str], list[str]], np.ndarray]
 
-# path -> image features (normalized encoder vector) per path, the same order as
-# in the input list; None at a position — could not decode/encode.
+# path -> normalized encoder vector per path, in input order; None — no decode/encode.
 FeatureEncoder = Callable[[list[str]], list[np.ndarray | None]]
-# stacked image features (of valid paths only) + prompts -> softmax probabilities.
+# stacked features (valid paths only) + prompts -> softmax probabilities.
 FeatureScorer = Callable[[np.ndarray, list[str]], np.ndarray]
 
-# Negative classes: they take probability mass away from ordinary photos so that a
-# softmax over landmark prompts alone does not produce false positives.
+# Negative classes: they take probability mass away from ordinary photos, so a softmax
+# over landmark prompts alone cannot produce a false positive.
 _NEGATIVE_PROMPTS = (
     "a photo",
     "an indoor photo of people",
     "a snapshot of everyday life",
 )
 
-# F75 anti-classes. DO NOT DELETE AS "REDUNDANT" — each line here was measured on the
-# live collection and each one buys something the plain negatives above do not:
-# * the render/wallpaper/poster/figurine lines catch pictures OF a landmark that were
-#   never taken at it (a video-game skyline scored 0.924 for Times Square; with these
-#   it drops to 0.631);
-# * the two generic-European lines catch the opposite error — a real photo of real
-#   architecture that simply has no entry in our ten-landmark list, so CLIP hands it to
-#   the nearest one it does know (17 Berlin fires went from a median 0.980 to 0.433).
-# They cost the true positives some score too (Prague 0.991 -> 0.894), which is why the
-# threshold is a config value and not a constant: adding or removing a line here shifts
-# the whole distribution and `naming.landmark_threshold` has to be re-measured with
-# `scripts/measure_landmarks.py`.
+# F75 anti-classes. DO NOT DELETE AS "REDUNDANT" — each line was measured on the live
+# collection: the render/wallpaper/poster/figurine lines catch pictures OF a landmark
+# never taken at it (a video-game skyline scored 0.924 for Times Square, 0.631 with
+# them), the two generic-European lines catch a real photo of real architecture that has
+# no entry in the list (17 Berlin fires went from a median 0.980 to 0.433). They cost the
+# true positives too (Prague 0.991 -> 0.894), which is why the threshold is a config
+# value: adding or removing a line shifts the whole distribution and
+# `naming.landmark_threshold` has to be re-measured with `scripts/measure_landmarks.py`.
 _ANTI_PROMPTS = (
     "a screenshot from a video game",
     "a desktop wallpaper",
@@ -118,19 +101,16 @@ class Landmark:
     country: str   # ISO code (reverse_geocoder format, the cc field)
     city: str
     # GeoNames id of the city, so a landmark match lands in the SAME folder as a GPS
-    # photo of the same place. Without it the sorter cannot localize the name — the
-    # translation is looked up by geonameid — and "Paris" appeared next to "Париж" as
-    # a second folder for one city. The ids are the ones a GPS photo taken AT the
-    # landmark resolves to, which is what makes the two paths agree.
-    # Optional: a user-supplied list without the field still works, just unlocalized.
+    # photo of the same place: the translation is looked up by geonameid, and without it
+    # "Paris" appeared next to "Париж" as a second folder for one city. Optional — a
+    # user-supplied list without the field works, just unlocalized.
     geonameid: int | None = None
 
 
 # F65 follow-up: the same packaging trap the geo database fell into. The historical
-# default is a path relative to the CURRENT DIRECTORY, so it only ever resolved when
-# sorta was run from the repository root — an installed CLI found nothing. The
-# curated list now ships as package data; _LEGACY_LANDMARKS_FILE keeps working trees
-# checked out before the move alive.
+# default is relative to the CURRENT DIRECTORY, so it only resolved when sorta ran from
+# the repository root and an installed CLI found nothing. _LEGACY_LANDMARKS_FILE keeps
+# working trees checked out before the move alive.
 DEFAULT_LANDMARKS_FILE = "data/landmarks.yaml"
 _PACKAGE_LANDMARKS_FILE = Path(__file__).resolve().parent / "data" / "landmarks.yaml"
 _LEGACY_LANDMARKS_FILE = Path(__file__).resolve().parent.parent / "data" / "landmarks.yaml"
@@ -139,10 +119,9 @@ _LEGACY_LANDMARKS_FILE = Path(__file__).resolve().parent.parent / "data" / "land
 def resolve_landmarks_file(configured: str | Path | None) -> Path:
     """Configured value -> an existing landmarks file.
 
-    An existing path wins, so a user-supplied list is always respected. Only the
-    historical default (or an empty value) falls back to the bundled file — a custom
-    path that does not exist raises instead of silently swapping in our list, which
-    would be indistinguishable from the config having been applied.
+    Only the historical default (or an empty value) falls back to the bundled file: a
+    custom path that does not exist raises instead of silently swapping in our list,
+    which would look exactly like the config having been applied.
     """
     if configured:
         candidate = Path(configured)
@@ -189,42 +168,27 @@ def load_landmarks(path: str | Path) -> list[Landmark]:
 def landmark_prompts(landmarks: Sequence[Landmark]) -> list[str]:
     """The prompt list for one CLIP pass: landmarks first, distractors after them.
 
-    The order is part of the contract — argmax is taken over the first len(landmarks)
-    entries only, so the negative and anti classes can drain probability mass but can
-    never win. `scripts/measure_landmarks.py` builds its prompts through here as well,
-    otherwise it would measure a threshold for a prompt set the pipeline does not use.
+    The order is part of the contract — argmax runs over the first len(landmarks) entries
+    only, so the negative and anti classes drain mass but can never win.
+    `scripts/measure_landmarks.py` builds its prompts through here for the same reason.
     """
     return [lm.prompt for lm in landmarks] + list(_NEGATIVE_PROMPTS) + list(_ANTI_PROMPTS)
 
 
 @dataclass
 class CachingFeatureClassifier:
-    """A caching wrapper over `Classifier`: CLIP image features do not depend on the
-    text prompts, so each path is encoded (decode+encode_image) at most ONCE over
-    the object's lifetime; a repeated call with the same path but a different set of
-    prompts — only the cheap `score` (matmul + softmax), without re-decoding
-    (previously one photo could be decoded up to three times per `sorta run` —
-    landmarks, junk classes, the document pass).
+    """A caching `Classifier`: image features do not depend on the prompts.
 
-    From the outside the object is a plain `Classifier` (`__call__` with the same
-    signature `(paths, prompts) -> probs`), so the landmarks/junk test mocking
-    infrastructure does not change.
+    Each path is encoded at most ONCE per object lifetime; a repeat with different
+    prompts pays only for `score` (matmul + softmax). Before this, one photo could be
+    decoded three times per `sorta run` — landmarks, junk classes, the document pass.
+    From the outside it is a plain `Classifier`, so the test mocking does not change.
 
-    encode(paths) -> a list of features in the same order as paths; None at a
-    position — the file did not decode/encode. Such paths are NOT cached (no
-    "forever zero"): a repeated call with the same path will try to encode again —
-    as before in `clip_classifier`, a decode error is cheaper than the risk of a
-    stuck None on a file that is actually readable.
+    A path that would not decode is NOT cached: a decode error is cheaper than a stuck
+    "forever None" on a file that is actually readable.
 
-    score(features, prompts) -> softmax probabilities (n, len(prompts));
-    receives the already-stacked features of ONLY the valid (successfully encoded)
-    paths of the current call.
-
-    Cache bounds: a plain dict without eviction — the object lives within a single
-    CLI command (`sorta run`), not a long-lived process; features are small
-    (~768 floats ≈ 3 KB per photo) — not a problem for a realistic collection size
-    (tens of thousands of photos). If a long-lived process is needed — add an LRU
-    modelled on `imaging.decode_rgb_cached`.
+    An unbounded dict on purpose — the object lives inside one CLI command, and features
+    are ~768 floats ≈ 3 KB per photo. A long-lived process would want an LRU here.
     """
 
     encode: FeatureEncoder
@@ -234,11 +198,8 @@ class CachingFeatureClassifier:
     def features(self, paths: list[str]) -> list[np.ndarray | None]:
         """The features ALREADY computed for `paths` — the cache, never a new encode.
 
-        F128: the junk stage stores the vector it has just paid for, and the whole point
-        of storing it is that no extra pass is run for it — so this hands back what the
-        preceding `__call__` put in the cache and nothing else. A path that is not there
-        (it did not decode, or nobody has scored it yet) is None, the same "no signal" a
-        zero row means on the scoring side.
+        F128: the junk stage stores the vector it has just paid for, and the point of
+        storing it is that no extra pass is run. A path that is not there is None.
         """
         return [self._cache.get(p) for p in paths]
 
@@ -262,14 +223,10 @@ class CachingFeatureClassifier:
 def _decode_pool_size(s: NamingSettings) -> int:
     """How many threads decode the frames of a CLIP batch (F64).
 
-    The CLIP stages (junk/landmarks) are decode-bound, not GPU-bound: growing the
-    batch barely moves the needle, while the decode pool does — on a 24-core
-    machine 16 workers give ~1.6× the throughput of 8. So the auto default is one
-    worker per core capped at 16 (past that the curve flattens out, and every
-    in-flight decode costs memory).
-
-    `clip.decode_workers` > 0 is a user override and wins over the auto default;
-    the field is read via getattr — it is optional in the settings object.
+    The CLIP stages are decode-bound, not GPU-bound: growing the batch barely moves the
+    needle, while the pool does — on a 24-core machine 16 workers give ~1.6× the
+    throughput of 8. Past that the curve flattens and every in-flight decode costs
+    memory, so the auto default is one worker per core capped at 16.
     """
     override = int(getattr(s, "clip_decode_workers", 0) or 0)
     if override > 0:
@@ -280,18 +237,10 @@ def _decode_pool_size(s: NamingSettings) -> int:
 def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML, smoke test
     """The real open_clip zero-shot classifier (shared by landmarks and junk).
 
-    Optimizations against the CPU-decode-bound bottleneck (Phase 6):
-    - decode images in a batch IN PARALLEL (ThreadPoolExecutor; Pillow releases the
-      GIL in the C decode);
-    - inference in ONE batch on the GPU (encode_image over the whole batch, not one
-      by one);
-    - decode at a reduced resolution (F67: through the shared preview cache) — CLIP
-      resizes to the model input anyway, so decoding a full-size HEIC/JPEG is
-      pointless, and the preview is shared with the pHash/OCR/VLM stages;
-    - prompt text embeddings are cached (identical between batches);
-    - image features are cached by path (F19, `CachingFeatureClassifier`) — one
-      decode+encode_image per path over the classifier's lifetime, not per
-      `classify()` call.
+    Against the CPU-decode-bound bottleneck: parallel decode (Pillow releases the GIL),
+    one batched encode_image, a reduced decode resolution through the shared preview
+    cache (CLIP resizes to the model input anyway), a text-embedding cache, and the
+    per-path feature cache of `CachingFeatureClassifier`.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -317,11 +266,9 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
     _text_cache: dict[tuple[str, ...], object] = {}
 
     def _load(path: str):
-        # F67: the frame comes from the shared preview cache — the same file is also
-        # decoded by junk (CLIP/OCR/VLM) and dedup (pHash), and the preview turns
-        # every run after the first into a small-JPEG decode. mtime/size for the key
-        # come from a local stat (microseconds against hundreds of ms of decode) so
-        # that the Classifier/FeatureEncoder signatures stay untouched.
+        # F67: the frame comes from the shared preview cache, so every run after the
+        # first is a small-JPEG decode. mtime/size come from a local stat —
+        # microseconds against hundreds of ms — to keep the signatures untouched.
         try:
             st = os.stat(path)
             im = imaging.decode_rgb_preview(path, st.st_mtime, st.st_size, max_edge=_draft[0])
@@ -341,11 +288,9 @@ def clip_classifier(s: NamingSettings) -> Classifier:  # pragma: no cover — ML
             _text_cache[key] = cached = tf
         return cached
 
-    # F214: an accelerator that refuses an operator halfway through a stage retreats to
-    # the CPU once, with a line in the log — the same shape of degradation this stage
-    # already has for missing weights. The text-feature cache is dropped with it: those
-    # tensors live on the old device, and a matmul across two devices is an error in
-    # itself. Never fires on CUDA (see accel.CpuFallback).
+    # F214: an accelerator that refuses an operator mid-stage retreats to the CPU once,
+    # with a line in the log. The text-feature cache goes with it — those tensors live on
+    # the old device, and a matmul across two is an error. Never fires on CUDA.
     def _to_cpu(dev: str) -> None:
         model.to(dev)
         _text_cache.clear()
@@ -387,23 +332,19 @@ class LandmarkStats:
     scanned: int = 0                  # files with places.confidence='unknown'
     matched: int = 0                  # got confidence='visual'
     by_landmark: dict[str, int] = field(default_factory=dict)
-    # F75 corroboration: without these the feature cannot be measured, and it has to be
-    # re-measured every time the prompts or the thresholds move. Each match above the
-    # threshold falls into exactly one of these buckets or into `matched`.
+    # F75 corroboration: each match above the threshold falls into exactly one of these
+    # buckets or into `matched` — the feature has to be re-measured on every prompt or
+    # threshold move, and cannot be without them.
     dropped_by_group: int = 0            # a minority city inside its own directory
     dropped_by_folder_name: int = 0      # the path names a different country
     confirmed_by_folder_name: int = 0    # the path names this country/city (kept)
-    # F131: the check, and the same rule applies — the addition it buys has to be
-    # measurable rather than assumed. `proposals` is the population the widened gate
-    # collects, `checked` prices the pass (one question each), and the gap between
-    # `confirmed_by_model` and `proposals` is what the check removed before corroboration
-    # ever saw it. All zero when the toggle is off: nothing was asked.
+    # F131: `proposals` is the population the widened gate collects, `checked` prices the
+    # pass, and the gap between `confirmed_by_model` and `proposals` is what the check
+    # removed before corroboration saw it. All zero when the toggle is off.
     proposals: int = 0                   # matches above the gate, before any check
-    # F136: files of the selection the CLIP pass did not have to look at, because nothing
-    # that decides their answer had moved since the run that did look (see `_SCAN_KEY`).
-    # They stay part of `scanned` and their proposals still go through corroboration — the
-    # counter is here so that "the stage did nothing this time" is visible in the numbers
-    # instead of being inferred from a suspiciously short run.
+    # F136: files the CLIP pass did not have to look at (`_SCAN_KEY`). They stay part of
+    # `scanned` and their proposals still go through corroboration; the counter exists so
+    # "the stage did nothing this time" is visible rather than inferred.
     skipped: int = 0
     checked: int = 0                     # proposals a question was actually asked about
     checks_reused: int = 0               # answers taken from landmark_checks, not re-asked
@@ -414,13 +355,12 @@ class LandmarkStats:
 
 # --- F75: corroboration of a CLIP match by its place in the tree -----------------
 
-# A folder name may be compound ("чехия-австрия", "Франция Париж"), so besides the
-# component itself every run of LETTERS in it is tried as well. Digits never belong to
-# a place name here, so "100D3300" contributes only itself and the useless "D".
+# A folder name may be compound ("чехия-австрия", "Франция Париж"), so every run of
+# LETTERS in a component is tried as well. Digits never belong to a place name.
 _WORD_RE = re.compile(r"[^\W\d_]+")
 
-# Shorter components are not looked up at all: three letters collide with some city in
-# a world-wide geo base far too easily ("Сад", "Море", "DCI"), and a false country would
+# Shorter components are not looked up: three letters collide with some city in a
+# world-wide base far too easily ("Сад", "Море", "DCI"), and a false country would
 # silently discard correct matches.
 _MIN_COMPONENT_LEN = 4
 
@@ -429,13 +369,10 @@ _MIN_COMPONENT_LEN = 4
 class _Match:
     """A landmark proposed by CLIP for a file, before corroboration.
 
-    `folder` — the directory the file lies in; both rules are about the neighbours,
-    so it is the grouping key and the source of the name hints.
-
-    `path` and `score` carry what the F131 check needs and corroboration does not: the
-    frame to show the model, and the number that decides the fallback when the model
-    cannot be asked. Both default, because `scripts/measure_landmarks.py` builds matches
-    for corroboration alone and has no use for either.
+    `folder` is the grouping key and the source of the name hints — both rules are about
+    the neighbours. `path` and `score` are what the F131 check needs and corroboration
+    does not: the frame to show the model, and the number that decides the fallback when
+    the model cannot be asked. Both default, for `scripts/measure_landmarks.py`.
     """
 
     file_id: int
@@ -449,10 +386,9 @@ class _Match:
 class _FolderHint:
     """What the directories above a file claim about where it was taken.
 
-    Countries and cities are kept apart on purpose: a country name in the path is a
-    deliberate human statement and may REFUTE a match, while a city name is only
-    allowed to confirm one — "York", "Nice" or "Split" turn up inside perfectly
-    innocent folder names, and a refutation on that basis would throw away good data.
+    Countries and cities are kept apart: a country name in the path is a deliberate human
+    statement and may REFUTE a match, while a city name may only confirm one — "York",
+    "Nice" and "Split" turn up inside innocent folder names.
     """
 
     countries: frozenset[str] = frozenset()       # ISO cc — confirm and refute
@@ -478,10 +414,9 @@ def _folder_tokens(directory: str) -> list[str]:
 def _folder_hint(directory: str, resolver: GeoResolver, lang: i18n.Lang) -> _FolderHint:
     """Recognize countries/cities in a directory path via the bundled geo base.
 
-    The geo base is the whole point: `names.tsv` holds the localized names, so
-    "Франция", "France" and "フランス" resolve identically for the matching
-    `cfg.language`, and technical components (DCIM, 100D3300, Camera, SORT) resolve to
-    nothing simply because they are not places — no blocklist to maintain.
+    `names.tsv` holds the localized names, so "Франция", "France" and "フランス" resolve
+    identically for the matching `cfg.language`, and technical components (DCIM,
+    100D3300, Camera) resolve to nothing because they are not places — no blocklist.
     """
     countries: set[str] = set()
     city_countries: set[str] = set()
@@ -505,9 +440,8 @@ _shared_geo: GeoResolver | None = None
 def _default_resolver() -> GeoResolver:
     """One resolver per process, built on first use.
 
-    The bundled base is read-only and costs ~12 MB plus a parse to load, while the
-    stage can run several times inside one `sorta ui` session — a fresh resolver per
-    call would pay for it every time.
+    The bundled base is read-only and costs ~12 MB plus a parse, while the stage can run
+    several times inside one `sorta ui` session.
     """
     global _shared_geo
     if _shared_geo is None:
@@ -519,9 +453,8 @@ def _folder_hints(matches: Sequence[_Match], resolver: GeoResolver | None,
                   lang: i18n.Lang) -> list[_FolderHint]:
     """A hint per match, computed once per directory.
 
-    Without the bundled geo data (`places.tsv` missing) every hint is empty and the
-    folder-name rule simply does not fire — the stage degrades to the group rule
-    instead of failing.
+    Without the bundled geo data every hint is empty and the folder-name rule does not
+    fire — the stage degrades to the group rule instead of failing.
     """
     if resolver is None or not resolver.data_available():
         return [_FolderHint()] * len(matches)
@@ -539,16 +472,13 @@ def _group_minority(matches: Sequence[_Match], min_group: int,
                     dominance: float) -> set[int]:
     """Indices of matches whose city is a minority inside its own directory.
 
-    One card dump, one trip: you cannot physically have been in Prague and in Berlin
-    within a single folder, so where a directory agrees on one city strongly enough,
-    the odd ones out are the classifier being wrong — this alone removed 16 of the 17
-    false Berlins that neither the threshold nor the anti-classes could touch.
+    One card dump, one trip: where a directory agrees on one city strongly enough, the
+    odd ones out are the classifier being wrong — this alone removed 16 of the 17 false
+    Berlins neither the threshold nor the anti-classes could touch.
 
-    Deliberately NOT a reassignment to the dominant city: a folder called
-    "чехия-австрия" makes Prague likely but Vienna just as possible, and inventing a
-    place is worse than admitting we do not know one. Groups below `min_group` or
-    without a clear majority are left completely alone — a two-photo folder says
-    nothing.
+    Deliberately NOT a reassignment to the dominant city: a folder called "чехия-австрия"
+    makes Prague likely but Vienna just as possible, and inventing a place is worse than
+    admitting we do not know one. Groups below `min_group` are left alone.
     """
     groups: dict[str, list[int]] = {}
     for i, m in enumerate(matches):
@@ -572,11 +502,10 @@ def _corroborate(matches: Sequence[_Match], hints: Sequence[_FolderHint],
                  stats: LandmarkStats) -> list[_Match]:
     """Matches above the threshold -> the ones that survive both corroboration rules.
 
-    Order (brief §4): the group rule decides first, the folder name is applied on top
-    of it — an explicit human label on the path outranks the statistics of the
-    neighbouring files and may bring back a match the group rule had discarded. A
-    country in the path that contradicts the match wins over both: that is the case
-    the user spotted by eye, and no amount of local agreement makes it right.
+    The group rule decides first and the folder name is applied on top: an explicit human
+    label on the path outranks the statistics of the neighbours and may bring back a
+    match the group rule discarded. A country in the path that CONTRADICTS the match wins
+    over both — no amount of local agreement makes that right.
     """
     minority = _group_minority(matches, min_group, dominance)
     kept: list[_Match] = []
@@ -603,45 +532,38 @@ def _corroborate(matches: Sequence[_Match], hints: Sequence[_FolderHint],
 
 
 # --- F131: the check between the proposal and corroboration -----------------------
-#
-# path -> the model's raw answer about the place in one frame, read back by
-# `match_named_landmark`. The same shape as the askers of the junk stage (F113/F130/F132)
-# on purpose: one prompt over one frame, injected by the caller, so no test loads weights.
+# path -> the model's raw answer, read back by `match_named_landmark`. The shape of the
+# junk stage's askers: one prompt over one frame, injected, so no test loads weights.
 LandmarkAskFn = Callable[[str], str]
 
-# THE question — and its FORM is a measured result here, not a wording preference. The
-# phase-0 probe put both forms of the brief to the same frames, three runs:
+# THE question, and its FORM is a measured result. The phase-0 probe put both forms of
+# the brief to the same frames, three runs:
 #
 #     form     backed a RIGHT proposal    backed a WRONG one
 #     verify      20% / 42% / 42%             0 / 0 / 0
 #     naming      80% / 80% / 80%             0 / 0 / 0
 #
-# "Was this taken at X?" invites a cautious "no" — it threw away more than half of what
-# the stage finds today, in every run. The open question makes the model look instead of
-# agree, and it is also why the false confirmations came out at zero: a model that does
-# not know the place answers nothing (71 of the 104 answers) rather than guessing.
-#
-# The proposed landmark is deliberately NOT named in the prompt. Naming it is what turns
-# a check into an agreement, and two models agreeing on the same wrong city is the exact
-# failure this feature was measured against ("a false city is worse than no city", F75).
+# "Was this taken at X?" invites a cautious "no" and threw away more than half of what
+# the stage finds. The open question makes the model look instead of agree, which is
+# also why the false confirmations came out at zero: a model that does not know the
+# place answers nothing (71 of the 104 answers) rather than guessing. The proposed
+# landmark is deliberately NOT named — naming it turns a check into an agreement, and
+# two models agreeing on one wrong city is the failure F75 was measured against.
 LANDMARK_NAMING_PROMPT = (
     "Look at the photo. If it shows a famous landmark or a well-known "
     "place, answer with the name of that place and nothing else. "
     "If it does not, answer with exactly one word: none."
 )
 # A place name, not an essay. Wider than the junk stage's eight tokens because a name is
-# several words ("the Charles Bridge in Prague"), and no wider, because past that the only
-# thing a larger budget buys is room for the model to explain itself.
+# several words; no wider, because past that a larger budget only buys explanations.
 LANDMARK_MAX_NEW_TOKENS = 16
 
-# The list writes `name` in the interface language, so the English wording of a place
-# comes from the CLIP prompt instead: asking a 3B model about «Карлов мост» would measure
-# its Russian rather than its geography.
+# The list writes `name` in the interface language, so the English wording comes from the
+# CLIP prompt: asking a 3B model about «Карлов мост» measures its Russian, not geography.
 _PHOTO_PREFIX_RE = re.compile(r"^\s*(?:a|an|the)\s+photo\s+of\s+", re.IGNORECASE)
 _NON_LETTER_RE = re.compile(r"[^a-z]+")
-# Words that carry no place: articles, prepositions and the wording of the prompt itself.
-# The KIND of a place ("bridge", "tower") is deliberately NOT here — two landmarks sharing
-# one is exactly what the uniqueness rule in `match_named_landmark` is for.
+# Words that carry no place. The KIND of a place ("bridge", "tower") is deliberately NOT
+# here — two landmarks sharing one is what `match_named_landmark`'s uniqueness rule is for.
 _STOPWORDS = frozenset({"a", "an", "the", "of", "in", "and", "at", "photo", "s"})
 
 
@@ -651,10 +573,10 @@ def landmark_phrase(landmark: Landmark) -> str:
 
 
 def _answer_words(text: str) -> str:
-    """Lowercased text with every non-letter run turned into an underscore, and padded.
+    """Lowercased text, every non-letter run an underscore, padded.
 
-    So a word is looked for as `_word_` and cannot match inside another one — "york" must
-    not be found in "yorkshire", and a landmark must not be named by half of a longer word.
+    A word is then looked for as `_word_` and cannot match inside another — "york" must
+    not be found in "yorkshire".
     """
     return "_" + _NON_LETTER_RE.sub("_", (text or "").lower()).strip("_") + "_"
 
@@ -669,15 +591,14 @@ def _content_words(landmark: Landmark) -> tuple[str, ...]:
 def match_named_landmark(answer: str, landmarks: Sequence[Landmark]) -> int | None:
     """A free-form answer -> the index of the landmark it names, or None.
 
-    A landmark counts as named when the answer carries its city, or a word that belongs to
-    it ALONE in this list ("eiffel", "colosseum"), or at least two of its words. The
-    uniqueness is computed against the list in hand rather than from a private word list:
-    "bridge" is evidence in a list with one bridge in it and none at all in a list with
-    two, and hard-coding either answer would be wrong on the day somebody adds a landmark.
-    Ties go to the landmark that matched more words, then to list order.
+    Named = the answer carries its city, or a word belonging to it ALONE in this list
+    ("eiffel", "colosseum"), or at least two of its words. Uniqueness is computed against
+    the list in hand: "bridge" is evidence in a list with one bridge and none in a list
+    with two, and hard-coding either would break the day somebody adds a landmark. Ties
+    go to more words matched, then to list order.
 
-    None — the answer named nothing we know, which covers both the model's "none" and its
-    silence. That is a rejection, not a parse failure; see `_verify_matches`.
+    None covers both the model's "none" and its silence — a rejection, not a parse
+    failure; see `_verify_matches`.
     """
     text = _answer_words(answer)
     words = [_content_words(lm) for lm in landmarks]
@@ -700,10 +621,9 @@ def vlm_landmark_asker(describe: Callable[[Sequence[Image.Image], str, int], str
                        max_edge: int) -> LandmarkAskFn:
     """The landmark question over an ALREADY LOADED runtime (naming.shared_vlm).
 
-    The decode goes through the shared preview cache — Unicode/HEIC-safe, the same frame
-    every other stage sees. A frame that will not decode gets an empty answer, and an
-    empty answer names nothing, which is a rejection here: the proposal is dropped and
-    the row stays `unknown`, exactly as if the model had said "none".
+    The decode goes through the shared preview cache. A frame that will not decode gets
+    an empty answer, which names nothing and so is a rejection: the row stays `unknown`,
+    exactly as if the model had said "none".
     """
     def ask(path: str) -> str:
         try:
@@ -730,9 +650,8 @@ def qwen_vlm_landmark_factory(max_edge: int) -> Callable[[str], LandmarkAskFn]:
     return lambda model_name: qwen_vlm_landmark(model_name, max_edge=max_edge)
 
 
-# What `landmark_checks.verdict` holds. Two values and no third: "the model was never
-# asked" is the ABSENCE of a row, not a verdict, and giving it a name here would invite a
-# reader to treat silence as data.
+# What `landmark_checks.verdict` holds. Two values and no third: "never asked" is the
+# ABSENCE of a row, and naming it would invite a reader to treat silence as data.
 CHECK_CONFIRMED = "confirmed"
 CHECK_REJECTED = "rejected"
 
@@ -747,13 +666,10 @@ _CHECK_UPSERT = """INSERT INTO landmark_checks (file_id, landmark, score, verdic
 def landmark_check_model(model: str) -> str:
     """The `model` column: the runtime AND the fingerprint of the question it was asked.
 
-    The group_keeper/frame_quality device (F120/F130/F132). A marker that names only the
-    tier leaves every stored answer looking fresh after a prompt edit, and nobody should
-    have to remember to empty a table by hand after rewording a question.
-
-    Only the question is hashed. The CLIP prompts and the thresholds decide WHO is asked,
-    not what comes back, so moving a threshold must not throw away answers that are still
-    true — which is the whole point of storing them.
+    The F120/F130/F132 device — a marker naming only the tier leaves every stored answer
+    looking fresh after a prompt edit. Only the QUESTION is hashed: the CLIP prompts and
+    thresholds decide who is asked, not what comes back, so moving a threshold must not
+    throw away answers that are still true.
     """
     fingerprint = hashlib.sha1(LANDMARK_NAMING_PROMPT.encode("utf-8")).hexdigest()[:8]
     return f"{model}#{fingerprint}"
@@ -763,10 +679,9 @@ def _stored_checks(conn: sqlite3.Connection, file_ids: Sequence[int],
                    model: str) -> dict[tuple[int, str], str]:
     """(file_id, landmark name) -> verdict, for the proposals already asked about.
 
-    Keyed by the PAIR because that is what was asked: CLIP proposing a different landmark
-    for the same frame next run is a new question, not a stale answer. Chunked over the
-    ids like every other collection-sized lookup here — SQLite has a ceiling on bound
-    parameters that a photo library reaches easily.
+    Keyed by the PAIR because that is what was asked: a different landmark for the same
+    frame next run is a new question, not a stale answer. Chunked — SQLite has a ceiling
+    on bound parameters that a photo library reaches easily.
     """
     out: dict[tuple[int, str], str] = {}
     for part in batched(list(file_ids), 500):
@@ -783,24 +698,21 @@ def _verify_matches(matches: Sequence[_Match], landmarks: Sequence[Landmark],
                     threshold: float, stats: LandmarkStats) -> list[_Match]:
     """Proposals -> the ones the model backed, with every answer remembered.
 
-    Three outcomes, and they are deliberately NOT the same thing:
+    Three outcomes, deliberately not the same thing:
 
-    * the model names the proposed landmark — confirmed, and the proposal goes on to
-      corroboration, which still has the last word over it;
-    * it names something else, or nothing at all — rejected. Silence is the COMMON case
-      (71 of the 104 probe answers) and it is not a parse failure: it is the entire reason
-      the false confirmations came out at zero, so treating it as "could not read the
-      answer" and falling back to the CLIP rule would throw the feature away. A rejected
-      frame keeps `unknown` — it is never moved to the place the model did name (F75);
-    * the model RAISES — nothing was learned, so the proposal falls back to the rule of a
-      run without the check (`score >= naming.landmark_threshold`) and nothing is stored.
-      An expensive tier that is unavailable must not lose what the cheap one already
-      finds; this is the rule the whole cascade is built on (F130).
+    * it names the proposed landmark — confirmed, and corroboration still has the last
+      word;
+    * it names something else or nothing — rejected, and the frame keeps `unknown`; it is
+      never moved to the place the model did name (F75). Silence is the COMMON case (71
+      of the 104 probe answers) and is the whole reason the false confirmations came out
+      at zero, so reading it as "could not parse" would throw the feature away;
+    * it RAISES — nothing was learned, so the proposal falls back to the rule of a run
+      without the check and nothing is stored. An unavailable expensive tier must not
+      lose what the cheap one already finds (F130).
 
-    Answers are written as they come in, inside one transaction with the reads: a question
-    already paid for should not have to be paid for twice, and the stored answer is what
-    keeps a rejected frame — which stays `unknown` and so comes back into the stage on
-    every run — from being asked about again and again.
+    Answers are written as they come in, in one transaction with the reads: a rejected
+    frame stays `unknown` and comes back every run, and the stored answer is what keeps
+    it from being asked about again and again.
     """
     known = _stored_checks(conn, [m.file_id for m in matches], model)
     now = utcnow_iso()
@@ -837,32 +749,20 @@ def _verify_matches(matches: Sequence[_Match], landmarks: Sequence[Landmark],
 
 
 # --- F136: the scan marker — what a later run is allowed not to look at again -------
+# The stage used to be incremental in its SELECTION alone: everything unmatched kept
+# `'unknown'` and went to CLIP again on every run — 7 619 frames and 138 s of the 176 s a
+# full run costs on the live collection, for an answer that could not have changed.
 #
-# The stage used to be incremental in its SELECTION alone: a match becomes
-# `confidence='visual'` and leaves, everything else keeps `'unknown'` and was handed to
-# CLIP again on every single run — 7 619 frames and 138 s of the 176 s a full run costs on
-# the live collection, for an answer that could not have come out differently. The
-# interface used to work around it with a button ("do not run this stage again"), which is
-# a shortcoming of the stage delegated to a person; F135 removed the button.
-#
-# WHERE THE MARKER LIVES, and why not somewhere more obvious:
-#
-# * not in `places` — `geo` recomputes that table from scratch (`DELETE FROM places`) and
-#   always runs BEFORE landmarks, so a marker written there is gone before it is read;
-# * not in a file next to the DB — that is a second store to keep in step with
-#   `reset_index`, with `sorta ui`'s "Start over", and with a database that gets copied or
-#   moved; a stale sidecar would silently hand back answers for files it no longer
-#   describes, which is the failure this whole marker exists to prevent;
-# * `landmark_checks` is this stage's own table (F131): wiped with the index, keyed by
-#   (file_id, landmark), already carrying a fingerprint in `model`. One RESERVED key per
-#   file is all that is needed, and the schema does not move — which the F136 brief
-#   forbids outright.
+# Where the marker lives, and why not somewhere more obvious: not in `places`, which
+# `geo` recomputes from scratch before landmarks ever runs; not in a sidecar file, which
+# is a second store to keep in step with `reset_index` and with a database that gets
+# copied or moved. `landmark_checks` is this stage's own table (F131) — wiped with the
+# index, keyed by (file_id, landmark), already carrying a fingerprint in `model` — so one
+# RESERVED key per file is all it takes and the schema does not move.
 _SCAN_KEY = "#scan"
-# What a scan row's `verdict` holds: the name of the landmark CLIP proposed for the file,
-# or this — nothing reached the gate. Both are results of the pass, and neither can be
-# confused with an answer of the model: those rows are keyed by a real landmark name (a
-# place name out of the list, never "#..."), and `_stored_checks` filters on `model` on top
-# of that.
+# A scan row's `verdict`: the landmark CLIP proposed, or this — nothing reached the gate.
+# Neither can be confused with an answer of the model: those rows are keyed by a real
+# place name, never "#...", and `_stored_checks` filters on `model` on top of that.
 _SCAN_NONE = "#none"
 
 
@@ -871,13 +771,10 @@ def _stage_fingerprint(landmarks: Sequence[Landmark], prompts: Sequence[str],
                        dominance: float) -> str:
     """A short digest of everything that decides this stage's answer (the F120 device).
 
-    Deliberately WIDER than what decides a single CLIP score. The prompts and the gate are
-    what produce a proposal, but an edited `data/landmarks.yaml` also moves the country,
-    the city and the geonameid a match is written with, and the group thresholds decide
-    which proposals survive — the brief names all of them, and every one of them is a way
-    for a stored answer to become a lie while still looking fresh. The cost of being wide
-    is a recompute nobody strictly needed; the cost of being narrow is old verdicts
-    silently outliving the settings that produced them.
+    Deliberately WIDER than what decides a single CLIP score: an edited
+    `data/landmarks.yaml` also moves the country, city and geonameid a match is written
+    with, and the group thresholds decide which proposals survive. The cost of being wide
+    is a recompute nobody needed; of being narrow, verdicts outliving their settings.
     """
     payload = "\n".join([
         *prompts,
@@ -891,12 +788,10 @@ def _stage_fingerprint(landmarks: Sequence[Landmark], prompts: Sequence[str],
 def _scan_marker(fingerprint: str, row: sqlite3.Row) -> str:
     """The `model` of a scan row: the stage's fingerprint AND the file's, in one string.
 
-    One string compared for equality, because the question the row answers is "is
-    everything that decides this file's result still what it was" — and a marker that
-    matches in part is not a match at all (the F120 rule: a mismatch means RECOMPUTE,
-    never use). The file's half is path + mtime + size, taken from the index rather than
-    from a fresh stat: the indexer is the one stage that decides what a file currently is,
-    and asking the disk here would make the stage disagree with it.
+    Compared for equality, because a marker that matches in part is not a match at all
+    (F120: a mismatch means RECOMPUTE, never use). The file's half is path + mtime + size
+    taken from the INDEX and not from a fresh stat — the indexer decides what a file
+    currently is, and asking the disk here would make the stage disagree with it.
     """
     identity = f"{row['path']}\0{row['mtime']!r}\0{row['size']!r}"
     return (f"scan#{fingerprint}#"
@@ -919,9 +814,9 @@ def _reuse_scan(row: sqlite3.Row, scan: sqlite3.Row | None, fingerprint: str,
                 by_name: dict[str, Landmark]) -> tuple[bool, _Match | None]:
     """(may the CLIP pass skip this file, what it proposed the last time it did not).
 
-    A landmark the current list no longer knows is treated as no marker at all rather than
-    as a missing proposal — it cannot happen while the fingerprint covers the list, and if
-    it ever does, paying for one more CLIP pass is the cheap way to be wrong.
+    A landmark the current list no longer knows is treated as no marker at all: it cannot
+    happen while the fingerprint covers the list, and one more CLIP pass is the cheap way
+    to be wrong if it does.
     """
     if scan is None or str(scan["model"]) != _scan_marker(fingerprint, row):
         return False, None
@@ -940,12 +835,10 @@ def _remember_scans(conn: sqlite3.Connection,
                     scans: Sequence[tuple[int, str, _Match | None]]) -> None:
     """Store what the CLIP pass found for each frame it looked at.
 
-    Written right after the pass and BEFORE corroboration, because the row records the
-    PROPOSAL and not where the file ended up. The files this feature is actually for are
-    the ones that never match: they keep `unknown`, come back into the selection on every
-    run, and are 7 619 of the 7 619 frames the live collection rescans. A row written only
-    for the survivors would miss all of them — and the survivors are the one group that
-    already skipped itself, by leaving the selection.
+    Written after the pass and BEFORE corroboration, because the row records the PROPOSAL
+    and not where the file ended up. The files this is for are the ones that never match:
+    they keep `unknown` and come back every run, while the survivors already skip
+    themselves by leaving the selection.
     """
     now = utcnow_iso()
     with conn:
@@ -964,9 +857,8 @@ def _resolve_asker(cfg: Config, asker: LandmarkAskFn | None,
                    factory: Callable[[str], LandmarkAskFn] | None) -> LandmarkAskFn | None:
     """The check, or None when the model will not build.
 
-    The graceful fallback every expensive tier in this project has (F37/F113/F130/F132):
-    weights that fail to load cost the cheap tier nothing. Here they cost one thing more,
-    and the caller pays it — the widening of the candidate gate goes back with them.
+    The graceful fallback every expensive tier here has (F37/F113/F130/F132). The caller
+    pays one thing more: the widening of the candidate gate goes back with the weights.
     """
     if asker is not None:
         return asker
@@ -983,9 +875,8 @@ def _resolve_asker(cfg: Config, asker: LandmarkAskFn | None,
 def _candidate_gate(cfg: Config, s: NamingSettings) -> float:
     """The score a proposal needs to reach the check.
 
-    Never above `naming.landmark_threshold`: this gate exists to WIDEN the population the
-    stage looks at, and a value above today's threshold would narrow it instead — losing
-    finds that need no check at all.
+    Never above `naming.landmark_threshold`: the gate exists to WIDEN the population, and
+    a value above the threshold would narrow it, losing finds that need no check.
     """
     candidate = float(getattr(getattr(cfg, "features", None),
                               "landmark_candidate_threshold", 0.5))
@@ -1002,26 +893,18 @@ def detect_landmarks(
 ) -> LandmarkStats:
     """CLIP zero-shot over the landmark list for files without a resolved place.
 
-    Incrementality has two halves. Matched files get confidence='visual' and do not enter
-    the next run at all (the selection is only for 'unknown'); everything else is selected
-    again, and F136 keeps the CLIP pass off the frames whose answer cannot have changed —
-    their proposal is raised out of `landmark_checks` instead. Corroboration then sees the
-    same set of matches a full run would have built, which is the point: the group rule
-    reads the company a match keeps, so a thinned-out set is not a saving but a different
-    verdict.
+    Incrementality has two halves: matched files become 'visual' and leave the selection,
+    while F136 keeps the CLIP pass off the rest when their answer cannot have changed,
+    raising their proposal out of `landmark_checks` instead. Corroboration then sees the
+    same match set a full run would have built — the group rule reads the company a match
+    keeps, so a thinned-out set is a different verdict, not a saving.
 
-    F75: the classifier only proposes. Every match above the threshold is collected
-    first, corroborated against its folder (see `_corroborate`) and only then written —
-    a discarded match leaves the row 'unknown', it is never moved to another city.
-
-    F131: with `features.landmarks_verify` on, the local VLM is asked what place each
-    proposal shows and only the ones it names itself go on. The order is the safety
-    argument and it does not bend: CLIP proposes -> the model checks -> corroboration
-    decides. Agreement between two models never overrules a country named in the path.
-    With the toggle off — or with a model that will not load — this function does exactly
-    what it did before, down to the gate the proposals are collected at. F145: `vlm.enabled`
-    is the same kind of "off" and stands above the toggle, so a run without deep analysis
-    resolves the same set of places this stage resolved before F131 existed.
+    F75: the classifier only proposes. A discarded match leaves the row 'unknown' and is
+    never moved to another city. F131: with `features.landmarks_verify` on, the local VLM
+    is asked what place each proposal shows and only the ones it names itself go on —
+    CLIP proposes, the model checks, corroboration decides, and agreement between two
+    models never overrules a country named in the path. With the toggle off, or with
+    `vlm.enabled` off (F145), this is the function it was before F131, down to the gate.
     """
     s = naming_settings(cfg)
     landmarks = load_landmarks(s.landmarks_file)
@@ -1038,20 +921,16 @@ def detect_landmarks(
     if classifier is None:
         classifier = clip_classifier(s)  # pragma: no cover — ML, smoke test
 
-    # F145: `features.landmarks_verify` says WHAT to ask, `vlm.enabled` says whether a
-    # model may be raised at all — and this stage was the one with no such condition
-    # whatsoever, so a base run without deep analysis called the model here. The master
-    # switch is folded into `verify` itself rather than into the asker below, because
-    # `verify` also widens the candidate gate and that widening is part of the
-    # fingerprint: with it off the stage is the one it was before F131, down to which
+    # F145: the master switch is folded into `verify` itself rather than into the asker,
+    # because `verify` also widens the candidate gate and that widening is part of the
+    # fingerprint — with it off the stage is the one it was before F131, down to which
     # frames it rescans.
     verify = (vlm_allowed(cfg)
               and bool(getattr(getattr(cfg, "features", None), "landmarks_verify", False)))
     gate = _candidate_gate(cfg, s) if verify else s.landmark_threshold
-    # The thresholds are read through getattr: the fields live in config.py, which this
-    # module does not own (the F30/F37/F64 pattern) — an older settings object keeps
-    # working on the measured defaults. Read here rather than by the corroboration call
-    # below because the scan marker fingerprints them (F136).
+    # getattr: the fields live in config.py, which this module does not own, so an older
+    # settings object keeps working on the measured defaults. Read here rather than at
+    # the corroboration call because the scan marker fingerprints them (F136).
     min_group = int(getattr(s, "landmark_group_min", 5))
     dominance = float(getattr(s, "landmark_group_dominance", 0.6))
 
@@ -1060,11 +939,10 @@ def detect_landmarks(
                                      float(gate), min_group, dominance)
     stored = _stored_scans(conn, [int(r["id"]) for r in rows])
     by_name = {lm.name: lm for lm in landmarks}
-    # Keyed by file so the match list can be rebuilt in SELECTION order below, whichever
-    # half it came from. The order is not cosmetic: `_group_minority` breaks a tie between
-    # two equally frequent cities by the order it met them, so a run that appended the
-    # raised proposals after the fresh ones could decide a folder differently from the full
-    # run it is supposed to be indistinguishable from.
+    # Keyed by file so the match list can be rebuilt in SELECTION order, whichever half it
+    # came from. Not cosmetic: `_group_minority` breaks a tie between two equally frequent
+    # cities by the order it met them, so appending the raised proposals after the fresh
+    # ones could decide a folder differently from the full run.
     proposals: dict[int, _Match] = {}
     todo: list[sqlite3.Row] = []
     for r in rows:
@@ -1109,15 +987,11 @@ def detect_landmarks(
     stats.proposals = len(matches)
     if verify:
         # The weights are asked for HERE and not before the CLIP pass: a run whose band is
-        # empty has nothing to ask and should not pay 20 GB to find that out. A model that
-        # will not build takes the widening back with it — the band is filtered to the
-        # threshold a run without the check would have used, because a wide band with
-        # nothing checking it is the one outcome worse than not having the feature.
-        #
-        # No progress reporting over the loop on purpose: the callback is a single
-        # (done, total) pair owned by the CLIP pass above, and a second phase pushed
-        # through it would make the bar run twice. The population is a couple of hundred
-        # frames — the measured band at 0.50 is 151 — not a collection-sized pass.
+        # empty should not pay 20 GB to find that out. A model that will not build takes
+        # the widening back with it — a wide band with nothing checking it is worse than
+        # not having the feature. No progress reporting over the loop: the callback is one
+        # (done, total) pair owned by the CLIP pass, and the population is a couple of
+        # hundred frames — the measured band at 0.50 is 151.
         ask = _resolve_asker(cfg, asker, asker_factory)
         if ask is None:
             matches = [m for m in matches if m.score >= s.landmark_threshold]
