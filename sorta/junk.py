@@ -1174,6 +1174,15 @@ def apply_text_frac(verdict: str, score: float, text_frac: float | None,
 # F155: one box of the `faces` table, as written there — (x1, y1, x2, y2) in pixels of the
 # FULL original frame, after its EXIF orientation has been applied (that stage detects on a
 # rotated full-resolution decode, see faces._decode_for_faces).
+#
+# TRAP, and it will look like a bug of this file. F178 reports that on a frame with EXIF
+# orientation 6 the faces stage decodes through `cv2.imdecode` (which has already applied
+# the rotation) and rotates a SECOND time, so the box is written in a sideways frame while
+# everything here works in the upright one. If that holds, every box on a rotated
+# photograph lands wrong for `face_sharpness` and `eye_openness` alike, and has since F155.
+# It is a finding about the faces stage, out of this file's bounds, and
+# scripts/measure_eye_state.py counts how often a stored box matches a fresh detection
+# («легли на бокс») so that whoever owns it starts from a number.
 FaceBox = tuple[float, float, float, float]
 
 
@@ -1182,15 +1191,12 @@ class FaceBoxes:
     """The faces of one frame, plus the frame their coordinates are measured in.
 
     `long_edge` is what makes the boxes usable at all: they are written in pixels of the
-    ORIGINAL, and the laplacian is taken over a preview that is a small copy of it, so
-    without the size of the original there is no way back from one to the other. It is the
-    longer side (max of `files.width/height`) rather than the pair, because a thumbnail
-    scales both axes by one factor and the longer side is the axis that factor is set by —
-    and because the longer side is the one quantity of the two that an EXIF rotation
-    cannot swap.
+    ORIGINAL and read over a preview. The longer side rather than the pair, because a
+    thumbnail scales both axes by one factor and the longer side is both the axis that
+    factor is set by and the one quantity an EXIF rotation cannot swap.
 
-    Empty is the ordinary case, not an error: two thirds of a collection have no face, and
-    a frame the faces stage has never seen is empty here in exactly the same way.
+    Empty is the ordinary case: two thirds of a collection have no face, and a frame the
+    faces stage has never seen is empty here in the same way.
     """
     boxes: tuple[FaceBox, ...] = ()
     long_edge: float = 0.0
@@ -1208,21 +1214,20 @@ NO_FACES = FaceBoxes()
 class Sharpness:
     """What ONE decode of a frame's preview yields (F155, F179).
 
-    The three numbers are returned together because they are measured together: the face
-    laplacian is the same variance taken over a crop of the very same array, the eye
-    opening is fitted to a face box on it, and computing either in a pass of its own would
-    decode every frame in the collection a second time for pixels that are already in
-    memory.
+    Three numbers together because they are measured together — the face laplacian is the
+    same variance over a crop of the same array, the eye opening is fitted to a box on it
+    — and a pass of its own for either would decode the whole collection a second time for
+    pixels already in memory.
 
-    None means NOT MEASURED, the `frame_quality` rule: the frame did not decode (`frame`),
-    or it has no face, no faces run behind it, or a crop too small to measure (`face`,
-    `eyes` — the latter also when the 106-point model is not available at all).
+    None means NOT MEASURED, the `frame_quality` rule: the frame did not decode, or it has
+    no face, no faces run behind it, a crop too small to measure, or (for `eyes`) no
+    106-point model on this machine.
     """
     frame: float | None = None
     face: float | None = None
     # F179: the eye opening over the eye width of the LARGEST face, small = closed. Named
-    # apart from the two above because it is not a laplacian and is not on their scale;
-    # it rides here because it rides on their decode.
+    # apart because it is not a laplacian and not on their scale; it rides here because it
+    # rides on their decode.
     eyes: float | None = None
 
 
@@ -1239,13 +1244,11 @@ QUALITY_SOURCE_VLM = "vlm"           # + the model answers about a candidate lis
 def laplacian_variance(img: Image.Image) -> float | None:
     """Variance of the 4-neighbour laplacian of a grayscale frame — the blur signal.
 
-    The classic measure and deliberately the plain one: a blurred frame has little
-    high-frequency energy, so the second derivative barely moves and its variance
-    collapses. Computed with numpy rather than cv2 (which this project does not import)
-    over the interior pixels only — the border has no full neighbourhood.
+    numpy rather than cv2 (which this project does not import), over the interior pixels
+    only — the border has no full neighbourhood.
 
-    None for a frame too small to have an interior: nothing to measure, and 0.0 would be
-    read as "completely flat", which is a different statement.
+    None for a frame too small to have an interior: 0.0 would be read as "completely
+    flat", which is a different statement.
     """
     a = np.asarray(img.convert("L"), dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3 or a.shape[1] < 3:
@@ -1256,11 +1259,9 @@ def laplacian_variance(img: Image.Image) -> float | None:
 
 
 # F155: the shortest side a crop may have before the laplacian over it stops meaning
-# anything. In PREVIEW pixels, because that is the array the variance is taken over: at
-# `sharpness_max_edge` = 512 a 24 px box is a face occupying ~5% of the frame's width, and
-# below that the crop is a few hundred pixels of mostly sensor noise. Such a frame gets
-# NULL rather than the number — "not measured", never a small value that would sort it to
-# the top of a blur list it was never measured for.
+# anything, in PREVIEW pixels. At `sharpness_max_edge` = 512 a 24 px box is a face over
+# ~5% of the frame's width; below that the crop is mostly sensor noise. Such a frame gets
+# NULL — never a small value, which would sort it to the top of a blur list.
 FACE_CROP_MIN_PX = 24
 
 
@@ -1268,21 +1269,17 @@ def face_crop_boxes(faces: FaceBoxes, size: tuple[int, int],
                     min_px: int = FACE_CROP_MIN_PX) -> list[tuple[int, int, int, int]]:
     """Face boxes rescaled from the ORIGINAL frame into preview pixels, clamped to it.
 
-    THE RESCALING IS THE FEATURE, not a detail of it. `faces.bbox` is written in
-    coordinates of the full original — ArcFace embeds out of it — while the laplacian is
-    taken over a preview of a few hundred pixels, so a box used as written falls outside
-    the array it is supposed to index. That is not a hypothetical: the measurement this
-    feature is built on made exactly that mistake, 39 of its 68 crops fell off the frame
-    and were dropped, and the 29 that survived reported 100% recall instead of the real
-    62%. A broken crop does not fail loudly — it flatters the result.
+    THE RESCALING IS THE FEATURE. `faces.bbox` is written in coordinates of the full
+    original while the laplacian is taken over a preview of a few hundred pixels, so a box
+    used as written falls off the array it is meant to index — and it does not fail
+    loudly, it FLATTERS: the F155 measurement made exactly that mistake, 39 of its 68
+    crops were dropped, and the surviving 29 reported 100% recall instead of the real 62%.
 
-    Clamping is the second half of the same guard: a box may legitimately run a pixel or
-    two past the edge (a face at the border, rounding in the scale), and a crop is taken
-    of the part that is inside rather than not at all.
+    Clamping is the other half of that guard: a box may legitimately run a pixel past the
+    edge, and the part that is inside is worth cropping.
 
-    Boxes below `min_px` on either side after scaling are left out — see FACE_CROP_MIN_PX.
-    A `faces` with no scale to it yields nothing, for the same reason: a box in unknown
-    units is not a box.
+    Boxes below `min_px` after scaling are left out (see FACE_CROP_MIN_PX), and a `faces`
+    with no scale to it yields nothing: a box in unknown units is not a box.
     """
     if not faces.usable:
         return []
@@ -1302,10 +1299,22 @@ def face_crop_boxes(faces: FaceBoxes, size: tuple[int, int],
 def face_crop_sharpness(img: Image.Image, faces: FaceBoxes) -> float | None:
     """The laplacian of the SHARPEST face on an already-decoded frame; None if none.
 
-    The sharpest and not the average, because of what the number is asked for: "was this
-    shot taken properly". One person in focus and another walking past out of it is a
-    photograph that worked, and an average would call it half-blurred. If any face in the
-    frame is sharp, the frame is.
+    F155: WHY A FACE AND NOT THE FRAME. The variance over a whole frame answers "how much
+    detail is in this picture", which is a different question from "is it in focus" — a
+    detailed sharp street and a smooth blurred face give the same number, blurred frames
+    sit in every band up to 400, and the filter caught 2 of 33 blurred frames on a
+    hand-checked sample of 200. A face is the one object whose content is roughly constant
+    from frame to frame, so the same variance means the same thing twice: on the 68 frames
+    of that sample that have a face (13 of them blurred), 62% recall at a threshold of 200
+    against 15% for the whole frame at 300, for a comparable number of frames flagged.
+
+    It RANKS AND DOES NOT JUDGE — ~25% precision at every threshold measured, over the
+    third of a collection that has a face at all — so `features.face_sharpness_max` orders
+    the blur list and nothing in this stage reads it.
+
+    The sharpest and not the average, because the question is "was this shot taken
+    properly": one person in focus and another walking past out of it is a photograph that
+    worked, and an average would call it half-blurred.
     """
     best: float | None = None
     for box in face_crop_boxes(faces, img.size):
@@ -1337,17 +1346,30 @@ def eye_openness(points: np.ndarray) -> float | None:
     """The eye opening over the eye width, from a ring of contour points.
 
     The two points furthest apart are the corners: they define the eye's own axis, and the
-    opening is the spread of the ring ACROSS that axis. Written this way the number does
-    not care how the head is tilted, nor in which order the model happens to list the ring
-    — the alternative, naming four indices as "upper lid" and "lower lid", is a promise
-    about a model file that a new release can quietly break.
+    opening is the spread of the ring ACROSS it. Written this way the number does not care
+    how the head is tilted nor in which order the model lists the ring — the alternative,
+    naming four indices "upper lid" and "lower lid", is a promise about a model file that
+    a new release can quietly break.
 
-    None when the ring is degenerate (fewer than three points, or all of them in one
-    place): "not measured", never a small number that would sort to the top of a list of
-    closed eyes it was never measured for.
+    F179 CHOSE ARITHMETIC OVER A MODEL, against the same 249 hand labels (F178,
+    scripts/measure_eye_state.py), for the ~948 frames — 15.6% of everything with a face —
+    the retired VLM question was about at 92 minutes a run:
 
-    Copied unchanged from the measurement this feature was decided by (F178,
-    scripts/measure_eye_state.py) — the numbers in `features.eye_openness_max` are this
+        way in                        threshold  precision  recall
+        the VLM (retired)                     —      60%       9%
+        eyelid geometry                    0.18      62%      48%
+        a classifier over the eye crop      0.9      46%      57%
+        CLIP over the eye crop              0.8      58%      49%
+
+    Five times the recall at slightly better precision, for no call at all; CLIP over the
+    same crop lost while costing a pass of a network the stage already runs. It RANKS AND
+    DOES NOT JUDGE — 62% precision — so `features.eye_openness_max` orders a window a
+    person walks past, and nothing here deletes or reclassifies by it.
+
+    None when the ring is degenerate (fewer than three points, or all in one place): "not
+    measured", never a small number that would sort to the top of a list of closed eyes.
+
+    Copied unchanged from that measurement — `features.eye_openness_max` holds this
     function's numbers, and a paraphrase would silently invalidate them.
     """
     if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] != 2:
@@ -1368,15 +1390,13 @@ def largest_face_box(faces: FaceBoxes,
                      size: tuple[int, int]) -> tuple[int, int, int, int] | None:
     """The biggest face of a frame, rescaled into preview pixels; None if there is none.
 
-    THE BIGGEST AND ONLY THE BIGGEST — the `largest` rule the measurement was run under.
-    A frame where a passer-by at the back has their eyes shut is not a portrait with closed
-    eyes, and reading every face would put it in the slice; the largest face is the one the
-    shot is about. (`face_sharpness` picks the sharpest face for the mirror-image reason:
-    each takes the face its own question is about.)
+    THE BIGGEST AND ONLY THE BIGGEST — the `largest` rule the F178 measurement was run
+    under. A passer-by at the back with their eyes shut is not a portrait with closed eyes,
+    and reading every face would put that frame in the slice. (`face_sharpness` takes the
+    SHARPEST face for the mirror-image reason: each rule takes the face its own question is
+    about.)
 
-    Rescaled through `face_crop_boxes`, so it inherits the guard that feature exists for —
-    the boxes are in pixels of the ORIGINAL and the preview is a small copy of it — and its
-    minimum size: a box too small there is not a face this can be fitted to.
+    Rescaled through `face_crop_boxes`, so it inherits that guard and its minimum size.
     """
     boxes = face_crop_boxes(faces, size)
     if not boxes:
@@ -1388,13 +1408,13 @@ def face_eye_openness(img: Image.Image, faces: FaceBoxes,
                       landmark: EyeLandmarkFn | None) -> float | None:
     """How open the eyes of the largest face on an already-decoded frame are; None if not.
 
-    The MORE CLOSED of the two eyes answers for the face, because that is the question the
-    slice asks — a frame where one eye is shut is a frame the person wants to look at — and
-    because a half-blink averaged with an open eye is nothing at all.
+    The MORE CLOSED of the two eyes answers for the face — a frame where one eye is shut is
+    a frame the person wants to look at, and a half-blink averaged with an open eye is
+    nothing at all.
 
-    None all the way down, never a small number: no face, no model, a model that answered
-    with something that is not 106 points, or a ring that came out degenerate. A wrong
-    small value would sort itself to the very top of a list ordered by "most closed first".
+    None all the way down, never a small number: no face, no model, an answer that is not
+    106 points, a degenerate ring. A wrong small value would sort itself to the very top of
+    a list ordered by "most closed first".
     """
     if landmark is None:
         return None
@@ -1417,36 +1437,23 @@ def preview_sharpness_detector(max_edge: int,
                                landmark: EyeLandmarkFn | None = None) -> SharpnessFn:
     """The real detector: the shared preview cache, at a FIXED resolution.
 
-    Fixed because the variance of the laplacian is scale-dependent — the same photo
-    measured at 512 and at 1536 px gives two different numbers, and a threshold over a
-    mixture of the two means nothing. `features.sharpness_max_edge` is that resolution;
-    changing it invalidates every threshold chosen against the old one.
+    Fixed because the variance of the laplacian is scale-dependent — the same photo at 512
+    and at 1536 px gives two different numbers, and a threshold over a mixture of the two
+    means nothing. Changing `features.sharpness_max_edge` invalidates every threshold
+    chosen against the old one. A vanished or undecodable file is None, "no signal".
 
-    Decoded grayscale straight away (the measure only looks at luma) and through
-    `decode_rgb_preview`, so the cost on any stage after the first is a small-JPEG decode,
-    not a decode of the original. A vanished or undecodable file is None — "no signal",
-    the same contract the OCR detector gives.
+    ONE decode, three numbers (F155, F179), and two properties of it are not obvious:
 
-    F155: ONE decode, two numbers — the whole frame and the sharpest face in it. The
-    orientation is applied here where it used to be left alone, because the face boxes are
-    written in the rotated space (faces._decode_for_faces) and the two have to be the same
-    space for the crop to land on the face. The frame number does not move under that: the
-    laplacian kernel is symmetric under every rotation and mirror an EXIF orientation can
-    express, and so is the set of interior pixels its variance is taken over. What is not
-    exactly symmetric is the RESAMPLE around it — scaling and then turning a frame is not
-    pixel-identical to turning and then scaling — and that is worth ~0.01% on a rotated
-    frame, against a band 270 units wide.
-
-    F179: a THIRD number off that same decode, and no third decode for it — the eye
-    openness of the largest face, fitted to the box the crop above is taken from. The one
-    thing it changes is the COLOUR of the decode: the 106-point contour was measured on a
-    colour preview (F178) and a grayscale one is not the input those numbers came from, so
-    a run with the model present asks for RGB and `laplacian_variance` converts to luma
-    itself. Both paths measure the luma of the SAME preview — libjpeg's grayscale output
-    against a YCbCr->RGB->luma round trip — and both weight the channels the same way, so
-    what is left is rounding: measured at 0.15% on noise and 0.12% on a photograph, against
-    a band 270 units wide. The F155 argument about the orientation, one step on. Without a
-    model (`landmark is None`) the decode is grayscale exactly as before.
+    * the EXIF ORIENTATION is applied, because the face boxes are written in the rotated
+      space (faces._decode_for_faces) and the crop has to land on the face. The
+      whole-frame number stands under it — the laplacian kernel and its interior are
+      symmetric under every rotation and mirror an orientation can express, and what the
+      resample leaves is ~0.01% on a rotated frame against a band 270 units wide;
+    * the decode is COLOUR when the eye model is there, grayscale when it is not. The
+      106-point contour was measured on a colour preview (F178), so a run with the model
+      asks for RGB and `laplacian_variance` takes the luma itself. Both paths measure the
+      luma of the same preview and weight the channels the same way; what is left is
+      rounding, 0.15% on noise and 0.12% on a photograph against that same band.
     """
     def sharpness(path: str, faces: FaceBoxes = NO_FACES) -> Sharpness:
         try:
@@ -1472,13 +1479,11 @@ def preview_sharpness_detector(max_edge: int,
 def lazy_eye_landmarks(build: Callable[[], EyeLandmarkFn]) -> EyeLandmarkFn:
     """The 106-point model, built on the FIRST face of a run and never before it.
 
-    Two runs must not pay for it: one over a collection with no faces in it (two thirds of
-    a typical archive have none, and a first run has no `faces` rows at all), and one on a
-    machine where the model cannot be built — the [faces] extra missing, no weights on
-    disk, a broken onnxruntime. The second is why a failure answers None for the rest of
-    the run instead of raising: the eye number is one column of `frame_quality`, and an
-    optional column must never take the stage that writes the other five down with it. The
-    reason is logged ONCE, not once per frame.
+    Two runs must not pay for it: one over a collection with no faces (two thirds of a
+    typical archive, and a first run has no `faces` rows at all), and one on a machine
+    where the model cannot be built. The second is why a failure answers None for the rest
+    of the run instead of raising — an optional column must not take down the stage that
+    writes the other five — and why the reason is logged ONCE, not once per frame.
     """
     state: dict[str, EyeLandmarkFn | None] = {}
 
@@ -1501,14 +1506,13 @@ def lazy_eye_landmarks(build: Callable[[], EyeLandmarkFn]) -> EyeLandmarkFn:
 def insightface_eye_landmarks() -> EyeLandmarkFn:  # pragma: no cover — ML
     """`2d106det` out of the buffalo_l set the faces stage already downloads.
 
-    NO NEW WEIGHTS: the 106-point model is 4.8 MB inside the set `sorta faces` has been
-    fetching since phase 3, and it is disabled there (`faces._ALLOWED_MODULES`) only
-    because that stage has nothing to do with it. The detector is loaded beside it because
-    insightface's FaceAnalysis insists on one, and it is never CALLED: the boxes come from
-    the `faces` table, which is the whole point of doing this inside the junk stage.
+    NO NEW WEIGHTS: 4.8 MB inside a set `sorta faces` has been fetching since phase 3, and
+    disabled there (`faces._ALLOWED_MODULES`) only because that stage has no use for it.
+    The detector loaded beside it is never CALLED — insightface's FaceAnalysis insists on
+    one — because the boxes come from the `faces` table.
 
-    The box arrives in preview pixels and the points come back in them, so nothing here
-    knows about the original frame — `largest_face_box` has already done that conversion.
+    The box arrives in preview pixels and the points come back in them: `largest_face_box`
+    has already done the conversion.
     """
     from insightface.app import FaceAnalysis
     from insightface.app.common import Face
