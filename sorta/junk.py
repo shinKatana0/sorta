@@ -1,256 +1,101 @@
 """F6 (Phase 5, FR-7): junk classification of canonical photos.
 
-Contract: reads files (+faces as a signal), writes ONLY into media_class
-(schema v3). Deletes and moves NOTHING — the layout into _Unsorted/junk is done
-by F5-sorter based on this table.
+Contract: reads `files` (+`faces` as a signal), writes `media_class`, `frame_quality`,
+`clip_embeddings`, `search_embeddings` and `detections`. Deletes and moves NOTHING — the
+layout into _Unsorted/junk is the sorter's job, off this table.
 
-Two-stage scheme (conservative — brief F13, junk is costlier for a missed piece of
-trash than a real photo in the trash):
-a) heuristics (fast, no ML) — only an explicit Screenshot_/"снимок экрана" name,
-   source='heuristic';
-b) CLIP zero-shot (the same model as landmarks, in a batch) — 3 classes, threshold
-   naming.junk_threshold, source='clip', score is written. A file with camera EXIF/
-   GPS OR detected faces — a veto, the CLIP verdict does not override it.
-   Below the threshold — the heuristic verdict stays, but the row is marked
-   source='clip' (the file was checked by CLIP and is not recomputed again —
-   incrementality).
-Files with verdict='photo' are also written (a "checked" mark).
+THE FAST TIER, in the order the branches run (`clip_verdict`): an explicit
+Screenshot_/«снимок экрана» name (F13, source='heuristic'), then a high document score
+(F15 — BEFORE the camera/GPS veto, because a photographed document carries camera EXIF,
+and never for a frame with faces), then the veto itself (camera EXIF, GPS or a detected
+face: messengers strip EXIF, so a face is the third condition), then the three junk classes
+over `naming.junk_threshold`. Conservative throughout: a real photo in the trash costs more
+than junk left among the city folders.
 
-F15: verdict='document' — a separate review category (not junk), detected
-BEFORE the camera/GPS veto (a photographed document has camera EXIF — the target
-case), but ONLY if the photo has no detected faces (portraits — the main FP source
-from F13, they never contain documents). A separate CLIP run over the
-document prompts (its own softmax normalization, does not interfere with the
-junk_threshold of the main 3 classes) and a separate, higher threshold
-naming.document_threshold (not yet typed in config.py — read via cfg.raw). For
-files with faces the document-CLIP is not computed at all (the veto is
-unconditional, saving a pass).
+F37-A hangs a text-density signal (easyocr, the fraction of the frame under text boxes) on
+the document<->photo pair alone, and only for frames without faces. source='ocr' means, and
+only means, that OCR moved the verdict.
 
-F37 (Phase A): CLIP zero-shot document is unreliable both ways (FP on scenes
-with signs/menus, FN on genuinely photographed documents with a low CLIP score).
-After the CLIP-stage verdict is computed, a text-density signal is applied
-(easyocr, the fraction of the frame area under text boxes, `text_frac`) — only
-to the document↔photo pair, only for files without faces (the same veto as the
-document-CLIP above):
-- FP gate: verdict='document', but text_frac < naming.text_frac_min → 'photo'
-  (a beach/scene without dense text comes back from _Documents);
-- FN rescue: verdict='photo', but text_frac >= naming.text_frac_document →
-  'document', even if the CLIP score was low (catches photographed documents
-  that CLIP missed).
-In both cases source='ocr', score=text_frac. Screenshot/meme are not touched
-(OCR is applied only if the verdict is already 'document' or 'photo'). The
-thresholds — `getattr(cfg.naming, "text_frac_min"/"text_frac_document", default)`:
-the fields are not yet typed in NamingConfig (getattr fallback, like
-document_threshold once was).
+F37-B adds the DEEP TIER: one VLM (Qwen2.5-VL) over the candidates the fast tier doubts,
+answering personal_photo/document/product, opt-in and off by default. Screenshots stay the
+fast tier's job — the deep tier has no such answer. Every model here is optional in the
+strong sense: a factory that will not build is caught around the BUILD, logged, and the run
+goes on with the verdicts the tier below it gave.
 
-F38 (validating F37-A on real data found 3 bugs): (1) the detector decodes
-via `imaging.decode_rgb` (Unicode/HEIC-safe) + downscale before
-`reader.detect()` — cv2 silently failed to read non-ASCII paths/HEIC, the box area
-is now relative to the downscaled frame; (2) the FN rescue (the `verdict==
-'photo'` branch) calls `text_detector` ONLY if `doc_score[i] >=
-cfg.naming.text_rescue_docscore_min` — clear scenes (doc_score≈0) do not run
-OCR, many fewer calls; the FP gate (`verdict=='document'`) is not gated, as
-before. (3) the `text_frac_document` default was lowered 0.35 -> 0.15
-(a real document at an angle gave text_frac=0.247 < 0.35 → the FN was not fixed).
+F68: incrementality runs on `media_class.tier`, not on `source`. `source` is WHAT decided
+(heuristic | clip | ocr | vlm, read by sorter.py), `tier` is WHICH TIER walked the row
+(heuristic | clip | vlm). They do not coincide — the OCR gate rewrites source, and the deep
+tier deliberately leaves clear photographs on 'clip' — and under the old source-based
+marker both kinds of row were reclassified on EVERY run.
 
-F37 (Phase B): the deep tier, opt-in, default OFF (`naming.vlm_enabled`). Instead of
-the CLIP+OCR pipeline (fast tier, Phase A, above), canonical photos are classified
-by a VLM (Qwen2.5-VL, lazy-import — like easyocr above) with a 3-way prompt:
-personal_photo/document/product -> verdict photo/document/product, source='vlm'.
-An explicit Screenshot_ name (heuristic) still overrides the VLM — the deep tier
-does not detect screenshots/memes, that stays the fast tier's job. GRACEFUL FALLBACK
-(critical for an optional tier on weak hardware): a model-factory failure
-(transformers not installed, the model does not load, not enough VRAM) is caught
-ENTIRELY around building the classifier — a silent fall back to the fast tier (CLIP),
-the error is only logged (`_log.warning`), `classify()` does not crash.
+F48/F67: every decode here comes from the shared disk preview cache
+(`imaging.decode_rgb_preview`), never from the original. Before F67 the second decode
+inside OCR was 315 ms a frame, ~80% of the whole stage.
 
-F68: incrementality runs on its OWN column `media_class.tier` (schema v11), not on
-`source`. The two mean different things: `source` is WHAT decided the verdict
-(heuristic | clip | ocr | vlm — user-facing, read by sorter.py), `tier` is WHICH
-TIER processed the row (heuristic | clip | vlm — the incrementality marker). They
-do not coincide: the OCR gate/rescue rewrites source to 'ocr' inside the fast pass,
-and the VLM gate deliberately leaves clear personal photos on source='clip' — under
-the old `source`-based marker both kinds of rows failed the "already processed"
-check and were reclassified on EVERY run (with the deep tier on, that meant the
-whole collection). `classify()` computes `active_tier` (see below) and writes it to
-every row it touches; `todo` is the rows whose `tier` differs from it, so a
-fast<->deep switch (either direction) reprocesses instead of losing rows, and a
-repeated run with the same tier processes nothing.
+THE THREE MODEL PASSES ARE PIPELINED, all of them through `_vlm_labels`: `vlm.workers`
+threads prepare frames (decode + the processor's preprocessing) while this thread generates
+and writes. F101 built it for the deep tier off a profile that ruled batching out — ~0.6 s
+of CPU then ~0.19 s of GPU per frame, strictly alternating, 0.84 cores of 24 busy, the card
+at ~26% — and F206 moved the other two questions onto it after the run of 2026-08-05 priced
+them apart:
 
-F48 (#28, V1 profile): the junk-stage bottleneck is not the models but the SECOND
-decode of the frame inside OCR (`imaging.decode_rgb(path, max_edge=1280)` — 315
-ms/frame, ~80% of the junk stage). Reason: the default JPEG-draft headroom in
-decode_rgb (margin=2×, see imaging.py) on typical camera frames (~4000px) does not
-pass the first halving threshold for max_edge=1280 -> draft silently does not fire,
-the full frame is decoded. `easyocr_text_frac_detector` now passes
-`draft_margin=imaging._DRAFT_MARGIN_AGGRESSIVE` (1.0, an opt-in parameter of
-decode_rgb) — draft kicks in, the decode is many times cheaper; `text_frac` (the
-fraction of area under text) does not change from this, the document/photo verdict
-accuracy is preserved (the ratio is scale-robust). Other decode_rgb consumers (thumbs
-in ui.py/sorter.py, the VLM decode) stay on the default margin — unaffected.
+    stage=classify phase=junk_vlm         7 951 frames    5 503 s   1.4 frames/s
+    stage=junk     phase=junk_pets_vlm  }
+    stage=junk     phase=junk_rescue_vlm }  4 281 frames  ~10 200 s  0.42
 
-F67 supersedes that decode path: OCR and VLM take the frame from the shared disk
-preview cache (`imaging.decode_rgb_preview`) instead of decoding the original, so
-the draft margin no longer matters here — a 1536px preview is cheap to decode by
-itself, and the cost is shared with the pHash/CLIP stages.
+Same model, same one frame per call, three times the price — 116 minutes a run. NO VERDICT
+MAY MOVE FOR IT: answers come back in the CANDIDATE order (a FIFO of futures, not whatever
+finishes first), the model still sees one frame per call with the same prompt and the same
+greedy decode, the writes still happen on this thread alone, and a frame whose preparation
+fails keeps its cheap-tier answer and still steps the progress bar.
+`tests/test_junk_asker_pipeline.py` prices the animal phase AGAINST the deep tier's phase
+of the same run, because a cost per frame in seconds is a statement about a machine where a
+RATIO between two phases is a statement about this stage.
 
-F73: with the decode that cheap, what is left of the junk stage is `reader.detect`
-itself — and it used to run strictly serially on the pipeline thread (py-spy on a
-live 24.5k-frame run: 4.27 files/s, every decode worker idle). The detect calls are
-independent, so they now go through `_OcrPool`: K threads, each with its OWN easyocr
-Reader (a Reader holds a torch model and its buffers — sharing one is not safe, the
-same reason F12.1 gives every faces worker its own FaceAnalysis). The per-chunk loop
-is split into three phases — the pre-OCR verdict, the parallel text_frac, then the
-verdicts and the DB writes — and only the middle one leaves the caller's thread, so
-SQLite stays single-writer. This is a perf change only: the gate `run_ocr`, the
-thresholds and the order in which verdicts are applied are untouched, so the
-classification is byte-for-byte what K=1 produces.
+The OCR half has a pool of its own (`_OcrPool`, F73): K threads, each with its OWN easyocr
+Reader — a Reader holds a torch model and its buffers, the same reason F12.1 gives every
+faces worker its own FaceAnalysis. Serially it ran at 4.27 files/s with every decode worker
+idle. Only that middle phase leaves the caller's thread, so SQLite stays single-writer.
 
-F95: the VLM weights are loaded by `naming.shared_vlm`, not by this module — the
-event-naming stage now runs the same Qwen2.5-VL and two copies do not fit in VRAM.
-Only the loading moved: the prompt, the decode, the label parsing and the graceful
-fallback around building the classifier are unchanged.
+F95: the VLM weights are loaded by `naming.shared_vlm` and not by this module — the naming
+stage runs the same model and two copies do not fit in VRAM (peak 20.5 GB).
 
-F90: OCR still runs on 28% of the frames and changes 2% of the verdicts (14:1), and
-`text_rescue_docscore_min` — the number that decides that ratio — was set by eye and
-never measured. The gate is worth its cost (it catches a real document CLIP scored
-low, and letting one of those into the city folders is the expensive error), so the
-threshold is not something a worker may quietly raise; it is a decision for the user
-in front of a table. The tool that prints that table is
-`scripts/measure_ocr_gate.py`, and for it to price the REAL gate the verdict/gate
-branches now live in functions of their own — `clip_verdict`, `ocr_gate_open`,
-`apply_text_frac`, over the thresholds of `gate_settings` — instead of inline in the
-classify() loop. classify() calls exactly those functions, so the measurement cannot
-drift away from the pipeline. Behaviour is unchanged; no threshold moved.
+F90: OCR runs on 28% of the frames and changes 2% of the verdicts (14:1), and
+`text_rescue_docscore_min` decides that ratio. It is a user's decision in front of the table
+`scripts/measure_ocr_gate.py` prints, so the verdict and gate branches live in functions of
+their own (`clip_verdict`, `ocr_gate_open`, `apply_text_frac`) and the script drives exactly
+those, or it would price a gate the pipeline does not have.
 
-F100: the stage now names the phase it is in (CLASSIFY_PHASE_* below), through the
-same optional `progress.phase(name)` channel F84 built for clustering. It used to name
-nothing, and with the deep tier on that showed. Measured on the live run of
-2026-07-28 (24 196 frames, 7 896 of them past the candidate gate): the counter runs
-through the fast pass to 24 196/24 196 and then silently RE-BASES — `total` becomes
-7 896, `done` restarts at zero — with `"phase": null` throughout. The numbers were
-always honest; what was missing is the sentence explaining why the bar just jumped
-back to the start against a threefold smaller denominator. The VLM phase reports a
-real `(done, total)` over the gate's candidate list — unlike HDBSCAN it is
-measurable, because the candidates are known before the loop starts.
+F100/F205: the stage names the phase it is in (CLASSIFY_PHASE_* below) through the optional
+`progress.phase(name)` channel, and the three model passes have three names. A phase name
+IS the unit a measurement is filed under (runlog.measurement_unit), so one name over three
+prices that differ threefold prices none of them.
 
-The one place the bar could genuinely freeze is fixed here too: a VLM error used to
-`continue` PAST the progress call, so the counter stopped for exactly as many frames
-as the model failed on. Observability only: no verdict, threshold or gate is touched,
-and a callback without a `phase` channel (the CLI, quiet mode, tests) behaves exactly
-as it did.
+F113: the stage also fills `frame_quality`, and every signal there is taken with the
+CHEAPEST TOOL THAT CAN ANSWER IT — a laplacian over the preview for sharpness, a prompt
+group inside the CLIP call this stage already makes for animals, eyelid geometry for the
+eyes (F179; the VLM that used to answer them is retired). That half keeps its OWN
+incrementality marker (`frame_quality.source`): switching `features.pets` on changes no
+junk verdict, and a collection classified before the feature existed has no quality rows.
 
-F101: the deep tier earns its keep — on the live run of 2026-07-28 it changed 2 592 of
-24 196 verdicts (10.7%), 2 202 of them into `product`, a class the fast tier does not
-produce at all — but it took ~95 minutes at 1.38 frames/s, which is a weekend job, not
-a default. The profile said the pass is not heavy but SEQUENTIAL: ~0.6 s of CPU
-(decode + the processor's image preprocessing) then ~0.19 s of GPU per frame, strictly
-alternating — 0.84 cores busy out of 24, the card at ~26%. Batching was ruled out by
-that same measurement (a starved GPU does not want bigger portions), so the lever is
-the one F87 used for faces: run the CPU half of several frames while the GPU half of
-the previous one is running. `_vlm_labels` does that — `vlm_workers` threads prepare,
-this thread generates and writes, and the queue is bounded so the frames in flight
-cannot grow into RAM (the prepared tensors stay on the CPU, see naming.qwen_runtime,
-so the VRAM peak is what it was).
+F128/F141: the CLIP vector of every frame this stage looks at is KEPT (`clip_embeddings`)
+where it used to be read for three scores and dropped, and behind `features.search_index` a
+SECOND vector from a multilingual model is computed beside it (`search_embeddings`).
 
-Not one verdict may move because of it: labels come back in the CANDIDATE ORDER (a
-FIFO of futures, not "whatever finishes first"), the model still sees one frame per
-call with the same prompt and the same greedy decode, the writes still happen on this
-thread alone, and a frame whose preparation fails still keeps its fast verdict with a
-warning and still steps the progress bar (F100).
+F130/F154: the animal label is a CASCADE — CLIP selects widely, the VLM answers whether the
+animal is alive, an object detector answers whether there is one at all. Each tier
+overrides the one below it and falls back to it, never to "no animal" (`pet_label`).
 
-F113: this stage now also fills `frame_quality` — the per-frame signals a later consumer
-needs to pick the best frame of a burst and to recognize a shot nobody meant to take.
-Every signal is taken with the CHEAPEST TOOL THAT CAN ANSWER IT, and the next tier up is
-only paid for where the cheap one is not sure:
+F140: the search by words put memes and screenshots at the top of its results while all
+19 753 rows it searches carry the verdict `photo` — this stage being wrong about ~4% of
+what it calls a photograph, which nothing made visible until a query did. A zero-shot
+margin over the vectors F128 already stores SELECTS those frames and does not judge them;
+only the model's answer moves `media_class`. The same device as the F38 OCR gate, and
+cheaper: a matmul over a table that already exists.
 
-* sharpness — the variance of the laplacian over the shared preview. Milliseconds, no
-  model, no toggle: the data is wanted by every future consumer and costs nothing.
-* pets (cat/dog/pet) — a prompt group APPENDED to the main CLIP call of the stage, behind
-  `features.pets`. Not a second pass and not a second call. "Is there a cat in the frame"
-  is a question about an object, which is what CLIP does well; the CLIP failure measured
-  in F110 was about the PURPOSE of a frame, a different question. And the arithmetic is
-  not close: the same coverage through the VLM is 19 757 x 0.78 s = 4.3 hours.
-  `_group_probs` keeps the junk verdict exactly where it was — a renormalized slice of a
-  softmax IS the softmax over that slice — so `naming.junk_threshold` does not move under
-  a threshold that was measured against three prompts.
-* eyes open — the local VLM, behind `vlm.quality`, over an uncertain band inside a scope.
-  RETIRED BY F186, and the line stays here because the reasoning above it is what retired
-  it: the cheapest tool that can answer a question. F179 found one — the spread of an
-  eyelid contour the faces stage already fits — at 62% precision over 48% recall against
-  the model's 60% over 9% on the same 249 hand labels, for no call at all. See
-  `frame_quality.eye_openness` and the F179 note further down. The column `eyes_open`
-  stays and stays NULL, which is what "not asked" has always meant in that table.
-
-The quality half keeps its OWN incrementality marker (`frame_quality.source`), because the
-two halves go stale independently: switching `features.pets` on does not change a single
-junk verdict, and a collection classified before this feature existed has no quality rows
-at all.
-
-F128: the CLIP vector this stage computes for every frame it looks at is now KEPT
-(`clip_embeddings`), where it used to be read for three scores and dropped. Nothing is
-shown for it — the value is that the next feature of that class (search by words, an album
-from a query, scene clustering, "frames like this one") reads a table instead of paying
-for a full CLIP pass over the collection.
-
-It is deliberately not a fourth pass over anything: the vector comes out of the caching
-classifier that has just scored the chunk (`landmarks.CachingFeatureClassifier.features`),
-so the number of model calls a run makes is exactly what it was. Three properties of the
-row carry the reasoning, and the schema comment states them once more:
-
-* `model` is written always. Vectors of different models are not comparable, so a row
-  whose model differs from the current config is RECOMPUTED, never used — the same rule
-  the F120 prompt fingerprint applies to the quality answers.
-* the vector is stored L2-normalized in float32, little-endian. Normalized so cosine
-  similarity is a plain dot product for every consumer. float32 is a MEASURED decision and
-  not the obvious one: half precision would halve a table that reaches 920 MB at 300 000
-  photos, so the brief proposed it and made it conditional on the ranking surviving. It
-  does not — over 256 unit vectors of the real width, 18 of 20 queries come back in a
-  different order in float16 (tests/test_clip_embeddings.py keeps that measurement) — and
-  the pre-committed answer to that was float32 rather than a softer test.
-* the population is the one `frame_quality` has, by the F120 argument — the embedding of a
-  screenshot or a product shot is noise in a search over personal photographs — and this
-  half, like the other two, keeps its own incrementality marker (`clip_embeddings.model`).
-
-F141: and a SECOND vector next to it (`search_embeddings`), from a different model, for
-search alone. The one pass of this stage that encodes the same frames twice, and the
-justification is a measurement: `ViT-L-14` scores 22% at top-5 on Russian queries against
-98% for `xlm-roberta-base-ViT-B-32`, with four of eight concepts returning nothing at all.
-Swapping the model would be free and is exactly what must not happen — the landmark (F75),
-animal (F122) and cascade (F130) thresholds are calibrated on L14's numbers — so the
-search side pays for its own pass instead, behind `features.search_index`, off by default
-because ten and a half minutes per 20 000 frames is a cost a person agrees to. It keeps
-the F128 rules unchanged: the model in every row, a mismatch means recompute, and the F120
-population.
-
-F130: the animal question becomes a CASCADE — CLIP selects widely, the VLM checks
-(`features.pets_verify`, default off). F122 measured where the CLIP-only answer stands:
-92% precision at 0.70 and 54% recall, with ~466 animals sitting below 0.30 among 18 400
-frames, which no threshold reaches. The two halves of that have one cause and one fix:
-
-* the errors left at 92% are drawn cats, plush toys, fur coats and a hotdog — frames CLIP
-  is STRUCTURALLY unable to judge, because it compares a picture to a text as a whole and
-  a picture of a cat is a cat to it. "Alive, or a rendering?" is a question about the
-  meaning of the scene, and that is the one thing the VLM is better at;
-* and once something checks the answer, the SELECTION can be widened. 0.70 was high
-  precisely because nothing did. `features.pet_candidate_threshold` (0.30) decides who is
-  shown to the model — 1 331 frames of the live collection, ~17 minutes at 0.78 s each,
-  against 4.3 hours for asking about everything.
-
-The model outranks the score, and nothing else does: a frame whose answer did not parse,
-or whose answer never came, falls back to `pet_score >= pet_threshold` — never to "no".
-The answer is stored (`frame_quality.pet_vlm`) because "rejected" and "never asked" are
-different facts: without the column every later run would pay 0.78 s again for each of
-the ~500 frames the model already turned down, and the interface would have nothing to
-explain a removed label with.
-
-F132 had the stage answer the question the duplicates view has always had to guess — WHICH
-FRAME OF A NEAR-DUPLICATE GROUP IS THE ONE TO KEEP — comparatively, one call per group
-with the frames of that group in a single prompt (`dedup.keeper_vlm`, default off).
-
-F186 RETIRED IT, and the shape of that measurement is the point rather than the number.
-The owner labelled 111 groups BLIND on 2026-08-04 — the frames shuffled, the model's answer
-hidden — and the four candidate rules landed like this:
+F186 RETIRED THE COMPARATIVE QUESTION (F132) — which frame of a near-duplicate group is the
+one to keep. The owner labelled 111 groups BLIND on 2026-08-04, the frames shuffled and the
+model's answer hidden:
 
     way in                agreement with the person    calls    seconds
     sharpness                       27%                  0         0
@@ -260,247 +105,37 @@ hidden — and the four candidate rules landed like this:
 
     PICKING AT RANDOM               30.4%   (20 000 shuffles: 30.3%)
 
-28 of 88 guessed against a coin's ~27. Nothing was bought to replace it, because nothing
-was worth buying: a question no rule answers is not a question with a cheaper answer
-somewhere. What stays is the MECHANISM — `group_keeper`, `dedup.group_key`,
-`dedup.keeper_groups` and the sharpness ranking the Duplicates tab has always shown — so
-the interface behaves exactly as it did, and `dedup_choice` is what it has always been:
-the user's own decision, written by hand. No path of this stage has ever written it.
+Nothing was bought to replace it: a question no rule answers is not a question with a
+cheaper answer somewhere. The MECHANISM stays in dedup.py (`group_keeper`,
+`dedup.group_key`, `dedup.keeper_groups` and the sharpness ranking the Duplicates tab
+shows), and `dedup_choice` remains the user's own decision, which no path here has ever
+written.
 
-F140: the search by words (F134) put memes and screenshots at the top of its results, and
-the table it searches is clean — all 19 753 rows of it carry the verdict `photo`. So this
-was not junk leaking into the index but THIS STAGE being wrong about ~4% of what it calls a
-photograph, an error nothing made visible until a query did. Those frames are laid out by
-city today, and they land in the duplicates, in the quality signals and in the albums.
-
-They are found by a zero-shot query over the vectors F128 already stores — no new pass over
-any model:
-
-    junk_score = max(similarity to screenshot/meme/text/receipt)
-               - max(similarity to a photograph)
-
-and the whole feature is what is NOT done with that number. Reviewed by eye on the live
-collection: above +0.05 the 93 frames are junk outright, but the band +0.02..+0.05 still
-holds ~17% real photographs. Applied as a verdict at 85% precision it would take ~150
-living pictures out of the layout — exactly the mistake F130 measured for animals, where a
-signal of 80-85% applied directly makes a 92% baseline worse. So the score SELECTS and does
-not judge:
-
-* it is computed for every photograph with a stored vector and kept
-  (`frame_quality.junk_score`); a frame without one (a heuristics-only run,
-  `store_embeddings: false`) gets NULL and is no candidate;
-* frames above `features.junk_rescue_threshold` (0.02, the measured row above — 955 frames,
-  ~12 minutes at 0.78 s each) are shown to the VLM, which answers with a verdict rather
-  than a resemblance, and only the model's answer moves `media_class`;
-* with the deep tier off nothing is reclassified at all, and with `features.junk_rescue`
-  off nothing is even computed. The score prompts and the model's question both enter
-  `quality_prompt_fingerprint`, so editing either invalidates the scores it produced (the
-  F120 rule).
-
-It is the same device as the OCR rescue gate (F38): a cheap signal decides who is worth an
-expensive check. Cheaper, in fact — this one is a matmul over a table that already exists.
-
-F154: the animal label gets a third tier — an OBJECT DETECTOR (`detect.py`), and the shape
-it takes is the whole decision. Measured on 200 hand-labelled frames (2026-08-02, at
-confidence 0.5), a COCO detector is 62% precision / 87% recall on animals against the CLIP
-label's 71% / 33% — but 42% precision on people where the face boxes are ~100% (F152), and
-20% / 15% on food, which COCO has no class for at all. It earns its keep on one slice of
-three, and a pass over the collection to get it is 83.8 ms x 22 096 = 30.8 minutes.
-
-So it is a CASCADE, the same device F130 and F140 already pay for: a zero-shot query over
-the stored vectors ranks the collection, the top `features.detector_candidates` (2 000)
-frames go to the detector, and ~3 minutes replace ~31. Recall is then bounded by the
-query's own at that depth, and precision rises from the query's 43% to the detector's 62%.
-`_DetectorPass` below is that pass; `detect.py` holds the model, the classes and the rule.
-
-Three properties are the feature rather than its implementation:
-
-* it is subordinate to a master switch of its own — `detect.enabled`, NOT `vlm.enabled`
-  (this is not a VLM), under the F145 rule that no subordinate key raises a model by
-  itself. Without stored vectors there are no candidates, and the stage says so instead of
-  falling back to a pass over everything;
-* the answer OVERRIDES the CLIP label in both directions, and falls back to the previous
-  rule — never to "no animal" — whenever the detector says nothing (see
-  `detect.cascade_label`, which also states why a frame the F130 check has answered about
-  keeps that answer: a box detector calls a drawn cat a cat);
-* what it found is stored with the class, the confidence and the box (`detections`),
-  because there is nowhere else those could come from. F122 closed the cat/dog split for
-  CLIP, which could not tell the species apart; a detector can, and the table is what makes
-  that a query rather than another pass.
-
-WHERE THE ANSWER IS ACTUALLY READ, because it is not here: since F137 the CONSUMERS of the
-animal slice — the album, the "Animals" tab, the Overview counter — do not read
-`frame_quality.pet` at all. They derive the verdict when they read, out of `pet_score`,
-`pet_vlm` and (F160) the `detections` row, through `sorter.animal_auto_sql`, so that a
-threshold moved in the config moves the slice without a run. F154 shipped without that
-branch and the gap was the worst kind: the stage ran, the boxes were in the database, and
-nothing a user looks at moved. F160 wrote the tier into that expression and made the two
-spellings of the rule — `pet_label` here, `animal_auto_sql` there — a case table that is
-run through both, so the fifth source of this label cannot repeat the silence.
-
-F155: the blur filter this stage feeds catches 6% of what a person calls blurred — 2 of 33
-on a hand-checked sample of 200 frames — and the reason is not the threshold. The variance
-of the laplacian over a whole frame answers "how much detail is in this picture", which is
-a different question from "is it in focus": a detailed sharp street and a smooth blurred
-face give the same number, and blurred frames sit in every band up to 400. Nothing about a
-whole frame is comparable across frames, so no cut through that number can be.
-
-A FACE IS COMPARABLE. It is the one object whose content is roughly constant from frame to
-frame, so the same variance measured inside it means the same thing twice. On the 68 frames
-of that sample that have a face (13 of them blurred): 62% recall at a threshold of 200,
-against 15% for the whole frame at 300, for a comparable number of frames flagged.
-
-`frame_quality.face_sharpness` is that number, and three properties of it are the feature:
-
-* it costs NO NEW PASS. `preview_sharpness_detector` decodes the shared preview once, as
-  before, and takes the second variance over a crop of the same array. What did change is
-  that the decode now applies the EXIF orientation — the boxes are written in the rotated
-  space — and the whole-frame number stands, because the laplacian kernel and its interior
-  are symmetric under every rotation and mirror an orientation can express (what the
-  resample leaves is ~0.01% on a rotated frame, four orders below the band it is read in);
-* THE COORDINATES ARE RESCALED (`face_crop_boxes`), and that is where the measurement this
-  feature is built on went wrong: `faces.bbox` is in pixels of the full original, the
-  preview is a few hundred pixels, and boxes used as written fell off the frame. 39 of 68
-  crops were dropped that way and the surviving 29 reported 100% recall instead of 62%. A
-  broken crop flatters the result rather than failing;
-* it RANKS AND DOES NOT JUDGE. ~25% precision at every threshold measured — three of four
-  flagged frames are not blurred — and it covers only the third of a collection that has a
-  face at all. So `features.face_sharpness_max` orders the blur list and nothing in this
-  stage reads it: no verdict, no threshold, no deletion. NULL means not measured, as
-  everywhere in `frame_quality`.
-
-F179: the third number off that same decode, and the first one in this file that a MODEL
-used to answer. "Are the eyes open" was asked of the local VLM for 92 minutes a run and
-came back 60% right about 9% of the frames it was meant to find; the question is gone
-(F177) and the ~948 frames it was about — 15.6% of everything with a face in it — did not
-go with it. Measured against the same 249 hand labels (F178, scripts/measure_eye_state.py):
-
-    way in                        threshold  precision  recall
-    the VLM (retired)                     —      60%       9%
-    eyelid geometry                    0.18      62%      48%
-    a classifier over the eye crop      0.9      46%      57%
-    CLIP over the eye crop              0.8      58%      49%
-
-Five times the recall at slightly better precision, out of ARITHMETIC over contour points
-— `eye_openness` is the spread of an eye's ring across its own long axis, so no threshold
-here depends on a network's opinion, only on where the contour landed. CLIP over the same
-crop lost while costing a pass of the network the stage already runs.
-
-Three properties, and they are the same three `face_sharpness` has, which is not an
-accident — it is the shape a signal in this table has to have:
-
-* NO NEW PASS and NO NEW WEIGHTS. `2d106det` is 4.8 MB inside the `buffalo_l` set the faces
-  stage already downloads, it is fitted to the box the crop above is taken from, and it is
-  built on the first face of a run and never on a run without one (`lazy_eye_landmarks`);
-* THE COORDINATES ARE RESCALED, through the very same `face_crop_boxes`. The F178
-  measurement lists this as the mistake F155 had already made once: `faces.bbox` is in
-  pixels of the full original and the preview is a few hundred pixels wide, and a box used
-  as written lands on empty sky. It does not raise — it flatters;
-* it RANKS AND DOES NOT JUDGE. 62% precision means one frame in three of that slice has its
-  eyes open, so `features.eye_openness_max` orders the list and opens it to a window a
-  person walks past; nothing in this stage deletes or reclassifies by it.
-
-The one rule that differs is which face answers: the LARGEST, where sharpness takes the
-sharpest. A frame where somebody at the back blinked is not a portrait with closed eyes,
-and a frame where one of several faces is in focus is a photograph that worked — each rule
-picks the face its own question is about.
-
-WHAT IS NOT FIXED HERE, written down because it will look like this feature's bug. F178
-reports that on a frame with EXIF orientation 6 the faces stage decodes through
-`cv2.imdecode` (which has already applied the rotation) and then rotates a second time, so
-`faces.bbox` is written in a SIDEWAYS frame — while this stage works in the upright one.
-If that holds, every box on a rotated photograph lands wrong here, and it lands wrong for
-`face_sharpness` in exactly the same way and has since F155. It is a finding about the
-faces stage, that stage is out of this feature's bounds, and the same script measures how
-often a stored box matches a fresh detection (`легли на бокс`) — so whoever owns it starts
-from a number rather than from this paragraph.
-
-F164: the first three levers pulled with the phase table of F147 in hand, and the first
-lesson is that a phase NAME is not a bill of costs. `junk_write` looked like 19,4 ms of
-SQLite per frame and turned out to be the laplacian — the writes are one transaction and
-cost 0,005 ms a row, measured (scripts/measure_junk_write.py, the table is at
-_MEDIA_CLASS_UPSERT). Nothing was batched, because there was nothing left to batch; what
-the phase is really made of is written down instead, so the next person starts from the
-right number.
-
-The other two levers are the same lever at both ends of the stage — a THREAD CEILING
-chosen before anything was measured — and both keep their value, for two different
-reasons. `vlm.workers` was measured and 4 turns out to be past the knee already: one
-frame's preparation uses about seven cores since F105 gave the runtime the fast image
-processor, so 6, 8 and 12 threads came back SLOWER than 4 on the live collection, and
-the card's 51% is what NO overlap looks like at 0,12 s of CPU per 0,19 s of GPU rather
-than a queue that is too short (config.default_vlm_workers holds that table).
-`_DEFAULT_OCR_WORKERS_CAP` is unmeasured on purpose: what it protects is VRAM — one
-easyocr Reader per thread — and only a free card can price it, so the tool ships
-(scripts/measure_ocr_workers.py) and the number waits for the run that earns it.
-
-Neither ceiling touches a verdict, and that is what the tests are about rather than the
-seconds: the OCR pool has always written on the caller's thread in chunk order (F73),
-the deep tier has always applied its labels in the candidate order (F101), and
-tests/test_worker_ceilings.py pins both across every thread count the sweeps went up to.
+F164: `vlm.workers` was measured and 4 is past the knee already — one frame's preparation
+uses about seven cores since F105, so 6, 8 and 12 threads came back SLOWER on the live
+collection (config.default_vlm_workers holds that table). The other ceiling of the stage is
+`_DEFAULT_OCR_WORKERS_CAP`, unmeasured on purpose for the reason written beside it.
 
 F165: THE STAGE RUNS IN TWO HALVES, and `verdicts_only` is which one. The faces stage is
-46% of a full run and it walks 24 195 frames, 4 300 of which this stage already knows are
-screenshots, documents, memes or products — it just used to find out AFTER faces had paid
-for them. So the verdicts move ahead of faces (`sorta classify`, and the `classify` step of
-the pipeline) and everything that needs the face signal stays behind it (`sorta junk`):
+46% of a full run and used to walk 4 300 frames of 24 195 that this stage already knew were
+screenshots, documents, memes or products — so the verdicts move ahead of it:
 
     index -> geo -> landmarks -> classify -> faces -> events -> junk -> phash
 
-The split is by dependency and nothing else. `verdicts_only=True` runs the fast pass
-(heuristics, CLIP, the OCR gate), the deep tier and the stored vectors of F128 — none of
-which reads `frame_quality` — and leaves out every half that does: the quality cascade
-(`face_sharpness` is measured inside the boxes the faces stage writes, F155), the animal
-cascade, the rescue and the search index. Swapping the two stages instead of
-splitting them would have switched `face_sharpness` off silently on every first run, which
-is the failure this note exists to prevent someone re-inventing.
+The split is by dependency and nothing else: `verdicts_only=True` runs everything that does
+not read `frame_quality` and leaves the rest behind faces. Swapping the two stages instead
+of splitting them would have switched `face_sharpness` off silently on every first run.
+Both halves are the SAME function under the same incrementality, so the second call
+reclassifies nothing and `sorta junk` alone still does the whole thing.
 
-Both halves are the SAME function and the same incrementality: the second call finds
-`media_class.tier` already current and reclassifies nothing, so `sorta junk` alone still
-does the whole thing and the pipeline pays for the fast pass once. What the frames of the
-first call cost the second is one softmax over the cache the shared classifier already
-holds (F19) — no frame is decoded or encoded twice within a run.
-
-THE ONE THING THAT DOES CHANGE, stated where it will be found. The fast tier reads
-`has_faces` in four places (the F13 veto, the F15 document pass, the F38 OCR gate and the
-#14 VLM gate), and before the faces stage has ever run there is nothing to read: on a FIRST
-run with `--faces` a frame that CLIP calls a meme is no longer vetoed by the face in it.
-That is exactly what a default run (faces are opt-in, F53) has always done, and one run
-later the faces are in the database and the veto is back for every frame that still gets
-there — but a frame this stage calls junk is a frame `faces` now skips, so the veto cannot
-reach it afterwards. The brief accepted that trade for the 18% (F165, "Оговорки", 2 and 3);
-it is written down here because no test can show it and no log line will mention it.
-
-F206: THE OTHER HALF OF THAT SPLIT KEPT ASKING SERIALLY, and the phase names of F205 are
-what finally showed it. The run of 2026-08-05:
-
-    stage=classify phase=junk_vlm         7 951 frames    5 503 s   1.4 frames/s
-    stage=junk     phase=junk_pets_vlm  }
-    stage=junk     phase=junk_rescue_vlm }  4 281 frames  ~10 200 s  0.42
-
-Same model, same one frame per call, same card — three times the price, because the
-pipeline went to `classify` with the verdicts (F101 built it there) while `_frame_question`
-stayed the plain serial path. At the previous run's rate those 4 281 frames cost 3 243 s:
-116 minutes a run, and the balance of the two runs closes on that number exactly (6 041
-frames fewer saved ~76 min, the lost pipeline cost ~116, +40 against the +27 observed).
-
-The fix is a MOVE and not a design: `_frame_question` hands back its halves the way
-`vlm_classifier_from` does, and the two askers go through `_vlm_labels` — the same FIFO of
-futures, the same bounded window, the same "generation stays on the caller's thread". So
-the properties the deep tier has had since F101 are the ones these two questions get: the
-verdicts cannot move (the prompt, the token budget and the input size are untouched, and
-one frame is still one call), the answers arrive in the CANDIDATE order rather than in
-completion order, a frame whose preparation fails still keeps its cheap-tier answer, and
-the VRAM peak is one frame's inputs — the prepared tensors stay on the CPU
-(naming.qwen_runtime), which is what the window bounds.
-
-What was NOT done here, deliberately: no batching (that is F105, with a measurement of its
-own), no prompt, threshold or population touched, and no second optimization riding along —
-one edit, one effect, or the next run cannot say what helped. The guard against a third
-serial pass is a test rather than a comment: `tests/test_junk_asker_pipeline.py` prices the
-animal phase AGAINST the deep tier's phase of the same run, because a cost per frame in
-seconds is a statement about a machine and a RATIO between two phases asking one model one
-question about one frame is a statement about this stage.
+THE ONE THING THAT DOES CHANGE WITH IT, written here because no test can show it and no log
+line will mention it: the fast tier reads `has_faces` in four places (the F13 veto, the F15
+document pass, the F38 OCR gate, the #14 VLM gate), and before the faces stage has ever run
+there is nothing to read. On a FIRST run with `--faces` a frame CLIP calls a meme is no
+longer vetoed by the face in it — exactly what a default run has always done (faces are
+opt-in, F53) — and a frame this stage calls junk is a frame `faces` now skips, so the veto
+cannot reach it afterwards. The brief accepted that trade for the 18% (F165, «Оговорки»,
+2 and 3).
 """
 from __future__ import annotations
 
@@ -538,9 +173,8 @@ from .detect import (
     unpack_boxes,
 )
 
-# F102 moved the workers knob to `vlm.workers` and this resolver along with it (the old
-# `naming.vlm_workers` address is still honoured there) — but this module is where it was
-# born and where the measurement scripts import it from, so the name stays re-exported.
+# F102 moved this resolver to config along with the knob it reads, but the measurement
+# scripts import it from here, so the name stays re-exported.
 from .config import resolve_vlm_workers  # noqa: F401
 from .landmarks import CachingFeatureClassifier, Classifier, batched, clip_classifier
 from .naming import (
@@ -568,26 +202,25 @@ _CLIP_CLASSES: tuple[tuple[str, str], ...] = (
 _SCREENSHOT_NAME_RE = re.compile(
     r"^(screen[ _-]?shot|снимок[ _]экрана)", re.IGNORECASE)
 
-# F29: the folder signal — the file is in a Screenshots/Screenshot directory (any
-# path segment, case-insensitive). A "floor" for verdict='photo': such a file
-# cannot stay an ordinary photo (see the override in classify).
+# F29: a "floor" for verdict='photo' — a file in a Screenshots directory cannot stay an
+# ordinary photo (see the override in classify).
 _SCREENSHOT_DIRS = {"screenshots", "screenshot"}
 
 
 def _in_screenshots_dir(path: str) -> bool:
-    """True if any path segment == screenshots|screenshot (case-insensitive).
-    Splitting on both separators — in the DB paths come with both `\\` and `/`
-    depending on the indexing platform."""
+    """True if any path segment is screenshots|screenshot (case-insensitive).
+
+    Split on both separators: paths in the DB come with `\\` and with `/`, depending on
+    the platform that indexed them.
+    """
     return any(
         seg.lower() in _SCREENSHOT_DIRS for seg in re.split(r"[\\/]", path)
     )
 
-# F15/F22: a separate CLIP run for documents, its own softmax group (does not
-# share the probability mass with _CLIP_CLASSES). Anti-classes (an ordinary photo +
-# street/outdoor scenes — F22: they pull probability mass away from travel photos of
-# buildings with signs, which were otherwise caught as receipt/paper/scan) are
-# excluded from the document score; the max is taken ONLY over the document
-# subclasses.
+# F15/F22: a separate CLIP run for documents, with a softmax group of its own. The
+# anti-classes drain the mass that otherwise made travel photos of buildings with signs
+# come out as receipt/paper/scan (F22); the score is the max over the DOCUMENT
+# subclasses alone.
 _DOC_ANTI_CLASSES: tuple[tuple[str, str], ...] = (
     ("photo", "a regular photograph of people, places or things"),
     ("building", "a photo of a building or house"),
@@ -604,11 +237,9 @@ _DOC_POS_CLASSES: tuple[tuple[str, str], ...] = (
 _DOCUMENT_CLASSES: tuple[tuple[str, str], ...] = _DOC_ANTI_CLASSES + _DOC_POS_CLASSES
 _N_DOC_ANTI = len(_DOC_ANTI_CLASSES)
 
-# #14/V1: a cheap CLIP prefilter for "productness" — the same trick as the document
-# score (its own softmax group, personal-photo anti-classes excluded from the
-# product score). Serves ONLY as a candidate gate for the VLM (not a final verdict):
-# files with a high product_score go to the expensive VLM, which decides
-# product/document/personal_photo. That way the VLM is not run on every frame.
+# #14/V1: the same trick for "productness", and it is a CANDIDATE GATE and never a
+# verdict — a high product_score buys a frame a VLM call, which is what keeps the deep
+# tier off the whole collection.
 _PROD_ANTI_CLASSES: tuple[tuple[str, str], ...] = (
     ("photo", "a personal photograph of people, places or pets"),
     ("scene", "an everyday life scene or travel photo"),
@@ -623,57 +254,41 @@ _N_PROD_ANTI = len(_PROD_ANTI_CLASSES)
 # the "product" zone threshold for VLM candidates (>= -> the file goes to the VLM). Tuned on a run.
 _DEFAULT_PRODUCT_CANDIDATE_MIN = 0.4
 
-# F113: pets — the one frame-quality question CLIP can answer, so it is answered by the
-# CLIP call this stage already makes. "Is there a cat in this frame" is a question about
-# an OBJECT in the picture, which is what CLIP was trained on; the CLIP failure we
-# measured (a document against a product, a beach 0.95 against a medical form 0.79) was a
-# question about the PURPOSE of a frame — a different task. The arithmetic decides the
-# rest: asking the VLM about pets across a whole collection is 19 757 x 0.78 s = 4.3
-# hours, while these prompts ride along on frames CLIP is looking at anyway.
+# F113: "is there a cat in this frame" is a question about an OBJECT, which is what CLIP
+# does well — the CLIP failure measured in F110 (a beach 0.95 against a medical form 0.79)
+# was about the PURPOSE of a frame, a different question. The arithmetic decides the rest:
+# the same coverage through the VLM is 19 757 x 0.78 s = 4.3 hours, while these prompts
+# ride along on frames CLIP is looking at anyway.
 #
-# They are APPENDED to the junk prompt list, not scored on a pass of their own, and the
-# junk verdict is protected from them by `_group_probs`: a softmax restricted to a subset
-# of its own inputs and renormalized IS the softmax over that subset. So the three junk
-# classes keep exactly the probabilities they had before these prompts existed and
-# `naming.junk_threshold` — a measured number — does not silently move under them.
+# APPENDED to the junk prompt list, never a pass of their own, and `_group_probs` protects
+# the junk verdict from them: a renormalized slice of a softmax IS the softmax over that
+# slice, so `naming.junk_threshold` does not move under prompts it was not measured with.
 _PET_POS_CLASSES: tuple[tuple[str, str], ...] = (
     ("cat", "a photo of a cat"),
     ("dog", "a photo of a dog"),
-    # F121: was "a photo of a pet animal at home", and it was the worst class of the
-    # three — a review of all 649 of its frames found people and children in it. "At
-    # home" describes a SCENE, so the prompt attracted domestic scenes with a living
-    # being in them rather than animals. Naming the animals instead keeps the class for
-    # what it is for: the pets that are neither a cat nor a dog.
+    # F121: was "a photo of a pet animal at home", and a review of all 649 of its frames
+    # found people and children in it — "at home" describes a SCENE. Naming the animals
+    # keeps the class for what it is for: the pets that are neither a cat nor a dog.
     ("pet", "a photo of a rabbit, a hamster, a bird, a horse or another animal"),
 )
-# Anti-classes for the pet group — the same device the document and product groups use.
-# Without somewhere for the probability mass of a pet-less frame to go, every photo comes
-# out as the most cat-like of the three cat prompts.
-# F120: the first live run said the two anti-classes below were not enough. CLIP does not
-# separate a thing from a PICTURE of a thing unless something else is offered to take that
-# probability, so `a photo of a cat` matched drawn cats, a plush toy landed in `dog`
-# alongside a hotdog, and people in fur coats came out as `pet`. Measured contamination
-# before these prompts: 45% of `dog` and 15% of `cat` were not photographs of an animal.
-#
-# Each anti-class below answers one observed failure, and they are anti-classes rather
-# than a higher threshold on purpose: a drawn cat is a CONFIDENT cat to CLIP, so no
-# threshold separates it — the probability has to have somewhere else to go.
+# Anti-classes: without somewhere for the mass of a pet-less frame to go, every photo comes
+# out as the most cat-like of the three prompts above. F120 measured the contamination the
+# first two alone left — 45% of `dog` and 15% of `cat` were not photographs of an animal —
+# and each line below answers one observed failure. Anti-classes and not a higher threshold
+# on purpose: a drawn cat is a CONFIDENT cat to CLIP, so no threshold separates it.
 _PET_ANTI_CLASSES: tuple[tuple[str, str], ...] = (
-    # F121: a review of the whole population after the first pass found people and
-    # CHILDREN in the general class, so the people prompt names them.
+    # F121: the review found children in the general class, so the prompt names them.
     ("people", "a photo of a person, a child or a group of people, with no animal"),
     ("scene", "a photo of a place, a building or an object, with no animal in it"),
     # drawn cats in `cat`
     ("drawing", "a drawing, painting, cartoon or illustration of an animal"),
-    # F121: the drawing prompt does not catch these, and it should not — a wallpaper of
-    # a cat IS a photograph of a cat, and CLIP is right about that. The distinction the
-    # collection needs is not "drawn or photographed" but "mine or somebody else's".
+    # F121: the drawing prompt does not catch these and should not — a wallpaper of a cat
+    # IS a photograph of a cat. The distinction wanted is "mine or somebody else's".
     ("stock", "a wallpaper, a stock photograph, a poster or a magazine picture"),
-    # F121: the "puppies" frame. CLIP reads lettering and believes it over the picture —
-    # the typographic weakness it has been known for since the original paper.
+    # F121: the "puppies" frame — CLIP reads lettering and believes it over the picture.
     ("text", "a picture with large text, a caption or lettering written on it"),
-    # F121: two plush dogs still got through the previous wording; naming the toy as the
-    # SUBJECT of the shot rather than as an adjective is what separates it from an animal.
+    # F121: two plush dogs got through the previous wording; the toy has to be the SUBJECT
+    # of the prompt rather than an adjective in it.
     ("toy", "a photo of a stuffed plush toy, a soft toy or a figurine of an animal"),
     # the hotdog in `dog`
     ("food", "a photo of food or a dish on a plate"),
@@ -689,15 +304,14 @@ _N_PET_POS = len(_PET_POS_CLASSES)
 # measurement says the binary question is worth publishing and the three-way one is not.
 PET_CLASS = "animal"
 
-# F130: what `frame_quality.pet_vlm` holds — the model's answer to the one question CLIP
-# is structurally unable to answer. The errors left at 92% precision are drawn cats, plush
-# toys, fur coats and a hotdog: CLIP compares a picture to a text as a whole and cannot
-# tell a cat from a picture of a cat, while "is this animal alive or is it a rendering of
-# one" is a question about the MEANING of the scene, which is what a VLM does.
+# F130: what `frame_quality.pet_vlm` holds. The errors left at 92% precision are drawn
+# cats, plush toys, fur coats and a hotdog — CLIP compares a picture to a text as a whole
+# and cannot tell a cat from a picture of a cat, while "alive, or a rendering?" is a
+# question about the meaning of the scene.
 #
-# NULL is not one of these three. It means the question was not asked — below the
-# candidate threshold, the check off, the model unavailable, or an answer that did not
-# parse — and `pet_label` treats it as such rather than as a "no".
+# NULL is not one of these three: it means the question was not asked (below the candidate
+# threshold, the check off, no model, an unreadable answer), and `pet_label` treats it as
+# such rather than as a "no".
 PET_VLM_REAL = "real"
 PET_VLM_DEPICTION = "depiction"
 PET_VLM_NONE = "none"
@@ -708,17 +322,12 @@ _PET_GROUP = (len(_CLIP_CLASSES), len(_CLIP_CLASSES) + len(_PET_CLASSES))
 
 # --- F140: the screenshots and receipts this stage took for photographs ----------------
 #
-# These prompts are NOT part of the call above and are deliberately not appended to it: the
-# score they produce is read off the STORED vector (F128), which is what makes it free and
-# what makes it answerable for a collection whose junk classification is already current.
-# Nothing here is encoded a second time — the images were encoded once, months ago
-# perhaps, and this is a matmul against a handful of text vectors.
-#
-# The junk classes themselves are reused rather than re-worded (`_CLIP_PROMPT`), because
-# the score is a statement about the same question the stage already asks and a second
-# wording of "a screenshot" would be a second definition of one. What is added is what the
-# review of the live collection actually found among the misclassified frames — a
-# photographed screen, a page of text, a receipt.
+# Deliberately NOT appended to the call above: the score is read off the STORED vector
+# (F128), which is what makes it free and what lets it answer for a collection whose junk
+# classification is already current. The junk classes are reused rather than re-worded
+# (`_CLIP_PROMPT`) — a second wording of "a screenshot" would be a second definition of
+# one — and what is added is what the review of the live collection found among the
+# misclassified frames: a photographed screen, a page of text, a receipt.
 _CLIP_PROMPT = dict(_CLIP_CLASSES)
 _JUNK_RESCUE_POS_PROMPTS: tuple[str, ...] = (
     _CLIP_PROMPT["screenshot"],
@@ -736,9 +345,9 @@ _JUNK_RESCUE_NEG_PROMPTS: tuple[str, ...] = (_CLIP_PROMPT["photo"],)
 def junk_rescue_prompts() -> list[str]:
     """The prompt list of the rescue score, POSITIVES FIRST — the order is the contract.
 
-    One list rather than two because it is one text-encoder call, and `junk_rescue_score`
-    splits it back at `len(_JUNK_RESCUE_POS_PROMPTS)`. The measurement script builds its
-    prompts through here as well, so it cannot price a score the stage does not compute.
+    One list because it is one text-encoder call, split back at
+    `len(_JUNK_RESCUE_POS_PROMPTS)`. The measurement script builds its prompts through
+    here too, or it would price a score the stage does not compute.
     """
     return list(_JUNK_RESCUE_POS_PROMPTS) + list(_JUNK_RESCUE_NEG_PROMPTS)
 
@@ -746,10 +355,9 @@ def junk_rescue_prompts() -> list[str]:
 def unit_rows(matrix: np.ndarray) -> np.ndarray:
     """Rows of a text-feature matrix, L2-normalized — so a dot product is a cosine.
 
-    Done here even though the encoder already normalizes, for the reason
-    `pack_embedding` normalizes a vector the image tower had normalized: the guarantee
-    costs a norm over a few rows and is worth more than the trust. A zero row has no
-    direction to preserve and is left as it is rather than divided by zero.
+    Done again although the encoder normalizes, for the reason `pack_embedding` repeats
+    it: a norm over a few rows is worth more than the trust. A zero row has no direction
+    to preserve and is left as it is rather than divided by zero.
     """
     m = np.asarray(matrix, dtype=np.float32)
     if m.ndim != 2:
@@ -762,14 +370,12 @@ def junk_rescue_score(vec: np.ndarray, text_features: np.ndarray) -> float | Non
     """max(junk prompts) - max(photograph prompts) over one stored vector.
 
     A margin and not a probability: softmax would compress exactly the region the
-    threshold lives in (the useful band is 0.02 wide), and the frames this looks for are
-    the ones the softmax of the main call already called a photograph. Both sides are unit
-    vectors, so every similarity here is a cosine.
+    threshold lives in (the useful band is 0.02 wide), and these frames are the ones the
+    softmax of the main call already called a photograph.
 
-    None — the widths do not match: a vector stored by another model, or a truncated blob.
-    A number computed across two spaces would look exactly like a real score, which is the
-    one thing a selection signal must not do (`search.search` drops such rows for the same
-    reason).
+    None — the widths do not match (a vector of another model, a truncated blob). A number
+    computed across two spaces looks exactly like a real score, which is the one thing a
+    selection signal must not do; `search.search` drops such rows for the same reason.
     """
     v = np.asarray(vec, dtype=np.float32).ravel()
     if text_features.ndim != 2 or v.size != text_features.shape[1]:
@@ -783,8 +389,7 @@ def clip_prompts(pets: bool) -> list[str]:
     """The prompts of the ONE main CLIP call of the stage; pets appended when asked for.
 
     With pets off the list is byte-for-byte what it always was — same prompts, same order,
-    same text-embedding cache key — so a run with the toggle off is not changed by this
-    feature in any way.
+    same text-embedding cache key.
     """
     prompts = [prompt for _cls, prompt in _CLIP_CLASSES]
     if pets:
@@ -795,11 +400,10 @@ def clip_prompts(pets: bool) -> list[str]:
 def _group_probs(probs_row: np.ndarray, group: tuple[int, int]) -> np.ndarray:
     """The softmax over ONE prompt group, recovered from the row of the shared call.
 
-    softmax(x)_i / sum over a subset == softmax over that subset, so renormalizing the
-    slice gives exactly the probabilities a separate CLIP call over those prompts alone
-    would have produced — which is what lets one call serve two independent questions.
-    A row of zeros (a frame that did not decode) has no mass to renormalize and is
-    returned as it is: score 0, the same "no signal" it has always meant.
+    Renormalizing the slice gives exactly the probabilities a separate CLIP call over
+    those prompts alone would produce, which is what lets one call serve two independent
+    questions. A row of zeros (a frame that did not decode) has no mass to renormalize and
+    comes back as it is: score 0, the "no signal" it has always meant.
     """
     part = probs_row[group[0]:group[1]]
     if len(part) == len(probs_row):
@@ -811,21 +415,17 @@ def _group_probs(probs_row: np.ndarray, group: tuple[int, int]) -> np.ndarray:
 def pet_verdict(probs_row: np.ndarray, threshold: float) -> tuple[str | None, float]:
     """(class, score) of the pet group -> the class is None below `threshold`.
 
-    The score is returned either way and stored either way: a threshold that was chosen
-    from a distribution has to be re-choosable from the stored scores, without a new pass
-    over the collection.
+    The score is stored either way: a threshold chosen from a distribution has to be
+    re-choosable from the stored scores, without a new pass over the collection.
 
     F122: ONE class is stored, whichever positive prompt won. A labelled sample of 320
-    frames said the two halves of this signal are of very different quality — "is there
-    an animal here" is right 92% of the time at 0.70, while WHICH animal was the part the
-    review kept finding wrong (people landing in `dog`, a concert photo in the general
-    class). So the ensemble of three prompts stays — it is what the 92% was measured on —
-    and only its unreliable half stops being published.
+    frames priced the two halves apart — "is there an animal here" is right 92% of the
+    time at 0.70, WHICH animal is what the review kept finding wrong (people landing in
+    `dog`, a concert photo in the general class) — so the ensemble stays, being what the
+    92% was measured on, and only its unreliable half stops being published.
 
-    The three prompts are deliberately NOT collapsed into one. The score is the max over
-    the positives of a softmax across the whole group; merging them would move the
-    probability mass into a single class, raise every score, and invalidate the threshold
-    the measurement chose.
+    The three prompts are deliberately NOT collapsed into one: merging them would move the
+    probability mass into a single class, raise every score and invalidate that threshold.
     """
     group = _group_probs(probs_row, _PET_GROUP)
     if not len(group):
@@ -840,38 +440,28 @@ def pet_label(pet_vlm: str | None, pet_score: float | None, threshold: float, *,
               detected: bool | None = None) -> str | None:
     """The animal label of one frame — the whole cascade, in one place.
 
-    The model OUTRANKS the score, which is the reason the cascade exists: a frame scored
-    0.95 and answered `depiction` is a plush toy, and no threshold over a CLIP score ever
-    separates one from a dog (F120 measured that — a drawn cat is a confident cat).
+    The model OUTRANKS the score, which is why the cascade exists: a frame scored 0.95 and
+    answered `depiction` is a plush toy, and no threshold over a CLIP score separates one
+    from a dog (F120: a drawn cat is a confident cat). `pet_vlm IS NULL` — not asked, not
+    understood, no model — falls back to the rule that ran before the check existed, never
+    to a guess in either direction (brief item 3.2).
 
-    `pet_vlm IS NULL` — not asked, not understood, or the model never came up — falls back
-    to the rule that ran before this feature existed. That is what makes the check
-    optional in the strong sense: with it off, and on every frame it could not answer, the
-    label is byte-for-byte the one the stage wrote yesterday. Never a guess in either
-    direction (brief item 3.2).
-
-    THIS FUNCTION AND `sorter.animal_auto_sql` ARE ONE RULE IN TWO SPELLINGS. It is written
-    twice because the two questions have different shapes — this one labels the single
-    frame a stage has just scored, that one answers "which files" over a whole index — and
-    the price of the second spelling is that every new source of the label has to reach
-    both. F160 is the feature that found the detector reaching only one of them, so the
-    case table in `tests/test_detector_reaches_the_screen.py` now runs both side by side
-    and a source that lands in only one fails a test instead of a slice.
+    THIS FUNCTION AND `sorter.animal_auto_sql` ARE ONE RULE IN TWO SPELLINGS — this one
+    labels a single frame, that one answers "which files" over a whole index — so every
+    new source of the label has to reach both. F160 found the detector reaching only one,
+    and `tests/test_detector_reaches_the_screen.py` now runs both over one case table.
 
     The two keyword arguments are what a READER knows and the stage does not:
 
-    `detected` is the F154 tier — True: this detector examined the frame and found an
-    animal at or above `features.detector_threshold`; False: it examined the frame and
-    found none; None: it never examined it (below the candidate depth, switched off, the
-    model unavailable, an error on that frame, or boxes from another detector). None falls
-    through to the score, never to "no animal" — the same order `detect.cascade_label`
-    states, VLM answer above the detector included, because a box detector cannot be asked
-    whether the cat it sees is alive.
+    `detected` is the F154 tier — True: examined and an animal found at or above
+    `features.detector_threshold`; False: examined and none found; None: never examined
+    (below the candidate depth, off, no model, an error, or boxes from another detector).
+    None falls through to the score, never to "no animal", and the VLM answer stays above
+    it: a box detector cannot be asked whether the cat it sees is alive.
 
-    `candidate_threshold` is the F137 gate on a STORED answer: it counts only for a frame
-    the current `features.pet_candidate_threshold` would still show the model, and a frame
-    whose gate has since risen falls back to the tiers below it. None — the caller has a
-    fresh answer to a question it has just asked, and there is nothing to re-gate.
+    `candidate_threshold` is the F137 gate on a STORED answer — it counts only for a frame
+    the current `features.pet_candidate_threshold` would still show the model. None: the
+    caller has just asked, and there is nothing to re-gate.
     """
     if pet_vlm is not None and (candidate_threshold is None
                                 or (pet_score is not None
@@ -883,91 +473,65 @@ def pet_label(pet_vlm: str | None, pet_score: float | None, threshold: float, *,
         return None
     return PET_CLASS if pet_score >= threshold else None
 
-# F37 (Phase A): defaults for naming.text_frac_min/text_frac_document, while the
-# fields are not typed in NamingConfig (getattr pattern).
-# text_frac_min — low (FP gate: almost no text -> not a document).
-# F38: text_frac_document lowered 0.35 -> 0.15 (validation on real data:
-# a document at an angle gave text_frac=0.247, scenes — 0.0-0.002; a large margin).
+# F37 (Phase A): defaults for naming.text_frac_min/text_frac_document, which are not typed
+# in NamingConfig (the getattr pattern this file uses for them).
+# F38 lowered text_frac_document 0.35 -> 0.15 on real data: a document at an angle gave
+# text_frac=0.247, scenes 0.0-0.002 — a large margin either side of it.
 _DEFAULT_TEXT_FRAC_MIN = 0.08
 _DEFAULT_TEXT_FRAC_DOCUMENT = 0.15
 
-# F38: the OCR rescue (verdict='photo' -> 'document') is called only if the
-# document-CLIP already "doubts whether it is a document" (doc_score in the zone
-# 0.3..document_threshold) — clear scenes (doc_score≈0) do not run OCR, which is
-# the perf win.
+# F38: the OCR rescue (verdict='photo' -> 'document') runs only where the document-CLIP
+# already doubts (doc_score in 0.3..document_threshold) — clear scenes never pay for OCR.
 #
-# F164 was asked to sweep this too — 28% of the collection behind the gate is generous
-# for "is there text on this frame", and `junk_ocr` is the most expensive phase of the
-# stage. It did not, and the reason is worth as much as a table would be. A sweep of this
-# number needs BOTH columns: how many frames a threshold cuts, and how many documents go
-# into the city folders with them. The first is a CLIP pass, the second is an OCR pass
-# over everything the LOWEST threshold of the grid gates — and with the card occupied
-# (see _DEFAULT_OCR_WORKERS_CAP below) only the first half could have been run. A sweep
-# with the coverage column and no benefit column is exactly the table that gets a
-# threshold raised for the wrong reason: F38 raised this number because a document
-# landing among the holiday photographs is the expensive error here.
-#
-# The tool is `scripts/measure_ocr_gate.py` (F90 built it, and it caches its per-frame
-# aggregates so a grid can be re-tried without paying for the models again), and it
-# already prints both columns plus `--probe-below`, an estimate of the documents the gate
-# misses at EVERY threshold of the grid. What must not happen is this constant moving
-# without that output: F90 states the rule in the module docstring — the threshold is a
-# decision for a person in front of the table, not something a worker changes quietly.
+# F164 WAS ASKED TO SWEEP THIS AND DID NOT, which is worth as much as a table would be. A
+# sweep needs BOTH columns: how many frames a threshold cuts, and how many documents go
+# into the city folders with them. The first is a CLIP pass, the second an OCR pass over
+# everything the lowest threshold gates — and with the card occupied (see
+# _DEFAULT_OCR_WORKERS_CAP) only the first was affordable. A coverage column with no
+# benefit column is exactly the table that raises a threshold for the wrong reason: F38
+# raised this one because a document among the holiday photographs is the expensive error.
+# `scripts/measure_ocr_gate.py` prints both columns plus `--probe-below`, and the rule is
+# the module docstring's: this constant is a user's decision in front of that output.
 _DEFAULT_TEXT_RESCUE_DOCSCORE_MIN = 0.3
 
-# F38: the detector decodes via imaging.decode_rgb and shrinks the frame before
-# reader.detect() — a full-size decode is 1.2-3.2s/frame on large photos
-# (F38 measurement), shrinking to ~1280px gives a x3-10 speedup.
+# F38: the frame is shrunk before reader.detect() — a full-size decode is 1.2-3.2 s/frame
+# on large photos, ~1280px gives a x3-10 speedup.
 _DEFAULT_TEXT_FRAC_DOWNSCALE_PX = 1280
 
 TextFracDetector = Callable[[str, int | None, int | None], float | None]
-# F73: builds the detector of ONE worker thread — see _OcrPool. Every thread needs
-# its own (an easyocr Reader is not thread-safe), so the pool takes a factory, not a
-# ready detector.
+# F73: builds the detector of ONE worker thread — an easyocr Reader is not thread-safe, so
+# the pool takes a factory rather than a ready detector.
 TextFracDetectorFactory = Callable[[], TextFracDetector]
-# (file_id, path, width, height) — one OCR job for the pool. file_id keys the result
-# back to the row, the pool does not preserve the input order.
+# (file_id, path, width, height) — one OCR job. file_id keys the result back to the row:
+# the pool does not preserve the input order.
 OcrJob = tuple[int, str, int | None, int | None]
 
-# F73: the default ceiling for naming.ocr_workers. Each worker keeps its own Reader
-# (i.e. its own model copy in VRAM), so the default stays deliberately conservative —
-# a higher value is a measurement on real hardware, not a default that may knock over
-# a weak card.
+# F73: the default ceiling for naming.ocr_workers, and it is UNMEASURED ON PURPOSE. Each
+# worker keeps its own Reader, i.e. its own copy of the detector on the card, so what this
+# number protects is VRAM and only a run on the GPU profile can price it — a CPU run
+# prices a different machine, and a pool that cannot build its N-th Reader quietly shrinks
+# to the ones it built (see _OcrPool), so such a row measures a smaller pool than its label
+# says. The card was occupied throughout F164, which is when the question was asked.
 #
-# F164 went looking for that measurement, because `junk_ocr` is the most expensive phase
-# of the stage — 614,6 s over 6 793 frames on the live run of 2026-08-03, i.e. 90,5 ms a
-# frame and 15% of the whole run — and because the one number that does exist says the
-# ceiling was chosen too low: F73 measured x3,7 going from 1 to 4 workers, which is still
-# almost linear where it was capped.
-#
-# It did not raise the ceiling, and the reason is not the result but WHAT MAY BE MEASURED
-# ON WHAT. The resource this number protects is VRAM — a Reader per thread, i.e. a copy
-# of the detector on the card — so 6 and 8 workers are priced only by a run on the GPU
-# profile, where those copies are real and where a pool that cannot build its N-th Reader
-# quietly shrinks to the ones it built (see _OcrPool: such a row measures a smaller pool
-# than its own label says). The card was occupied by another process throughout F164, a
-# CPU run prices a different machine, and a default that ships to other people's hardware
-# is not moved on a table about the wrong resource.
-#
-# So the tool ships instead and the number waits for the run that earns it:
+# What is known says the ceiling is low rather than right: `junk_ocr` is the most expensive
+# phase of the stage (614,6 s over 6 793 frames on the live run of 2026-08-03 — 90,5 ms a
+# frame, 15% of the run), and F73 measured x3,7 from 1 to 4 workers, still almost linear
+# where it was capped. So the tool ships and the number waits for a free card:
 #
 #     python scripts/measure_ocr_workers.py --sample 500 --workers 1 4 6 8
 #
-# on a free card. It prints ms/frame, the speedup, the Readers actually built and the
-# VRAM peak per row, and it says in one line whether the ceiling moves: at least x1,15
-# over the current default with every Reader built. That is a one-line change here, with
-# its table under it. Lowering stays what it always was — a value in `naming.ocr_workers`,
-# which nothing here caps.
+# It prints ms/frame, the speedup, the Readers actually built and the VRAM peak, and says
+# in one line whether the ceiling moves: at least x1,15 with every Reader built. Lowering
+# stays a value in `naming.ocr_workers`, which nothing here caps.
 _DEFAULT_OCR_WORKERS_CAP = 4
 
 
 def resolve_ocr_workers(raw: dict | None) -> int:
     """How many OCR threads run in parallel — `naming.ocr_workers` in config.yaml.
 
-    Read straight out of `cfg.raw`, the way hashing.resolve_workers reads
-    `index.workers`: no typed field is added to NamingConfig for it. Default
-    min(4, cpu_count) — see _DEFAULT_OCR_WORKERS_CAP on why it is that low.
-    Absent / 0 / negative / garbage -> the default; the result is always >= 1.
+    Read straight out of `cfg.raw`, the way hashing.resolve_workers reads `index.workers`.
+    Absent / 0 / negative / garbage -> min(4, cpu_count); see _DEFAULT_OCR_WORKERS_CAP on
+    why that is low.
     """
     default = min(_DEFAULT_OCR_WORKERS_CAP, os.cpu_count() or 1)
     workers = ((raw or {}).get("naming") or {}).get("ocr_workers")
@@ -983,22 +547,17 @@ def resolve_ocr_workers(raw: dict | None) -> int:
 class _OcrPool:
     """text_frac over a pool of worker threads, one own detector per thread (F73).
 
-    Worker threads are long-lived (they outlive a chunk) and pull jobs from a shared
-    queue. Every worker builds its OWN detector on its first job — lazily, once,
-    thread-local — and reuses it for every later frame and every later chunk: loading
-    an easyocr Reader is expensive, building one per frame would cost far more than
-    the detection it does. Nothing is shared between workers.
+    Workers outlive a chunk and pull from a shared queue. Each builds its OWN detector on
+    its first job — lazily, thread-local, reused for every later chunk, because loading an
+    easyocr Reader costs far more than the detection it then does.
 
-    VRAM degradation: if a worker cannot build its detector (typically no memory left
-    for the second and further Readers), the stage does NOT crash — the pool shrinks
-    to the detectors actually created (in the limit a single worker), the job goes
-    back into the queue for a surviving worker, and the reason is logged. No silent
-    fallback: it is exactly on such silence that the reason for a VLM refusal was
-    lost once (F37-B lesson). If not a single detector can be built, text_frac()
-    re-raises the build error — an unbuildable detector was a stage error before F73
-    too.
+    VRAM degradation: a worker that cannot build its detector (typically no memory for the
+    second and further Readers) does not kill the stage — the pool shrinks to the detectors
+    actually created, the job goes back to a surviving worker, and the reason is LOGGED
+    rather than swallowed (the F37-B lesson: a silent refusal is a refusal nobody can
+    price). With not one detector buildable, text_frac() re-raises the build error.
 
-    Results are returned to the caller's thread; nothing here touches SQLite.
+    Results come back on the caller's thread; nothing here touches SQLite.
     """
 
     def __init__(self, factory: TextFracDetectorFactory, workers: int) -> None:
@@ -1024,10 +583,9 @@ class _OcrPool:
     def text_frac(self, jobs: list[OcrJob]) -> dict[int, float | None]:
         """text_frac for `jobs`, keyed by file_id; returns on the caller's thread.
 
-        A detector error on one frame becomes None for that file_id ("no signal" —
-        the gate/rescue leaves the verdict alone) and does not affect its neighbours,
-        the same contract the try/except around reader.detect has always given.
-        A file_id missing from the result also means "no signal".
+        A detector error on one frame is None for that file_id — "no signal", the verdict
+        is left alone — and does not touch its neighbours. A missing file_id means the
+        same.
         """
         if not jobs:
             return {}
@@ -1052,9 +610,8 @@ class _OcrPool:
     def _detector(self) -> TextFracDetector | None:
         """The calling thread's detector, built on first use; None -> leave the pool.
 
-        The slot is reserved under the lock but the factory runs outside it: loading
-        several Readers in parallel is fine, and serializing it would only delay the
-        start of the stage.
+        The slot is reserved under the lock but the factory runs outside it: several
+        Readers may load in parallel, and serializing that would only delay the stage.
         """
         det: TextFracDetector | None = getattr(self._local, "det", None)
         if det is not None:
@@ -1153,9 +710,9 @@ def _resolve_detector_factory(
 ) -> TextFracDetectorFactory:
     """The factory the OCR pool builds its per-thread detectors with (F73).
 
-    An explicitly injected `text_detector` (a mock in tests, a caller with its own
-    detector) is handed to every worker as it is — how it copes with threads is then
-    the caller's business. Otherwise each worker builds its own easyocr detector.
+    An injected `text_detector` is handed to every worker as it is — how it copes with
+    threads is then the caller's business. Otherwise each worker builds its own easyocr
+    detector.
     """
     if text_detector is not None:
         return lambda: text_detector
@@ -1175,10 +732,8 @@ def _product_score(probs_row: np.ndarray) -> float:
 
 
 def _polygon_area(points: list) -> float:
-    """Polygon area by the shoelace formula.
-
-    easyocr boxes are quadrilaterals (slanted text is not a rectangle).
-    """
+    """Polygon area by the shoelace formula — easyocr boxes of slanted text are not
+    rectangles."""
     n = len(points)
     area = 0.0
     for i in range(n):
@@ -1193,36 +748,28 @@ def easyocr_text_frac_detector(
 ) -> TextFracDetector:  # pragma: no cover — ML, smoke test
     """easyocr (the CRAFT detector) — the fraction of frame area under text boxes.
 
-    Lazy-import: the junk module is imported without easyocr (like faces with
-    insightface). The Reader is built once and reused for the whole classify() run.
+    Lazy-import, and the Reader is built once for the whole classify() run.
 
-    F38: decode via imaging (not reader.detect(path) — cv2 silently does not read
-    non-ASCII paths and HEIC, the frame dropped out of the OCR signal) + downscale to
-    maxpx before detect() (a full-size decode — seconds/frame on large photos).
-    The box area is computed RELATIVE to the downscaled frame.
+    F38: decoded through imaging and NOT by `reader.detect(path)` — cv2 silently fails to
+    read non-ASCII paths and HEIC, and those frames dropped out of the OCR signal
+    altogether. The box area is relative to the downscaled frame.
     """
     import easyocr
 
     from .diagnostics import warn_if_gpu_mismatch
 
-    # F63: easyocr(gpu=True) silently falls back to the CPU when torch is a CPU-only
-    # build (verbose=False also hides easyocr's own "Using CPU" notice) — surface it.
+    # F63: easyocr(gpu=True) falls back to the CPU on a CPU-only torch build, and
+    # verbose=False below hides easyocr's own notice about it — so it is surfaced here.
     warn_if_gpu_mismatch()
-    # verbose=False: suppresses the model-download progress bar (the █ / █ char),
-    # which crashes the Windows cp1251 console (UnicodeEncodeError). The download
-    # proceeds silently; the detector itself does not change from this.
+    # verbose=False: the model-download progress bar draws a █, which the Windows cp1251
+    # console cannot encode (UnicodeEncodeError). The download itself is unaffected.
     reader = easyocr.Reader(["en"], gpu=True, verbose=False)
 
     def text_frac(path: str, width: int | None, height: int | None) -> float | None:
-        # F40: decode DIRECTLY at a reduced resolution (max_edge) — JPEG draft gives
-        # a DCT downscale without a full decode (for large JPEGs — the main perf win);
-        # decode_rgb finishes with a thumbnail down to max_edge, no separate one
-        # needed. HEIC does not support draft (full decode), but detect still runs on
-        # the shrunk frame.
-        # F67: the frame now comes from the shared preview cache — the F48 aggressive
-        # draft margin is no longer needed on this path (a 1536px preview is already
-        # small, there is nothing left for draft to save). mtime/size for the cache
-        # key come from a local stat: the TextFracDetector signature stays as it is.
+        # F67: the frame comes from the shared preview cache, which is why the F48
+        # aggressive draft margin is gone from this path — a 1536px preview leaves draft
+        # nothing to save. mtime/size come from a local stat, so the TextFracDetector
+        # signature stays as it is.
         try:
             st = os.stat(path)
         except OSError:
@@ -1230,9 +777,9 @@ def easyocr_text_frac_detector(
         img = imaging.decode_rgb_preview(path, st.st_mtime, st.st_size, max_edge=maxpx)
         if img is None:
             return None  # could not decode (corrupt/unrecognized file)
-        # detect() — box DETECTION only, without text recognition: for density the
-        # areas are enough, and the easyocr recognition path fails on degenerate
-        # crops (cv2.resize !ssize.empty). Faster and does not load the recognition model.
+        # detect() and not readtext(): the areas are all the density needs, the
+        # recognition model is never loaded, and the recognition path fails on degenerate
+        # crops (cv2.resize !ssize.empty).
         try:
             horizontal, free = reader.detect(np.asarray(img))
         except Exception as exc:  # noqa: BLE001 — one bad frame must not break the stage
@@ -1252,15 +799,13 @@ def easyocr_text_frac_detector(
     return text_frac
 
 
-# F37 (Phase B): VLM 3-way classify_media(path) -> label; mapping to verdict
-# below. An unrecognized model answer -> 'personal_photo' (conservative, the same
-# principle as everywhere in junk.py — better to let a document/product through as
-# a photo than to lose a real photo).
+# F37 (Phase B): VLM 3-way classify_media(path) -> label, mapped to a verdict below. An
+# unrecognized answer is 'personal_photo' — the rule everywhere in this file: letting a
+# document through as a photo costs less than losing a real photo.
 VlmClassifyFn = Callable[[str], str]
 
-# F101: the label a frame gets without asking the model at all — it did not exist on
-# disk any more, or did not decode. Conservative by the rule above, and unchanged from
-# when these two returns sat inline in classify_media.
+# F101: the label a frame gets without the model being asked at all — it is gone from
+# disk, or it did not decode. Conservative by the same rule.
 _VLM_FALLBACK_LABEL = "personal_photo"
 
 _VLM_LABEL_TO_VERDICT: dict[str, str] = {
@@ -1269,10 +814,8 @@ _VLM_LABEL_TO_VERDICT: dict[str, str] = {
     "product": "product",
 }
 
-# F95: the model name and its input size describe the MODEL, not this stage, and the
-# naming stage now runs the same weights. F102 finished that thought — they are the
-# `vlm:` config section, and these two are only the defaults for a caller that has no
-# config in hand (a measurement, a test).
+# F95/F102: the model name and its input size describe the MODEL and live in the `vlm:`
+# config section; these two are only the defaults for a caller with no config in hand.
 _DEFAULT_VLM_MODEL = DEFAULT_VLM_MODEL
 _DEFAULT_VLM_MAX_EDGE = VLM_MAX_EDGE
 
@@ -1280,39 +823,29 @@ _DEFAULT_VLM_MAX_EDGE = VLM_MAX_EDGE
 # itself, which the parser below would then have to wade through.
 _VLM_MAX_NEW_TOKENS = 8
 
-# F196: the `product` line names an item HELD IN A HAND. The old wording narrowed itself
-# — `isolated object, catalog shot` — and a hand holding the thing fell into `everyday
-# life` instead. That is not a guess about the model: the owner labelled 20 misses against
-# a list of reasons fixed BEFORE the frames were opened, and it came out `narrow` 17 (85%),
-# `borderline` 3 (15%), `feature_missing` 0, `other` 0. Nothing needed the `other` bucket,
-# so the shape of the miss is named rather than approximated.
+# F196: the `product` line names an item HELD IN A HAND. The old wording narrowed itself —
+# `isolated object, catalog shot` — and a hand holding the thing fell into `everyday life`.
+# The owner labelled 20 misses against a list of reasons fixed BEFORE the frames were
+# opened: `narrow` 17 (85%), `borderline` 3 (15%), `feature_missing` 0, `other` 0.
 #
-# What the wider question buys and what it costs, measured on 2026-08-05 over 733 frames
-# the model had ALREADY been asked about (a prompt edit does not move the gate, so the
-# selection layer was left out of the measurement), counted by layer and weighted by
-# population:
+# What the wider question buys and costs, measured on 2026-08-05 over 733 frames the model
+# had ALREADY been asked about (a prompt edit does not move the gate, so the selection
+# layer was left out), counted by layer and weighted by population:
 #
 #     wording                precision   recall   marked
 #     narrow (before)            78%       80%    ~2 107
 #     this one (after)           75%       94%    ~2 604
 #
-# +14 points of recall for -3 of precision: ~290 more products found, at the price of ~190
-# frames in the product folder that do not belong there. Whoever clarifies this wording
-# next needs both halves of that in hand — the previous clarification WAS measured, and
-# three points of precision are what it spent.
+# ~290 more products found for ~190 frames in the product folder that do not belong there.
+# Whoever clarifies this wording next needs both halves of that: the previous clarification
+# WAS measured, and three points of precision are what it spent. `personal_photo` and
+# `document` are word for word what they were — the measurement priced ONE edit.
 #
-# `personal_photo` and `document` are word for word what they were, deliberately: the
-# measurement priced ONE edit, and moving two lines at once would have made it inapplicable
-# to either.
-#
-# An edit here does not invalidate a stored verdict by itself. The deep tier's
-# incrementality marker is `media_class.tier = 'vlm'` (F68) and it carries no fingerprint of
-# the question — unlike `frame_quality.source`, which does (F120,
-# `quality_prompt_fingerprint`). So a collection that already has verdicts keeps the ones
-# the narrow wording produced until its rows are reprocessed: a run on the fast tier moves
-# every marker to `clip`, and the next `--deep` run asks the model again. ~6 901 candidates
-# ≈ 90 minutes, once. The permanent cost does not move — the same frames are asked, the
-# question is merely a little longer.
+# TRAP: an edit here invalidates nothing by itself. The deep tier's marker is
+# `media_class.tier = 'vlm'` (F68) and carries no fingerprint of the question, unlike
+# `frame_quality.source` (F120), so a collection keeps the verdicts the old wording
+# produced until a fast-tier run moves every marker to `clip` and a `--deep` run asks
+# again: ~6 901 candidates ≈ 90 minutes, once.
 _VLM_PROMPT = (
     "Classify this image into exactly one category: personal_photo, document, "
     "or product.\n"
@@ -1331,10 +864,9 @@ _VLM_PROMPT = (
 class PreparedFrame:
     """What the CPU half of the deep tier produces for one frame (F101).
 
-    Either model `inputs` (the frame decoded and preprocessed, waiting for the GPU) or
-    a ready `label` — a frame that vanished or would not decode never reaches the
-    model, exactly as in the serial classifier, and carrying that answer through the
-    pipeline keeps the GPU half free of file-system branches.
+    Either model `inputs` or a ready `label`: a frame that vanished or would not decode
+    never reaches the model, and carrying its answer through the pipeline keeps the GPU
+    half free of file-system branches.
     """
     inputs: Any = None
     label: str | None = None
@@ -1344,9 +876,9 @@ class PreparedFrame:
 class SplitVlmClassifier:
     """classify_media(path) as its CPU half and its GPU half (F101).
 
-    It IS a VlmClassifyFn (calling it does both halves in turn, which is the serial
-    classifier), so nothing that only knows the old interface has to change. The deep
-    tier checks for this type to decide whether the pass can be pipelined at all.
+    It IS a VlmClassifyFn — calling it runs both halves in turn, which is the serial
+    classifier — so nothing that knows only the old interface changes. The deep tier
+    checks for this type to decide whether a pass can be pipelined at all.
     """
     prepare: Callable[[str], PreparedFrame]
     classify_prepared: Callable[[PreparedFrame], str]
@@ -1368,16 +900,13 @@ def vlm_classifier_from(describe: Callable[[Sequence[Image.Image], str, int], st
                         max_edge: int = _DEFAULT_VLM_MAX_EDGE) -> VlmClassifyFn:
     """The stage's classifier over an ALREADY LOADED runtime — the halves included.
 
-    Everything that belongs to this stage lives here: the prompt, the decode and the
-    parsing of the answer. Decode — via imaging.decode_rgb_preview (Unicode/HEIC-safe,
-    the Phase A/F38 lesson; F67: through the shared preview cache), downscale to
-    max_edge before feeding the model.
+    Everything that belongs to this stage lives here: the prompt, the decode (through the
+    shared preview cache, Unicode/HEIC-safe — the F38 lesson) and the parsing.
 
-    F101: when the runtime offers its halves (naming.SplitVlm) so does the classifier —
-    `prepare` is the whole CPU part of a frame (decode + the processor), which is what
-    the pipeline in _vlm_labels moves off this thread, and `classify_prepared` is the
-    GPU part plus the label parsing. A runtime without the halves gets the plain
-    serial classifier, unchanged.
+    F101: a runtime that offers its halves (naming.SplitVlm) gets a classifier that does
+    too — `prepare` is the CPU part of a frame, which `_vlm_labels` moves off this thread,
+    `classify_prepared` is the GPU part plus the parsing. Without them, the serial
+    classifier, unchanged.
     """
     split = describe if isinstance(describe, SplitVlm) else None
 
@@ -1418,12 +947,9 @@ def qwen_vlm_classifier(
 ) -> VlmClassifyFn:  # pragma: no cover — ML, smoke test
     """The real VLM classifier (Qwen2.5-VL via transformers).
 
-    F95: the weights are no longer loaded here — naming.shared_vlm hands out ONE
-    runtime per model name for the whole process, because the naming stage now runs
-    the same model and a second copy does not fit in VRAM (peak 20.5 GB). The load is
-    still lazy (transformers is imported inside the loader) and still fails only when
-    the classifier is actually built — which the caller in classify() wraps in
-    try/except for a graceful fallback to the fast tier.
+    F95: the weights come from naming.shared_vlm — ONE runtime per model name for the
+    whole process. The load is lazy and still fails only when the classifier is actually
+    built, which classify() wraps for its graceful fallback to the fast tier.
     """
     return vlm_classifier_from(shared_vlm(model_name), max_edge=max_edge)
 
@@ -1431,9 +957,9 @@ def qwen_vlm_classifier(
 def qwen_vlm_classifier_factory(max_edge: int) -> Callable[[str], VlmClassifyFn]:
     """The default `vlm_classifier_factory` of classify(), carrying `vlm.max_edge` (F102).
 
-    The factory interface stays (model_name) -> classifier — tests inject their own, and
-    widening it would make every one of them care about a number they do not use — so
-    the configured input size travels in the closure instead.
+    The interface stays (model_name) -> classifier and the input size travels in the
+    closure: widening it would make every injected test factory carry a number it does
+    not use.
     """
     return lambda model_name: qwen_vlm_classifier(model_name, max_edge=max_edge)
 
@@ -1442,21 +968,16 @@ def _vlm_labels(vlm_fn: VlmClassifyFn, paths: list[str],
                 workers: int) -> Generator[str | BaseException, None, None]:
     """Labels for `paths` IN INPUT ORDER, pipelined when that is possible (F101).
 
-    Yields one item per path, in the order given: the label, or the exception the
-    classifier raised on that frame (the caller logs it and keeps the fast verdict —
-    the same contract the try/except around vlm_fn(path) has always had, only the
-    raising moved).
+    One item per path: the label, or the exception the classifier raised on that frame
+    (the caller logs it and keeps the fast verdict).
 
-    The pipeline needs both halves from the runtime (SplitVlmClassifier) and more than
-    one worker; anything else — an injected test classifier, a runtime without halves,
+    The pipeline needs both halves from the runtime (SplitVlmClassifier) and more than one
+    worker; anything else — an injected test classifier, a runtime without halves,
     vlm_workers=1 — takes the serial path, which is the pre-F101 loop verbatim.
 
-    F206: `paths` are not always the deep tier's, and an item is not always a label. The
-    two questions of the back half (the animal check, the rescue) come through here with
-    the same contract — one item per path, in the order given, an exception where the
-    model raised — because what they need is exactly what this function does and a second
-    copy of it would be a second place for the order to go wrong. What an item MEANS is
-    the caller's business: the tier reads a label, the askers read a raw answer.
+    F206: all three questions of the stage come through here, because a second copy would
+    be a second place for the order to go wrong. What an item MEANS is the caller's
+    business: the tier reads a label, the askers read a raw answer.
     """
     split = vlm_fn if isinstance(vlm_fn, SplitVlmClassifier) else None
     if split is None or workers < 2:
@@ -1473,16 +994,14 @@ def _vlm_labels_pipelined(split: SplitVlmClassifier, paths: list[str],
                           workers: int) -> Generator[str | BaseException, None, None]:
     """`workers` threads preparing frames while this thread runs the model on them.
 
-    A FIFO of futures, not "first finished wins": the frame whose future is at the head
-    is the next one yielded, so the output order is the input order no matter how the
-    preparations interleave. The GPU half runs HERE, on the consumer's thread — one
-    stream of generate() calls, as before; several would only queue up inside the
-    driver and cost VRAM.
+    A FIFO of futures, not "first finished wins": the frame at the head is the next one
+    yielded, so the output order is the input order however the preparations interleave.
+    The GPU half runs HERE, on the consumer's thread — several streams of generate() would
+    only queue inside the driver and cost VRAM.
 
-    The window (2 per worker) is the RAM bound the brief asks for: at most that many
-    preprocessed frames exist at once, and they are CPU tensors (naming.qwen_runtime
-    keeps them off the card), so the VRAM peak is one frame's inputs — what it was when
-    the pass was serial.
+    The window (2 per worker) is the RAM bound: at most that many preprocessed frames
+    exist at once, and they are CPU tensors (naming.qwen_runtime), so the VRAM peak is one
+    frame's inputs — what it was when the pass was serial.
     """
     from collections import deque
     from concurrent.futures import Future, ThreadPoolExecutor
@@ -1519,10 +1038,9 @@ def heuristic_verdict(
 ) -> str | None:
     """A screenshot candidate without ML; None — the heuristic is silent (= photo).
 
-    The only signal (brief F13): an explicit Screenshot_/"снимок экрана" name.
-    Screen-ratio (3:4/4:3 — the usual proportions of phone photos) and
-    messenger-name→meme (a forwarded photo is often a real one) were removed — they
-    were the main FP source on real family photos.
+    The only signal (brief F13): an explicit Screenshot_/"снимок экрана" name. Screen
+    ratio (3:4/4:3) and messenger-name→meme were REMOVED — they were the main FP source
+    on real family photos.
     """
     if camera_make or camera_model:
         return None  # shot with a camera — not junk
@@ -1533,12 +1051,11 @@ def heuristic_verdict(
 
 
 def _is_real_photo(row: sqlite3.Row) -> bool:
-    """Camera EXIF/GPS or the presence of detected faces — a veto against CLIP.
+    """Camera EXIF/GPS or a detected face — a veto against a CLIP verdict.
 
-    Messengers strip EXIF from forwarded photos, so camera/GPS alone do not protect
-    real photos without metadata (brief F13) — a face in the photo is an equally
-    reliable "this is not a document/meme/screenshot" sign, added as a third veto
-    condition. Used against false CLIP verdicts.
+    Messengers strip EXIF from forwarded photos, so camera/GPS alone do not protect real
+    photos without metadata (brief F13); a face is an equally reliable "not a
+    document/meme/screenshot", which is why it is the third condition.
     """
     return bool(
         row["camera_make"] or row["camera_model"]
@@ -1546,21 +1063,18 @@ def _is_real_photo(row: sqlite3.Row) -> bool:
     )
 
 
-# F90: the fast-tier verdict and the OCR gate, lifted out of the classify() loop.
-# The gate is priced by scripts/measure_ocr_gate.py, which sweeps
-# text_rescue_docscore_min over a grid — and a measurement is only worth anything if
-# it replays the decision the pipeline actually makes. A second copy of these three
-# branches in the script would drift from this one and quietly price the wrong gate,
-# so both call the same functions. classify() behaves exactly as before.
+# F90: the fast-tier verdict and the OCR gate, lifted out of the classify() loop so that
+# scripts/measure_ocr_gate.py can sweep the real decision. A second copy of these three
+# branches in the script would drift from this one and price a gate the pipeline does not
+# have.
 
 
 @dataclass(frozen=True)
 class GateSettings:
     """The thresholds the CLIP verdict and the OCR gate/rescue are built from.
 
-    Read through getattr with the module defaults (see the F37/F38 constants above):
-    the fields appeared in NamingConfig later than the code reading them, and the
-    getattr pattern is what junk.py has always used for them.
+    Read through getattr with the module defaults (see the F37/F38 constants above): the
+    fields appeared in NamingConfig later than the code reading them.
     """
     junk_threshold: float
     document_threshold: float
@@ -1588,12 +1102,9 @@ def clip_verdict(best_class: str, best_score: float, heuristic: str | None,
                  g: GateSettings) -> tuple[str, float]:
     """The verdict of one frame BEFORE the OCR signal -> (verdict, score).
 
-    The order of the branches is the contract, not a detail: an explicit
-    Screenshot_/"снимок экрана" name wins over everything (F22), then a
-    high-confidence document-CLIP — BEFORE the camera/GPS/faces veto, because a
-    photographed document carries camera EXIF (F15), then the veto (F13), then the
-    junk classes. `doc_score` is None for frames with faces: the document pass is not
-    run for them at all.
+    The order of the branches is the contract, not a detail — see the module docstring
+    for why each one sits where it does. `doc_score` is None for frames with faces: the
+    document pass is not run for them at all.
     """
     if heuristic == "screenshot":
         return "screenshot", best_score
@@ -1610,12 +1121,10 @@ def ocr_gate_open(has_faces: bool, verdict: str, doc_score: float,
                   rescue_docscore_min: float) -> bool:
     """Does this frame cost an OCR call? (F37 Phase A + the F38 doc-score gate.)
 
-    `rescue_docscore_min` is a parameter rather than a field of GateSettings because
-    F90 sweeps exactly this number over a grid to price the gate; classify() passes
-    the configured one. The rest is the F38 condition unchanged: OCR only for the
-    document<->photo pair, never for frames with faces, and the FP gate
-    (verdict=='document') is not limited by the threshold — there are few documents
-    anyway, and letting one through is the expensive error.
+    `rescue_docscore_min` is a parameter and not a field of GateSettings because F90
+    sweeps exactly this number over a grid. The FP gate (verdict=='document') is
+    deliberately NOT limited by it: there are few documents anyway, and letting one
+    through is the expensive error.
     """
     return not has_faces and (
         verdict == "document"
@@ -1633,32 +1142,32 @@ def apply_text_frac(verdict: str, score: float, text_frac: float | None,
     """
     if text_frac is not None:
         if verdict == "document" and text_frac < g.text_frac_min:
-            # FP gate: CLIP is sure it is "document", but there is almost no text —
-            # a scene (beach), not a document.
-            return "photo", text_frac, "ocr"
+            return "photo", text_frac, "ocr"        # a beach, not a document
         if verdict == "photo" and text_frac >= g.text_frac_document:
-            # FN rescue: dense text over the whole frame — a document, even if the
-            # CLIP score was low.
-            return "document", text_frac, "ocr"
+            return "document", text_frac, "ocr"     # dense text, whatever CLIP scored
     return verdict, score, "clip"
 
 
 # --- F113: the frame-quality cascade ------------------------------------------------
 #
-# Three questions, three prices. Sharpness is a laplacian over the preview every other
-# stage has already paid for (milliseconds, no toggle, written always). Pets are a prompt
-# group inside the CLIP call above (free, `features.pets`). Everything left — since F177
-# that is the eyes and nothing else — is a VLM at ~0.78 s per frame, so it is asked ONLY
-# about the frames the cheap tiers did not settle (`vlm.quality`).
-#
-# The population rule is the F109 result put to use: sending the model the least confident
-# 30% of frames kept 98.2% of the findings. There it was worthless because the probe
-# learned from the model's own labels (a closed circle); CLIP has no such circle — it
-# labels without being trained on anything of ours.
+# Three questions, three prices: sharpness is a laplacian over the preview every other
+# stage has already paid for (no toggle, written always), pets are a prompt group inside
+# the CLIP call above (`features.pets`), and what is left is a VLM at ~0.78 s a frame,
+# asked only about frames the cheap tiers did not settle. The band that selects them is the
+# F109 result put to use — the least confident 30% of frames kept 98.2% of the findings.
 
-# F155: one box of the `faces` table, as it is written there — (x1, y1, x2, y2) in pixels
-# of the FULL original frame, after its EXIF orientation has been applied (the faces stage
-# detects on a rotated full-resolution decode, see faces._decode_for_faces).
+# F155: one box of the `faces` table, as written there — (x1, y1, x2, y2) in pixels of the
+# FULL original frame, after its EXIF orientation has been applied (that stage detects on a
+# rotated full-resolution decode, see faces._decode_for_faces).
+#
+# TRAP, and it will look like a bug of this file. F178 reports that on a frame with EXIF
+# orientation 6 the faces stage decodes through `cv2.imdecode` (which has already applied
+# the rotation) and rotates a SECOND time, so the box is written in a sideways frame while
+# everything here works in the upright one. If that holds, every box on a rotated
+# photograph lands wrong for `face_sharpness` and `eye_openness` alike, and has since F155.
+# It is a finding about the faces stage, out of this file's bounds, and
+# scripts/measure_eye_state.py counts how often a stored box matches a fresh detection
+# («легли на бокс») so that whoever owns it starts from a number.
 FaceBox = tuple[float, float, float, float]
 
 
@@ -1667,15 +1176,12 @@ class FaceBoxes:
     """The faces of one frame, plus the frame their coordinates are measured in.
 
     `long_edge` is what makes the boxes usable at all: they are written in pixels of the
-    ORIGINAL, and the laplacian is taken over a preview that is a small copy of it, so
-    without the size of the original there is no way back from one to the other. It is the
-    longer side (max of `files.width/height`) rather than the pair, because a thumbnail
-    scales both axes by one factor and the longer side is the axis that factor is set by —
-    and because the longer side is the one quantity of the two that an EXIF rotation
-    cannot swap.
+    ORIGINAL and read over a preview. The longer side rather than the pair, because a
+    thumbnail scales both axes by one factor and the longer side is both the axis that
+    factor is set by and the one quantity an EXIF rotation cannot swap.
 
-    Empty is the ordinary case, not an error: two thirds of a collection have no face, and
-    a frame the faces stage has never seen is empty here in exactly the same way.
+    Empty is the ordinary case: two thirds of a collection have no face, and a frame the
+    faces stage has never seen is empty here in the same way.
     """
     boxes: tuple[FaceBox, ...] = ()
     long_edge: float = 0.0
@@ -1693,21 +1199,20 @@ NO_FACES = FaceBoxes()
 class Sharpness:
     """What ONE decode of a frame's preview yields (F155, F179).
 
-    The three numbers are returned together because they are measured together: the face
-    laplacian is the same variance taken over a crop of the very same array, the eye
-    opening is fitted to a face box on it, and computing either in a pass of its own would
-    decode every frame in the collection a second time for pixels that are already in
-    memory.
+    Three numbers together because they are measured together — the face laplacian is the
+    same variance over a crop of the same array, the eye opening is fitted to a box on it
+    — and a pass of its own for either would decode the whole collection a second time for
+    pixels already in memory.
 
-    None means NOT MEASURED, the `frame_quality` rule: the frame did not decode (`frame`),
-    or it has no face, no faces run behind it, or a crop too small to measure (`face`,
-    `eyes` — the latter also when the 106-point model is not available at all).
+    None means NOT MEASURED, the `frame_quality` rule: the frame did not decode, or it has
+    no face, no faces run behind it, a crop too small to measure, or (for `eyes`) no
+    106-point model on this machine.
     """
     frame: float | None = None
     face: float | None = None
     # F179: the eye opening over the eye width of the LARGEST face, small = closed. Named
-    # apart from the two above because it is not a laplacian and is not on their scale;
-    # it rides here because it rides on their decode.
+    # apart because it is not a laplacian and not on their scale; it rides here because it
+    # rides on their decode.
     eyes: float | None = None
 
 
@@ -1724,13 +1229,11 @@ QUALITY_SOURCE_VLM = "vlm"           # + the model answers about a candidate lis
 def laplacian_variance(img: Image.Image) -> float | None:
     """Variance of the 4-neighbour laplacian of a grayscale frame — the blur signal.
 
-    The classic measure and deliberately the plain one: a blurred frame has little
-    high-frequency energy, so the second derivative barely moves and its variance
-    collapses. Computed with numpy rather than cv2 (which this project does not import)
-    over the interior pixels only — the border has no full neighbourhood.
+    numpy rather than cv2 (which this project does not import), over the interior pixels
+    only — the border has no full neighbourhood.
 
-    None for a frame too small to have an interior: nothing to measure, and 0.0 would be
-    read as "completely flat", which is a different statement.
+    None for a frame too small to have an interior: 0.0 would be read as "completely
+    flat", which is a different statement.
     """
     a = np.asarray(img.convert("L"), dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3 or a.shape[1] < 3:
@@ -1741,11 +1244,9 @@ def laplacian_variance(img: Image.Image) -> float | None:
 
 
 # F155: the shortest side a crop may have before the laplacian over it stops meaning
-# anything. In PREVIEW pixels, because that is the array the variance is taken over: at
-# `sharpness_max_edge` = 512 a 24 px box is a face occupying ~5% of the frame's width, and
-# below that the crop is a few hundred pixels of mostly sensor noise. Such a frame gets
-# NULL rather than the number — "not measured", never a small value that would sort it to
-# the top of a blur list it was never measured for.
+# anything, in PREVIEW pixels. At `sharpness_max_edge` = 512 a 24 px box is a face over
+# ~5% of the frame's width; below that the crop is mostly sensor noise. Such a frame gets
+# NULL — never a small value, which would sort it to the top of a blur list.
 FACE_CROP_MIN_PX = 24
 
 
@@ -1753,21 +1254,17 @@ def face_crop_boxes(faces: FaceBoxes, size: tuple[int, int],
                     min_px: int = FACE_CROP_MIN_PX) -> list[tuple[int, int, int, int]]:
     """Face boxes rescaled from the ORIGINAL frame into preview pixels, clamped to it.
 
-    THE RESCALING IS THE FEATURE, not a detail of it. `faces.bbox` is written in
-    coordinates of the full original — ArcFace embeds out of it — while the laplacian is
-    taken over a preview of a few hundred pixels, so a box used as written falls outside
-    the array it is supposed to index. That is not a hypothetical: the measurement this
-    feature is built on made exactly that mistake, 39 of its 68 crops fell off the frame
-    and were dropped, and the 29 that survived reported 100% recall instead of the real
-    62%. A broken crop does not fail loudly — it flatters the result.
+    THE RESCALING IS THE FEATURE. `faces.bbox` is written in coordinates of the full
+    original while the laplacian is taken over a preview of a few hundred pixels, so a box
+    used as written falls off the array it is meant to index — and it does not fail
+    loudly, it FLATTERS: the F155 measurement made exactly that mistake, 39 of its 68
+    crops were dropped, and the surviving 29 reported 100% recall instead of the real 62%.
 
-    Clamping is the second half of the same guard: a box may legitimately run a pixel or
-    two past the edge (a face at the border, rounding in the scale), and a crop is taken
-    of the part that is inside rather than not at all.
+    Clamping is the other half of that guard: a box may legitimately run a pixel past the
+    edge, and the part that is inside is worth cropping.
 
-    Boxes below `min_px` on either side after scaling are left out — see FACE_CROP_MIN_PX.
-    A `faces` with no scale to it yields nothing, for the same reason: a box in unknown
-    units is not a box.
+    Boxes below `min_px` after scaling are left out (see FACE_CROP_MIN_PX), and a `faces`
+    with no scale to it yields nothing: a box in unknown units is not a box.
     """
     if not faces.usable:
         return []
@@ -1787,10 +1284,22 @@ def face_crop_boxes(faces: FaceBoxes, size: tuple[int, int],
 def face_crop_sharpness(img: Image.Image, faces: FaceBoxes) -> float | None:
     """The laplacian of the SHARPEST face on an already-decoded frame; None if none.
 
-    The sharpest and not the average, because of what the number is asked for: "was this
-    shot taken properly". One person in focus and another walking past out of it is a
-    photograph that worked, and an average would call it half-blurred. If any face in the
-    frame is sharp, the frame is.
+    F155: WHY A FACE AND NOT THE FRAME. The variance over a whole frame answers "how much
+    detail is in this picture", which is a different question from "is it in focus" — a
+    detailed sharp street and a smooth blurred face give the same number, blurred frames
+    sit in every band up to 400, and the filter caught 2 of 33 blurred frames on a
+    hand-checked sample of 200. A face is the one object whose content is roughly constant
+    from frame to frame, so the same variance means the same thing twice: on the 68 frames
+    of that sample that have a face (13 of them blurred), 62% recall at a threshold of 200
+    against 15% for the whole frame at 300, for a comparable number of frames flagged.
+
+    It RANKS AND DOES NOT JUDGE — ~25% precision at every threshold measured, over the
+    third of a collection that has a face at all — so `features.face_sharpness_max` orders
+    the blur list and nothing in this stage reads it.
+
+    The sharpest and not the average, because the question is "was this shot taken
+    properly": one person in focus and another walking past out of it is a photograph that
+    worked, and an average would call it half-blurred.
     """
     best: float | None = None
     for box in face_crop_boxes(faces, img.size):
@@ -1822,17 +1331,30 @@ def eye_openness(points: np.ndarray) -> float | None:
     """The eye opening over the eye width, from a ring of contour points.
 
     The two points furthest apart are the corners: they define the eye's own axis, and the
-    opening is the spread of the ring ACROSS that axis. Written this way the number does
-    not care how the head is tilted, nor in which order the model happens to list the ring
-    — the alternative, naming four indices as "upper lid" and "lower lid", is a promise
-    about a model file that a new release can quietly break.
+    opening is the spread of the ring ACROSS it. Written this way the number does not care
+    how the head is tilted nor in which order the model lists the ring — the alternative,
+    naming four indices "upper lid" and "lower lid", is a promise about a model file that
+    a new release can quietly break.
 
-    None when the ring is degenerate (fewer than three points, or all of them in one
-    place): "not measured", never a small number that would sort to the top of a list of
-    closed eyes it was never measured for.
+    F179 CHOSE ARITHMETIC OVER A MODEL, against the same 249 hand labels (F178,
+    scripts/measure_eye_state.py), for the ~948 frames — 15.6% of everything with a face —
+    the retired VLM question was about at 92 minutes a run:
 
-    Copied unchanged from the measurement this feature was decided by (F178,
-    scripts/measure_eye_state.py) — the numbers in `features.eye_openness_max` are this
+        way in                        threshold  precision  recall
+        the VLM (retired)                     —      60%       9%
+        eyelid geometry                    0.18      62%      48%
+        a classifier over the eye crop      0.9      46%      57%
+        CLIP over the eye crop              0.8      58%      49%
+
+    Five times the recall at slightly better precision, for no call at all; CLIP over the
+    same crop lost while costing a pass of a network the stage already runs. It RANKS AND
+    DOES NOT JUDGE — 62% precision — so `features.eye_openness_max` orders a window a
+    person walks past, and nothing here deletes or reclassifies by it.
+
+    None when the ring is degenerate (fewer than three points, or all in one place): "not
+    measured", never a small number that would sort to the top of a list of closed eyes.
+
+    Copied unchanged from that measurement — `features.eye_openness_max` holds this
     function's numbers, and a paraphrase would silently invalidate them.
     """
     if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] != 2:
@@ -1853,15 +1375,13 @@ def largest_face_box(faces: FaceBoxes,
                      size: tuple[int, int]) -> tuple[int, int, int, int] | None:
     """The biggest face of a frame, rescaled into preview pixels; None if there is none.
 
-    THE BIGGEST AND ONLY THE BIGGEST — the `largest` rule the measurement was run under.
-    A frame where a passer-by at the back has their eyes shut is not a portrait with closed
-    eyes, and reading every face would put it in the slice; the largest face is the one the
-    shot is about. (`face_sharpness` picks the sharpest face for the mirror-image reason:
-    each takes the face its own question is about.)
+    THE BIGGEST AND ONLY THE BIGGEST — the `largest` rule the F178 measurement was run
+    under. A passer-by at the back with their eyes shut is not a portrait with closed eyes,
+    and reading every face would put that frame in the slice. (`face_sharpness` takes the
+    SHARPEST face for the mirror-image reason: each rule takes the face its own question is
+    about.)
 
-    Rescaled through `face_crop_boxes`, so it inherits the guard that feature exists for —
-    the boxes are in pixels of the ORIGINAL and the preview is a small copy of it — and its
-    minimum size: a box too small there is not a face this can be fitted to.
+    Rescaled through `face_crop_boxes`, so it inherits that guard and its minimum size.
     """
     boxes = face_crop_boxes(faces, size)
     if not boxes:
@@ -1873,13 +1393,13 @@ def face_eye_openness(img: Image.Image, faces: FaceBoxes,
                       landmark: EyeLandmarkFn | None) -> float | None:
     """How open the eyes of the largest face on an already-decoded frame are; None if not.
 
-    The MORE CLOSED of the two eyes answers for the face, because that is the question the
-    slice asks — a frame where one eye is shut is a frame the person wants to look at — and
-    because a half-blink averaged with an open eye is nothing at all.
+    The MORE CLOSED of the two eyes answers for the face — a frame where one eye is shut is
+    a frame the person wants to look at, and a half-blink averaged with an open eye is
+    nothing at all.
 
-    None all the way down, never a small number: no face, no model, a model that answered
-    with something that is not 106 points, or a ring that came out degenerate. A wrong
-    small value would sort itself to the very top of a list ordered by "most closed first".
+    None all the way down, never a small number: no face, no model, an answer that is not
+    106 points, a degenerate ring. A wrong small value would sort itself to the very top of
+    a list ordered by "most closed first".
     """
     if landmark is None:
         return None
@@ -1902,36 +1422,23 @@ def preview_sharpness_detector(max_edge: int,
                                landmark: EyeLandmarkFn | None = None) -> SharpnessFn:
     """The real detector: the shared preview cache, at a FIXED resolution.
 
-    Fixed because the variance of the laplacian is scale-dependent — the same photo
-    measured at 512 and at 1536 px gives two different numbers, and a threshold over a
-    mixture of the two means nothing. `features.sharpness_max_edge` is that resolution;
-    changing it invalidates every threshold chosen against the old one.
+    Fixed because the variance of the laplacian is scale-dependent — the same photo at 512
+    and at 1536 px gives two different numbers, and a threshold over a mixture of the two
+    means nothing. Changing `features.sharpness_max_edge` invalidates every threshold
+    chosen against the old one. A vanished or undecodable file is None, "no signal".
 
-    Decoded grayscale straight away (the measure only looks at luma) and through
-    `decode_rgb_preview`, so the cost on any stage after the first is a small-JPEG decode,
-    not a decode of the original. A vanished or undecodable file is None — "no signal",
-    the same contract the OCR detector gives.
+    ONE decode, three numbers (F155, F179), and two properties of it are not obvious:
 
-    F155: ONE decode, two numbers — the whole frame and the sharpest face in it. The
-    orientation is applied here where it used to be left alone, because the face boxes are
-    written in the rotated space (faces._decode_for_faces) and the two have to be the same
-    space for the crop to land on the face. The frame number does not move under that: the
-    laplacian kernel is symmetric under every rotation and mirror an EXIF orientation can
-    express, and so is the set of interior pixels its variance is taken over. What is not
-    exactly symmetric is the RESAMPLE around it — scaling and then turning a frame is not
-    pixel-identical to turning and then scaling — and that is worth ~0.01% on a rotated
-    frame, against a band 270 units wide.
-
-    F179: a THIRD number off that same decode, and no third decode for it — the eye
-    openness of the largest face, fitted to the box the crop above is taken from. The one
-    thing it changes is the COLOUR of the decode: the 106-point contour was measured on a
-    colour preview (F178) and a grayscale one is not the input those numbers came from, so
-    a run with the model present asks for RGB and `laplacian_variance` converts to luma
-    itself. Both paths measure the luma of the SAME preview — libjpeg's grayscale output
-    against a YCbCr->RGB->luma round trip — and both weight the channels the same way, so
-    what is left is rounding: measured at 0.15% on noise and 0.12% on a photograph, against
-    a band 270 units wide. The F155 argument about the orientation, one step on. Without a
-    model (`landmark is None`) the decode is grayscale exactly as before.
+    * the EXIF ORIENTATION is applied, because the face boxes are written in the rotated
+      space (faces._decode_for_faces) and the crop has to land on the face. The
+      whole-frame number stands under it — the laplacian kernel and its interior are
+      symmetric under every rotation and mirror an orientation can express, and what the
+      resample leaves is ~0.01% on a rotated frame against a band 270 units wide;
+    * the decode is COLOUR when the eye model is there, grayscale when it is not. The
+      106-point contour was measured on a colour preview (F178), so a run with the model
+      asks for RGB and `laplacian_variance` takes the luma itself. Both paths measure the
+      luma of the same preview and weight the channels the same way; what is left is
+      rounding, 0.15% on noise and 0.12% on a photograph against that same band.
     """
     def sharpness(path: str, faces: FaceBoxes = NO_FACES) -> Sharpness:
         try:
@@ -1957,13 +1464,11 @@ def preview_sharpness_detector(max_edge: int,
 def lazy_eye_landmarks(build: Callable[[], EyeLandmarkFn]) -> EyeLandmarkFn:
     """The 106-point model, built on the FIRST face of a run and never before it.
 
-    Two runs must not pay for it: one over a collection with no faces in it (two thirds of
-    a typical archive have none, and a first run has no `faces` rows at all), and one on a
-    machine where the model cannot be built — the [faces] extra missing, no weights on
-    disk, a broken onnxruntime. The second is why a failure answers None for the rest of
-    the run instead of raising: the eye number is one column of `frame_quality`, and an
-    optional column must never take the stage that writes the other five down with it. The
-    reason is logged ONCE, not once per frame.
+    Two runs must not pay for it: one over a collection with no faces (two thirds of a
+    typical archive, and a first run has no `faces` rows at all), and one on a machine
+    where the model cannot be built. The second is why a failure answers None for the rest
+    of the run instead of raising — an optional column must not take down the stage that
+    writes the other five — and why the reason is logged ONCE, not once per frame.
     """
     state: dict[str, EyeLandmarkFn | None] = {}
 
@@ -1986,14 +1491,13 @@ def lazy_eye_landmarks(build: Callable[[], EyeLandmarkFn]) -> EyeLandmarkFn:
 def insightface_eye_landmarks() -> EyeLandmarkFn:  # pragma: no cover — ML
     """`2d106det` out of the buffalo_l set the faces stage already downloads.
 
-    NO NEW WEIGHTS: the 106-point model is 4.8 MB inside the set `sorta faces` has been
-    fetching since phase 3, and it is disabled there (`faces._ALLOWED_MODULES`) only
-    because that stage has nothing to do with it. The detector is loaded beside it because
-    insightface's FaceAnalysis insists on one, and it is never CALLED: the boxes come from
-    the `faces` table, which is the whole point of doing this inside the junk stage.
+    NO NEW WEIGHTS: 4.8 MB inside a set `sorta faces` has been fetching since phase 3, and
+    disabled there (`faces._ALLOWED_MODULES`) only because that stage has no use for it.
+    The detector loaded beside it is never CALLED — insightface's FaceAnalysis insists on
+    one — because the boxes come from the `faces` table.
 
-    The box arrives in preview pixels and the points come back in them, so nothing here
-    knows about the original frame — `largest_face_box` has already done that conversion.
+    The box arrives in preview pixels and the points come back in them: `largest_face_box`
+    has already done the conversion.
     """
     from insightface.app import FaceAnalysis
     from insightface.app.common import Face
@@ -2020,18 +1524,12 @@ def insightface_eye_landmarks() -> EyeLandmarkFn:  # pragma: no cover — ML
     return landmark
 
 
-# F186: the frame-quality prompt is gone, and with it the last of the three questions it
-# once carried. F122 measured the "accidental" one out (5% precision, and the frames the
-# model called DELIBERATE held twice that rate), F177 dropped "is there a subject" by
-# inspection (212 subjectless frames out of 6 111, all of them ordinary photographs), and
-# the eyes were the one left. F179 answered them without a model at all — the spread of an
-# eyelid contour the faces stage already fits — at 62% precision over 48% recall against
-# the model's 60% over 9% on the same 249 hand labels. The replacement shipped and the
-# question stayed behind it; this is where it is taken out.
-#
-# The three ANSWER COLUMNS stay and stay NULL. That is the same decision F122 and F177
-# already made for the other two: NULL is exactly what "not asked" means in that table,
-# and a documented empty column is cheaper than a rebuild of it.
+# F186: the frame-quality prompt is gone and so are all three of its questions. F122
+# measured the "accidental" one out (5% precision, and the frames the model called
+# DELIBERATE held twice that rate), F177 dropped "is there a subject" by inspection (212
+# subjectless frames of 6 111, all ordinary photographs), and F179 answered the eyes off
+# eyelid geometry instead. The three ANSWER COLUMNS stay and stay NULL: that is what "not
+# asked" means in that table, and a documented empty column is cheaper than a rebuild.
 _NON_WORD_RE = re.compile(r"[^a-z]+")
 
 
@@ -2040,25 +1538,16 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
                     max_new_tokens: int) -> Callable[[str], str]:
     """One prompt over one frame, over an ALREADY LOADED runtime (naming.shared_vlm).
 
-    The decode goes through the shared preview cache, Unicode/HEIC-safe, exactly as
-    everywhere else here; a frame that will not decode gets an empty answer, which parses
-    to "not asked".
-
     Shared by the two questions this stage still asks a frame (the pet check, F130; the
     rescue, F140) because they differ in the prompt and the token budget and in nothing
-    else — a second copy of the decode would be a second place for the cache key to go
-    wrong.
+    else. A frame that will not decode gets an empty answer, which both parsers read as
+    "not asked".
 
-    F206: and it comes back with its HALVES when the runtime has them, exactly like
-    `vlm_classifier_from` above. This used to be "deliberately the plain, serial path",
-    on the argument that these populations are a candidate list rather than a whole
-    collection and the pipeline would cost more reading than it saves seconds. The
-    argument was measured out of date by the run of 2026-08-05: 4 281 frames through
-    these two questions at 0.42 frames/s against the deep tier's pipelined 1.4, i.e.
-    116 minutes a run. The halves are what `_vlm_labels` needs to overlap the CPU half
-    of one frame with the GPU half of the previous one, and it is the same machinery,
-    the same window and the same order guarantee the deep tier has run on since F101 —
-    a question whose prompt, token budget and input size are untouched by any of it.
+    F206: it comes back with its HALVES when the runtime has them, like
+    `vlm_classifier_from` above, so `_vlm_labels` can overlap these two questions the way
+    it overlaps the tier's. This used to be the serial path on the argument that a
+    candidate list is too short to be worth pipelining; the run of 2026-08-05 measured
+    that out of date at 0.42 frames/s against the tier's 1.4.
     """
     def decode(path: str) -> Image.Image | None:
         try:
@@ -2080,9 +1569,8 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
 
     def prepare(path: str) -> PreparedFrame:
         img = decode(path)
-        # An empty answer IS the answer here (both parsers read it as "not asked"), so a
-        # frame that never reaches the model carries it through the pipeline as a ready
-        # label — the GPU half then stays free of file-system branches, as in the tier.
+        # An empty answer IS the answer, so a frame that never reaches the model carries it
+        # through as a ready label and the GPU half stays free of file-system branches.
         if img is None:
             return PreparedFrame(label="")
         return PreparedFrame(inputs=split.prepare([img], prompt))
@@ -2098,19 +1586,17 @@ def _frame_question(describe: Callable[[Sequence[Image.Image], str, int], str],
 # --- F130: the pet check --------------------------------------------------------------
 #
 # path -> the model's raw answer about the animal in one frame (parsed by
-# `parse_pet_answer`). The same shape as QualityAskFn on purpose: both are one prompt over
-# one frame, and both are injected by the suite so no test loads a model.
+# `parse_pet_answer`), injected by the suite so that no test loads a model.
 PetAskFn = Callable[[str], str]
 
-# ONE question with three outcomes, and the species is deliberately not among them. F122
-# retired the species labels by measurement — the binary call was 92% right and the
-# `cat`/`dog`/`pet` assignment on top of it was not — and bringing them back through a
-# different model without a new measurement would be an unmeasured label that looks like
-# data. If a consumer ever needs the species, that is a feature with its own measurement.
+# ONE question with three outcomes, and the species is deliberately not among them: F122
+# retired the species labels by measurement (the binary call was 92% right, the
+# `cat`/`dog`/`pet` assignment on top of it was not), and bringing them back through a
+# different model would be an unmeasured label that looks like data.
 #
 # The wording names what the collection actually got wrong (F120/F121: drawn cats, plush
-# toys, a fur coat, a picture on a screen), because those are the frames the check exists
-# to catch, and "a picture of a cat" is not a category a model volunteers unprompted.
+# toys, a fur coat, a picture on a screen) — "a picture of a cat" is not a category a model
+# volunteers unprompted.
 _PET_VLM_PROMPT = (
     "Look at this photo and answer with exactly one word from this list:\n"
     "real — a living animal is actually present in the photo;\n"
@@ -2120,15 +1606,11 @@ _PET_VLM_PROMPT = (
     "none — there is no animal in the photo at all.\n"
     "Answer with one word: real, depiction or none."
 )
-# One word, like the deep tier's label: a larger budget only buys the model room to
-# explain itself, which the parser below would then have to wade through.
 _PET_VLM_MAX_NEW_TOKENS = 8
 
-# Keyword -> stored value, IN PRIORITY ORDER, and the order is a decision rather than an
-# accident. `real` is the word a model reaches for while EXPLAINING one of the other two
-# ("not a real animal", "no real animal here"), so a scan that met it first would read
-# half the rejections as agreement — the same trap `_QUALITY_KEYWORDS` used to avoid by
-# putting `no_subject` before `subject`, until F177 retired that question.
+# Keyword -> stored value, IN PRIORITY ORDER, and the order is a decision: `real` is the
+# word a model reaches for while EXPLAINING one of the other two ("not a real animal"), so
+# a scan that met it first would read half the rejections as agreement.
 _PET_VLM_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("depiction", PET_VLM_DEPICTION),
     ("none", PET_VLM_NONE),
@@ -2139,14 +1621,13 @@ _PET_VLM_KEYWORDS: tuple[tuple[str, str], ...] = (
 def parse_pet_answer(answer: str) -> str | None:
     """The model's answer -> real | depiction | none; None when nothing was recognized.
 
-    Read as leniently as `parse_quality_answer` reads its keywords, and for the same
-    reason (the F96 lesson: asked for a composite format the model answers in prose
-    anyway) — everything that is not a letter is a separator, and the word is looked for
-    anywhere in the line rather than as the whole answer.
+    Read leniently, the F96 lesson: asked for a composite format the model answers in
+    prose anyway, so everything that is not a letter is a separator and the word is looked
+    for anywhere in the line.
 
-    None is NOT `none`. An answer nobody could read means the question was effectively not
-    asked, so the frame falls back to the unverified rule; reading it as "no animal" would
-    be guessing, and guessing here silently deletes a label the cheap tier was right about.
+    None is NOT `none`. An unreadable answer means the question was effectively not asked
+    and the frame falls back to the unverified rule; reading it as "no animal" would
+    silently delete a label the cheap tier was right about.
     """
     text = "_" + _NON_WORD_RE.sub("_", (answer or "").lower()) + "_"
     return next((value for keyword, value in _PET_VLM_KEYWORDS
@@ -2173,29 +1654,25 @@ def qwen_vlm_pet_factory(max_edge: int) -> Callable[[str], PetAskFn]:
 
 # --- F140: the question asked of a rescue candidate ------------------------------------
 #
-# path -> the model's raw answer about one candidate (parsed by `parse_junk_rescue_answer`).
-# The same shape as PetAskFn, and injected by the suite for the same reason: no test loads
-# a model.
+# path -> the model's raw answer about one candidate (parsed by
+# `parse_junk_rescue_answer`), injected by the suite like PetAskFn above.
 JunkAskFn = Callable[[str], str]
 
 # Query strings -> one text feature per string, in the same order. The real one is
-# `search.text_encoder` — the project's own open_clip, because the query has to land in the
-# space the stored vectors live in — and it is resolved lazily, only for a run that has
-# frames to score.
+# `search.text_encoder` (the query has to land in the space the stored vectors live in),
+# resolved lazily, only for a run that has frames to score.
 TextEncoder = Callable[[Sequence[str]], np.ndarray]
 
-# The three answers, and they are the `media_class.verdict` values on purpose: this
-# question exists to correct a verdict, so an answer that had to be translated into one
-# would be a second vocabulary for the same fact.
+# The three answers, and they are the `media_class.verdict` values on purpose: an answer
+# that had to be translated into one would be a second vocabulary for the same fact.
 JUNK_RESCUE_SCREENSHOT = "screenshot"
 JUNK_RESCUE_DOCUMENT = "document"
 JUNK_RESCUE_PHOTO = "photo"
 
-# A question about the KIND of picture, not about its quality, and asked separately from
-# the deep tier's own 3-way prompt (personal_photo/document/product) rather than by widening
-# it: that prompt has no screenshot among its answers — the deep tier never had to detect
-# one, it is the fast tier's job — and adding a fourth class there would move the verdicts
-# of every frame it sees, including on runs where this feature is off.
+# Asked separately from the deep tier's own 3-way prompt rather than by widening it: that
+# prompt has no screenshot among its answers (detecting one is the fast tier's job), and a
+# fourth class there would move the verdicts of every frame it sees, on runs where this
+# feature is off included.
 _JUNK_RESCUE_PROMPT = (
     "Classify this image into exactly one category: screenshot, document, or photo.\n"
     "screenshot = a screen capture, or a photograph of a phone, monitor or TV screen, or "
@@ -2205,14 +1682,11 @@ _JUNK_RESCUE_PROMPT = (
     "photo = an ordinary photograph of people, places, pets or everyday life.\n"
     "Answer with exactly one word: screenshot, document, or photo."
 )
-# One word, like the other labels of this stage: a larger budget only buys the model room
-# to explain itself, which the parser below would then have to wade through.
 _JUNK_RESCUE_MAX_NEW_TOKENS = 8
 
-# Keyword -> answer, IN PRIORITY ORDER, and the order is the same decision `_PET_VLM_KEYWORDS`
-# documents: `photo` is the word a model reaches for while describing one of the other two
-# ("a photo of a receipt", "a photo of a screen"), so a scan that met it first would read
-# half the rejections as agreement.
+# Keyword -> answer, IN PRIORITY ORDER, the same decision `_PET_VLM_KEYWORDS` documents:
+# `photo` is the word a model reaches for while describing one of the other two ("a photo
+# of a receipt"), so a scan that met it first would read half the rejections as agreement.
 _JUNK_RESCUE_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("screenshot", JUNK_RESCUE_SCREENSHOT),
     ("screen", JUNK_RESCUE_SCREENSHOT),
@@ -2227,11 +1701,10 @@ _JUNK_RESCUE_KEYWORDS: tuple[tuple[str, str], ...] = (
 def parse_junk_rescue_answer(answer: str) -> str | None:
     """The model's answer -> screenshot | document | photo; None when nothing was read.
 
-    Lenient in the two ways every answer of this stage is read (the F96 lesson), and None
-    is NOT `photo`: an unreadable answer means the question was effectively not asked, so
-    the frame keeps the verdict the fast tier gave it. Reading it as a junk class would
-    delete a photograph on the strength of a resemblance score — the one thing the whole
-    feature is arranged to avoid.
+    Lenient the way every answer of this stage is read (the F96 lesson), and None is NOT
+    `photo`: an unreadable answer means the question was effectively not asked, so the
+    frame keeps its fast verdict. Reading it as a junk class would delete a photograph on
+    the strength of a resemblance score — what this whole feature is arranged to avoid.
     """
     text = "_" + _NON_WORD_RE.sub("_", (answer or "").lower()) + "_"
     return next((value for keyword, value in _JUNK_RESCUE_KEYWORDS
@@ -2260,37 +1733,24 @@ def qwen_vlm_junk_rescue_factory(max_edge: int) -> Callable[[str], JunkAskFn]:
 def clip_text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML
     """The default text encoder of the rescue score — the search engine's own (F129).
 
-    Imported here and not at module scope because `search` imports this module, and built
-    only when a run actually has frames to score: it loads the model, and a stage that has
-    nothing to ask must not pay for one (`_JunkRescuePass` calls this lazily, the same
-    rule `_unused_classifier` states for the image side).
+    Imported here and not at module scope because `search` imports this module, and called
+    lazily because it loads a model: a run with nothing to ask must not pay for one.
     """
     from .search import text_encoder
 
     return text_encoder(s)
 
 
-# --- F132/F186: the keeper of a near-duplicate group, and why nothing asks about it -----
-#
-# The comparative question ("which of these five is the one to keep") is gone. It was
-# measured on 2026-08-04 against 111 groups the owner labelled BLIND — the frames shuffled,
-# the model's answer hidden — and it agreed with the person on 32% of them. Picking a frame
-# at random agrees on 30.4% (20 000 shuffles say 30.3%), and sharpness, arithmetic and a
-# cascade all land on 27-28%. Nothing here is a replacement, because there was nothing to
-# buy: 451 seconds of GPU a run for the accuracy of a coin.
-#
-# What STAYS is the mechanism, in dedup.py: `group_keeper`, `KEEPER_SOURCE_SHARPNESS`,
-# `store_group_keeper` and the ranking the Duplicates tab has always shown. Only the
-# question to the model left, so the interface behaves exactly as it did.
-
-
 @dataclass(frozen=True)
 class QualitySettings:
     """Everything the cascade reads out of the config, resolved once per run.
 
-    Same shape and same reason as GateSettings: the measurement script sweeps these
-    numbers, and it can only price the real cascade if it drives the same functions off
-    the same object the pipeline uses.
+    Same shape and same reason as GateSettings: the measurement script can only price the
+    real cascade if it drives the same functions off the same object the pipeline uses.
+
+    The fields below `exclude_classes` are DEFAULTED so that a caller building these by
+    hand — the measurement script, the suite — keeps working when the check they belong to
+    is not what it is asking about.
     """
     pets: bool
     pet_threshold: float
@@ -2299,15 +1759,11 @@ class QualitySettings:
     subject_score_min: float
     # F120: media classes no VLM is shown (`vlm.exclude_classes`).
     exclude_classes: frozenset[str] = frozenset()
-    # F130: the pet check — its own toggle, and the second, much lower threshold that
-    # decides who is shown to the model. Defaulted (unlike the two fields above them in
-    # the class) so a caller that built these settings by hand — the measurement script,
-    # the suite — keeps working unchanged when the check is not what it is asking about.
+    # F130: the pet check, and the second and much lower threshold deciding who is shown
+    # to the model.
     pets_verify: bool = False
     pet_candidate_threshold: float = 0.3
-    # F140: the rescue score — its own toggle, and the threshold that decides who is shown
-    # to the model. Defaulted for the same reason the two fields above are: a caller that
-    # built these settings by hand keeps working when this is not what it is asking about.
+    # F140: the rescue score, and the threshold deciding who is shown to the model.
     junk_rescue: bool = False
     junk_rescue_threshold: float = 0.02
 
@@ -2330,20 +1786,17 @@ def quality_settings(cfg: Config) -> QualitySettings:
     )
 
 
-# F120: the quality questions — is there a pet, are the eyes open, was this shot an
-# accident — are questions about a PERSONAL PHOTOGRAPH (of the three, only the pet one is
-# still put to a model — see F186 above). Asked of a screenshot or a product shot they
-# produce an answer that means nothing, and the first live run showed
-# what that costs: 45% of the `dog` class and 45% of the sharpest frames were not
-# photographs at all. Screenshots are also structurally "sharper" than any photo (hard
-# edges and text: mean laplacian 2854 against 1253), so a global sharpness ranking put
-# them on top by construction.
+# F120: every quality question is a question about a PERSONAL PHOTOGRAPH, and asked of a
+# screenshot or a product shot it produces an answer that means nothing. The first live run
+# priced that: 45% of the `dog` class and 45% of the sharpest frames were not photographs
+# at all — screenshots are structurally sharper than any photo (hard edges and text, mean
+# laplacian 2854 against 1253), so a global sharpness ranking put them on top by
+# construction.
 QUALITY_VERDICT = "photo"
 
-# The `faces` row that means "this file was processed and no face was found in it" (see
-# the faces module docstring) — a bookkeeping marker, not a face. Every question about
-# REAL faces has to exclude it: on the live collection 24 195 files out of 24 196 carry
-# one, so a predicate that forgets it answers "all of them".
+# The `faces` row meaning "processed, no face found" — a bookkeeping marker, not a face.
+# Every question about REAL faces has to exclude it: 24 195 files of 24 196 on the live
+# collection carry one, so a predicate that forgets it answers "all of them".
 NO_FACES_BBOX = "[]"
 
 
@@ -2351,16 +1804,15 @@ def uncertain_band(sharpness: float | None, subject_score: float,
                    q: QualitySettings) -> bool:
     """Is this frame one the cheap tiers did NOT settle?
 
-    Two independent ways in, either of them enough: sharpness inside the band where it
-    decides nothing (clearly blurred is below it, clearly sharp above), or a junk-group
-    CLIP probability of "a photograph" low enough that CLIP is saying it does not know
-    what it is looking at. A frame that did not decode has no sharpness signal and is
-    judged on the second condition alone.
+    Two independent ways in, either enough: sharpness inside the band where it decides
+    nothing, or a junk-group probability of "a photograph" low enough that CLIP is saying
+    it does not know what it is looking at. A frame that did not decode is judged on the
+    second alone.
 
-    F186: this used to select the population of the quality VLM, and that question is
-    retired. The band itself is kept because it is what `scripts/measure_frame_quality.py`
-    prices the cascade over, and `features.sharpness_band_*` / `features.subject_score_min`
-    are the thresholds it sweeps — the stage asks nothing of it.
+    F186 retired the question this selected the population of. It is kept because
+    `scripts/measure_frame_quality.py` prices the cascade over it and sweeps
+    `features.sharpness_band_*` / `features.subject_score_min`; the stage asks nothing
+    of it.
     """
     low, high = q.sharpness_band
     if sharpness is not None and low <= sharpness <= high:
@@ -2371,22 +1823,12 @@ def uncertain_band(sharpness: float | None, subject_score: float,
 def faces_stage_ran(conn: sqlite3.Connection) -> bool:
     """Has the faces stage ever found a face in this index? One real row is enough.
 
-    `bbox = '[]'` is not a face but the marker "this file was processed and had none"
-    (faces module docstring), so it says nothing about the stage having run usefully and
-    everything about it having run at all — which is why every question about REAL faces
-    has to exclude it. On the live collection 24 195 files out of 24 196 carry such a row.
+    Answers whether an absent face is a fact or an absence of evidence (F121). `bbox =
+    '[]'` is excluded for the NO_FACES_BBOX reason.
     """
     return bool(conn.execute(
         "SELECT EXISTS(SELECT 1 FROM faces WHERE bbox != ?)", (NO_FACES_BBOX,)
     ).fetchone()[0])
-
-
-# F186 took `quality_scope_ready` and `quality_scope_ids` out with the question they
-# served. They chose WHO the quality VLM was asked about — the frames of a near-duplicate
-# group, of an event, with a face on them, or the whole collection — and there is no longer
-# anybody to ask. Nothing replaced them: `faces_stage_ran` above is the one piece of that
-# machinery with a second consumer (F121, whether an absent face is a fact or an absence of
-# evidence), and it stays for that consumer alone.
 
 
 @dataclass(frozen=True)
@@ -2394,27 +1836,24 @@ class FrameQuality:
     """One `frame_quality` row as Python types — None stays None, and is not a False."""
     file_id: int
     sharpness: float | None = None
-    # F155: the same laplacian inside the sharpest face box of the frame, or None for "not
-    # measured" — no face, no faces run, or a crop below FACE_CROP_MIN_PX. It ranks the
-    # blur list and decides nothing: ~25% of what it flags is actually blurred.
+    # F155: the same laplacian inside the sharpest face box, or None for "not measured" —
+    # no face, no faces run, a crop below FACE_CROP_MIN_PX.
     face_sharpness: float | None = None
-    # F179: the eye opening over the eye width of the LARGEST face, or None for "not
-    # measured" — no face, no faces run, a crop below FACE_CROP_MIN_PX, or no 106-point
-    # model on this machine. Small means closed; it ranks the slice and decides nothing.
+    # F179: the eye opening of the LARGEST face, small = closed, or None for the same
+    # reasons plus "no 106-point model on this machine".
     eye_openness: float | None = None
     pet: str | None = None
     pet_score: float | None = None
-    # F130: real | depiction | none, or None for "the model was not asked about this
-    # frame" — which is what tells a rejected frame from one below the candidate threshold.
+    # F130: real | depiction | none, or None for "not asked" — which is what tells a
+    # rejected frame from one below the candidate threshold.
     pet_vlm: str | None = None
+    # The three retired questions (F186, F177, F122): read like every other column so that
+    # a row is a row, but nothing asks them and all three are NULL everywhere.
     eyes_open: bool | None = None
-    # The two retired questions (F177, F122). The columns are read like every other one
-    # so that a row is a row, but nothing asks them any more; `has_subject` was emptied
-    # of the answers it did collect by the v26 migration, so both are NULL everywhere.
     has_subject: bool | None = None
     is_accidental: bool | None = None
-    # F140: the zero-shot "screenshot rather than photograph" margin, or None for "not
-    # computed" — the toggle is off, or this frame has no stored CLIP vector to read it off.
+    # F140: the zero-shot "screenshot rather than photograph" margin, or None — the toggle
+    # is off, or the frame has no stored CLIP vector to read it off.
     junk_score: float | None = None
     source: str = QUALITY_SOURCE_CLASSIC
 
@@ -2427,9 +1866,8 @@ def _bool_or_none(value: object) -> bool | None:
 def _parse_bbox(raw: object) -> FaceBox | None:
     """One `faces.bbox` string -> (x1, y1, x2, y2); None for anything that is not one.
 
-    Tolerant on purpose. The column is a JSON list written by another stage, and a row
-    this cannot read has to cost that frame its face number and nothing else — the
-    laplacian over the whole frame, the pets, the verdict all stand.
+    Tolerant on purpose: the column is JSON written by another stage, and a row this
+    cannot read costs that frame its face number and nothing else.
     """
     try:
         values = json.loads(str(raw))
@@ -2448,14 +1886,10 @@ def read_face_boxes(conn: sqlite3.Connection,
                     file_ids: Sequence[int]) -> dict[int, FaceBoxes]:
     """The real faces of `file_ids`, with the size of the frame they were found in (F155).
 
-    `bbox = '[]'` is EXCLUDED, and that is not tidiness: the marker means "this file was
-    processed and had no face in it", and on the live collection 24 195 of 24 196 files
-    carry one (F125's trap). A predicate that forgets it answers "every file has a face"
-    and then tries to crop a zero-length box out of every frame in the archive.
-
-    A file with no width/height recorded is left out too — the boxes are in pixels of that
-    frame, so without its size there is nothing to scale them by. Files missing from the
-    result simply have no faces: the caller reads it with `NO_FACES` as the default.
+    `bbox = '[]'` is EXCLUDED (see NO_FACES_BBOX — F125's trap), and so is a file with no
+    width/height recorded: the boxes are in pixels of that frame, and without its size
+    there is nothing to scale them by. A file missing from the result has no faces; the
+    caller reads it with `NO_FACES` as the default.
     """
     out: dict[int, FaceBoxes] = {}
     for part in batched(list(file_ids), 500):
@@ -2480,9 +1914,9 @@ def read_frame_quality(conn: sqlite3.Connection,
                        file_ids: Sequence[int] | None = None) -> dict[int, FrameQuality]:
     """`frame_quality` by file_id — the reading side of the "NULL is not False" rule.
 
-    The consumers of this table (F114: the web app, the sorter, the events stage) must not
-    each rebuild the 0/NULL distinction out of raw rows; one of them would get it wrong
-    exactly once and quietly discard frames nobody had looked at.
+    The consumers (F114: the web app, the sorter, the events stage) must not each rebuild
+    the 0/NULL distinction out of raw rows; one of them would get it wrong exactly once
+    and quietly discard frames nobody had looked at.
     """
     sql = ("SELECT file_id, sharpness, face_sharpness, eye_openness, pet, pet_score,"
            " pet_vlm, eyes_open, has_subject, is_accidental, junk_score, source"
@@ -2522,16 +1956,9 @@ def read_frame_quality(conn: sqlite3.Connection,
 
 
 # The fast half of the cascade writes the row; the model halves update it in place. Every
-# model column is reset to NULL by the fast half on purpose: this run has not asked yet,
-# and a leftover answer from a previous run would describe a frame the current settings
-# may never look at. F130 puts `pet_vlm` under the same rule — the fast half re-walks a
-# frame only when its own marker went stale (a prompt edit among other things), and a
-# stale prompt is exactly when a stored answer must not survive.
-#
-# F186: `eyes_open` joins `has_subject` and `is_accidental` as a column this statement
-# only ever sets to NULL. All three questions are retired and nothing updates them
-# afterwards any more — NULL is what "not asked" means here, and it is now the only value
-# the three of them ever hold.
+# model column is reset to NULL here on purpose: this run has not asked yet, and the fast
+# half re-walks a frame only when its own marker went stale — a prompt edit among other
+# things, which is exactly when a stored answer must not survive.
 _QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, face_sharpness,
                          eye_openness, pet, pet_score, pet_vlm, eyes_open, has_subject,
                          is_accidental, junk_score, source, updated_at)
@@ -2544,9 +1971,8 @@ _QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, face_sharpne
                          has_subject = NULL, is_accidental = NULL, junk_score = NULL,
                          source = excluded.source, updated_at = excluded.updated_at"""
 # F130: the answer AND the label it decides, written together — `pet` is a function of
-# `pet_vlm` (see pet_label), so leaving the two to be reconciled by a later reader would
-# be two sources of truth for one fact. `pet_score` is untouched: it is what a threshold
-# is re-chosen from, and a rejected frame keeps it like every other one.
+# `pet_vlm` (see pet_label), and reconciling the two in a later reader would be two sources
+# of truth for one fact. `pet_score` is untouched: it is what a threshold is re-chosen from.
 _PET_ANSWER_UPDATE = """UPDATE frame_quality
                         SET pet_vlm = ?, pet = ?, updated_at = ?
                         WHERE file_id = ?"""
@@ -2557,10 +1983,8 @@ _JUNK_SCORE_UPDATE = """UPDATE frame_quality
                         SET junk_score = ?, updated_at = ?
                         WHERE file_id = ?"""
 # F154: the animal label after the detector has spoken. `pet_vlm` is untouched — the two
-# tiers answer different questions (which object is in the frame; whether the animal in it
-# is alive) and overwriting one with the other would lose the fact that the model was
-# asked. `pet_score` is untouched for the same reason it survives the F130 check: it is
-# what a threshold is re-chosen from.
+# tiers answer different questions (which object is in the frame; whether it is alive), and
+# overwriting one with the other would lose the fact that the model was asked.
 _PET_DETECTOR_UPDATE = """UPDATE frame_quality
                           SET pet = ?, updated_at = ?
                           WHERE file_id = ?"""
@@ -2576,50 +2000,36 @@ _DETECTIONS_UPSERT = """INSERT INTO detections (file_id, label, score, boxes, mo
                             updated_at = excluded.updated_at"""
 
 # The verdict of one frame. F68: `tier` is written on every path and always equals the
-# run's active tier — a row the active tier touched must never stay unmarked (or marked by
-# an older tier), otherwise it is reclassified on every run. Lifted out of classify() by
-# F140 for the same reason F90 lifted the gate functions: a second writer of this row
-# (the rescue) must write it the same way, and a paraphrase would drift.
+# run's active tier — a row the active tier touched but left unmarked is reclassified on
+# every run. Lifted out of classify() by F140 for the reason F90 lifted the gate functions:
+# the rescue writes this row too, and a paraphrase would drift.
 #
-# HOW THIS ROW IS WRITTEN, AND WHY IT IS NOT BATCHED (F164). The F147 phase table read
-# `junk_write 470,3 s / 24 196 frames / 19,4 ms` and the obvious suspect was a commit per
-# row — 19,4 ms for one INSERT would be more than CLIP spends on a frame in the same
-# stage (11,7 ms on the GPU). It is not what happens. Every write of the fast pass goes
-# through ONE transaction: sqlite3 is left at its default isolation, so no statement
-# autocommits, `with conn:` sits OUTSIDE the chunk loop in classify(), and the single
-# COMMIT happens when that loop is done. The deep tier and every later pass have one
-# `with conn:` each, for the same reason.
-#
-# Measured on this machine (scripts/measure_junk_write.py, 24 196 rows, this exact
-# statement, a throwaway database on the same disk, three runs):
+# WHY IT IS NOT BATCHED (F164). The F147 phase table read `junk_write 470,3 s / 24 196
+# frames / 19,4 ms` and the obvious suspect was a commit per row. It is not what happens:
+# every write of the fast pass goes through ONE transaction (`with conn:` sits outside the
+# chunk loop, sqlite3 is at its default isolation so nothing autocommits), and the deep
+# tier and every later pass have one each. Measured on this machine
+# (scripts/measure_junk_write.py, 24 196 rows, this exact statement, three runs):
 #
 #     commit strategy            commits   ms/row, best run   ms/row, worst run
 #     one transaction (today)          1              0,004               0,005
 #     one commit per 16 rows       1 513              0,003               0,157
 #     one commit per row          24 196              0,014               2,271
 #
-# The spread on the two lower rows is not noise to be averaged away: it is the operating
-# system deciding whether a COMMIT really reaches the disk, and it is exactly what makes
-# committing often a gamble — two of three runs never flushed and one paid 55 s for the
-# same 24 196 rows. The row that matters has no spread at all: what the stage does today
-# costs 0,004-0,005 ms whatever the disk feels like, i.e. 0,1 s of the 470,3 s the phase
-# was billed for — 0,02%.
+# The spread on the lower two rows is the operating system deciding whether a COMMIT really
+# reaches the disk — two of three runs never flushed, one paid 55 s for the same rows —
+# which is what makes committing often a gamble. Today's shape has no spread at all: 0,1 s
+# of the 470,3 s the phase was billed for, 0,02%. It also gives for free the property a
+# batch size would break: a run that dies mid-pass leaves the whole collection with its
+# PREVIOUS verdicts, never half of today's and half of yesterday's.
 #
-# So the lever the brief proposed was already pulled, and there is nothing left to batch.
-# A batch size in the config would buy those 0,02% back at best, would be slower whenever
-# the flush is real, and would break the property this shape gives for free: a run that
-# dies mid-pass leaves the whole collection with its PREVIOUS verdicts, never half of
-# today's and half of yesterday's.
-#
-# Where the phase's seconds actually are: `report.enter(CLASSIFY_PHASE_WRITE)` covers the
-# per-frame loop that also measures the laplacian (`_QualityPass.measure`) and stores the
-# CLIP vector (`_EmbeddingPass.store`). The same script prices those on real frames of the
-# live collection: 26,9 ms for the sharpness of one frame, 0,06 ms for its vector, 0,005
-# ms for its verdict. 79% of the frames of that run got a quality row (19 216 of 24 196),
-# and 0,79 x 26,9 = 21,3 ms against the 19,4 ms the phase was billed — the laplacian IS
-# the phase. Making it cheaper is a question about `features.sharpness_max_edge` and the
-# preview cache, not about SQLite; whoever picks it up should start from that number and
-# not from this statement.
+# WHERE THE PHASE'S SECONDS ACTUALLY ARE, because the name says otherwise:
+# `report.enter(CLASSIFY_PHASE_WRITE)` covers the per-frame loop that also measures the
+# laplacian and stores the CLIP vector. The same script prices them on live frames — 26,9
+# ms for the sharpness of a frame, 0,06 ms for its vector, 0,005 ms for its verdict — and
+# 79% of that run's frames got a quality row (19 216 of 24 196): 0,79 x 26,9 = 21,3 ms
+# against the 19,4 ms billed. The laplacian IS the phase, so making it cheaper is a
+# question about `features.sharpness_max_edge` and the preview cache, not about SQLite.
 _MEDIA_CLASS_UPSERT = """INSERT INTO media_class (file_id, verdict, source, score,
                                                   updated_at, tier)
                          VALUES (?, ?, ?, ?, ?, ?)
@@ -2632,8 +2042,8 @@ def _unused_classifier(paths: list[str], prompts: list[str]) -> np.ndarray:
     """The classifier of a run that asks CLIP nothing — being called is a bug, not a case.
 
     A backfill of sharpness alone (F113, both toggles off, junk already classified) needs
-    no model, and building one would be the entire cost of such a run. This stands in for
-    it so nothing downstream has to carry an optional classifier around.
+    no model, and building one would be the entire cost of such a run. This stands in so
+    that nothing downstream has to carry an optional classifier around.
     """
     raise AssertionError(  # pragma: no cover — unreachable by construction
         "junk: CLIP вызван в прогоне, где он не нужен")
@@ -2644,22 +2054,15 @@ def quality_prompt_fingerprint(pets: bool, *, verify_pets: bool = False,
                                rescue_vlm: bool = False) -> str:
     """Eight hex characters over the TEXT that decides what lands in `frame_quality`.
 
-    F120: the marker used to name the tier and nothing else, so editing a prompt left
-    every stored answer looking fresh. That is not hypothetical — F120 rewrote the pet
-    group (five anti-classes for drawings, toys, food, screens and clothing) and the old
-    labels would have survived it untouched, because a tier called `vlm` still equals a
-    tier called `vlm`. Nobody should have to remember to empty a table by hand after
-    editing a prompt.
+    F120: the marker used to name the tier and nothing else, so editing a prompt left every
+    stored answer looking fresh — F120 rewrote the pet group with five new anti-classes and
+    the old labels would have survived it untouched, because a tier called `vlm` equals a
+    tier called `vlm`. Nobody should have to remember to empty a table by hand.
 
-    Only the text that actually reaches the stored columns is hashed: the CLIP prompt
-    list (the pet group writes `pet`/`pet_score`, the junk group decides through the
-    subject score who is asked at all) and, when the model runs, the question it is
-    asked. Sharpness depends on neither, which is why the `classic` tier carries no
-    fingerprint and a sharpness-only collection is not invalidated by prompt work.
-
-    F186 dropped the `with_vlm` half of that — the frame-quality prompt is retired, so
-    there is no longer a question of the model whose wording could reach `eyes_open`. The
-    hash a collection already carries does not move: `with_vlm=False` appended nothing.
+    Only text that actually reaches the stored columns is hashed: the CLIP prompt list and,
+    when the model runs, the question it is asked. Sharpness depends on neither, which is
+    why the `classic` tier carries no fingerprint and a sharpness-only collection is not
+    invalidated by prompt work.
     """
     parts = list(clip_prompts(pets))
     if pets:
@@ -2668,20 +2071,15 @@ def quality_prompt_fingerprint(pets: bool, *, verify_pets: bool = False,
         # meaning of `frame_quality.pet` without touching a prompt, and a marker blind to
         # that would have left every row saying `cat` and looking fresh.
         parts.append(PET_CLASS)
+    # Each question below enters the hash ONLY when it was actually asked: a collection
+    # measured without a check must not be invalidated by a prompt nobody put to it.
     if verify_pets:
-        # F130: the check's question decides `pet_vlm` and, through it, `pet` — so an edit
-        # to its wording has to invalidate the rows it produced, exactly as an edit to the
-        # CLIP prompts does. Only when the check actually ran: a collection measured
-        # without it must not be invalidated by a prompt nobody asked.
         parts.append(_PET_VLM_PROMPT)
     if rescue:
-        # F140: these prompts decide `junk_score` and, through the threshold, which frames
-        # are shown to the model at all — so an edit has to invalidate the stored scores
-        # (brief requirement 1) and, with them, the candidate list a later run rebuilds.
+        # F140: these decide `junk_score` and, through the threshold, the candidate list a
+        # later run rebuilds (brief requirement 1).
         parts.extend(junk_rescue_prompts())
     if rescue_vlm:
-        # And the question itself, only when it is asked: a collection scored without the
-        # deep tier must not be invalidated by wording nobody used on it.
         parts.append(_JUNK_RESCUE_PROMPT)
     raw = "\x00".join(parts)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
@@ -2701,18 +2099,11 @@ def _quality_source(use_clip: bool, pets: bool, pet_ask: PetAskFn | None = None,
                     rescue_ask: JunkAskFn | None = None) -> str:
     """The tier marker this run writes — and therefore what it considers up to date.
 
-    F130: the pet check is a model too, so a run that only does that one still writes the
-    `vlm` tier — the marker names WHICH TIER processed the row, and a row whose animal
-    label came from the model did not come from the CLIP tier.
-
-    F140: the rescue score is a CLIP signal (text vectors against a stored image vector),
-    so switching it on moves the row to the `clip` tier at worst — and to `vlm` when the
-    deep tier is there to answer for its candidates. Either way the fingerprint carries the
-    prompts, which is what makes the score recomputable after an edit.
-
-    F186 removed the third asker (the frame-quality question) from the list. A collection
-    marked by a run that asked only the pet check or only the rescue keeps the marker it
-    has: the fingerprint of those runs never carried the retired prompt.
+    The marker names WHICH TIER processed the row, so the pet check alone is enough to
+    make it `vlm` (F130). The rescue score is a CLIP signal — text vectors against a
+    stored image vector — so it reaches `clip` at worst and `vlm` when the deep tier is
+    there to answer for its candidates. Either way the fingerprint carries the prompts,
+    which is what makes a score recomputable after an edit.
     """
     if pet_ask is not None or rescue_ask is not None:
         fingerprint = quality_prompt_fingerprint(
@@ -2727,102 +2118,61 @@ def _quality_source(use_clip: bool, pets: bool, pet_ask: PetAskFn | None = None,
     return QUALITY_SOURCE_CLASSIC
 
 
-# F100: the phases `classify` reports. Stable identifiers, not captions — the served
-# UI localizes them (ui._UI_STRINGS), the CLI labels them for the rich bar
-# (cli._CLUSTER_PHASE_LABELS is the precedent). The keys mirror the three parts F73
-# split the per-chunk loop into, plus the deep tier.
-#
-# The difference from faces.CLUSTER_PHASE_* (F84) is the point of this feature: there
-# the long phase (HDBSCAN) is ONE blocking call, so it can only show a stopwatch;
-# here EVERY phase is measurable, the VLM one included — its candidate list is known
-# before the loop starts, because the gate has already run. That is also why the VLM
-# phase needs a caption more than the others: it is the only one that changes the
-# denominator under the user (24 196 frames -> 7 896 candidates on the live run), and
-# a bar that restarts from zero without a word reads as a bar that lost its place.
+# F100: the phases `classify` reports — stable identifiers and not captions, localized by
+# the served UI (ui._UI_STRINGS) and labelled by the CLI. The VLM phase is the one that
+# changes the denominator under the user (24 196 frames -> 7 896 candidates on the live
+# run), and a bar that restarts from zero without a word reads as a bar that lost its place.
 CLASSIFY_PHASE_CLIP = "junk_clip"
 CLASSIFY_PHASE_OCR = "junk_ocr"
 CLASSIFY_PHASE_VLM = "junk_vlm"
-# F205: the model is asked in THREE places, and until this feature all three reported
-# under the name above. The run of 2026-08-05 measured what that cost: the deep tier ran
-# 7 951 frames at 1.4 frames/s (pipelined), the animal check 2 997 at 0.42 and the rescue
-# 1 284 at 0.41-0.49 — one name over three prices that differ by a factor of three, so no
-# reader of the log and no arithmetic over it could price any of them. A phase name IS the
-# unit a measurement is filed under (runlog.measurement_unit), which is why three prices
-# need three names.
-#
-# The deep tier KEEPS `junk_vlm`. It is the one of the three whose seconds a log written
-# before this split can still be trusted for — it dominated that shared bucket — and
-# renaming it would throw those measurements away and buy nothing. The two questions of
-# the back half get the new names, and a log without them simply has no measurement for
-# them, which the estimate already handles by falling back to its default.
+# F205: three model passes, three names. The run of 2026-08-05 had all three under the name
+# above — the deep tier 7 951 frames at 1.4 frames/s (pipelined), the animal check 2 997 at
+# 0.42, the rescue 1 284 at 0.41-0.49 — so no arithmetic over that log could price any of
+# them. The deep tier KEEPS `junk_vlm`: it dominated the shared bucket, so older logs can
+# still be trusted for it, and renaming would throw those measurements away for nothing.
 CLASSIFY_PHASE_PETS_VLM = "junk_pets_vlm"
 CLASSIFY_PHASE_RESCUE_VLM = "junk_rescue_vlm"
-# F164: this phase is NOT the cost of writing. Its seconds are the per-frame loop the
-# writes share with the laplacian and the stored vector, and the laplacian is ~99% of
-# them — see the measured breakdown at _MEDIA_CLASS_UPSERT before reading a number under
-# this name as a number about SQLite.
+# F164: this phase is NOT the cost of writing — the laplacian is ~99% of it. See the
+# measured breakdown at _MEDIA_CLASS_UPSERT before reading a number under this name as a
+# number about SQLite.
 CLASSIFY_PHASE_WRITE = "junk_write"
-# F141: the search index — a phase of its own and not part of `junk_clip`, because it is
-# the one pass here that is a SECOND encode of the same frames rather than a use of the
-# first. Its seconds are the price of `features.search_index` and nothing else, and that
-# is exactly the number somebody deciding whether to switch it on needs to read.
+# F141/F154: a phase each, because their seconds price one toggle each —
+# `features.search_index` (the only SECOND encode of the same frames) and
+# `features.detector` (a second model over a short list, 83.8 ms where a VLM costs 0.78 s).
 CLASSIFY_PHASE_SEARCH = "junk_search"
-# F154: the object detector over the candidates of the animal query — its own phase for
-# the reason the search index has one. It is neither the fast CLIP pass (it is a second
-# model over a short list) nor the VLM tier (it is not a VLM, and it costs 83.8 ms where
-# that one costs 0.78 s), so its seconds price `features.detector` and nothing else.
 CLASSIFY_PHASE_DETECT = "junk_detect"
 
-# F147: the name this stage is timed under in the run log — the same one the pipeline
-# calls it by (`cli._pipeline_steps`), because the phase lines are read next to the
-# `stage=junk elapsed=...` line they break down, and a second spelling would break
-# every grep that puts the two together.
+# F147: the name this stage is timed under, the same one the pipeline calls it by
+# (`cli._pipeline_steps`) — the phase lines are read next to the `stage=junk elapsed=...`
+# line they break down, and a second spelling would break every grep over the two.
 CLASSIFY_STAGE = "junk"
 
-# F165: and the name of the half that runs BEFORE faces — the verdicts alone. The phases
-# keep their `junk_*` identifiers: they are the same passes, run by the same function, and
-# renaming them per caller would break the captions (i18n `cli.phase.junk_*`), the UI
-# labels and every grep over a run log written before this split. What the stage name
-# decides is which `stage=` the phase lines are filed under, and that one has to match the
-# `stage_timer` the caller opened or the F166 close-out would look for phases nobody
-# registered.
+# F165: and the half that runs BEFORE faces. The phases keep their `junk_*` identifiers —
+# same passes, same function, and renaming per caller would break the captions (i18n
+# `cli.phase.junk_*`), the UI labels and every older run log. What the stage name decides
+# is which `stage=` the phase lines are filed under, and it has to match the `stage_timer`
+# the caller opened or the F166 close-out looks for phases nobody registered.
 VERDICTS_STAGE = "classify"
 
 
 class _PhaseProgress:
     """Phase + `(done, total)` reporting for `classify` (F100).
 
-    The phase channel is optional and duck-typed exactly as in faces (F84): a callback
-    that can show a caption exposes `phase(name)` (progress.TaskProgress,
-    ui._StageProgress), a bare `(done, total)` function simply gets no phases, and
-    without a callback at all every method is a no-op — the CLI path, the quiet mode
-    and most of the suite call classify() that way.
+    The phase channel is optional and duck-typed as in faces (F84): a bare `(done, total)`
+    function gets no phases, and without a callback every method is a no-op.
 
-    Unlike clustering, the fast-tier phases interleave INSIDE the per-chunk loop
-    (CLIP -> OCR -> write, F73) over one shared counter of frames, so `enter` only
-    relabels and never touches the count — a bar that restarted three times per chunk
-    would be worse than no phases at all. Repeating the current phase is not re-sent:
-    the UI restarts the phase clock on every report. `start` is for the one place
-    where the denominator really does change (the VLM tier counts its own candidates),
-    and it changes the caption at the same moment, which is what makes the new numbers
-    readable instead of a bar that silently slid backwards.
+    The fast-tier phases interleave INSIDE the per-chunk loop (CLIP -> OCR -> write, F73)
+    over one shared counter, so `enter` only relabels and never touches the count — a bar
+    that restarted three times per chunk would be worse than no phases at all — and it does
+    not re-send the current phase, because the UI restarts the phase clock on every report.
+    `start` is for the passes that count their OWN items, and it moves caption and
+    denominator together, which is what makes new numbers readable instead of a bar that
+    silently slid backwards.
 
-    F147 hangs the stopwatch on the very same object, and that is the whole design: the
-    phases are timed under the names they are ANNOUNCED under, so the breakdown in the
-    run log and the caption on the bar can never drift apart. It follows that timing
-    happens with no callback at all — every method here already works that way.
-
-    F205 is what that design cost once the passes it covered stopped being alike: the
-    three model passes re-`start`ed ONE phase over three candidate lists, so one bucket
-    held three prices that differ threefold. They now announce three names — still one
-    name each for the caption and for the stopwatch, which is the part of the design that
-    holds.
-
-    F166 moved the stopwatch itself into `runlog.StagePhases` and kept that design
-    intact: the same `enter`/`start` call still drives both the caption and the clock,
-    one after the other. What changed is WHEN the clock is read out — as the stage
-    goes rather than at its end — and that the object is registered under the stage
-    name, so a run cut short in the middle still leaves the phases that finished.
+    F147/F166: the stopwatch (`runlog.StagePhases`) hangs on this same object, so a phase is
+    timed under the name it is ANNOUNCED under and the run log cannot drift from the
+    caption. Timing therefore happens with no callback at all, and the clock is read as the
+    stage goes: a run cut short still leaves the phases that finished.
     """
 
     def __init__(self, progress: ProgressCB | None,
@@ -2837,22 +2187,19 @@ class _PhaseProgress:
     def count(self, name: str, units: int) -> None:
         """Add `units` to what phase `name` has processed (F147).
 
-        Separate from `enter` because the number is rarely known when the phase opens:
-        the CLIP phase begins at the top of a chunk and only decides a few lines later
-        how many of its frames actually need encoding. Only ever called for a phase the
-        stage has entered — a counter alone must not conjure a line for work that did
-        not happen.
+        Separate from `enter` because the number is rarely known when the phase opens: the
+        CLIP phase begins at the top of a chunk and decides a few lines later how many of
+        its frames need encoding. Only ever called for a phase the stage has entered — a
+        counter alone must not conjure a line for work that did not happen.
         """
         self._log.count(name, units)
 
     def log_timings(self) -> None:
-        """Write out whatever the phases still hold (F147/F166).
+        """Write out whatever the phases still hold — the pass that was running at the end.
 
-        Most of the breakdown has been written on the way already; what is left here is
-        the pass that was running when the stage reached its end. Still called at the
-        exits rather than from a `finally`, because the broken paths are not this
-        object's business any more: `stage_timer` closes the phases it registered, and
-        it is the one that knows whether the stage failed, was cancelled or finished.
+        Called at the exits rather than from a `finally`: `stage_timer` closes the phases
+        it registered, and it is the one that knows whether the stage failed, was cancelled
+        or finished.
         """
         self._log.close()
 
@@ -2881,28 +2228,23 @@ class _PhaseProgress:
 
 # --- F128: the CLIP vector, kept ----------------------------------------------------
 
-# The stored element type, and it is part of the file format rather than a local choice:
-# a reader on another machine has to get back the numbers this machine wrote, so the byte
-# order is spelled out instead of left to the platform.
+# The stored element type, part of the file format rather than a local choice — the byte
+# order is spelled out so a reader on another machine gets back what this one wrote.
 #
-# float32 AND NOT float16, which is what the brief proposed for the size. The brief also
-# made the format conditional on a measurement — half precision "has to be checked, not
-# taken on trust" — and the measurement (tests/test_clip_embeddings.py) says it does not
-# hold: over 256 unit vectors of the real width, 18 of 20 queries come back in a different
-# order in float16, and at 2 000 vectors all 20 do. The reordering is small in score
-# (max |delta| 3e-5 of a cosine) and it is always a pair the format cannot tell apart, but
-# the rule was pre-committed for exactly this outcome, so it is followed rather than argued
-# with: float32 stores the encoder's own numbers and reproduces its ranking exactly.
-# The price is the table, doubled — ~60 MB per 20 000 photos instead of ~30, ~920 MB at
-# 300 000 instead of ~460. Same wire format as `faces.embedding`, which is little-endian
-# float32 for the same reason.
+# float32 AND NOT float16, which is what the brief proposed for the size and made
+# conditional on a measurement. The measurement (tests/test_clip_embeddings.py) says half
+# precision does not hold: over 256 unit vectors of the real width 18 of 20 queries come
+# back in a different order, and at 2 000 vectors all 20 do. The reordering is small in
+# score (max |delta| 3e-5 of a cosine) and always between a pair the format cannot tell
+# apart, but the rule was pre-committed for exactly this outcome. The price is the table
+# doubled — ~60 MB per 20 000 photos, ~920 MB at 300 000. Same wire format as
+# `faces.embedding`.
 _EMBEDDING_DTYPE = np.dtype("<f4")
 
-# paths -> the image feature of each path, in the same order; None where the frame did not
-# encode. The real source is `landmarks.CachingFeatureClassifier.features` — the cache the
-# scoring call has just filled, NOT a second encode, which is the whole economy of this
-# feature. A classifier without such a method (a plain function in a test) simply hands
-# back nothing and no vector is stored.
+# paths -> the image feature of each, in order; None where the frame did not encode. The
+# real source is `landmarks.CachingFeatureClassifier.features` — the cache the scoring call
+# has just filled and NOT a second encode, which is the whole economy of this feature. A
+# classifier without that method (a plain function in a test) hands back nothing.
 FeatureSource = Callable[[list[str]], list[np.ndarray | None]]
 
 _EMBEDDING_UPSERT = """INSERT INTO clip_embeddings (file_id, model, dim, vec, updated_at)
@@ -2916,9 +2258,8 @@ def embedding_model(s: NamingSettings) -> str:
     """What produced a vector: the open_clip model AND its weights, as one name.
 
     The weights belong in the name as much as the architecture does — the same
-    `ViT-L-14-quickgelu` loaded with `openai` and with a laion checkpoint produces two
-    incomparable spaces, and a row that recorded only the architecture would let them mix
-    silently. A mismatch means recompute; see `read_clip_embeddings` for the reading side.
+    `ViT-L-14-quickgelu` under `openai` and under a laion checkpoint is two incomparable
+    spaces, and a row naming only the architecture would let them mix silently.
     """
     return f"{s.clip_model}/{s.clip_pretrained}"
 
@@ -2926,12 +2267,10 @@ def embedding_model(s: NamingSettings) -> str:
 def pack_embedding(vec: np.ndarray) -> bytes:
     """A CLIP feature -> the stored blob: L2-normalized, float32, little-endian.
 
-    Normalizing HERE and not in every consumer is the point of doing it at all: with unit
-    vectors cosine similarity is a dot product, so a search does one matmul and no
-    per-query normalization. The encoder already returns unit vectors, and this does it
-    again anyway — the cost is a norm over 768 numbers and the guarantee is worth more than
-    the trust. A zero vector (no direction to preserve) is stored as it is rather than
-    divided by zero; it can only come from a caller that made one up.
+    Normalized HERE and not in every consumer: with unit vectors a cosine is a dot
+    product, so a search is one matmul. The encoder already returns unit vectors and this
+    repeats it anyway — a norm over 768 numbers is worth more than the trust. A zero vector
+    has no direction to preserve and is stored as it is rather than divided by zero.
     """
     v = np.asarray(vec, dtype=np.float32).ravel()
     norm = float(np.linalg.norm(v))
@@ -2943,9 +2282,9 @@ def pack_embedding(vec: np.ndarray) -> bytes:
 def unpack_embedding(blob: bytes) -> np.ndarray:
     """The stored blob -> a float32 vector, ready to be dotted with another one.
 
-    A copy rather than the buffer itself: `np.frombuffer` gives a read-only view over
-    memory that belongs to the sqlite row, and a consumer that stacks a few thousand of
-    those has no reason to care which of them may be written to.
+    A copy and not the buffer: `np.frombuffer` gives a read-only view over memory owned by
+    the sqlite row, and a consumer stacking a few thousand of those should not have to
+    care which of them may be written to.
     """
     return np.frombuffer(blob, dtype=_EMBEDDING_DTYPE).astype(np.float32)
 
@@ -2955,14 +2294,13 @@ def read_clip_embeddings(conn: sqlite3.Connection, model: str,
                          ) -> dict[int, np.ndarray]:
     """Stored vectors OF THIS MODEL by file_id — the model filter is not optional.
 
-    A consumer that read every row regardless of `model` would mix two incomparable
-    spaces and return plausible nonsense that nothing in the output marks as wrong, so the
-    filter lives here, in the one function that reads the table, rather than in each
-    caller. Rows of another model are absent from the result exactly like frames that were
-    never encoded — and the stage recomputes them on its next run.
+    A consumer reading every row regardless of `model` would mix two incomparable spaces
+    and return plausible nonsense nothing in the output marks as wrong, so the filter lives
+    in the one function that reads the table. Rows of another model are absent exactly like
+    frames that were never encoded, and the stage recomputes them next run.
 
-    Chunked over `file_ids` for the reason `read_frame_quality` gives: asking about a whole
-    collection is the expected case and SQLite has a ceiling on bound parameters.
+    Chunked over `file_ids` for the reason `read_frame_quality` gives: a whole collection
+    is the expected case, and SQLite has a ceiling on bound parameters.
     """
     sql = "SELECT file_id, vec FROM clip_embeddings WHERE model = ?"
 
@@ -2982,17 +2320,15 @@ def read_clip_embeddings(conn: sqlite3.Connection, model: str,
 class _EmbeddingPass:
     """The F128 half of `classify`: keep the vector the stage has already paid for.
 
-    Owns the same three things the quality half owns and nothing more: which frames want a
-    vector this run (its own incrementality, on `clip_embeddings.model`), where the vector
-    comes from (the classifier's cache, never a new encode), and the rule that only a
-    personal photograph gets a row. It writes on the caller's thread inside the caller's
-    transaction — SQLite stays single-writer, as everywhere in this stage.
+    Owns the three things every pass here owns: which frames want a vector this run (its
+    own incrementality, on `clip_embeddings.model`), where the vector comes from (the
+    classifier's cache, never a new encode), and the rule that only a personal photograph
+    gets a row. It writes on the caller's thread inside the caller's transaction — SQLite
+    stays single-writer, as everywhere in this stage.
 
-    Staleness is the MODEL and only the model. That is what makes a stored vector unusable
-    rather than merely old, and it is the one thing a row can be checked against without a
-    column that repeats what `files` already knows; a frame whose content changed is
-    revisited by the same rule that has it reclassified, and re-encoding it then costs the
-    one CLIP call the stage was making anyway.
+    Staleness is the MODEL and only the model: that is what makes a stored vector unusable
+    rather than merely old, and it needs no column repeating what `files` already knows. A
+    frame whose content changed is revisited by the rule that has it reclassified anyway.
     """
 
     def __init__(self, conn: sqlite3.Connection, model: str, ids: set[int],
@@ -3024,15 +2360,13 @@ class _EmbeddingPass:
         """Write the vector of one frame — or drop the row this frame must not have.
 
         Two things leave a frame without a row, and neither is a NULL: a verdict that is
-        not a personal photograph (F120 — the embedding of a screenshot is noise in a
-        search over personal photos, and a row a previous run left is removed), and a frame
-        that did not encode at all.
+        not a personal photograph (F120 — a screenshot's embedding is noise in a search
+        over personal photos, and a row a previous run left is removed), and a frame that
+        did not encode.
 
-        A frame that did not encode is therefore selected again by every later run. That is
-        the accepted price of "no row rather than a NULL row": the alternative is a marker
-        row saying "this one is hopeless", which is a claim about a file that may simply
-        have been on a disconnected drive. The retry costs one decode attempt on a file the
-        stage is already walking, and only for files that are actually broken.
+        The second is therefore selected again by every later run, which is the price of
+        "no row rather than a NULL row": a marker saying "this one is hopeless" is a claim
+        about a file that may simply have been on a disconnected drive.
         """
         if verdict is not None and verdict != QUALITY_VERDICT:
             self._conn.execute(
@@ -3047,10 +2381,10 @@ class _EmbeddingPass:
     def purge(self) -> None:
         """Drop the rows of everything this run decided is not a personal photograph.
 
-        The same statement, and for the same reason, as the `frame_quality` purge below
-        it: incrementality skips a frame whose row already looks current, so a collection
-        embedded before this rule would keep its screenshots PRECISELY because they are up
-        to date, and the deep tier reclassifies frames after the fast pass wrote them.
+        The same statement and the same reason as the `frame_quality` purge: incrementality
+        skips a frame whose row already looks current, so a collection embedded before this
+        rule would keep its screenshots PRECISELY because they are up to date — and the
+        deep tier reclassifies frames after the fast pass has written them.
         """
         if not self._enabled:
             return  # `features.store_embeddings` off: the table is not this run's business
@@ -3061,28 +2395,22 @@ class _EmbeddingPass:
 
 # --- F141: the search index, a second vector with a model of its own ------------------
 #
-# The vector above is the CLASSIFICATION vector and it stays that. This one is the SEARCH
-# vector, and the two are separate because the measurement said so twice over.
-#
 # `ViT-L-14` is accurate in English and does not work in Russian: over 217 hand-labelled
 # judgements on 8 concepts it gives 22% precision at top-5 against 98% for
-# `xlm-roberta-base-ViT-B-32`, and four of the eight concepts (cake, food, mountains,
-# children) return nothing at all. The multilingual model is not weaker in English either
-# (95% against 98% at top-5, three points on forty judgements), which was the objection
-# that had to be ruled out before its smaller image tower could be trusted.
+# `xlm-roberta-base-ViT-B-32`, with four of the eight (cake, food, mountains, children)
+# returning nothing at all. The multilingual model is not weaker in English either (95%
+# against 98% at top-5 over forty judgements), which had to be ruled out before its smaller
+# image tower could be trusted.
 #
-# The cheap fix — swap `naming.clip.*` — is the one thing that must not happen. The
+# THE CHEAP FIX — swapping `naming.clip.*` — IS THE ONE THING THAT MUST NOT HAPPEN. The
 # landmark threshold 0.85 with corroboration (F75), the animal threshold 0.70 (F122), the
 # cascade selection at 0.50 (F130) and the junk classification are all calibrated on L14's
-# numbers; a swap invalidates every one of them at once, and nothing in the pipeline would
+# numbers, and a swap invalidates every one of them at once with nothing in the pipeline to
 # say so. So the search side pays for a pass of its own: ~10.5 minutes per 20 000 frames,
 # behind `features.search_index`, off until a person switches it on.
 #
-# Everything else is `clip_embeddings`' arrangement, deliberately unchanged: the model
-# name is written into every row (F128's rule, not weakened — a vector that does not say
-# what computed it is rubbish that looks like data), a mismatch means recompute rather
-# than use, the wire format is L2-normalized little-endian float32, and the population is
-# canonical photographs only (F120).
+# Everything else is `clip_embeddings`' arrangement unchanged: the model name in every row,
+# a mismatch means recompute, L2-normalized little-endian float32, the F120 population.
 
 _SEARCH_UPSERT = """INSERT INTO search_embeddings (file_id, model, dim, vec, updated_at)
                     VALUES (?, ?, ?, ?, ?)
@@ -3090,11 +2418,9 @@ _SEARCH_UPSERT = """INSERT INTO search_embeddings (file_id, model, dim, vec, upd
                         model = excluded.model, dim = excluded.dim,
                         vec = excluded.vec, updated_at = excluded.updated_at"""
 
-# Which frames this pass owes a vector: a canonical photograph (F120 — the same population
-# `clip_embeddings` and `frame_quality` have) whose stored vector is missing or was
-# computed by another model. A frame with no verdict yet is included for the reason the
-# F128 selection includes it: a first run has classified nothing, and the purge below
-# settles whatever this run turns out to have decided.
+# Which frames this pass owes a vector: a canonical photograph (the F120 population) whose
+# stored vector is missing or was computed by another model. A frame with no verdict yet is
+# included — a first run has classified nothing, and the purge below settles it.
 _SEARCH_PENDING_SQL = """SELECT f.id, f.path
     FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
                  LEFT JOIN search_embeddings se ON se.file_id = f.id
@@ -3108,9 +2434,9 @@ def search_index_model(cfg: Config) -> str:
     """What the search side computes with — `features.search_model`, as one name.
 
     A key of its own and not `naming.clip.*`: that model is what the classification
-    thresholds are calibrated on, and the whole feature is the refusal to change it. The
-    string is `<architecture>/<weights>` in the same spelling `embedding_model` writes, so
-    a row of either table answers "which model" the same way.
+    thresholds are calibrated on, and this whole feature is the refusal to change it. Same
+    `<architecture>/<weights>` spelling as `embedding_model`, so a row of either table
+    answers "which model" the same way.
     """
     features = getattr(cfg, "features", None) or FeaturesConfig()
     return str(getattr(features, "search_model", FeaturesConfig.search_model))
@@ -3125,11 +2451,9 @@ def search_index_enabled(cfg: Config) -> bool:
 def search_index_settings(s: NamingSettings, model: str) -> NamingSettings:
     """The CLIP settings of the SEARCH model: `s` with its model name replaced.
 
-    Everything else about the encode is deliberately inherited — the batch size, the
-    decode pool, and through them the shared preview cache — because this pass reads the
-    very same previews the classification pass does (the brief's requirement, and the
-    reason its ten minutes are ten and not thirty). Only the pair (architecture, weights)
-    differs, and it is split here, once, so no caller has to know the name is a pair.
+    Everything else is inherited — the batch size, the decode pool, and through them the
+    shared preview cache — because this pass reads the very same previews, which is why its
+    ten minutes are ten and not thirty. The name is split into its pair here, once.
     """
     architecture, _, weights = model.partition("/")
     return replace(s, clip_model=architecture, clip_pretrained=weights)
@@ -3140,10 +2464,9 @@ def read_search_embeddings(conn: sqlite3.Connection, model: str,
                            ) -> dict[int, np.ndarray]:
     """Stored SEARCH vectors of this model by file_id — the same rule, the other table.
 
-    A separate function rather than a table argument on `read_clip_embeddings`: the model
-    filter is the safety property of both (mixing two spaces produces a plausible ranking
-    nothing marks as wrong), and a parameter that selects which table to apply it to is
-    one call site away from being passed the wrong one.
+    A separate function and not a table argument on `read_clip_embeddings`: the model
+    filter is the safety property of both, and a parameter selecting which table to apply
+    it to is one call site away from being passed the wrong one.
     """
     sql = "SELECT file_id, vec FROM search_embeddings WHERE model = ?"
 
@@ -3163,10 +2486,9 @@ def read_search_embeddings(conn: sqlite3.Connection, model: str,
 def search_image_encoder(s: NamingSettings) -> FeatureSource:  # pragma: no cover — ML
     """The image tower of the search model: paths -> a unit vector each, None where not.
 
-    `landmarks.clip_classifier` and nothing new: it already decodes through the shared
-    preview cache, in a pool, in one GPU batch, and returns None for a frame that would
-    not decode. What this pass needs is its `encode` half alone — there are no prompts
-    here, the vector IS the answer — so the classifier is built and its encoder taken.
+    `landmarks.clip_classifier` and nothing new — it already decodes through the shared
+    preview cache, in a pool, in one GPU batch. This pass needs its `encode` half alone:
+    there are no prompts here, the vector IS the answer.
     """
     classifier = clip_classifier(s)
     if not isinstance(classifier, CachingFeatureClassifier):
@@ -3177,19 +2499,16 @@ def search_image_encoder(s: NamingSettings) -> FeatureSource:  # pragma: no cove
 class _SearchIndexPass:
     """F141: the second CLIP pass, the one that pays for itself in Russian queries.
 
-    The only pass of this stage that ENCODES IMAGES AGAIN, and every property of it
-    follows from that being expensive. It runs last, over the verdicts everything above
-    has settled, so a frame the deep tier has just called a screenshot is never encoded;
-    it is incremental on `search_embeddings.model`, so switching the model recomputes and
-    a repeated run does nothing; and it is built lazily — a run with no frames to encode
-    loads no weights, which is what makes leaving the toggle on cheap for a collection
-    that is already indexed.
+    The only pass of this stage that ENCODES IMAGES AGAIN, and every property follows from
+    that being expensive: it runs LAST, over the verdicts everything above has settled, so
+    a frame the deep tier has just called a screenshot is never encoded; it is incremental
+    on `search_embeddings.model`; and it is built lazily, so leaving the toggle on costs a
+    collection that is already indexed nothing.
 
-    The failures are the same shape as every other optional half here. A model that will
-    not build leaves the run exactly as it was (the search index simply stays as it is,
-    and search says so rather than ranking with the classification vectors); a chunk that
-    will not encode is logged and skipped, and its frames are selected again next run,
-    which is the same "no row rather than a wrong row" rule `_EmbeddingPass.store` states.
+    The failures are the shape every optional half here has. A model that will not build
+    leaves the table as it was, and search says so rather than ranking with the
+    classification vectors; a chunk that will not encode is logged, skipped and selected
+    again next run — `_EmbeddingPass.store`'s "no row rather than a wrong row".
     """
 
     def __init__(self, conn: sqlite3.Connection, model: str,
@@ -3231,9 +2550,8 @@ class _SearchIndexPass:
                 chunk: Sequence[tuple[int, str]]) -> list[np.ndarray | None]:
         """One batch through the tower; a batch that raises costs the run nothing.
 
-        The encoder answers None per unreadable frame on its own — this catches the
-        failure of the CALL, which is a batch of frames and not one of them, and turns it
-        into the same "no vector" every one of them would have got individually.
+        The encoder answers None per unreadable frame on its own — this catches a failure
+        of the CALL, which is a whole batch, and turns it into the same "no vector".
         """
         try:
             return list(encode([path for _file_id, path in chunk]))
@@ -3257,11 +2575,9 @@ class _SearchIndexPass:
     def _purge(self) -> None:
         """Drop the rows of everything this run decided is not a personal photograph.
 
-        The same statement and the same reason as `_EmbeddingPass.purge`: incrementality
-        skips a frame whose row already looks current, so a screenshot indexed before its
-        verdict changed would stay in the search index PRECISELY because its vector is up
-        to date. Runs whenever the toggle is on, including on the runs that have no frame
-        left to encode — that is the state a collection settles into.
+        `_EmbeddingPass.purge`'s statement and reason. Runs whenever the toggle is on,
+        including on runs with no frame left to encode — the state a collection settles
+        into.
         """
         with self._conn:
             self._conn.execute(
@@ -3273,49 +2589,36 @@ class _SearchIndexPass:
 class JunkStats:
     total: int = 0        # canonical photos in total
     processed: int = 0    # processed in this run (rows whose tier != the active one)
-    # F68: rows skipped as already handled by the active tier (total - processed).
-    # On a repeated run without input changes it equals `total` and processed is 0 —
-    # the observable sign that incrementality works.
+    # F68: rows the active tier had already handled. On a repeated run without input
+    # changes it equals `total` and processed is 0 — the observable sign of incrementality,
+    # which every "stored" counter below repeats for its own half.
     skipped_incremental: int = 0
     clip_used: bool = False
     by_verdict: dict[str, int] = field(default_factory=dict)
     vlm_candidates: int = 0  # #14/V1: files selected for the VLM (doc/product zone)
     vlm_applied: int = 0     # of those, actually reclassified by the VLM (without errors)
-    # F113, the frame-quality cascade. quality_rows counts the rows the cheap tiers wrote
-    # (sharpness always, pets when the toggle is on). F186 removed the pair next to it —
-    # the uncertain band and how much of it the model answered — with the question they
-    # priced.
-    quality_rows: int = 0
-    # The animals this run ended up marking — AFTER the F130 check, if it ran: the number
-    # a user compares against the folder they get, not an intermediate the cascade
-    # discarded on its way there.
+    quality_rows: int = 0    # F113: rows the cheap tiers wrote
+    # The animals this run ended up marking — AFTER the F130 check and the F154 detector,
+    # if they ran: the number a user compares against the folder they get, not an
+    # intermediate the cascade discarded on its way there.
     pets_found: int = 0
-    # F130: frames shown to the pet check (`pet_score >= pet_candidate_threshold`) and how
-    # many of them came back with an answer that parsed. The pair is what prices the check.
+    # F130: frames shown to the pet check and how many came back with an answer that
+    # parsed. The pair is what prices the check.
     pet_candidates: int = 0
     pet_verified: int = 0
-    # F128: vectors written into `clip_embeddings` in this run. On a repeated run it is 0
-    # and the table is unchanged — the observable sign that this half is incremental too.
     embeddings_stored: int = 0
-    # F141: and the same number for the SEARCH index, counted apart from it because the
-    # two are not the same cost. This one is a second CLIP pass — ~10.5 minutes per 20 000
-    # frames — so "how many frames did that pass actually encode" is what prices the
-    # toggle, and on a repeated run it is 0 like the counter above it.
+    # F141: counted apart from the line above because a second CLIP pass is not the same
+    # cost — "how many frames did that pass encode" is what prices the toggle.
     search_vectors_stored: int = 0
-    # F140: photographs the rescue score was computed for, how many of them cleared
-    # `features.junk_rescue_threshold` (the frames the deep tier is asked about), and how
-    # many verdicts the model actually moved off `photo`. The first two price the gate the
-    # way pet_candidates/pet_verified price the animal check; the third is the whole point
-    # of the feature, and it is deliberately not the same number as the second — a
-    # candidate the model calls a photograph stays one.
+    # F140: photographs scored, how many cleared `features.junk_rescue_threshold`, and how
+    # many verdicts the model actually moved off `photo`. The third is deliberately not the
+    # second: a candidate the model calls a photograph stays one.
     junk_scored: int = 0
     junk_candidates: int = 0
     junk_rescued: int = 0
-    # F154: the animal detector — frames the query selected, how many of them the model
-    # actually looked at (the rest already had an answer from an earlier run, which is what
-    # makes a repeated run cost nothing), and on how many an animal was found. The first
-    # two price the cascade the way pet_candidates/pet_verified price the F130 check; the
-    # last is the population of the animal slice this feature exists to widen.
+    # F154: frames the query selected, how many the detector actually looked at (the rest
+    # had an answer from an earlier run — what makes a repeated run cost nothing), and on
+    # how many an animal was found.
     detector_candidates: int = 0
     detector_examined: int = 0
     detector_found: int = 0
@@ -3324,12 +2627,10 @@ class JunkStats:
 def _non_photo_ids(conn: sqlite3.Connection, file_ids: Sequence[int]) -> set[int]:
     """Which of these frames `media_class` says are NOT personal photographs.
 
-    One query over an indexed column, and it is asked AFTER the deep tier rather than
-    trusted from the fast pass: the deep tier (and, since F140, the rescue) is the one
-    thing that can move a verdict while a candidate list is standing, and `document` is
-    precisely the class `vlm.exclude_classes` protects by default. A frame with no verdict
-    at all is not in the answer — a first run has classified nothing yet, and that is not a
-    reason to withhold it.
+    Asked AFTER the deep tier rather than trusted from the fast pass: that tier (and, since
+    F140, the rescue) is what can move a verdict while a candidate list is standing, and
+    `document` is precisely the class `vlm.exclude_classes` protects by default. A frame
+    with no verdict at all is not in the answer — a first run has classified nothing.
     """
     out: set[int] = set()
     for part in batched(list(file_ids), 500):
@@ -3342,15 +2643,9 @@ def _non_photo_ids(conn: sqlite3.Connection, file_ids: Sequence[int]) -> set[int
 class _QualityPass:
     """The frame-quality half of `classify`, kept out of its loop (F113).
 
-    Owns three things and nothing else: which frames need quality work this run (its own
-    incrementality, on `frame_quality.source`, mirroring how junk uses `media_class.tier`),
-    what the cheap tiers say about a frame, and which frames that leaves for the pet check.
-    It writes on the caller's thread, inside the caller's transaction — SQLite stays
-    single-writer, as everywhere in this stage.
-
-    F186 left it with ONE model question. The frame-quality prompt, its candidate band and
-    the scope that narrowed it are gone (the eyes are geometry now, F179), so the pet check
-    is the only thing here that can raise a model at all.
+    Owns three things: which frames need quality work this run (its own incrementality, on
+    `frame_quality.source`), what the cheap tiers say about a frame, and which frames that
+    leaves for the pet check — the only model question here since F186.
     """
 
     def __init__(self, conn: sqlite3.Connection, q: QualitySettings,
@@ -3364,23 +2659,18 @@ class _QualityPass:
         self._ids = ids
         self._now = now
         self._stats = stats
-        # F130: the pet check and its candidate list — a CLIP score above
-        # `pet_candidate_threshold`, which is the one population this pass still selects.
         self._pet_ask = pet_ask
-        # F206: the preparation threads of that check — `vlm.workers`, the same knob and
-        # the same pool the deep tier uses. Defaulted to 1 (the serial path) so a caller
-        # that builds this pass by hand keeps the behaviour it had.
+        # F206: the preparation threads of that check — `vlm.workers`, the deep tier's own
+        # knob. Defaulted to 1 (the serial path) for a caller that builds this by hand.
         self._workers = workers
         # (file_id, path, label the cheap tier wrote) — the third field is what keeps
         # `stats.pets_found` the FINAL count when an answer moves the label.
         self._pet_candidates: list[tuple[int, str, str | None]] = []
-        # F140: (file_id, path) of every frame this run actually wrote a row for — the
-        # population of the rescue score, which is the same one by construction: a score
-        # belongs to a `frame_quality` row, and a row exists for personal photographs only.
+        # F140: every frame this run wrote a row for — the population of the rescue score,
+        # which is the same one by construction: a score belongs to a `frame_quality` row.
         self._measured: list[tuple[int, str]] = []
-        # F155: where the faces of the frames this run measures are. Read in one query
-        # rather than one per frame, and only when the first frame actually asks — a
-        # collection whose quality half is up to date must not pay for the query at all.
+        # F155: one query rather than one per frame, and only when the first frame asks —
+        # a collection whose quality half is up to date must not pay for it at all.
         self._faces: dict[int, FaceBoxes] | None = None
 
     @property
@@ -3401,9 +2691,9 @@ class _QualityPass:
     def needs_clip(self) -> bool:
         """Does the quality half need the CLIP row of a frame at all?
 
-        One thing wants it: the pet group, which writes `pet`/`pet_score`. F130 adds no
-        second reason (the check reads the score of that same group), and F186 removed the
-        one there used to be — the subject score that decided half of the uncertainty band.
+        Only the pet group does, and only to write `pet`/`pet_score` — the F130 check reads
+        the score of that same group, and F186 took the second reason away with the
+        subject score.
         """
         return self._q.pets
 
@@ -3411,23 +2701,17 @@ class _QualityPass:
                 verdict: str | None = None) -> None:
         """The cheap tiers for one frame: measure, write the row, note the candidates.
 
-        F120: a frame this run decided is NOT a personal photograph is dropped here
-        instead of measured, and any row a previous run left for it is removed — the
-        first live run wrote 24 196 rows over the whole collection, and the answers on
-        screenshots, products and documents were the noise that made the signal unusable.
+        F120: a frame this run decided is NOT a personal photograph is dropped here instead
+        of measured, and a row a previous run left for it is removed — the first live run
+        wrote 24 196 rows over the whole collection, and the answers on screenshots,
+        products and documents were the noise that made the signal unusable.
 
-        That same guard is what keeps `vlm.exclude_classes` out of the candidate list
-        below: this population is personal photographs, and the excludable classes
-        (document, product, screenshot, meme — `photo` is not one of them, see
-        config.VLM_EXCLUDABLE_CLASSES) have already left by the time a candidate is noted.
+        That same guard keeps `vlm.exclude_classes` out of the candidate list below: the
+        excludable classes have already left by the time a candidate is noted.
         """
         if verdict is not None and verdict != QUALITY_VERDICT:
             self._conn.execute("DELETE FROM frame_quality WHERE file_id = ?", (file_id,))
             return
-        # F155/F179: everything one decode yields — the whole frame, the sharpest face in
-        # it where the faces stage found one, and how open the eyes of the largest face
-        # are. The face crop is what actually separates a blurred frame from a detailed one
-        # (see the module docstring); the whole-frame number is unchanged.
         measured = self._sharpness(path, self._faces_of(file_id))
         sharpness = measured.frame
         pet: str | None = None
@@ -3441,11 +2725,10 @@ class _QualityPass:
         self._measured.append((file_id, path))
         if pet is not None:
             self._stats.pets_found += 1
-        # F130: the label written above is the UNVERIFIED one — `pet_score >=
-        # pet_threshold` — and that is deliberate. It is what the frame keeps if the model
-        # never answers about it, so the fallback is already in the table before anything
-        # expensive is attempted, and a run that dies mid-check leaves today's answer
-        # rather than half of tomorrow's.
+        # F130: the label written above is deliberately the UNVERIFIED one. It is what the
+        # frame keeps if the model never answers, so the fallback is in the table before
+        # anything expensive is attempted and a run that dies mid-check leaves today's
+        # answer rather than half of tomorrow's.
         if (self._pet_ask is not None and pet_score is not None
                 and pet_score >= self._q.pet_candidate_threshold):
             self._pet_candidates.append((file_id, path, pet))
@@ -3453,12 +2736,10 @@ class _QualityPass:
     def _reclassified(self) -> set[int]:
         """Candidates that stopped being personal photographs while the list was standing.
 
-        The list is built during the fast pass and asked after the deep tier, which is the
-        one thing that can move a verdict in between — a frame the fast tier called a
-        photograph can come back a `product` or a `document`. Its row is purged at the end
-        of the stage either way, but the question would already have been asked by then,
-        and `document` is precisely the class `vlm.exclude_classes` protects by default.
-        One query over an indexed column is a cheap way not to show the model a passport.
+        The list is built during the fast pass and asked after the deep tier, which can
+        move a verdict in between. The row is purged at the end of the stage either way,
+        but the question would already have been asked by then — and one query over an
+        indexed column is a cheap way not to show the model a passport.
         """
         return _non_photo_ids(
             self._conn, [fid for fid, _path, _before in self._pet_candidates])
@@ -3466,32 +2747,17 @@ class _QualityPass:
     def ask_pets(self, report: _PhaseProgress) -> None:
         """The pet check over its candidates — one frame per call, one word back (F130).
 
-        Three things can leave a frame unanswered, and all three mean the SAME thing: the
-        row keeps the label the CLIP threshold gave it and `pet_vlm` stays NULL. The model
-        raised on this frame; the model answered something nobody could read; the model was
-        never built at all (the caller's graceful fallback). None of them is a "no" — a
-        cheap tier that survives the failure of an expensive one is the rule this whole
-        stage is built on, and guessing here would delete a label CLIP was right about.
+        Three things leave a frame unanswered and all three mean the SAME thing — the row
+        keeps the label the CLIP threshold gave it and `pet_vlm` stays NULL: the model
+        raised, the model answered something nobody could read, or the model was never
+        built (the caller's graceful fallback). None of them is a "no": guessing here would
+        delete a label CLIP was right about.
 
-        The phase is CLASSIFY_PHASE_PETS_VLM — its own name since F205, with its own
-        caption in all three languages. It shared CLASSIFY_PHASE_VLM with the deep tier
-        while the two cost the same per frame, and a shared name means the estimate can
-        only charge one of them at the other's rate. The candidate list is known before
-        the loop starts, so the bar reports a real (done, total) over it. The count
-        reported is the list AFTER `_reclassified` has trimmed it, so the bar counts
-        questions that will actually be asked.
-
-        F206: THE ANSWERS COME THROUGH `_vlm_labels`, i.e. through the machinery the deep
-        tier has used since F101 — `vlm.workers` threads decode and preprocess frames
-        while this thread runs the model and writes. That is the whole change here: the
-        0.42 frames/s the phase name above was measured at was this loop asking one frame
-        at a time while the card idled through every decode, 116 minutes a run over the
-        4 281 frames the two back-half questions see. Nothing about the question moves —
-        the same prompt, the same token budget, the same input size, one frame per call —
-        so no verdict may move either, and the order guarantee is the tier's own: answers
-        arrive in the CANDIDATE order (a FIFO of futures), not in the order the
-        preparations happen to finish, because an answer written against its neighbour's
-        file is worse than a slow pass.
+        The count reported is the list AFTER `_reclassified` has trimmed it, so the bar
+        counts questions that will actually be asked. The answers come through
+        `_vlm_labels` (F206), so they arrive in the CANDIDATE order rather than in the
+        order the preparations finish — an answer written against its neighbour's file is
+        worse than a slow pass.
         """
         if self._pet_ask is None or not self._pet_candidates:
             return
@@ -3510,9 +2776,6 @@ class _QualityPass:
             for i, ((file_id, _path, before), item) in enumerate(
                     zip(candidates, answers)):
                 if isinstance(item, BaseException):
-                    # A frame the model raised on keeps the label the CLIP threshold gave
-                    # it — the same contract this loop has always had, only the raising
-                    # moved into the generator.
                     _log.warning(
                         "junk: VLM-проверка животных не ответила по file_id=%s (%s) — "
                         "оставляю метку по порогу CLIP", file_id, item)
@@ -3521,9 +2784,8 @@ class _QualityPass:
                     answer = item
                 seen = parse_pet_answer(answer)
                 if seen is not None:
-                    # The same rule the fast half used, now with the model's word in hand.
-                    # The score is passed as None because it cannot change the outcome —
-                    # an answer outranks it — and routing both cases through one function
+                    # The score is passed as None because it cannot change the outcome — an
+                    # answer outranks it — and routing both cases through the one function
                     # is what keeps the column and the label from disagreeing.
                     after = pet_label(seen, None, self._q.pet_threshold)
                     self._conn.execute(
@@ -3536,18 +2798,19 @@ class _QualityPass:
 class _JunkRescuePass:
     """F140: the zero-shot score over the stored vectors, and the check it selects for.
 
-    Owns the three things the other halves own and nothing else: which frames are scored
-    (the ones this run wrote a `frame_quality` row for — the score belongs to that row, and
-    that row exists for personal photographs only), where the numbers come from (the
-    `clip_embeddings` table F128 filled, never a new pass over any image), and who is shown
-    to the model. It writes on the caller's thread, inside the caller's transaction.
+    Owns the three things every pass here owns: which frames are scored (the ones this run
+    wrote a `frame_quality` row for — the score belongs to that row), where the numbers
+    come from (the `clip_embeddings` table F128 filled, never a new pass over any image),
+    and who is shown to the model. It writes on the caller's thread, in its transaction.
 
-    Two failures leave a frame alone rather than junked, and they are the reason this is a
-    gate and not a classifier: no stored vector (the score stays NULL and the frame is no
-    candidate — a heuristics-only collection or `store_embeddings: false` simply does not
-    have this feature), and no answer from the model (the fast verdict stands). Neither is
-    ever read as "this is junk": the score alone is right ~85% of the time, and the F130
-    lesson is that such a signal applied directly makes a better baseline worse.
+    WHY THIS IS A GATE AND NOT A CLASSIFIER: reviewed by eye on the live collection, above
+    +0.05 the 93 frames are junk outright, but the band +0.02..+0.05 still holds ~17% real
+    photographs — applied as a verdict at 85% precision it would take ~150 living pictures
+    out of the layout, exactly the mistake F130 measured for animals. So two failures leave
+    a frame alone rather than junked, and neither is ever read as "this is junk": no stored
+    vector (the score stays NULL, the frame is no candidate — a heuristics-only collection
+    or `store_embeddings: false` simply does not have this feature) and no answer from the
+    model (the fast verdict stands).
 
     The text encoder is built LAZILY, inside `run`, and only when there are frames to
     score: it loads a model, and a run with nothing to ask must not pay for one.
@@ -3564,18 +2827,15 @@ class _JunkRescuePass:
         self._now = now
         self._tier = tier
         self._stats = stats
-        # F206: the preparation threads of the question below — `vlm.workers`, the same
-        # knob the deep tier and the animal check use. Defaulted to 1 (the serial path)
-        # for a caller that builds this pass by hand.
+        # F206: `vlm.workers`, the deep tier's own knob; 1 is the serial path.
         self._workers = workers
 
     def _text_features(self) -> np.ndarray | None:
         """The prompts as a matrix of unit rows; None — the encoder could not be had.
 
-        The same graceful fallback the model halves of this stage have, and for the same
-        reason: an optional signal that cannot be computed must cost the run nothing. The
-        rows are not cached between runs — five short strings through a text tower is
-        nothing next to the pass that has just finished.
+        The graceful fallback every model half of this stage has: an optional signal that
+        cannot be computed must cost the run nothing. Not cached between runs — five short
+        strings through a text tower is nothing next to the pass that just finished.
         """
         try:
             rows = np.asarray(self._encoder()(junk_rescue_prompts()), dtype=np.float32)
@@ -3629,25 +2889,14 @@ class _JunkRescuePass:
                     report: _PhaseProgress) -> None:
         """One question per candidate; only the model's answer moves a verdict.
 
-        With the deep tier off there is no asker at all and this returns immediately: the
-        scores are stored, the candidates are counted, and not one verdict of the run has
-        changed — which is the promise the feature is switched on under.
+        With the deep tier off there is no asker and this returns immediately: the scores
+        are stored, the candidates counted, and not one verdict of the run has changed —
+        the promise the feature is switched on under.
 
-        `photo` back from the model is an answer, not a refusal: the frame was a candidate
-        because it LOOKS like a screenshot, and the model saying otherwise is exactly what
-        the ~15% of candidates that are real photographs need. It is written as a verdict
-        anyway (the source becomes `vlm`) so that a later reader can tell a frame the model
-        confirmed from one it was never shown.
-
-        F205: the phase is CLASSIFY_PHASE_RESCUE_VLM, not the deep tier's name — a price
-        of its own, which the estimate can only quote if the log files it separately.
-
-        F206: and the price is now the tier's, because the questions go through the tier's
-        own pipeline (`_vlm_labels`, see `_QualityPass.ask_pets` for the measurement that
-        ended the serial version of this loop). One question per candidate still, one
-        frame per call still, the answers still consumed in the candidate order and still
-        written from this thread inside this transaction — what changed is that the next
-        candidate is being decoded while the model answers about this one.
+        `photo` back from the model is an ANSWER, not a refusal: the frame was a candidate
+        because it LOOKS like a screenshot, and ~15% of candidates are real photographs. It
+        is written as a verdict anyway (source `vlm`) so that a later reader can tell a
+        frame the model confirmed from one it was never shown.
         """
         if self._ask is None:
             return
@@ -3678,11 +2927,9 @@ class _JunkRescuePass:
                 report.step(i + 1)
 
 
-# F154: who the animal query may rank at all. Canonical photographs the stage calls a
-# photograph, plus the ones it has not classified yet (a first run has settled nothing, and
-# that is not a reason to withhold a frame) — the F120 population. The detector never sees
-# anything outside this list, and
-# the ranking then cuts it down to `features.detector_candidates`.
+# F154: who the animal query may rank at all — the F120 population, plus the frames the
+# stage has not classified yet (a first run has settled nothing). The ranking then cuts it
+# down to `features.detector_candidates`, and the detector never sees anything else.
 _DETECTOR_POPULATION_SQL = """SELECT f.id, f.path FROM files f
     LEFT JOIN media_class mc ON mc.file_id = f.id
     WHERE f.dup_of IS NULL AND f.error IS NULL AND f.media_type = 'photo'
@@ -3693,29 +2940,26 @@ _DETECTOR_POPULATION_SQL = """SELECT f.id, f.path FROM files f
 class _DetectorPass:
     """F154: the object detector, over the candidates a query selects — never over a pass.
 
-    The pipeline half of `detect.py`, and it owns the three things every other pass here
-    owns: who the candidates are (the top `features.detector_candidates` frames of a
-    zero-shot animal query over the vectors F128 already stores, inside the F120 population
-    of personal photographs), which of them still need the model (its own incrementality —
-    a row in `detections` written by the same detector means "already examined", and that
-    covers a frame it found nothing on), and what the answer then decides
-    (`frame_quality.pet`, through `detect.cascade_label`). It writes on the caller's thread
-    inside its own transactions — SQLite stays single-writer, as everywhere in this stage.
+    The pipeline half of `detect.py`, owning the three things every pass here owns: who the
+    candidates are (the top `features.detector_candidates` frames of a zero-shot animal
+    query over the vectors F128 stores, inside the F120 population), which of them still
+    need the model (its own incrementality — a `detections` row of the same detector means
+    "already examined", a frame it found nothing on included), and what the answer decides
+    (`frame_quality.pet`, through `detect.cascade_label`).
 
-    THERE IS NO CODE PATH THAT RUNS THE DETECTOR OVER EVERYTHING. That is the feature, not
-    a safeguard: 83.8 ms per frame is 30.8 minutes over 22 096 photographs, for a signal
-    that beats what the pipeline already has on exactly one slice out of three. Without
-    stored vectors there are no candidates and the stage says so instead of falling back to
-    a pass — a fallback nobody asked for is how three minutes become thirty-one.
+    WHY A CASCADE. Measured on 200 hand-labelled frames (2026-08-02, confidence 0.5), a
+    COCO detector is 62% precision / 87% recall on animals against the CLIP label's 71% /
+    33% — but 42% precision on people where the face boxes are ~100% (F152), and 20% / 15%
+    on food, which COCO has no class for. It earns its keep on one slice of three, and a
+    pass over the collection is 83.8 ms x 22 096 = 30.8 minutes against ~3 for the top
+    2 000. So THERE IS NO CODE PATH THAT RUNS IT OVER EVERYTHING: without stored vectors
+    there are no candidates and the stage says so, because a fallback nobody asked for is
+    how three minutes become thirty-one.
 
-    Three failures leave every label exactly as the cheaper tiers wrote it, and none of
-    them is ever read as "no animal": no vectors to query (the reason is logged), an
-    encoder or a detector that will not build (the graceful fallback every optional half of
-    this stage has), and an error on one frame (that frame keeps its label and is examined
-    again next run, because no row is written for it).
-
-    Both the encoder and the detector are built LAZILY, inside `run`, and only when there
-    is work: each loads a model, and a run with nothing to ask must not pay for one.
+    Three failures leave every label as the cheaper tiers wrote it and none is read as "no
+    animal": no vectors to query (logged), an encoder or detector that will not build (the
+    graceful fallback every optional half here has), an error on one frame (no row, so it
+    is examined again next run). Both models are built LAZILY, inside `run`.
     """
 
     def __init__(self, conn: sqlite3.Connection, s: DetectorSettings, model: str,
@@ -3742,9 +2986,8 @@ class _DetectorPass:
         todo = [(file_id, path) for file_id, path in candidates if file_id not in stored]
         found = dict(stored)
         found.update(self._examine(todo, report))
-        # Counted over the candidates that HAVE an answer, this run's and the stored ones
-        # alike: the number a user compares against the folder they get does not depend on
-        # which run happened to ask the question.
+        # Over every candidate that HAS an answer, this run's and the stored ones alike: the
+        # number a user compares against their folder must not depend on which run asked.
         self._stats.detector_found = sum(
             1 for boxes in found.values()
             if best_animal(boxes, self._s.threshold) is not None)
@@ -3753,14 +2996,12 @@ class _DetectorPass:
     def _candidates(self) -> list[tuple[int, str]]:
         """The frames the animal query ranks highest — (file_id, path), best first.
 
-        The query runs over `clip_embeddings`, the CLASSIFICATION vectors: those are the
-        rows this pipeline's prompts live in the space of, and the model filter inside
-        `read_clip_embeddings` is what keeps a vector of another model out of the ranking.
+        Over `clip_embeddings`, the CLASSIFICATION vectors: those are the rows this
+        pipeline's prompts live in the space of.
 
         An empty table is a REASON and not an empty list (the F134 rule): "no candidates"
         and "nobody has ever computed a vector here" read identically in a count of zero,
-        and only one of them is fixed by running the junk stage with
-        `features.store_embeddings` on. So it is said, in the log, and nothing is asked.
+        and only one of them is fixed by a junk run with `features.store_embeddings` on.
         """
         rows = self._conn.execute(_DETECTOR_POPULATION_SQL, (QUALITY_VERDICT,)).fetchall()
         paths = {int(r["id"]): str(r["path"]) for r in rows}
@@ -3780,8 +3021,7 @@ class _DetectorPass:
     def _text_features(self) -> np.ndarray | None:
         """The animal prompts as unit rows; None — the encoder could not be had.
 
-        The same graceful fallback the model halves of this stage have, and for the same
-        reason: an optional signal that cannot be computed must cost the run nothing.
+        The graceful fallback of `_JunkRescuePass._text_features`, for the same reason.
         """
         try:
             rows = np.asarray(self._encoder()(list(ANIMAL_QUERY_PROMPTS)),
@@ -3796,10 +3036,9 @@ class _DetectorPass:
     def _stored(self, candidates: Sequence[tuple[int, str]]) -> dict[int, list[Detection]]:
         """What THIS detector already answered about these frames — incrementality.
 
-        Keyed by the model, like every other marker in this stage: boxes from another
-        detector are not this one's answer, so such a frame is examined again rather than
-        trusted. A row that exists with no boxes in it is an answer too — "looked, found
-        nothing" — and it is the reason a repeated run asks nothing at all.
+        Keyed by the model, like every other marker here: boxes from another detector are
+        not this one's answer. A row with no boxes in it is an answer too — "looked, found
+        nothing" — and it is what makes a repeated run ask nothing at all.
         """
         out: dict[int, list[Detection]] = {}
         for part in batched([file_id for file_id, _path in candidates], 500):
@@ -3814,10 +3053,9 @@ class _DetectorPass:
                  report: _PhaseProgress) -> dict[int, list[Detection]]:
         """Run the detector over the frames that have no answer yet, and store what it saw.
 
-        A frame the model raises on gets NO ROW: it keeps whatever label it had and is
-        examined again next run. That is the same "no row rather than a wrong row" rule
-        `_EmbeddingPass.store` states, and here it also keeps one bad frame from being
-        recorded as a frame with no animal on it.
+        A frame the model raises on gets NO ROW — `_EmbeddingPass.store`'s "no row rather
+        than a wrong row", which here also keeps a bad frame from being recorded as a frame
+        with no animal on it.
         """
         if not todo:
             return {}
@@ -3839,9 +3077,9 @@ class _DetectorPass:
                     _log.warning(
                         "junk: детектор не ответил по file_id=%s (%s) — кадр остаётся "
                         "с прежней меткой и попадёт в следующий прогон", file_id, exc)
-                    # Outside the `else` for the F100 reason: a frame the model failed on
-                    # is a frame this pass is done with, and a bar one short of its total
-                    # for good is worse than an honest step.
+                    # Outside the `else` for the F100 reason: a frame the model failed on is
+                    # a frame this pass is done with, and a bar one short of its total for
+                    # good is worse than an honest step.
                     report.step(i + 1)
                     continue
                 kept = animal_boxes(boxes, STORE_FLOOR)
@@ -3859,16 +3097,15 @@ class _DetectorPass:
                  found: dict[int, list[Detection]]) -> None:
         """Write the label the cascade decides — for the frames the detector examined.
 
-        Read before written, and only the rows that change are touched: this pass runs over
-        candidates the earlier tiers have already labelled, and the great majority of them
-        keep exactly what they had. `stats.pets_found` follows every change, so the number
-        a run reports is the one the cascade ended on and not the fast tier's (see the
-        counter's own note below for the one case where that difference is floored).
+        Read before written, and only rows that change are touched: this pass runs over
+        candidates the earlier tiers have already labelled, and most keep what they had.
+        `stats.pets_found` follows every change, so a run reports the number the cascade
+        ended on rather than the fast tier's.
 
         A candidate with no `frame_quality` row is skipped rather than given one: that
-        table's population is written by the quality half, under its own incrementality,
-        and a detection is not a reason to invent a row with no sharpness in it. The boxes
-        are stored either way — they are a fact about the frame, not about the label.
+        table's population belongs to the quality half, and a detection is not a reason to
+        invent a row with no sharpness in it. The boxes are stored either way — they are a
+        fact about the frame, not about the label.
         """
         ids = [file_id for file_id, _path in candidates if file_id in found]
         rows = read_frame_quality(self._conn, ids)
@@ -3882,11 +3119,9 @@ class _DetectorPass:
                 if after == row.pet:
                     continue
                 self._conn.execute(_PET_DETECTOR_UPDATE, (after, self._now, file_id))
-                # `pets_found` counts the animals THIS RUN ended up marking, and unlike
-                # the F130 check this pass does not select from the frames the run
-                # measured: on a collection that is otherwise up to date it has none. So a
-                # label taken off such a frame cannot push the count below zero — there
-                # was nothing there to subtract from.
+                # Floored: unlike the F130 check this pass does not select from the frames
+                # the run measured, so on a collection that is otherwise up to date there
+                # is nothing for a removed label to subtract from.
                 self._stats.pets_found = max(
                     0, self._stats.pets_found
                     + (after is not None) - (row.pet is not None))
@@ -3894,10 +3129,8 @@ class _DetectorPass:
     def purge(self) -> None:
         """Drop the boxes of everything this run decided is not a personal photograph.
 
-        The same statement and the same reason as `_EmbeddingPass.purge`: incrementality
-        skips a frame whose row already looks current, so a frame examined before its
-        verdict moved to `document` would keep its boxes PRECISELY because they are up to
-        date — and a document is the one class this project takes care not to describe.
+        `_EmbeddingPass.purge`'s reason, and here a document is the one class this project
+        takes care not to describe.
         """
         if not self._s.enabled:
             return  # the detector is off: the table is not this run's business
@@ -3908,31 +3141,26 @@ class _DetectorPass:
 
 # --- F210: the preview of a sensitive frame does not stay on disk ---------------------
 #
-# Refusing to SHOW a document (slices.py withholds `thumb_url` for it) protects the
-# screen and not the disk: the preview is written by the very stage that decides what the
-# frame is — `decode_rgb_preview` decodes everything it is handed, deliberately, and by
-# the time a verdict exists the JPEG is already in the cache. So the run that names a
-# frame is the run that has to take its derivative away, exactly as it already drops the
-# frame's quality row, its vector and its boxes (`_QualityPass`/`_EmbeddingPass`/
-# `_DetectorPass.purge`).
+# Refusing to SHOW a document (slices.py withholds `thumb_url`) protects the screen and not
+# the disk: `decode_rgb_preview` decodes everything it is handed, deliberately, so by the
+# time a verdict exists the JPEG is already in the cache. The run that names a frame is
+# therefore the run that takes its derivative away, exactly as it drops that frame's
+# quality row, its vector and its boxes.
 #
-# Which classes are sensitive is decided by the LIVE `vlm.exclude_classes` and by nothing
-# else. There is no list written down here: `_JUNK_NO_PREVIEW` in the UI is the default of
-# a parameter for direct calls, not a source of truth, and an EMPTY setting is an
-# instruction rather than an oversight — somebody whose config says `exclude_classes: []`
-# has said that no class is private, and for them this sweep must remove nothing at all.
+# Which classes are sensitive is the LIVE `vlm.exclude_classes` and nothing else — the UI's
+# `_JUNK_NO_PREVIEW` is the default of a parameter, not a source of truth — and an EMPTY
+# setting is an instruction rather than an oversight: somebody whose config says
+# `exclude_classes: []` has said no class of theirs is private.
 
 
 def sweep_previews(conn: sqlite3.Connection, classes: frozenset[str]) -> int:
     """Remove the disk previews of every frame whose verdict is one of `classes`.
 
-    Returns the number of preview files removed — a number for the caller's log, not a
+    Returns how many preview files were removed — a number for the caller's log and not a
     promise: a preview a reader holds open stays, and the next sweep gets it.
 
-    An empty `classes` returns 0 without touching the database. That is the whole of
-    requirement 4 of the brief: absence and emptiness are different wishes here as much as
-    they are in `config._as_exclude_classes`, and the empty list is the one that says "no
-    class of mine is private".
+    An empty `classes` returns 0 without touching the database (see above: absence and
+    emptiness are different wishes, as in `config._as_exclude_classes`).
     """
     if not classes:
         return 0
@@ -3954,13 +3182,10 @@ def sweep_previews_for_new_classes(conn: sqlite3.Connection,
                                    before: Sequence[str], after: Sequence[str]) -> int:
     """The sweep a CHANGED `vlm.exclude_classes` calls for — over the ADDED classes only.
 
-    The list is edited while the tool runs, and that is the moment the cleanup matters
-    most: switching the protection on has to reach the previews ALREADY on disk, or the
-    whole archive of documents survives it and the feature covers nothing but frames
-    classified from now on.
-
-    A class that LEFT the list sweeps nothing. Its previews are an ordinary cache entry
-    again and are rebuilt on demand — there is nothing to remove and nothing lost.
+    The list is edited while the tool runs, and that is when the cleanup matters most:
+    switching the protection on has to reach the previews ALREADY on disk, or the whole
+    archive of documents survives it. A class that LEFT the list sweeps nothing — its
+    previews are an ordinary cache entry again, rebuilt on demand.
     """
     return sweep_previews(conn, frozenset(after) - frozenset(before))
 
@@ -3989,153 +3214,41 @@ def classify(
     verdicts_only: bool = False,
     progress: ProgressCB | None = None,
 ) -> JunkStats:
-    """Classify canonical photos into media_class.
+    """Classify canonical photos into media_class, and fill the tables around it.
 
-    use_clip=False — heuristics only (source='heuristic', tier='heuristic'); such
-    rows will be reprocessed by CLIP on the next run with use_clip=True.
+    use_clip=False — heuristics only (source='heuristic', tier='heuristic'); such rows are
+    reprocessed by CLIP on the next run with use_clip=True.
 
-    F68: incrementality is driven by `media_class.tier`, not by `source` — every row
-    this run touches gets tier = active_tier ('heuristic' | 'clip' | 'vlm'), and only
-    rows carrying a different tier are redone (see the module docstring for why
-    `source` cannot serve as that marker).
+    F68: incrementality is driven by `media_class.tier` and not by `source` — every row
+    this run touches gets tier = active_tier ('heuristic' | 'clip' | 'vlm'), and only rows
+    carrying a different tier are redone.
 
-    text_detector (F37, Phase A): (path, width, height) -> text_frac | None.
-    By default an easyocr detector is built (lazily, once per run) — as with
-    classifier, the caller passes its own (mock) in tests.
+    EVERY MODEL OF THIS STAGE IS INJECTABLE AND OPTIONAL, which is one rule rather than a
+    list of parameters. Each `*_detector` / `*_vlm` / `*_encoder` takes a ready object (the
+    suite passes mocks — no test loads a model) and each `*_factory` builds the real one,
+    LAZILY, so a run with nothing to ask loads no weights; a factory that raises is caught
+    around the BUILD, logged, and the run continues on the tier below. F145: all of them
+    are subordinate to `vlm.enabled` as well — their own keys say WHAT to ask, not whether
+    a model is raised.
 
-    text_detector_factory (F73): builds ONE detector per OCR worker thread; by
-    default it wraps easyocr_text_frac_detector, and an explicit `text_detector`
-    (above) is shared by every worker instead. Tests replace the factory to count how
-    many detectors a run creates and to check the degradation path (a factory that
-    fails on the second and further calls must shrink the pool, not kill the stage).
-    The number of workers comes from `naming.ocr_workers` (see resolve_ocr_workers).
+    Two arguments do not follow that shape. `classifier` is the CLIP scorer, and F128 takes
+    the stored vector out of its cache (`features(paths)`), so a classifier injected as a
+    plain function stores nothing and logs why once. `eye_landmarks_factory` (F179) goes to
+    the sharpness detector rather than a pass of its own, because the pixels it needs are
+    already in that decode — an injected `sharpness_detector` leaves it unused.
 
-    vlm_classifier / vlm_classifier_factory (F37, Phase B): the deep tier,
-    opt-in via cfg.naming.vlm_enabled (default False, gated by use_clip=True —
-    a heuristics-only run does not touch deep). vlm_classifier — a ready
-    classify_media(path)->label (a mock in tests, like classifier/text_detector);
-    vlm_classifier_factory(model_name)->vlm_classifier — a factory for the real build
-    (qwen_vlm_classifier_factory(cfg.vlm.max_edge) by default), replaced in tests to
-    check the GRACEFUL FALLBACK: if the factory raises (no transformers, the model does
-    not load, not enough VRAM), classify() catches the exception, logs it, and quietly
-    continues on the fast tier (CLIP) — without crashing.
+    verdicts_only (F165): run the halves that do NOT need the face signal and stop — the
+    fast pass, the deep tier and the stored vectors. This is the `classify` stage, which
+    the pipeline runs BEFORE faces so that stage can skip what is already known not to be a
+    photograph (`faces._files_to_detect`); the quality cascade, the animal cascade, the
+    rescue and the search index are left to `junk` after it. The incrementality markers do
+    not change, so the second half finds the verdicts current and a lone `sorta junk` still
+    runs the whole stage.
 
-    F101: the deep pass is pipelined when the classifier exposes its halves (the real
-    one does — SplitVlmClassifier) and `vlm.workers` is above 1: that many threads
-    decode and preprocess frames while this thread runs the model and writes. An
-    injected `vlm_classifier` (tests) has no halves and takes the serial path, which is
-    why every verdict test below is unaffected by the pipeline.
-
-    F102: everything about the MODEL — which one, at what input resolution, with how
-    many preparation threads — comes from `cfg.vlm` (the `vlm:` config section, with the
-    old `naming.*` keys still honoured by load_config). The tier toggle is the exception
-    noted at the read below.
-
-    sharpness_detector (F113): the frame-quality cascade, written into `frame_quality`
-    alongside the classification. The detector is the laplacian over the shared preview (no
-    toggle — milliseconds, and both the "best frame" and the "blurred junk" consumers need
-    it); pets are a prompt group inside the CLIP call this stage already makes, behind
-    `features.pets`. It is injectable for the same reason `classifier`/`text_detector` are:
-    the suite must not load a model.
-
-    F186: the third tier of that cascade — the model asked about the uncertain band — is
-    gone, with its toggle, its scope and its parameters. It answered one question ("are the
-    eyes open") that F179 answers off the eyelid geometry of a decode this stage already
-    pays for, five times as often and at slightly better precision.
-
-    F155: the detector now takes the frame's face boxes as well and answers with BOTH
-    laplacians — over the whole preview and over the sharpest face in it — because they
-    come out of one decode and a second pass over the collection for the second number is
-    the one cost this signal is not worth.
-
-    eye_landmarks_factory (F179): builds the 106-point contour model the eye number is
-    fitted with, ONCE and on the first face of the run (`lazy_eye_landmarks`) — so a
-    collection with no faces in it never builds one, and a machine that cannot build one
-    loses `frame_quality.eye_openness` and nothing else. It is handed to the sharpness
-    detector rather than run in a pass of its own, for the F155 reason: the pixels it needs
-    are the ones that decode already has in memory. An injected `sharpness_detector` (every
-    mock in the suite) answers for all three numbers and this factory is then unused.
-
-    pet_vlm / pet_vlm_factory (F130): the animal check — the same shape and the same
-    graceful fallback again, behind `features.pets_verify` (which needs `features.pets`).
-    Frames whose pet score clears `features.pet_candidate_threshold` are shown the model
-    one at a time and the answer decides `frame_quality.pet_vlm` and, through it, the
-    label. A model that will not build, will not answer, or answers something nobody can
-    read leaves every frame with the label `features.pet_threshold` gave it.
-
-    F206: this check and the rescue below run through the SAME pipeline as the deep tier
-    (`vlm.workers` preparation threads, `_vlm_labels`), which they did not until the
-    regression in the module docstring was measured. An injected asker without halves —
-    every mock in the suite — takes the serial path, exactly as an injected
-    `vlm_classifier` does, which is why no verdict test below is affected by it.
-
-    F186: the keeper question (F132) is gone too — which frame of a near-duplicate group to
-    keep, asked once per group. Measured blind over 111 groups it agreed with the owner on
-    32% of them against 30.4% for a coin, so there was no cheaper answer to move to and
-    none was needed. `group_keeper` and the sharpness ranking the Duplicates tab shows are
-    untouched, and no path of this stage has ever written `dedup_choice`.
-
-    F128: the CLIP vector of every canonical photograph is stored in `clip_embeddings`
-    (`features.store_embeddings`, on by default). No parameter of its own: the vector is
-    taken from the classifier that has just scored the chunk — a `features(paths)` method
-    over its cache, which the real one (landmarks.CachingFeatureClassifier) has — so a
-    classifier injected as a plain function stores nothing, logs why once, and changes no
-    other behaviour of the stage.
-
-    junk_rescue_vlm / junk_rescue_vlm_factory / junk_text_encoder /
-    junk_text_encoder_factory (F140): the rescue of the screenshots and receipts this stage
-    called photographs, behind `features.junk_rescue`. The score is read off the stored
-    CLIP vectors (F128) with the text encoder — injected here, and built lazily from
-    `naming.clip.*` otherwise, so a run with nothing to score loads no model — and the
-    frames it selects are shown the VLM, which needs the deep tier (`vlm.enabled`) to be on
-    at all. Same shape and same graceful fallback as the three askers above: an encoder or
-    a model that will not build leaves every verdict of the run exactly as the fast tier
-    wrote it, and with the deep tier off nothing is reclassified even when the score is.
-
-    search_encoder / search_encoder_factory (F141): the image tower of the SEARCH index,
-    the one pass of this stage that encodes the frames a second time. Behind
-    `features.search_index` (off by default — it is ~10.5 minutes per 20 000 frames), with
-    a model of its own (`features.search_model`) that no threshold of this pipeline is
-    calibrated on, which is the entire reason it exists next to `naming.clip.*` instead of
-    replacing it. Injectable and built lazily for the same reasons the rescue encoder is:
-    the suite must not load a model, and a run with nothing left to encode must not either.
-
-    detector / detector_factory / detector_text_encoder (F154): the animal cascade's third
-    tier — an object detector over the candidates a zero-shot query picks out of the stored
-    CLIP vectors, behind `features.detector` AND `detect.enabled` (its own master switch,
-    see config.detector_allowed: a detector is not a VLM and is not raised by `vlm.enabled`
-    either way). Injectable and built lazily exactly like the encoders above, and for the
-    same two reasons: the suite must not load a model, and a run with no candidate to
-    examine must not either. Same graceful fallback as everything else here — an encoder or
-    a detector that will not build leaves every animal label as F122/F130 wrote it, and
-    there is no configuration in which the detector runs over the whole collection.
-
-    F145: every one of the askers above is subordinate to `vlm.enabled`. Their own
-    keys say WHAT to ask, not whether a model is raised — a run without deep analysis
-    loads no weights whatever config.yaml holds, and each of them then behaves exactly as
-    it does with its own key off (the graceful-fallback path they already had).
-
-    verdicts_only (F165): run the halves that do NOT need the face signal and stop —
-    the fast pass, the deep tier and the stored vectors, i.e. everything that ends in
-    `media_class` or `clip_embeddings`. This is the `classify` stage, which the pipeline
-    runs BEFORE faces so that the faces stage can skip what is already known not to be a
-    photograph (see `faces._files_to_detect`); the quality cascade, the animal cascade, the
-    rescue and the search index are left to the `junk` stage after it. Nothing
-    else about the call changes: the same incrementality markers, so the second half finds
-    the verdicts current and reclassifies nothing, and a lone `sorta junk` (or any caller
-    that never passes this flag) still runs the whole stage exactly as before.
-
-    progress (F100): the usual `(done, total)` callback; if it also carries a
-    `phase(name)` channel (progress.TaskProgress, ui._StageProgress) the stage reports
-    which of its phases it is in — CLASSIFY_PHASE_*. A plain function without that
-    channel is not an error and gets the counter alone, as before.
-
-    F147: those same phases are TIMED, and each one that ran leaves a
-    `stage=junk phase=<name> elapsed=<sec> processed=<n>` line in the run log next to
-    the stage summary. Independent of `progress` — a run with no callback measures
-    itself just the same — and independent of the phases' own behaviour: this is the
-    instrument the stage is about to be optimized with, so it changes nothing it
-    measures.
+    progress (F100): the usual `(done, total)` callback; one that also carries a
+    `phase(name)` channel is told which phase the stage is in (CLASSIFY_PHASE_*). F147:
+    those phases are TIMED whether or not there is a callback, and each one that ran leaves
+    a `stage=junk phase=<name> elapsed=<sec> processed=<n>` line in the run log.
     """
     s = naming_settings(cfg)
     rows = conn.execute(
@@ -4155,19 +3268,15 @@ def classify(
     ).fetchall()
     stats = JunkStats(total=len(rows))
 
-    # F145: the master switch, read ONCE and required by every question below. Each of
-    # them used to gate on its own key alone, so a run started without deep analysis
-    # still loaded the weights whenever one subordinate key was true in config.yaml —
-    # the hierarchy was assumed and never written down (see config.vlm_allowed). The
-    # check stands HERE, before any factory is called: loading is five seconds and
-    # gigabytes of memory, and somebody who cleared the checkbox does not pay for them.
+    # F145: the master switch, read ONCE and required by every question below. Each used to
+    # gate on its own key alone, so a run started without deep analysis still loaded the
+    # weights whenever one subordinate key was true in config.yaml. The check stands HERE,
+    # before any factory is called: loading is five seconds and gigabytes of memory.
     vlm_on = vlm_allowed(cfg)
 
-    # F37 (Phase B): the tier gate. use_clip=False — an explicit heuristics-only
-    # mode, deep does not enter there (symmetric with CLIP below).
-    # F161: and `vlm.products` — the tier is a named line of the run screen with a price
-    # of its own now, not the private effect of the master switch (see products_allowed,
-    # which still requires `vlm_on`).
+    # F37-B: the tier gate — heuristics-only never enters it, symmetric with CLIP below.
+    # F161: and `vlm.products`, because the tier is a named line of the run screen with a
+    # price of its own (products_allowed still requires `vlm_on`).
     vlm_fn: VlmClassifyFn | None = None
     if use_clip and products_allowed(cfg):
         if vlm_classifier is not None:
@@ -4182,23 +3291,15 @@ def classify(
                     "junk: VLM недоступна (%s) — откат на fast-ярус (CLIP)", exc)
                 vlm_fn = None
 
-    # F165: every question below this one belongs to the half that runs AFTER faces. The
-    # check sits next to each gate rather than around the whole block because that is where
-    # a reader looks for the answer to "does the `classify` stage load this model?" — and
-    # the answer has to be no for all of them, or the split would move the weights of the
-    # deep passes ahead of the stage that has nothing to ask them.
-    #
-    # F186: the frame-quality question used to be resolved here, first of the three, and
-    # its whole gate went with it — the toggle, the scope and the check that the scope was
-    # satisfiable at all.
+    # F165: every question below belongs to the half that runs AFTER faces, and the
+    # `verdicts_only` check sits next to each gate rather than around the block because
+    # that is where a reader looks for "does the `classify` stage load this model?".
     q = quality_settings(cfg)
 
-    # F130: the animal check, resolved exactly like the deep tier above and with the same
-    # graceful fallback — a model that will not build must cost the cheap tiers nothing.
-    # Its gate carries one extra condition — `features.pets`, because it verifies what the
-    # CLIP pet group found and has nothing to verify without it. The model is the shared
-    # one (F95), so switching this on next to another question costs a call per frame, not
-    # a second set of weights.
+    # F130: the animal check. One extra condition on its gate — `features.pets`, because
+    # it verifies what the CLIP pet group found and has nothing to verify without it. The
+    # model is the shared one (F95), so switching it on next to another question costs a
+    # call per frame and not a second set of weights.
     pet_ask: PetAskFn | None = None
     if use_clip and vlm_on and not verdicts_only and q.pets and q.pets_verify:
         if pet_vlm is not None:
@@ -4213,11 +3314,10 @@ def classify(
                     "по порогу CLIP", exc)
                 pet_ask = None
 
-    # F140: the rescue check, resolved the same way and with the same fallback again. Two
-    # conditions gate it and they are different questions: `features.junk_rescue` says the
-    # SCORE is wanted, the deep tier says there is somebody to answer for the candidates it
-    # selects. With the tier off the score is still computed and stored — that is the state
-    # the feature is meant to be tried in — and not one verdict moves.
+    # F140: the rescue check. Its two conditions are different questions —
+    # `features.junk_rescue` says the SCORE is wanted, the deep tier says somebody can
+    # answer for the candidates it selects — so with the tier off the score is still
+    # computed and stored, which is the state the feature is meant to be tried in.
     rescue_ask: JunkAskFn | None = None
     if use_clip and vlm_on and not verdicts_only and q.junk_rescue:
         if junk_rescue_vlm is not None:
@@ -4233,55 +3333,41 @@ def classify(
                     "за быстрым ярусом, счёт всё равно пишется", exc)
                 rescue_ask = None
 
-    # F68: incrementality runs on media_class.tier — the marker of WHICH TIER
-    # processed the row, independent of `source` (what decided the verdict). Three
-    # tiers: 'heuristic' (use_clip=False), 'clip' (the fast pass), 'vlm' (the fast
-    # pass + the deep refinement of candidates). A row is redone only when its tier
-    # differs from the active one — so any switch, upgrade or downgrade, reprocesses.
+    # F68: a row is redone only when its tier differs from the active one, so any switch —
+    # upgrade or downgrade — reprocesses.
     active_tier = "heuristic" if not use_clip else ("vlm" if vlm_fn is not None else "clip")
     junk_ids = {r["id"] for r in rows if r["mc_tier"] != active_tier}
-    # F113: the quality half keeps its OWN incrementality marker (`frame_quality.source`),
-    # because the two halves go stale independently — switching `features.pets` on does not
-    # change a single junk verdict, and a collection whose junk was classified before this
-    # feature existed has no quality rows at all. A frame is walked when EITHER half wants
-    # it, and each half then writes only its own table.
+    # F113: the quality half has a marker of its own, because the halves go stale
+    # independently. A frame is walked when EITHER wants it, and each writes only its own
+    # table.
     quality_source = _quality_source(use_clip, q.pets, pet_ask,
                                      use_clip and q.junk_rescue, rescue_ask)
-    # F120: only personal photographs are asked the quality questions. Selection uses the
-    # verdict ALREADY STORED, because this run's verdict is not known until the frame is
-    # walked; a frame with no verdict yet (a first run) is included and settled below, and
-    # a frame whose class changes is picked up on the next run. The lag is one run and it
-    # is on the cheap half of the cascade.
-    # F165: and in the verdicts-only half there is no quality work at all — the population
-    # is empty rather than the pass disabled, so `wanted()` says no about every frame and
-    # the loop below writes nothing into `frame_quality`.
+    # F120: the population is personal photographs, selected on the verdict ALREADY STORED
+    # — this run's is not known until the frame is walked. A frame with no verdict yet is
+    # included and settled below; a frame whose class changes is picked up on the next run,
+    # a lag of one run on the cheap half of the cascade.
+    # F165: the verdicts-only half has no quality work — the population is EMPTY rather
+    # than the pass disabled, so `wanted()` says no about every frame.
     quality_ids = ({r["id"] for r in rows
                     if r["fq_source"] != quality_source
                     and r["mc_verdict"] in (None, QUALITY_VERDICT)}
                    if use_clip and not verdicts_only else set())
-    # F128: and the third half, with a marker of its own again — `clip_embeddings.model`.
-    # A vector is stale when it was computed by another model, which is the only way a
-    # stored vector becomes unusable rather than merely old. The population is the quality
-    # half's, selected the same way and for the same F120 reason, with the same one-run lag
-    # on a frame whose class changes. A heuristics-only run asks CLIP nothing, so there is
-    # no vector to keep and no row is touched.
+    # F128: the third half, on `clip_embeddings.model` — another model is the only way a
+    # stored vector becomes unusable rather than merely old. Same population and same
+    # one-run lag as the quality half.
     store_embeddings = bool(getattr(
         getattr(cfg, "features", None) or FeaturesConfig(), "store_embeddings", True))
     embed_model = embedding_model(s)
-    # Whether this run can produce a vector at all, decided BEFORE any frame is selected
-    # for one. The real classifier hands its cache back (`features`, see
-    # landmarks.CachingFeatureClassifier) and so does one built below; an injected plain
-    # function — every mock in the suite, a caller with a scorer of its own — cannot, and
-    # then this half is simply off. Selecting frames it could never write would send them
-    # to CLIP for nothing and leave them selected again on the next run.
+    # Whether this run can produce a vector at all, decided BEFORE any frame is selected for
+    # one: an injected plain function has no cache to hand back, and selecting frames this
+    # half could never write would send them to CLIP for nothing.
     features_of = getattr(classifier, "features", None) if classifier is not None else None
     feature_source: FeatureSource | None = features_of if callable(features_of) else None
     can_embed = classifier is None or feature_source is not None
-    # F146: and it says so. The half switching itself off is the right behaviour and the
-    # silence around it was not: an empty `clip_embeddings` reads exactly like a collection
+    # F146: and it SAYS SO. An empty `clip_embeddings` reads exactly like a collection
     # nobody has processed yet, so a caller handing over a classifier that cannot produce
-    # vectors — as the web app did from F128 until a production run in August 2026 — gets
-    # no exception, no row and, until now, no hint of a reason.
+    # vectors — as the web app did from F128 until a production run in August 2026 — got no
+    # exception, no row and no hint of a reason.
     if use_clip and store_embeddings and not can_embed:
         _log.warning(
             "junk: классификатор (%s) не отдаёт CLIP-векторы — features.store_embeddings "
@@ -4293,24 +3379,21 @@ def classify(
                  if use_clip and store_embeddings and can_embed else set())
     work = [r for r in rows
             if r["id"] in junk_ids or r["id"] in quality_ids or r["id"] in embed_ids]
-    # `processed`/`skipped_incremental` keep counting CLASSIFICATION, not the walk: they
-    # are printed by the CLI and the web app as "how much of the collection was
-    # reclassified", and a frame that was only measured for sharpness was not. What the
-    # quality half did is its own counters (quality_rows / pets_found / quality_*).
+    # These two count CLASSIFICATION and not the walk: the CLI and the web app print them
+    # as "how much of the collection was reclassified", and a frame that was only measured
+    # for sharpness was not. What the quality half did is its own counters.
     stats.processed = len(junk_ids)
     stats.skipped_incremental = len(rows) - len(junk_ids)
     now = utcnow_iso()
-    # F165: the phases are filed under the stage that is actually running — the caller's
+    # F165: the phases are filed under the stage actually running — the caller's
     # `stage_timer` opened `classify` or `junk`, and the two names have to agree.
-    # F147: built here rather than next to the first `report.start` below, so the passes
-    # that can have work when every other half of the stage is up to date are timed on
-    # that path too instead of running under a throwaway reporter.
+    # F147: built here rather than at the first `report.start` below, so that the passes
+    # which can have work when everything else is current are timed on that path too.
     report = _PhaseProgress(progress, VERDICTS_STAGE if verdicts_only else CLASSIFY_STAGE)
-    # F141: the search index — a pass that can have work
-    # when every other half of the stage is up to date. That is its ORDINARY case: the
-    # toggle is switched on for a collection that is already classified, and an early
-    # return that skipped it would leave the feature silently doing nothing. Its encoder
-    # is a closure so that a run with nothing to encode never builds one.
+    # F141: the search index is one of those passes, and that is its ORDINARY case — the
+    # toggle is switched on for a collection that is already classified, so an early return
+    # skipping it would leave the feature silently doing nothing. Its encoder is a closure
+    # so that a run with nothing to encode never builds one.
     index_model = search_index_model(cfg)
     search_index = _SearchIndexPass(
         conn, index_model,
@@ -4319,17 +3402,14 @@ def classify(
             search_index_settings(s, index_model))),
         s.clip_batch_size, now, stats,
         use_clip and not verdicts_only and search_index_enabled(cfg))
-    # F154: the animal detector — a second pass that can have work when every other half of
-    # the stage is up to date, and for the same reason the search index can:
-    # the toggle is switched on for a collection that is already classified. Both of its
-    # models are closures so that a run with no candidate builds neither. A heuristics-only
-    # run has no vectors to query and no CLIP tier to correct, so `use_clip` gates it too.
+    # F154: the animal detector is the second such pass. Both its models are closures, so a
+    # run with no candidate builds neither, and `use_clip` gates it — a heuristics-only run
+    # has no vectors to query and no CLIP tier to correct.
     d = detector_settings(cfg)
-    # F165: and the verdicts-only half does not run it either — it is a cascade over
-    # `frame_quality`, which belongs to the half after faces. The settings are left
-    # untouched (unlike the heuristics-only case above) so that `purge` below still knows
-    # the detector is on: a frame this half has just called a document must lose its boxes
-    # in the run that renamed it, not in the next one.
+    # F165: the verdicts-only half does not run it either (it is a cascade over
+    # `frame_quality`), but its settings are left untouched — unlike the heuristics-only
+    # case — so that `purge` below still knows the detector is on: a frame this half has
+    # just called a document must lose its boxes in the run that renamed it.
     if not use_clip:
         d = replace(d, enabled=False)
     detect_pass = _DetectorPass(
@@ -4350,11 +3430,9 @@ def classify(
     # F121: has the faces stage ever run here? One row is enough to tell — after that,
     # "this frame has no face" is a fact rather than an absence of evidence.
     faces_known = faces_stage_ran(conn)
-    # F179: the eye number rides in the sharpness decode, so the model that produces it is
-    # handed to that detector rather than to a pass of its own. Lazily, and only where
-    # there are faces to fit it to: `lazy_eye_landmarks` builds on the first face of the
-    # run, so a collection with none — or a first run, before `sorta faces` — pays nothing,
-    # and a machine that cannot build it loses this one column and no more.
+    # F179: the eye model is handed to the sharpness detector and only where there are
+    # faces to fit it to, so a collection with none — or a first run, before `sorta faces`
+    # — pays nothing for it.
     quality = _QualityPass(
         conn, q,
         sharpness_detector or preview_sharpness_detector(
@@ -4362,21 +3440,16 @@ def classify(
             lazy_eye_landmarks(eye_landmarks_factory or insightface_eye_landmarks)
             if faces_known else None),
         quality_source, quality_ids, now, stats, pet_ask, cfg.vlm.workers)
-    # F140: the encoder is a closure and not an object, so that a run whose rescue has
-    # nothing to score never builds one — see _JunkRescuePass.
+    # F140: a closure and not an object, so a run whose rescue has nothing to score never
+    # builds an encoder.
     rescue = _JunkRescuePass(
         conn, q, embed_model,
         (lambda: junk_text_encoder) if junk_text_encoder is not None
         else (lambda: (junk_text_encoder_factory or clip_text_encoder)(s)),
         rescue_ask, now, active_tier, stats, cfg.vlm.workers)
-    # F100: the phase channel of the callback, if it has one. The total is reported
-    # right away, even if the stage is small/fast (#37); which phase the stage opens
-    # with depends on the tier — a heuristics-only run classifies nothing, it only
-    # writes verdicts.
-    #
-    # F147: this `start` is the only one that does NOT count units — its total is the
-    # denominator of the whole fast pass, not the size of one phase's own work list, and
-    # the phases below count what each of them actually touched.
+    # F100: the total is reported right away, even for a small stage (#37). F147: the only
+    # `start` that does NOT count units — its total is the denominator of the whole fast
+    # pass, and the phases below count what each of them actually touched.
     report.start(CLASSIFY_PHASE_CLIP if use_clip else CLASSIFY_PHASE_WRITE, len(work))
 
     heur_raw = {
@@ -4404,21 +3477,18 @@ def classify(
         report.log_timings()
         return stats
 
-    # F113: a run can now reach this point with nothing to ask CLIP — a collection whose
-    # junk classification is already current, on its first run after the frame_quality
-    # table appeared, with both toggles off: only laplacians are missing. Loading a CLIP
-    # model to compute those would be the whole cost of the stage for no question asked.
+    # F113: a run can reach this point with nothing to ask CLIP — a classified collection
+    # on its first run after `frame_quality` appeared, with both toggles off, is missing
+    # only laplacians. Loading a model for those would be the whole cost of the stage.
     needs_model = bool(junk_ids) or quality.needs_clip() or bool(embed_ids)
     if classifier is None:
         if needs_model:
             classifier = clip_classifier(s)  # pragma: no cover — ML, smoke test
         else:
             classifier = _unused_classifier
-    # F128: the vectors come out of the classifier that has just been resolved — the cache
-    # of `landmarks.CachingFeatureClassifier`, which is what makes this half free. A
-    # classifier BUILT here without that method could only be a future regression of
-    # clip_classifier, so it is logged rather than passed over: the table would otherwise
-    # stay empty for a reason nobody could see.
+    # F128: a classifier BUILT here without a feature cache could only be a future
+    # regression of clip_classifier, so it is logged rather than passed over — the table
+    # would otherwise stay empty for a reason nobody could see.
     if embed_ids and feature_source is None:
         features_of = getattr(classifier, "features", None)
         feature_source = features_of if callable(features_of) else None
@@ -4428,9 +3498,8 @@ def classify(
                 "включён, но таблица clip_embeddings не наполняется")
     embeddings = _EmbeddingPass(conn, embed_model, embed_ids, feature_source, now, stats,
                                 store_embeddings)
-    # F73: the OCR pool — K worker threads, one own detector each, built lazily on
-    # first use and reused for the whole run (see _OcrPool). The detector itself is no
-    # longer built here: a run where the gate opens for nothing loads no model at all.
+    # F73: the pool builds its detectors lazily, so a run where the gate opens for nothing
+    # loads no OCR model at all.
     ocr_workers = resolve_ocr_workers(cfg.raw)
     ocr = _OcrPool(
         text_detector_factory or _resolve_detector_factory(cfg, text_detector),
@@ -4439,20 +3508,16 @@ def classify(
     # F90: every threshold of the verdict/gate logic in one place (see GateSettings) —
     # the same values scripts/measure_ocr_gate.py sweeps.
     g = gate_settings(cfg)
-    # F113: the ONE main call of the stage answers both questions — the junk classes and,
-    # when `features.pets` is on, the pet group appended to the very same prompt list. Not
-    # a second pass and not a second call: the number of classifier calls a chunk makes is
-    # what it was before this feature.
+    # F113: ONE call answers both questions — the junk classes and, with `features.pets`
+    # on, the pet group appended to the same prompt list. The number of classifier calls a
+    # chunk makes is what it was before that feature.
     prompts = clip_prompts(q.pets)
     doc_prompts = [prompt for _cls, prompt in _DOCUMENT_CLASSES]
     prod_prompts = [prompt for _cls, prompt in _PRODUCT_CLASSES]
     product_candidate_min = float(
         getattr(cfg.naming, "product_candidate_min", _DEFAULT_PRODUCT_CANDIDATE_MIN))
-    # #14/V1: the VLM tier (deep) does NOT run on all frames — only on candidates:
-    # files without faces where the fast tier doubts (verdict='document' OR the
-    # document-CLIP is in a suspicious zone OR the product-CLIP is above the
-    # threshold). Collect here, reclassify with the VLM after the fast pass.
-    # (id, path, fast_verdict).
+    # (id, path, fast_verdict) of the frames the deep tier is asked about — collected here,
+    # reclassified after the fast pass.
     vlm_candidates: list[tuple[int, str, str]] = []
     done = 0
     try:
@@ -4460,24 +3525,19 @@ def classify(
             for chunk in batched(work, s.clip_batch_size):
                 report.enter(CLASSIFY_PHASE_CLIP)
                 paths = [r["path"] for r in chunk]
-                # F113: a chunk may hold frames only one of the two halves asked for. The
-                # junk half always needs its CLIP row, the quality half only when it has a
-                # question for CLIP (pets, or the band's subject score) — so a frame nobody
-                # needs a row for is not encoded, and everybody else is served by the one
-                # call below.
+                # F113/F128: a chunk may hold frames only one of the three halves asked
+                # for, and all of them are served by the ONE call below — so a frame nobody
+                # needs a row for is not encoded at all.
                 junk_idx = [i for i, r in enumerate(chunk) if r["id"] in junk_ids]
                 clip_idx = sorted(set(junk_idx) | (
                     {i for i, r in enumerate(chunk) if quality.wanted(r["id"])}
                     if quality.needs_clip() else set()) | (
-                    # F128: a frame whose vector is missing or was computed by another
-                    # model needs the same one call — not one of its own.
                     {i for i, r in enumerate(chunk) if embeddings.wanted(r["id"])}
                     if embeddings.needs_clip() else set()))
-                # F147: the unit of this phase is a frame ENCODED, not a frame walked —
-                # incrementality can hand the loop a chunk whose CLIP rows are all
-                # current, and counting those would price the encoder by work it never
-                # did. The document/product passes below run over a subset of the same
-                # frames, so they add no units of their own.
+                # F147: the unit of this phase is a frame ENCODED and not a frame walked —
+                # incrementality can hand the loop a chunk whose CLIP rows are all current,
+                # and counting those would price the encoder by work it never did. The
+                # document/product passes run over a subset, so they add no units.
                 report.count(CLASSIFY_PHASE_CLIP, len(clip_idx))
                 probs: dict[int, np.ndarray] = {}
                 vecs: dict[int, np.ndarray | None] = {}
@@ -4486,12 +3546,11 @@ def classify(
                     rows_probs = classifier(clip_paths, prompts)
                     probs = {i: rows_probs[k] for k, i in enumerate(clip_idx)}
                     if embeddings.needs_clip():
-                        # F128: the vectors of the very call above, out of its cache —
-                        # asked for right after it, while the chunk is still there.
+                        # F128: out of the cache the call above has just filled.
                         vecs = {i: v for i, v in
                                 zip(clip_idx, embeddings.vectors(clip_paths))}
-                # F15: document-CLIP only for files without detected faces —
-                # faces are an unconditional veto, a second pass for them is unneeded.
+                # F15: document-CLIP only for files without detected faces — a face is an
+                # unconditional veto, so a second pass for them buys nothing.
                 noface_idx = [i for i in junk_idx if not chunk[i]["has_faces"]]
                 doc_score: dict[int, float] = {}
                 product_score: dict[int, float] = {}
@@ -4503,17 +3562,12 @@ def classify(
                         prod_probs = classifier([paths[i] for i in noface_idx], prod_prompts)
                         for k, i in enumerate(noface_idx):
                             product_score[i] = _product_score(prod_probs[k])
-                # F73, phase 1: the pre-OCR verdict of every frame of the chunk, plus
-                # the frames the OCR gate opens for. The gate condition itself and the
-                # verdict logic are unchanged — only the OCR call left this loop.
+                # F73, phase 1: the pre-OCR verdict of every frame of the chunk, plus the
+                # frames the OCR gate opens for.
                 pre: dict[int, tuple[str, float]] = {}  # (verdict, score) before OCR
                 ocr_jobs: list[OcrJob] = []
                 for i in junk_idx:
                     r = chunk[i]
-                    # F113: the junk classes read through _group_probs — with pets off that
-                    # is the untouched row, with pets on it is the same row renormalized
-                    # over the first three prompts, which is the same softmax the stage saw
-                    # before the pet prompts joined the call.
                     p = _group_probs(probs[i], _JUNK_GROUP)
                     best = int(np.argmax(p))
                     verdict, score = clip_verdict(
@@ -4523,28 +3577,23 @@ def classify(
                     if ocr_gate_open(bool(r["has_faces"]), verdict,
                                      doc_score.get(i, 0.0), g.text_rescue_docscore_min):
                         ocr_jobs.append((r["id"], r["path"], r["width"], r["height"]))
-                # F73, phase 2: text_frac for the gated frames, in the pool. This is the
-                # only part of the stage that leaves this thread.
-                # F100: named only when the gate actually opened — a chunk with no OCR
-                # jobs stays in the CLIP phase instead of flashing a caption for work
-                # that is not happening.
+                # F73, phase 2: text_frac for the gated frames, in the pool — the only part
+                # of the stage that leaves this thread. F100: the phase is named only when
+                # the gate actually opened, so a chunk with no OCR jobs does not flash a
+                # caption for work that is not happening.
                 if ocr_jobs:
                     report.enter(CLASSIFY_PHASE_OCR)
                     report.count(CLASSIFY_PHASE_OCR, len(ocr_jobs))
                 text_fracs = ocr.text_frac(ocr_jobs)
-                # F73, phase 3: apply the OCR signal, then write — on this thread only
-                # (single writer) and in the original per-chunk order, so the verdicts
-                # and stats are exactly those of the serial version.
+                # F73, phase 3: apply the OCR signal, then write — on this thread alone and
+                # in the original per-chunk order, so verdicts and stats are exactly those
+                # of the serial version.
                 report.enter(CLASSIFY_PHASE_WRITE)
-                # F147: every frame of the chunk passes through here, and this phase is
-                # where two of the six costs of the stage actually live — the laplacian
-                # (`quality.measure`) and the stored vector (`embeddings.store`) — next
-                # to the verdict writes themselves.
                 report.count(CLASSIFY_PHASE_WRITE, len(chunk))
                 for i, r in enumerate(chunk):
                     # F120: the quality half needs to know what this frame turned out to
-                    # be. A frame the fast tier did not settle (`i not in pre`) keeps
-                    # whatever media_class already says — hence the stored verdict as the
+                    # be, and a frame the fast tier did not settle (`i not in pre`) keeps
+                    # what media_class already says — hence the stored verdict as the
                     # starting value rather than a name that may never be assigned.
                     verdict = r["mc_verdict"]
                     if i in pre:
@@ -4553,21 +3602,19 @@ def classify(
                         verdict, score, source = apply_text_frac(
                             verdict, score, text_fracs.get(r["id"]), g)
                         if verdict == "photo" and _in_screenshots_dir(r["path"]):
-                            # F29: the Screenshots folder is a "floor" for photo; we do not
-                            # override document/meme (conservative, brief F29).
+                            # F29: a floor for `photo` only — document/meme are not
+                            # overridden (conservative, brief F29).
                             verdict = "screenshot"
                         conn.execute(upsert,
                                      (r["id"], verdict, source, score, now, active_tier))
                         stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
-                        # #14/V1: selection into VLM candidates (deep refines doc/product/photo) —
-                        # without faces, not screenshot/meme, and the fast tier doubts: already a
-                        # document, OR the document-CLIP is in a suspicious zone, OR the
-                        # product-CLIP is above the threshold. Clear personal photos (both scores
-                        # low) are not touched by the VLM.
-                        # F120: `vlm.exclude_classes` — classes no VLM is shown at all.
-                        # The default holds `document`, and the cost is real and stated:
-                        # the deep tier is what CORRECTS a wrong document verdict, so an
-                        # excluded class keeps whatever the fast tier decided about it.
+                        # #14/V1: the deep tier is asked only where the fast one DOUBTS —
+                        # already a document, or a document-CLIP score in the suspicious
+                        # zone, or a product-CLIP score above its threshold. A clear
+                        # personal photo (both scores low) is never shown to it.
+                        # F120: `vlm.exclude_classes` is shown to no model at all, and the
+                        # cost of that is real — the deep tier is what CORRECTS a wrong
+                        # document verdict, so an excluded class keeps the fast tier's.
                         if (vlm_fn is not None and not r["has_faces"]
                                 and verdict not in q.exclude_classes
                                 and verdict not in ("screenshot", "meme")
@@ -4575,46 +3622,35 @@ def classify(
                                      or doc_score.get(i, 0.0) >= g.text_rescue_docscore_min
                                      or product_score.get(i, 0.0) >= product_candidate_min)):
                             vlm_candidates.append((r["id"], r["path"], verdict))
-                    # F113: the cheap half of the cascade — the laplacian always, the pet
-                    # group when the toggle is on, and the note of which frames the animal
-                    # check is worth asking about.
                     if quality.wanted(r["id"]):
                         quality.measure(r["id"], r["path"], probs.get(i), verdict)
-                    # F128: and the vector of the same frame, kept instead of dropped —
-                    # under the same verdict, so a screenshot gets no row here either.
+                    # F128: the vector under the same verdict, so a screenshot gets no row
+                    # here either.
                     if embeddings.wanted(r["id"]):
                         embeddings.store(r["id"], vecs.get(i), verdict)
                 done += len(chunk)
                 report.step(done)
     finally:
-        # F73: the workers (and their Readers) live exactly as long as the stage does.
-        # The count is logged so a run can be checked against "one Reader per worker,
-        # not per frame" without a profiler.
+        # F73: the workers (and their Readers) live exactly as long as the stage. The count
+        # is logged so that "one Reader per worker, not per frame" can be checked on a run
+        # without a profiler.
         ocr.close()
         if ocr.detectors_built:
             _log.info("junk: OCR-детекторов создано %d (воркеров %d)",
                       ocr.detectors_built, ocr_workers)
 
-    # #14/V1: the deep tier — the VLM only on the selected candidates (not all frames).
-    # A VLM runtime error on one frame does NOT crash the run (closes #31) — the file
-    # keeps its fast verdict.
+    # #14/V1: the deep tier, over the selected candidates alone. A runtime error on one
+    # frame does not crash the run (closes #31) — that file keeps its fast verdict.
     if vlm_fn is not None and vlm_candidates:
         stats.vlm_candidates = len(vlm_candidates)
-        # F100: the phase whose numbers used to arrive without a word of explanation.
-        # The denominator switches from the frames of the fast pass to the candidates
-        # of the gate — honest, and readable only because the caption switches with
-        # it: at the measured 1.38 frames/s the difference between a bar that quietly
-        # restarted and "2 201 of 7 896" is the difference between "probably hung" and
-        # "about an hour left".
+        # F100: the denominator switches from the frames of the fast pass to the candidates
+        # of the gate, and it is readable only because the caption switches with it — at
+        # the measured 1.38 frames/s, "2 201 of 7 896" against a bar that quietly restarted
+        # is the difference between "about an hour left" and "probably hung".
         report.start(CLASSIFY_PHASE_VLM, len(vlm_candidates))
         report.count(CLASSIFY_PHASE_VLM, len(vlm_candidates))
-        # F101: the labels arrive from _vlm_labels — in the candidate order, whether the
-        # pass was pipelined or serial. A frame the model failed on comes back as its
-        # exception instead of a label; everything below (the order of the writes, the
-        # mapping to a verdict, the stats, the progress step) is what it was.
-        # closing(): the preparation threads live exactly as long as the pass, the way
-        # the OCR pool does — not until the garbage collector gets round to the
-        # generator holding them.
+        # closing(): the preparation threads live exactly as long as the pass, the way the
+        # OCR pool does — not until the garbage collector reaches the generator.
         labels = _vlm_labels(vlm_fn, [path for _fid, path, _v in vlm_candidates],
                              cfg.vlm.workers)
         with closing(labels), conn:
@@ -4625,83 +3661,56 @@ def classify(
                                  fid, label)
                 else:
                     verdict = _VLM_LABEL_TO_VERDICT.get(label, fast_verdict)
-                    # source='vlm' — the VLM is what decided this verdict. The
-                    # incrementality marker is `tier` (already written as 'vlm' by the
-                    # fast pass above, for candidates and non-candidates alike), so a
-                    # repeated run does not re-run the VLM on these files.
+                    # source='vlm' names what decided; the incrementality marker is `tier`,
+                    # already written as 'vlm' by the fast pass for candidates and
+                    # non-candidates alike, so a repeated run asks the model nothing.
                     conn.execute(upsert, (fid, verdict, "vlm", None, now, active_tier))
                     if verdict != fast_verdict:
                         stats.by_verdict[fast_verdict] = stats.by_verdict.get(fast_verdict, 1) - 1
                         stats.by_verdict[verdict] = stats.by_verdict.get(verdict, 0) + 1
                         stats.vlm_applied += 1
-                # F100: outside the `else` — a frame the model failed on is a frame the
-                # pass is done with (an error on the last candidate would otherwise
-                # leave the bar one short of its total for good).
+                # F100: outside the `else` — an error on the last candidate would otherwise
+                # leave the bar one short of its total for good.
                 report.step(j + 1)
 
-    # F140: the rescue, over the frames the fast tier called photographs. Here and not in
-    # the loop because it reads what the loop wrote — the vector of each frame — and after
-    # the deep tier because that tier is the other thing that can move a verdict, and a
-    # frame it has just called a `document` must not be asked about again. Before the
-    # question below it because the verdict is what the rest of the pipeline depends on,
-    # and a run interrupted afterwards has finished the part that matters most.
+    # THE ORDER OF THE THREE PASSES BELOW IS THE CONTRACT. The rescue first: it reads the
+    # vectors the loop wrote, it must run after the deep tier (a frame that tier has just
+    # called a `document` must not be asked about again), and a run interrupted afterwards
+    # has finished the verdicts, which is what the rest of the pipeline depends on. Then
+    # the animal check, last question this stage puts to a model. Then the detector, which
+    # reads what that check wrote — a frame the model has judged keeps its answer, since
+    # "is this animal alive" is not a question a box detector can be asked
+    # (`detect.cascade_label`).
     rescue.run(quality.measured, report)
-    # F130: the animal check, over the candidates the CLIP pet group turned up. After the
-    # deep tier because both want the same GPU and the verdict is what the rest of the
-    # pipeline depends on. F186 left it the last question this stage puts to a model.
     quality.ask_pets(report)
-    # F154: the detector, last of the three tiers that can move an animal label. After the
-    # VLM check because it reads what that check wrote — a frame the model has already
-    # judged keeps its answer, since "is this animal alive" is not a question a box
-    # detector can be asked (`detect.cascade_label`) — and after the deep tier because that
-    # is what settles which frames are personal photographs at all. Its candidates come out
-    # of `clip_embeddings`, which the loop above has just filled.
-    # F165: and, like the two passes above it, not in the verdicts-only half — it reads
-    # and writes `frame_quality`, whose rows the half after faces owns.
+    # F165: not in the verdicts-only half — it reads and writes `frame_quality`, whose rows
+    # the half after faces owns.
     if not verdicts_only:
         detect_pass.run(report)
-    # F120: enforce "only a personal photograph has a quality row" DIRECTLY, and do it
-    # LAST, when every verdict of this run is written — the deep tier above reclassifies
-    # frames, so a purge any earlier would judge them by the fast tier's answer.
+    # F120: "only a personal photograph is described" is enforced HERE, when every verdict
+    # of this run is written — a purge any earlier would judge a frame the deep tier is
+    # about to reclassify by the fast tier's answer.
     #
-    # This is not the same guard as the per-frame one in `_QualityPass.measure`, and both
-    # are needed: incrementality skips a frame whose `source` already matches, so a
-    # collection measured before this rule — 24 196 rows over everything, all
-    # `source='vlm'` — would keep its screenshots and documents precisely BECAUSE they
-    # look up to date. One statement on an indexed column settles it for good.
+    # Not the same guard as the per-frame one in `_QualityPass.measure`, and both are
+    # needed: incrementality skips a frame whose `source` already matches, so a collection
+    # measured before this rule — 24 196 rows over everything — would keep its screenshots
+    # and documents precisely BECAUSE they look up to date.
     #
-    # F165: the three purges run in BOTH halves, and that is deliberate — the verdicts half
-    # writes no quality row, no vector and no box, but it is the half that can RENAME a
-    # frame into a document, and the rule is that the run which renames it is the run that
-    # drops what described it. `sorta classify` on its own would otherwise leave a passport
-    # with its old crop measurements until somebody happened to run `sorta junk`.
+    # F165: all four run in BOTH halves. The verdicts half writes no quality row, no vector
+    # and no box, but it is the half that can RENAME a frame into a document, and the run
+    # that renames it is the run that drops what described it — otherwise `sorta classify`
+    # leaves a passport with its old crop measurements until somebody runs `sorta junk`.
     with conn:
         conn.execute(
             "DELETE FROM frame_quality WHERE file_id IN"
             " (SELECT file_id FROM media_class WHERE verdict != ?)", (QUALITY_VERDICT,))
-        # F128: the same rule over the same population, for the same reason (see
-        # _EmbeddingPass.purge) — and after the deep tier, whose reclassifications it has
-        # to see.
         embeddings.purge()
-        # F154: and the boxes, under the same rule and in the same transaction — a frame
-        # this run decided is a document must not keep a description of what is on it.
         detect_pass.purge()
-    # F210: and the derivative that is not in the database — the preview JPEG the stage
-    # itself wrote before it knew what the frame was. Here for the same reason the three
-    # purges above are here and not earlier: the deep tier reclassifies frames, so a sweep
-    # any sooner would judge a passport by the fast tier's answer. In BOTH halves, again
-    # for the F165 reason — `sorta classify` is what can rename a frame into a document,
-    # so it is what must take the picture of it away.
+    # F210: and the derivative that is not in the database — the preview JPEG this stage
+    # wrote before it knew what the frame was.
     sweep_previews(conn, q.exclude_classes)
-    # F141: and last of all, the second CLIP pass — every verdict of this run is
-    # written and the purges above have run, so a frame the deep tier has just called a
-    # screenshot is not encoded. Ten minutes is too much to spend on rows that would be
-    # deleted a moment later.
+    # F141: last of all, because ten minutes is too much to spend on rows the purges above
+    # would have deleted a moment later.
     search_index.run(report)
-    # F147: the breakdown of the seconds the caller's `stage_timer` is about to report as
-    # a single number — by now all of it is written except the pass that was running when
-    # the stage reached its end. F166: a stage that raised or was cancelled no longer
-    # loses its phases either; `stage_timer` closes them, and marks the unfinished one as
-    # unfinished instead of letting it read as a profile of a run that never happened.
     report.log_timings()
     return stats

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The prose of `junk.py`, the fifth of the package the audit had skipped** (F231e). Wave
+  A was meant to start with this file and died on limits after `search`, `imaging` and
+  `landmarks`; the count of commits was checked at hand-over and the list of files was not.
+  It held **2 644 lines of comment and docstring — a fifth of the whole package**, more
+  than waves A, B and C cut together: **2 644 → 1 660 (−37%)**, comments 993 → 663,
+  docstrings 1 651 → 997, the file itself 4 707 → 3 716 lines, and the package
+  13 469 → 12 526. `tests/prose_budgets.txt` records the new number, so the ratchet holds
+  it there.
+  **Everything measured stayed, and several measurements moved closer to the code they
+  price.** The 504-line module docstring is now a map of the stage in 140: the F206 table
+  of 2026-08-05 (7 951 frames at 1.4 frames/s against 4 281 at 0.42, 116 minutes a run),
+  the F101 profile that ruled batching out (~0.6 s of CPU then ~0.19 s of GPU, 0.84 cores
+  of 24, the card at 26%), the F186 keeper table of 2026-08-04 (32% against a coin's 30.4%
+  over 111 blind-labelled groups), the F90 gate ratio (28% of frames, 2% of verdicts), the
+  F164 thread knee, the F165 split and the veto it trades away. What each half of the stage
+  measures now sits beside that half instead: the F155 blur numbers (2 of 33 whole-frame,
+  62% recall at 200 against 15% at 300, ~25% precision) at `face_crop_sharpness`, the F179
+  eye table (60%/9% for the retired VLM against 62%/48% for the geometry) at
+  `eye_openness`, the F140 rescue band (~17% real photographs between +0.02 and +0.05) at
+  `_JunkRescuePass`, the F154 detector figures (62%/87% against CLIP's 71%/33%, 83.8 ms ×
+  22 096 = 30.8 minutes) at `_DetectorPass`. The F178 trap about boxes on rotated frames is
+  kept where a reader of those boxes will meet it.
+  What went is the retelling of the pipeline in the docstring and again at every function
+  that touches it, the second and third accounts of one graceful fallback, the parameter
+  tour in `classify()` that paraphrased its own signature, and the essays about what the
+  code below the comment does.
 - **A budget for the prose of every module, with a ratchet on it** (F231d). The rule that
   a comment stays only when it carries a measurement, a decision that reads against the
   obvious, or a trap the next edit would spring was written down on 2026-08-08 — and

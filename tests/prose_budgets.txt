@@ -23,7 +23,7 @@ sorta/i18n.py         307
 sorta/imaging.py      214
 sorta/indexer.py      171
 sorta/install.py      109
-sorta/junk.py         2644
+sorta/junk.py         1660
 sorta/landmarks.py    355
 sorta/launch.py       86
 sorta/launcher.py     7
