@@ -31,13 +31,11 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
 from . import i18n
-from .offline import hf_cache_dir
 
 if TYPE_CHECKING:  # `sorta.tiers` imports THIS module, so the probe is imported lazily
     from .tiers import TierState
@@ -102,10 +100,12 @@ class Tier:
     # tier the MAIN TASK needs: without the verdicts the screenshots, the documents and
     # the product shots ride into the city folders among the photographs.
     default_yes: bool = False
-    # F223: fetch the weights HERE, during the install, instead of leaving them to the
-    # first run of the stage. Worth the wait only where the wait is the point: a person
-    # is at the screen, the progress is visible, and a refusal can be explained at once.
-    preload: bool = False
+    # F225 took a field away from here: `preload`, which said whether the weights are
+    # fetched during the install or left to the first run of the stage. Exactly one tier
+    # of four carried it, so the other three answered "yes, add it" and downloaded
+    # NOTHING — "in `sorta setup` I choose what to download, and where is the download
+    # itself?" (the owner, 2026-08-08). A yes is a yes for every tier now, so there is
+    # nothing left for the field to say.
 
     def name(self, lang: i18n.Lang) -> str:
         return i18n.cli_text(f"{_SETUP_PREFIX}tier.{self.key}.name", lang)
@@ -134,8 +134,7 @@ TIERS: tuple[Tier, ...] = (
     # classification without being told. The two models are separated here and each is
     # named by what it DOES: 1 631 MB that every run needs against 1 397 MB that only
     # search does, which the single 3.0 GB line could not say.
-    Tier("vision", weights=("ViT-L-14",), download_mb=1600, default_yes=True,
-         preload=True),
+    Tier("vision", weights=("ViT-L-14",), download_mb=1600, default_yes=True),
     Tier("faces", weights=("buffalo_l",), download_mb=400),
     Tier("search", weights=("XLM-RoBERTa",), download_mb=1400, requires=("vision",)),
     # The one tier that replaces rather than adds: the CUDA builds of torch and
@@ -370,16 +369,22 @@ def run_install(command: Sequence[str]) -> int:
 # --- the screens ---------------------------------------------------------------------
 
 
-def show_doctor(config_path: str) -> None:
+def show_doctor(config_path: str, states: Sequence[TierState] | None = None) -> None:
     """The check screen, which IS `sorta doctor` (requirement 3 of the brief).
 
     Imported inside the call on purpose: `sorta.cli` pulls in the whole command line
     (typer, numpy, every stage module), and a wizard that only wanted to print two health
     lines has no business paying for that at import time.
+
+    F225: `states` is the probe the wizard has ALREADY taken, handed over so that the two
+    screens of one window cannot describe two different machines. They used to probe one
+    after the other and the owner's run of 2026-08-08 caught them disagreeing inside a
+    single output — the doctor saying ViT-L-14 would be downloaded on the first run of the
+    stage, the wizard saying, four lines later, that it was already in place.
     """
     from .cli import _cmd_doctor
 
-    _cmd_doctor(config_path)
+    _cmd_doctor(config_path, states=None if states is None else list(states))
 
 
 def say_console(text: str) -> None:
@@ -441,32 +446,16 @@ def ask_console(question: str, default: bool = False) -> bool:
 # one number this side can measure honestly: how much bigger the hub cache has grown
 # since the download started.
 
-# How often the progress line is printed. Long enough not to fill the window of a slow
-# download, short enough that the gap between two lines never reads as a stall.
-PROGRESS_SECONDS = 5.0
+# F225: the measurement itself moved to `sorta/tiers.py` — the run screen needs the same
+# number and could not see it here (`tiers.downloaded_bytes`, `tiers.watch_download`).
+# What stayed is this side's sentences, which are a console's and not a browser's.
+#
+# A download nobody should be surprised by twice: past this many megabytes the wait is
+# tens of minutes on an ordinary line, and a person is told so BEFORE the window goes
+# quiet. 5 GB is under the deep tier's 7 000 and far above every other tier of the
+# catalog, so the line belongs to the one tier that earns it.
+SLOW_DOWNLOAD_MB = 5000
 _MB = 1_000_000
-
-
-def downloaded_bytes(cache: Path | None = None) -> int:
-    """How much the model cache holds right now — progress measured on the disk.
-
-    Deliberately the whole cache rather than one model's directory: what a library names
-    the folder it is filling (and whether it fills a `blobs/` file under a temporary
-    name first) is its own business, and a measurement that depends on those names would
-    quietly report zero the day one of them changes.
-    """
-    directory = hf_cache_dir() if cache is None else cache
-    total = 0
-    try:
-        for item in directory.rglob("*"):
-            try:
-                if item.is_file():
-                    total += item.stat().st_size
-            except OSError:  # a file the downloader replaced between the two calls
-                continue
-    except OSError:  # no cache directory yet — nothing has been downloaded
-        return 0
-    return total
 
 
 def clip_weight_names(config_path: str = "config.yaml") -> tuple[str, str]:
@@ -485,6 +474,37 @@ def clip_weight_names(config_path: str = "config.yaml") -> tuple[str, str]:
     except Exception:  # noqa: BLE001 — an unreadable config still gets its weights
         pass
     return str(naming.clip_model), str(naming.clip_pretrained)
+
+
+def search_weight_names(config_path: str = "config.yaml") -> tuple[str, str]:
+    """The multilingual CLIP a search by words loads: `(architecture, weights)`.
+
+    Off `features.search_model`, which spells the pair as `<architecture>/<weights>` —
+    split here the way `junk.search_index_settings` splits it for the stage, and read
+    from the config for the same reason `clip_weight_names` is: a machine whose owner
+    chose another model must not have a different one downloaded into its cache.
+    """
+    from .config import FeaturesConfig, load_config
+
+    features = FeaturesConfig()
+    try:
+        features = load_config(config_path).features
+    except Exception:  # noqa: BLE001 — an unreadable config still gets its weights
+        pass
+    architecture, _, weights = str(features.search_model).partition("/")
+    return architecture, weights
+
+
+def vlm_model_name(config_path: str = "config.yaml") -> str:
+    """The repository of the deep tier's model, as the config names it."""
+    from .config import VlmConfig, load_config
+
+    vlm = VlmConfig()
+    try:
+        vlm = load_config(config_path).vlm
+    except Exception:  # noqa: BLE001 — an unreadable config still gets its weights
+        pass
+    return str(vlm.model)
 
 
 def fetch_weights(tier: Tier, config_path: str = "config.yaml") -> None:
@@ -509,50 +529,87 @@ def _fetch_clip(config_path: str) -> None:  # pragma: no cover — 1.6 GB over t
     open_clip.create_model_and_transforms(model, pretrained=pretrained, device="cpu")
 
 
-# Only the weights of a tier that PRELOADS need an entry, and a test pins the two lists
-# together: a tier marked `preload` whose model nobody here can fetch would fail at
-# install time, on the one screen where a failure is most expensive.
-_FETCHERS: dict[str, Callable[[str], None]] = {"ViT-L-14": _fetch_clip}
+def _fetch_search_clip(config_path: str) -> None:  # pragma: no cover — 1.4 GB, network
+    import open_clip
+
+    model, pretrained = search_weight_names(config_path)
+    open_clip.create_model_and_transforms(model, pretrained=pretrained, device="cpu")
+
+
+def _fetch_faces(config_path: str) -> None:  # pragma: no cover — 400 MB over the network
+    """buffalo_l, through insightface, which downloads it while it builds the analysis.
+
+    `allowed_modules` is the detection/recognition pair the stage itself asks for
+    (`faces._ALLOWED_MODULES`); the pack arrives whole either way — it is one zip — and
+    limiting the modules keeps this from loading five networks to fetch a file.
+    """
+    from insightface.app import FaceAnalysis
+
+    FaceAnalysis(name="buffalo_l", allowed_modules=["detection"],
+                 providers=["CPUExecutionProvider"])
+
+
+def _fetch_vlm(config_path: str) -> None:  # pragma: no cover — 7 GB over the network
+    """Qwen2.5-VL, by the repository the config names.
+
+    `snapshot_download` and not `from_pretrained`: the deep tier's model is 7 GB and
+    building it would put all of that through RAM and a device to end up with the same
+    files in the same cache. The name is the hub's own here (`Qwen/Qwen2.5-VL-3B-...`),
+    so nothing is being guessed about which repository the stage will read.
+    """
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(repo_id=vlm_model_name(config_path))
+
+
+# Every model the catalog names needs an entry here, and a test pins the two lists
+# together — that guard is the one that would have stopped F225's third defect: three
+# tiers of four had no downloader, so answering "yes, add it" to them printed a promise
+# and fetched nothing.
+_FETCHERS: dict[str, Callable[[str], None]] = {
+    "ViT-L-14": _fetch_clip,
+    "XLM-RoBERTa": _fetch_search_clip,
+    "buffalo_l": _fetch_faces,
+    "Qwen2.5-VL-3B": _fetch_vlm,
+}
 
 
 def download_weights(tier: Tier, lang: i18n.Lang, config_path: str = "config.yaml", *,
                      say: Callable[[str], None] = say_console,
                      fetch: Callable[[Tier, str], None] = fetch_weights,
-                     measure: Callable[[], int] = downloaded_bytes,
-                     tick: float = PROGRESS_SECONDS) -> bool:
+                     measure: Callable[[], int] | None = None,
+                     tick: float | None = None) -> bool:
     """Fetch the tier's weights now, saying how it goes. True when they are on disk.
 
     A refusal by the network is not an error of the install: everything else stays as it
     was, the product works, and the stage that wanted the model fetches it on its first
     run — which F222 announces before that run starts. So this returns False and the
     caller says what it means, instead of raising into a window that is about to close.
+
+    F225: the loop that measures the progress is `tiers.watch_download` — the run screen
+    shows the same number, and one measurement with two implementations is the thing this
+    project keeps finding in its own defect reports.
     """
+    from .tiers import PROGRESS_SECONDS, downloaded_bytes, watch_download
+
+    if tier.download_mb >= SLOW_DOWNLOAD_MB:
+        # The half hour of silence the owner would otherwise meet with no warning.
+        say(i18n.cli_text(f"{_SETUP_PREFIX}weights_slow", lang,
+                          size=human_size(tier.download_mb, lang)))
     say(i18n.cli_text(f"{_SETUP_PREFIX}weights_downloading", lang,
                       weights=", ".join(tier.weights),
                       size=human_size(tier.download_mb, lang)))
-    failure: list[BaseException] = []
 
-    def work() -> None:
-        try:
-            fetch(tier, config_path)
-        except BaseException as exc:  # noqa: BLE001 — every refusal is a sentence below
-            failure.append(exc)
-
-    start = measure()
-    # A thread and not a subprocess: the download has to land in the cache of THIS
-    # machine's user, and the interpreter that would be started for a subprocess is the
-    # question `python_binary` exists to answer for packages — one mechanism per job.
-    worker = threading.Thread(target=work, daemon=True)
-    worker.start()
-    while True:
-        worker.join(tick)
-        if not worker.is_alive():
-            break
+    def progress(done: int) -> None:
         say(i18n.cli_text(f"{_SETUP_PREFIX}weights_progress", lang,
-                          done=human_size(max(0, measure() - start) // _MB, lang),
+                          done=human_size(done // _MB, lang),
                           size=human_size(tier.download_mb, lang)))
-    if failure:
-        error = failure[0]
+
+    error = watch_download(
+        lambda: fetch(tier, config_path), progress,
+        measure=downloaded_bytes if measure is None else measure,
+        tick=PROGRESS_SECONDS if tick is None else tick)
+    if error is not None:
         say(i18n.cli_text(f"{_SETUP_PREFIX}weights_failed", lang,
                           weights=", ".join(tier.weights),
                           error=str(error).strip() or error.__class__.__name__))
@@ -647,7 +704,7 @@ def run_setup(lang: i18n.Lang, *,
               states: Sequence[TierState] | None = None,
               say: Callable[[str], None] = say_console,
               ask: Callable[[str, bool], bool] = ask_console,
-              doctor: Callable[[str], None] = show_doctor,
+              doctor: Callable[..., None] = show_doctor,
               install: Callable[[Sequence[str]], int] = run_install,
               download: Callable[..., bool] = download_weights) -> int:
     """The first-run wizard. Returns the exit code: 0 unless an install failed.
@@ -659,13 +716,16 @@ def run_setup(lang: i18n.Lang, *,
     manifest = load_manifest() if manifest is None else manifest
     say(i18n.cli_text(f"{_SETUP_PREFIX}title", lang))
     say(i18n.cli_text(f"{_SETUP_PREFIX}checking", lang))
-    doctor(config_path)
+    # F225: ONE probe, taken here and shown to both screens. The check screen used to make
+    # its own, and a disk read twice a second apart is a disk that can answer twice — see
+    # `show_doctor`.
+    probed = list(probe_tiers() if states is None else states)
+    doctor(config_path, probed)
     say(i18n.cli_text(f"{_SETUP_PREFIX}exiftool_{exiftool_state(manifest)}", lang))
     say(i18n.cli_text(f"{_SETUP_PREFIX}base_ready", lang))
     say(i18n.cli_text(f"{_SETUP_PREFIX}tiers_intro", lang))
 
-    machine = {state.key: state for state in
-               (probe_tiers() if states is None else states)}
+    machine = {state.key: state for state in probed}
     outcome = Outcome()
     accepted: list[Tier] = []
     in_place: list[str] = []
@@ -717,13 +777,16 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
                download: Callable[..., bool] = download_weights) -> None:
     """Install what was said yes to: packages now, weights now or on first use.
 
-    The halves are reported apart because they cost the person different things: a
-    package is downloaded here and now, while weights ordinarily arrive inside the first
-    run of the stage that needs them. Saying "installed" about the second would be a lie
-    the person only discovers when a stage starts a 7 GB download.
+    F225: "or on first use" is gone. A tier somebody answered yes to is downloaded HERE,
+    whatever it carries — "in `sorta setup` I choose what to download, and where is the
+    download itself? why does the window simply close on Enter instead of downloading
+    what was chosen?" (the owner, 2026-08-08). F223 had built the mechanism for exactly
+    one tier of four; the other three printed "it will download some time later" and
+    closed, so the promise "agree in the wizard and the rest is offline" held for a
+    quarter of the catalog.
 
-    F223 adds the third case, for the tier the layout needs: its weights are fetched
-    HERE, and the sentence is neither "installed" nor "later" but the download itself.
+    A refusal by the network still leaves the install as it was — the tier goes to
+    `skipped`, the exit code stays 0, and the stage fetches the model on its first run.
     """
     uv = uv_binary(manifest)
     python = python_binary(manifest)
@@ -744,16 +807,12 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
                 say(i18n.cli_text(f"{_SETUP_PREFIX}install_failed", lang,
                                   name=tier.name(lang), status=code))
                 continue
-        if tier.weights and tier.preload:
-            # F223: the download happens HERE, at the screen, with progress — and a
-            # refusal by the network leaves the install as it was rather than failing it.
+        if tier.weights:
+            # The download happens HERE, at the screen, with progress — and a refusal by
+            # the network leaves the install as it was rather than failing it.
             if not download(tier, lang, config_path, say=say):
                 outcome.skipped.append(tier.name(lang))
                 continue
-        elif tier.weights:
-            say(i18n.cli_text(f"{_SETUP_PREFIX}weights_later", lang,
-                              size=human_size(tier.download_mb, lang),
-                              weights=", ".join(tier.weights)))
         outcome.chosen.append(tier.name(lang))
 
 

@@ -414,6 +414,15 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "「{stage}」ステージ用のモデルをダウンロード中: {weights}（{size}）。"
               "初回のみで、以降はディスクから読み込まれます。",
     },
+    # F225: ...and how far it has got, because a line that names a model and then never
+    # changes is read as a hang exactly the way silence was. The number is measured on the
+    # disk (`tiers.downloaded_bytes`) and refreshed at least every five seconds — the same
+    # measurement the setup wizard prints in its console, so the two cannot disagree.
+    "download_progress": {
+        "ru": "Скачано {done} из {size}.",
+        "en": "{done} of {size} so far.",
+        "ja": "{size} 中 {done} をダウンロード済み。",
+    },
     # F222 §6b: the tier is absent, so the option cannot do anything at all — and an
     # option that cannot act is a control that does nothing, which F211 forbids in as
     # many words. It goes dead, with the reason and the way out beside it (the wizard's

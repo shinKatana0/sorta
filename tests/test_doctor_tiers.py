@@ -124,13 +124,25 @@ class TestTheWeightsProbeLooksWhereTheLoadersWrite(unittest.TestCase):
         (self.insightface / "buffalo_l" / "det_10g.onnx").write_bytes(b"x")
         self.assertTrue(self._cached("buffalo_l"))
 
+    def _hub_model(self, entry: str) -> Path:
+        """A finished hub download: a revision under `snapshots/` with a file in it.
+
+        F225: a directory is no longer the answer — an interrupted download leaves one
+        behind too, and the probe has to tell the two apart (see
+        test_a_download_that_stopped_halfway.py, where the rule itself is pinned).
+        """
+        snapshot = self.hub / entry / "snapshots" / "0123456789abcdef"
+        snapshot.mkdir(parents=True)
+        (snapshot / "open_clip_pytorch_model.bin").write_bytes(b"x")
+        return self.hub / entry
+
     def test_the_hub_cache_is_matched_by_what_the_loader_asked_for(self):
         """The catalog names a model the way a person reads it; the cache names it the
         way the hub does, and for ViT-L-14 those two strings share nothing."""
-        (self.hub / "models--timm--vit_large_patch14_clip_224.openai").mkdir()
+        self._hub_model("models--timm--vit_large_patch14_clip_224.openai")
         self.assertTrue(self._cached("ViT-L-14"))
         self.assertFalse(self._cached("Qwen2.5-VL-3B"))
-        (self.hub / "models--Qwen--Qwen2.5-VL-3B-Instruct").mkdir()
+        self._hub_model("models--Qwen--Qwen2.5-VL-3B-Instruct")
         self.assertTrue(self._cached("Qwen2.5-VL-3B"))
 
     def test_a_missing_cache_directory_is_not_a_crash(self):

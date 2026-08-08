@@ -31,6 +31,7 @@ fail into `TrayUnavailable`, and none of them may take the server down with it.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import socket
@@ -97,6 +98,84 @@ class TrayUnavailable(RuntimeError):
 def url_for(port: int) -> str:
     """The address the icon opens and shows in its tooltip."""
     return f"http://127.0.0.1:{port}/"
+
+
+# --- F225: a windowed interpreter has no streams, and every library assumes it has ------
+#
+# The shortcut runs `pythonw.exe -m sorta.tray`, and a windowed interpreter starts with
+# `sys.stdout` and `sys.stderr` set to None — there is no console for them to point at.
+# `_say` below has known that since F207 and guards ITS OWN lines. Nothing guarded
+# anybody else's, and the run happens inside THIS process (`ui/process.py` runs the
+# pipeline on a thread of it), so the first library that prints takes the run down with
+# it. On a clean VM on 2026-08-08 that was huggingface_hub drawing its progress bar:
+#
+#     Failed to download weights for tag 'openai' ...
+#     Last error: 'NoneType' object has no attribute 'write'
+#
+# — a 1.6 GB download that failed with the network, the certificates and the disk all
+# perfectly fine, because there was nowhere to print the percentage to.
+#
+# Hence the fix is HERE, at the entry point, and not at the call that raised: the next
+# library to print a line comes with the next version of transformers, and it must not be
+# a second report of this defect. Both streams are made to exist and both go to the run
+# log (`%LOCALAPPDATA%\\sorta\\logs\\sorta.log`) — a line that cannot be shown to anybody
+# is still the line somebody reads afterwards to find out what happened.
+
+
+class _LogStream(io.TextIOBase):
+    """A text stream that has nowhere to print, so it writes the run log instead.
+
+    Line-buffered by hand: progress bars end their writes with `\\r` and would otherwise
+    put one log record per redraw. What is kept is whole lines; anything left over is
+    flushed when the writer flushes.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._pending = ""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        # Some libraries write bytes to a stream they believe is a console; refusing
+        # would be the crash this class exists to prevent.
+        data = text if isinstance(text, str) else bytes(text).decode("utf-8", "replace")
+        self._pending += data.replace("\r", "\n")
+        while "\n" in self._pending:
+            line, _, self._pending = self._pending.partition("\n")
+            self._emit(line)
+        return len(data)
+
+    def flush(self) -> None:
+        if self._pending:
+            line, self._pending = self._pending, ""
+            self._emit(line)
+
+    def isatty(self) -> bool:
+        """No. A progress bar that believes otherwise redraws a line nobody can see."""
+        return False
+
+    def _emit(self, line: str) -> None:
+        if line.strip():
+            _LOG.info("%s: %s", self._name, line.rstrip())
+
+
+def ensure_streams() -> tuple[str, ...]:
+    """Give this process the two standard streams, if the launcher left it without them.
+
+    Returns the names that had to be replaced — () on an ordinary console, where the real
+    streams are left exactly as they are. Also fills `sys.__stdout__`/`sys.__stderr__`,
+    which a library reaching past the current streams would otherwise find as None.
+    """
+    replaced: list[str] = []
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            setattr(sys, name, _LogStream(name))
+            replaced.append(name)
+        if getattr(sys, f"__{name}__", None) is None:
+            setattr(sys, f"__{name}__", getattr(sys, name))
+    return tuple(replaced)
 
 
 def _say(text: str, *, error: bool = False) -> None:
@@ -414,7 +493,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """The `sorta-tray` entry point. Everything `sorta ui` does at start-up, plus a
-    picture in the tray."""
+    picture in the tray.
+
+    F225: the streams first, before a single line of this is read or a single module of
+    the pipeline is imported. This is the entry point of the windowed launcher, and from
+    here on the process is one where any library may print — see `ensure_streams`.
+    """
+    ensure_streams()
     args = build_parser().parse_args(argv)
     cfg = load_config(args.config)
     configure_logging(cfg.log_level)

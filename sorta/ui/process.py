@@ -44,8 +44,8 @@ from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
 from ..tiers import (
-    PartState, TierState, download_failure, run_parts, stage_downloads, tier_states,
-    weights_size_mb,
+    MB, PartState, TierState, download_failure, run_parts, stage_downloads, tier_states,
+    watch_download, weights_size_mb,
 )
 from .common import _ProgressCB, _connect, _log
 from .layout import PlanCache
@@ -164,7 +164,7 @@ def _run_language(cfg: Config) -> Lang:
 
 
 def _pipeline_steps(
-        notify: Callable[[str | None, tuple[str, ...]], None] | None = None
+        notify: Callable[..., None] | None = None
         ) -> list[tuple[str, _StageFn]]:
     """Processing steps in dependency order — the same as `cli._pipeline_steps`, plus
     `phash` last (canonically from cli _pipeline_steps).
@@ -182,6 +182,12 @@ def _pipeline_steps(
     classifier, and announcing a download there would be a sentence about nothing. The
     caller turns it into the line the run screen shows — 1.6 GB with no line at all is
     indistinguishable from a hang, which is exactly what the owner reported.
+
+    F225: and while it runs it is called again, (stage, weights, bytes so far), at least
+    every `tiers.PROGRESS_SECONDS`. Naming the model was not enough — the second report,
+    on 2026-08-08, is of the same 1.6 GB arriving under a line that never changed, which
+    reads as a hang exactly the way silence did. The bytes are measured on the disk by
+    `tiers.watch_download`, the measurement the wizard's console prints from.
     """
     holder: dict[str, _LazyClassifierHolder] = {}
     # Which stage asked last: three of them share one classifier (F19) and whichever
@@ -191,18 +197,28 @@ def _pipeline_steps(
     def _build(cfg: Config) -> Classifier:
         stage = asked_by["stage"]
         pending = stage_downloads(stage)
-        if pending and notify is not None:
-            notify(stage, pending)
-        try:
+        if not pending:
+            # Already on disk: nothing to watch, nothing to announce, and a failure here
+            # failed for some other reason and is said as-is.
             return clip_classifier(naming_settings(cfg))
-        except Exception as exc:
-            if not pending:
-                raise  # already on disk: this failed for some other reason, say so as-is
-            _log.exception("sorta ui: не удалось скачать веса для этапа %r", stage)
-            raise _DownloadRefused(download_failure(
-                stage, pending, _run_language(cfg), exc)) from exc
+        if notify is not None:
+            notify(stage, pending)
+        built: list[Classifier] = []
+        try:
+            # F225: the build runs on a thread of its own so that this one is free to
+            # keep saying how much has arrived. The classifier lands in `built` — a
+            # thread has no return value to hand back.
+            failure = watch_download(
+                lambda: built.append(clip_classifier(naming_settings(cfg))),
+                lambda done: None if notify is None else notify(stage, pending, done))
+            if failure is not None:
+                _log.error("sorta ui: не удалось скачать веса для этапа %r", stage,
+                           exc_info=failure)
+                raise _DownloadRefused(download_failure(
+                    stage, pending, _run_language(cfg), failure)) from failure
+            return built[0]
         finally:
-            if pending and notify is not None:
+            if notify is not None:
                 notify(None, ())
 
     def _clip(cfg: Config, stage: str) -> _LazyClassifierHolder:
@@ -314,6 +330,10 @@ class _ProcessState:
         # a named model beats a silent hour.
         self.download_stage: str | None = None
         self.download_weights: tuple[str, ...] = ()
+        # F225: ...and how much of it has arrived, measured on the disk. A model that is
+        # named but never moves is read as a hang just as reliably as one that is not
+        # named at all — which is what the second report of it said.
+        self.download_done: int = 0
         # F222: stages this run skipped whose settings are still in config.yaml. The
         # sentence is built by `config.skipped_stage_notes`, the same one `sorta run`
         # prints, so a person cannot be told two different things about one file.
@@ -352,11 +372,17 @@ class _ProcessState:
         with self._lock:
             self.deep_ran = ran
 
-    def set_download(self, stage: str | None, weights: tuple[str, ...] = ()) -> None:
-        """F222: a model is being fetched for `stage` — or, with None, is not any more."""
+    def set_download(self, stage: str | None, weights: tuple[str, ...] = (),
+                     done: int = 0) -> None:
+        """F222: a model is being fetched for `stage` — or, with None, is not any more.
+
+        F225: `done` is how many bytes have arrived since this download started. The
+        line goes away when the download ends, so a finished one leaves no bar behind.
+        """
         with self._lock:
             self.download_stage = stage if weights else None
             self.download_weights = weights
+            self.download_done = done if weights else 0
 
     def set_skipped_notes(self, notes: Sequence[str]) -> None:
         """F222: what this run left out while the file still configures it."""
@@ -452,9 +478,12 @@ class _ProcessState:
                 # F222: what is coming down the wire, while it is coming. Null between
                 # downloads and on a run that needs none — the screen draws nothing then,
                 # rather than a bar about a finished download.
+                # F225: `done_mb` is what has arrived, so the line can say "X of Y" and
+                # keep changing while the gigabytes come down.
                 "download": ({"stage": self.download_stage,
                               "weights": list(self.download_weights),
-                              "mb": weights_size_mb(self.download_weights)}
+                              "mb": weights_size_mb(self.download_weights),
+                              "done_mb": self.download_done // MB}
                              if self.download_weights else None),
                 # F222: the stages this run skipped whose settings the file still holds.
                 # Almost always empty — a note on every run is noise, and noise is what

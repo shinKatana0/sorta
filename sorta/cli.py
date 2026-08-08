@@ -912,12 +912,17 @@ def _doctor_tier_lines(lang: Lang, states: list[TierState]) -> list[str]:
     return lines
 
 
-def _cmd_doctor(config_path: str) -> None:
+def _cmd_doctor(config_path: str, states: list[TierState] | None = None) -> None:
     """F112: `--config` is here only to know the output language — the command still
     works without a readable config (`_lang_of` falls back to the default), it just
     prints in the default language then. The two health summaries below come from
     diagnostics.py, which this feature does not own, so they stay as that module
     writes them.
+
+    F225: `states` is a probe somebody has already taken — the wizard's, which prints
+    this block and then its own answer about the same tiers. Without it the two probe the
+    disk one after the other, and one output was caught stating both "ViT-L-14 downloads
+    on the first run" and "already in place" about the same machine.
     """
     lang = _lang_of(config_path)
     # F211: name the environment BEFORE the health lines. An installed copy ships its
@@ -937,7 +942,7 @@ def _cmd_doctor(config_path: str) -> None:
     # F216: ...and what the install is made of. The installer ships one tier and offers
     # four, so both the person who installed it by hand and the workflow that installs
     # it on a clean machine ask this first.
-    for line in _doctor_tier_lines(lang, tier_states()):
+    for line in _doctor_tier_lines(lang, tier_states() if states is None else states):
         print(line)
     print(gpu_health().summary)
     # F65: the geo base failing to load is invisible at runtime (every coordinate just
