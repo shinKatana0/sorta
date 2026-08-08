@@ -3,17 +3,14 @@
 Invariant: original files are never modified.
 A re-run skips files with matching path+size+mtime.
 
-F81: source folders can be excluded BEFORE the walk reaches them (`excludes.yaml`,
-keyed by source root — see `load_excludes`). An excluded subtree is never entered, so
-its files cost no stat, no hash and no later stage; rows already indexed under such a
-path are deleted from the index at the start of `index()`, because "do not scan" and
-"is in the index" cannot both be true.
+F81: a source folder can be excluded BEFORE the walk reaches it (`excludes.yaml`, keyed by
+source root). An excluded subtree is never entered, and rows already indexed under such a
+path are deleted at the start of `index()` — "do not scan" and "is in the index" cannot
+both be true.
 
-F82: the same file also carries the OTHER kind of exclusion — "do not lay out"
-(`skip_layout`), which the indexer never looks at: those files are scanned and indexed
-as usual, `sorter._resolve_excludes` is what leaves them where they lie. Two sections
-of one file rather than two files, so a folder can be moved between the two meanings
-without moving between formats.
+F82: the same file carries the OTHER exclusion, "do not lay out" (`skip_layout`), which the
+indexer never looks at — `sorter._resolve_excludes` reads it. Two sections of one file so
+that a folder can move between the two meanings without moving between formats.
 """
 from __future__ import annotations
 
@@ -45,10 +42,8 @@ _RESOLUTION_RE = re.compile(r"(?i)\b(720p|1080p|2160p|4k)\b")
 _SOURCE_RE = re.compile(r"(?i)\b(webrip|web-?dl|bluray|bdrip|hdtv|dvdrip)\b")
 _CODEC_RE = re.compile(r"(?i)\b(x264|x265|hevc|h\.?264|h\.?265)\b")
 _GROUP_RE = re.compile(r"\[[^\[\]]{2,30}\]")
-# Dot-separated release names: 3+ dot-separated tokens, then a 4-digit year
-# (Movie.Name.2021.mp4) — weaker than the other signals on its own, but the brief
-# treats it as a release pattern; size is deliberately not used as a signal — a very
-# large file means nothing by itself (4K family video is large too).
+# Dot-separated release names: 3+ tokens then a 4-digit year (Movie.Name.2021.mp4).
+# SIZE is deliberately not a signal here — 4K family video is large too.
 _DOTTED_RELEASE_RE = re.compile(r"(?:[A-Za-z0-9]+\.){3,}(?:19|20)\d{2}\.")
 
 _RELEASE_PATTERNS = (
@@ -72,7 +67,7 @@ class IndexStats:
     # F81: what the walk refused to enter, and what it evicted because of that.
     excluded_dirs: int = 0      # pruned subtrees
     excluded_files: int = 0     # files inside them (counted from directory entries only)
-    removed_excluded: int = 0   # already-indexed rows deleted because they now sit under an exclusion
+    removed_excluded: int = 0   # indexed rows deleted for now sitting under an exclusion
 
 
 # --- F81/F82: excluded source folders --------------------------------------------
@@ -97,16 +92,14 @@ _DEPENDENT_TABLES = (
 class Excludes:
     """Excluded directories, keyed by SOURCE ROOT, in two independent meanings.
 
-    An exclusion is meaningless outside its root ("Movies" belongs to D:/Photos, not
-    to the world), so the file groups the relative paths per root. Changing the source
-    therefore needs no migration question: the new root has its own set, the old one
-    keeps its own, and coming back restores it.
+    An exclusion is meaningless outside its root ("Movies" belongs to D:/Photos, not to the
+    world), so paths are grouped per root — and changing the source then needs no migration
+    question, since the old root keeps its own set and coming back restores it.
 
-    `by_root` is "do not scan" (F81): the walk never enters it, its files are not in the
-    index at all. `layout_by_root` is "do not lay out" (F82): the files ARE indexed —
-    they take part in dedup, statistics and the web app — they are only left where they
-    lie by `sorter`. The two are mutually exclusive per folder; `load_excludes` resolves
-    a hand-written overlap in favour of "do not scan", the stronger of the two.
+    `by_root` is "do not scan" (F81): not in the index at all. `layout_by_root` is "do not
+    lay out" (F82): indexed as usual, taking part in dedup, statistics and the web app, and
+    only left where it lies by `sorter`. The two are mutually exclusive per folder, and
+    `load_excludes` resolves a hand-written overlap in favour of "do not scan".
     """
     by_root: dict[str, list[str]] = field(default_factory=dict)  # normalized root -> rel paths
     layout_by_root: dict[str, list[str]] = field(default_factory=dict)
@@ -122,11 +115,10 @@ class Excludes:
 
 
 def excludes_path(cfg: Config) -> Path:
-    """Location of the exclusion file.
+    """Location of the exclusion file — `excludes.yaml` next to the database by default.
 
-    `index.excludes_file` is read straight from `cfg.raw` — the same arrangement as
-    `index.workers` in `hashing.resolve_workers`: no typed field is added to
-    config.py for it. Default: `excludes.yaml` next to the database file.
+    `index.excludes_file` is read straight from `cfg.raw`, like `index.workers` in
+    `hashing.resolve_workers`: no typed field is added to config.py for it.
     """
     idx = (cfg.raw or {}).get("index")
     value = idx.get("excludes_file") if isinstance(idx, dict) else None
@@ -138,9 +130,8 @@ def excludes_path(cfg: Config) -> Path:
 def _norm_root(root: str | Path) -> str:
     """Lookup key of a source root: resolved + normcase.
 
-    The same root reaches us from config.yaml, from the CLI and from the web app, in
-    whatever spelling the user typed; on Windows it also differs in case and in the
-    separator. One canonical form is what makes those the same key.
+    One root reaches us from config.yaml, the CLI and the web app in whatever spelling the
+    user typed, and on Windows also in whatever case and separator.
     """
     try:
         resolved = Path(root).expanduser().resolve()
@@ -150,8 +141,7 @@ def _norm_root(root: str | Path) -> str:
 
 
 def _display_root(root: str | Path) -> str:
-    """How a root is written INTO the file: absolute, POSIX separators (`D:/Photos`) —
-    the file is machine-written but has to stay readable."""
+    """How a root is written INTO the file: absolute, POSIX (`D:/Photos`) — stays readable."""
     return Path(root).expanduser().resolve().as_posix()
 
 
