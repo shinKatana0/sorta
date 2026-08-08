@@ -5,7 +5,7 @@
 # Lowering a number needs nothing but the shrunken file. RAISING one is the point of the
 # file: prose that grows has to be argued for in the diff that grows it.
 sorta/__init__.py     1
-sorta/accel.py        131
+sorta/accel.py        102
 sorta/cli.py          391
 sorta/config.py       817
 sorta/dates.py        17

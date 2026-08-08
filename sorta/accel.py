@@ -1,36 +1,22 @@
 """F214: the one place that asks the machine what it can compute on.
 
-Until this module the question was answered four times, in four stages, by four copies
-of the same two lines — `"cuda" if torch.cuda.is_available() else "cpu"` in `naming`
-and `landmarks`, `["CUDAExecutionProvider", "CPUExecutionProvider"]` in `faces` and
-`junk`. Four copies of a two-branch decision survive exactly as long as there are two
-branches; the third one (Apple Silicon) is what this feature adds, and adding it in
-four places is how the stages start disagreeing about which device a run is on.
-
-The preference order, and what "available" means for each rung:
+The question used to be answered four times, in four stages, by four copies of the same
+two lines — `"cuda" if torch.cuda.is_available() else "cpu"` in `naming` and
+`landmarks`, `["CUDAExecutionProvider", "CPUExecutionProvider"]` in `faces` and `junk`.
+Four copies of a two-branch decision survive exactly as long as there are two branches;
+the third rung (Apple Silicon) is what this feature adds.
 
     torch          CUDA -> MPS -> CPU
     onnxruntime    CUDA -> CoreML -> CPU
 
 **Absence is not an error.** Every rung is probed, and a machine without any of them
-lands on the CPU with nothing logged — that is the ordinary case on the runner this
-project is tested on.
+lands on the CPU with nothing logged — the ordinary case on the runner this project is
+tested on.
 
-**Windows and Linux must not feel this.** That is the load-bearing requirement, not the
-speed: both platforms that work today walk this path. So the rules below are written to
-be identical to the code they replace wherever CUDA is in the picture:
-
-* `torch_device` asks `torch.cuda.is_available()` FIRST and returns the same string it
-  always did; MPS is only ever reached when that answer is False, which on Windows and
-  Linux it is only on machines that were already running on the CPU;
-* `onnx_providers` returns the historical `["CUDAExecutionProvider",
-  "CPUExecutionProvider"]` in every case except one — a runtime that offers CoreML and
-  does not offer CUDA, i.e. a Mac. A CPU-only Windows box keeps asking for CUDA and
-  keeps being handed the CPU by onnxruntime, exactly as it does today, because a list
-  that is *probably* equivalent is not the same thing as the same list;
-* `CpuFallback` re-raises everything on CUDA. The retreat below exists for MPS, whose
-  failure mode CUDA does not have, and a stage that dies on a CUDA machine has to die
-  the way it died before this module existed.
+**Windows and Linux must not feel this**, which is the load-bearing requirement and not
+the speed. Wherever CUDA is in the picture the rules below are the code they replace:
+CUDA is asked FIRST, `onnx_providers` returns the historical pair in every case but a
+runtime that offers CoreML and no CUDA, and `CpuFallback` re-raises everything on CUDA.
 
 None of this has run on real Apple hardware — there is no Mac here, and the macOS
 runner in `check.yml` reaches CI only on the first push. What that runner cannot answer
@@ -67,9 +53,9 @@ T = TypeVar("T")
 def _mps_available(torch: Any) -> bool:
     """Does this torch have a working Metal backend?
 
-    Wrapped whole: `torch.backends.mps` is missing on old builds, and `is_available()`
-    is free to raise on a build that was compiled without Metal. Both mean the same
-    thing here — no MPS — and neither is a reason to take a stage down.
+    Wrapped whole: `torch.backends.mps` is missing on old builds and `is_available()`
+    may raise on a build compiled without Metal. Both mean no MPS, and neither is a
+    reason to take a stage down.
     """
     try:
         backend = getattr(torch.backends, "mps", None)
@@ -87,10 +73,9 @@ def _import_torch() -> Any:
 def torch_device(torch: Any | None = None) -> str:
     """The device a torch stage runs on: CUDA -> MPS -> CPU.
 
-    `torch` is taken as an argument because every caller has already imported it
-    locally (the module must import without torch installed, which is why those imports
-    are inside the functions), and because it is what lets the choice be tested without
-    a GPU, a Mac, or a monkeypatched `sys.modules`.
+    `torch` is an argument because every caller has already imported it locally (this
+    module must import without torch installed), and because it is what lets the choice
+    be tested without a GPU, a Mac, or a monkeypatched `sys.modules`.
 
     The CUDA branch is deliberately the untouched original line, exceptions and all: a
     `torch.cuda.is_available()` that raises used to take the stage down, and this
@@ -107,7 +92,7 @@ def torch_device(torch: Any | None = None) -> str:
 def torch_dtype(torch: Any, device: str) -> Any:
     """`float16` on CUDA, `float32` everywhere else — the rule that already shipped.
 
-    MPS deliberately gets `float32`. Half precision on Metal is a different question
+    MPS deliberately gets `float32`: half precision on Metal is a different question
     from which device to run on, it would move verdicts, and nobody here can measure by
     how much (see the module docstring).
     """
@@ -117,8 +102,8 @@ def torch_dtype(torch: Any, device: str) -> Any:
 def available_providers(onnxruntime: Any | None = None) -> tuple[str, ...]:
     """The execution providers this onnxruntime build offers, or () if it cannot say.
 
-    An absent or broken onnxruntime is CPU semantics, the same reading `faces` has
-    given it since the parallel-sessions work.
+    An absent or broken onnxruntime is CPU semantics, the reading `faces` has given it
+    since the parallel-sessions work.
     """
     try:
         runtime = onnxruntime
@@ -134,10 +119,9 @@ def available_providers(onnxruntime: Any | None = None) -> tuple[str, ...]:
 def cuda_provider_available(onnxruntime: Any | None = None) -> bool:
     """Is onnxruntime built with CUDA here? (The GPU profile installs onnxruntime-gpu.)
 
-    Used to size the parallel inference sessions of the faces stage, which is a
-    different question from which providers to ask for — a CoreML machine keeps the
-    single-session default until somebody measures Metal, per this feature's rule
-    against optimising for Apple by guesswork.
+    Sizes the parallel inference sessions of the faces stage, which is a different
+    question from which providers to ask for: a CoreML machine keeps the single-session
+    default until somebody measures Metal.
     """
     return CUDA_PROVIDER in available_providers(onnxruntime)
 
@@ -145,17 +129,10 @@ def cuda_provider_available(onnxruntime: Any | None = None) -> bool:
 def onnx_providers(onnxruntime: Any | None = None) -> list[str]:
     """The provider list for an onnxruntime session: CUDA -> CoreML -> CPU.
 
-    Three cases, and two of them answer with the historical pair:
-
-        CUDA offered            [CUDA, CPU]     — the machines that work today
-        CoreML offered, no CUDA [CoreML, CPU]   — a Mac
-        neither, or no answer   [CUDA, CPU]     — unchanged; onnxruntime hands such a
-                                                  session the CPU itself, as it does
-                                                  on every CPU-only box right now
-
-    The last case is the one worth stating out loud: it would be tidier to return
-    `[CPU]` there, and tidier is not the requirement. A CPU-only Windows machine must
-    make the same call it made before this module, byte for byte.
+    A runtime that offers NEITHER is handed `[CUDA, CPU]` as well, and that is the case
+    worth stating out loud: returning `[CPU]` there would be tidier, and tidier is not
+    the requirement. onnxruntime hands such a session the CPU itself, so a CPU-only
+    Windows machine must make the same call it made before this module, byte for byte.
     """
     available = available_providers(onnxruntime)
     if CUDA_PROVIDER in available:
@@ -168,8 +145,8 @@ def onnx_providers(onnxruntime: Any | None = None) -> list[str]:
 # An accelerator saying "not this operation" rather than "your code is wrong". MPS
 # raises NotImplementedError for an operator it has no kernel for ("The operator
 # 'aten::...' is not currently implemented for the MPS device") and a RuntimeError that
-# names the backend for the rest — out of memory, an unsupported dtype, a placement it
-# will not do. Anything else is a bug in the stage and has to keep looking like one.
+# names the backend for the rest. Anything else is a bug in the stage and has to keep
+# looking like one.
 _MPS_FAILURE = re.compile(r"\bmps\b|\bmetal\b|not currently implemented", re.IGNORECASE)
 
 
@@ -183,21 +160,16 @@ def is_accelerator_failure(exc: BaseException) -> bool:
 class CpuFallback:
     """A stage's torch device, and its one-way retreat to the CPU.
 
-    MPS is not a smaller CUDA. An operator a model needs may simply have no Metal
-    kernel, and that shows up at the first call rather than at load time — so a device
-    that was chosen successfully can still refuse the work halfway into a stage. The
-    answer is the one every ML stage in this project already gives to missing weights:
-    a logged step down to a slower path that finishes the run, not a traceback through
-    the middle of it.
+    MPS is not a smaller CUDA: an operator a model needs may have no Metal kernel, and
+    that shows up at the first call rather than at load time, so a device chosen
+    successfully can still refuse the work halfway into a stage.
 
-    On CUDA nothing is caught. A CUDA machine that raises has to raise exactly as it
-    did before F214 — a stage quietly finishing on the CPU at a tenth of the speed is a
-    worse outcome than the failure it hid, and "Windows and Linux feel nothing" is this
-    feature's first requirement.
+    On CUDA nothing is caught. A stage quietly finishing on the CPU at a tenth of the
+    speed is a worse outcome than the failure it hid, and "Windows and Linux feel
+    nothing" is this feature's first requirement.
 
     The retreat happens once. `move` is what puts the caller's model on the CPU (the
-    device string alone does not move weights), `device` becomes "cpu" for every call
-    after it, and a second failure is a real failure and propagates.
+    device string alone does not move weights), and a second failure propagates.
     """
 
     def __init__(self, device: str, move: Callable[[str], None] | None = None,
@@ -227,8 +199,8 @@ def describe(torch: Any | None = None, onnxruntime: Any | None = None) -> str:
     """One line naming what this machine offers — what the macOS CI step prints.
 
     Deliberately a string and not a dataclass: its only readers are a person looking at
-    a runner's log and the probe script beside it. `sorta doctor` is the place where
-    this belongs for a user, and it is not this feature's to change.
+    a runner's log and the probe script beside it. `sorta doctor` is where this belongs
+    for a user, and it is not this feature's to change.
     """
     try:
         torch = _import_torch() if torch is None else torch
@@ -250,10 +222,9 @@ def verdicts_agree(left: Sequence[float], right: Sequence[float],
                    tolerance: float = 1e-3) -> tuple[bool, float]:
     """(agree, largest gap) between two runs of the same scores on two devices.
 
-    The measurement this feature owes and cannot pay in full: a device is the same
-    class of change as an attention kernel, and that one moved verdicts. This is the
-    part a runner with no photo collection can still do — the same frames scored twice,
-    on the CPU and on the accelerator, compared as numbers rather than trusted.
+    The part of the verdict comparison a runner with no photo collection can do: the
+    same frames scored twice, on the CPU and on the accelerator, compared as numbers
+    rather than trusted.
     """
     if len(left) != len(right):
         return False, float("inf")
