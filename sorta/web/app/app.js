@@ -296,6 +296,54 @@
 
   initQuit();
 
+  // --- F227: the tab opens before the launch has finished --------------------
+  //
+  // `sorta-tray` binds the port FIRST and does its diagnostics afterwards, because none
+  // of them is needed to answer a request (`warn_if_gpu_mismatch` alone is 3.76 s of
+  // torch). That is what makes the tab open in the first second — and it means the tab
+  // can open onto a program that is still getting ready. So this asks, says which step
+  // the launch is on, and shows the app when the answer says ready. No reload: the app
+  // has been booting behind the screen all along, and the background work only writes
+  // the run log.
+  //
+  // A server started any other way (`sorta ui`) answers `ready: true` and this screen is
+  // never seen. So does a failure to ask at all: an overlay nobody can dismiss is worse
+  // than a page whose first fetch went missing.
+  var STARTUP_POLL_MS = 500;
+
+  function startupStepText(state) {
+    var step = state.step;
+    if (!step) return I18N.startup_step_other;
+    var words = I18N["startup_step_" + step] || I18N.startup_step_other;
+    var steps = state.steps || [];
+    var at = steps.indexOf(step);
+    if (at === -1) return words;
+    return words + " — " + fmt(I18N.startup_step_counter,
+                               { step: at + 1, total: steps.length });
+  }
+
+  function initStartup() {
+    var box = document.getElementById("startup");
+    if (!box) return;
+    var stepEl = document.getElementById("startup-step");
+
+    function poll() {
+      fetch("/api/startup")
+        .then(function (r) { return r.json(); })
+        .then(function (state) {
+          if (!state || state.ready) { box.hidden = true; return; }
+          box.hidden = false;
+          if (stepEl) stepEl.textContent = startupStepText(state);
+          window.setTimeout(poll, STARTUP_POLL_MS);
+        })
+        .catch(function () { box.hidden = true; });
+    }
+
+    poll();
+  }
+
+  initStartup();
+
   // F65: the "Folder language" selector (Cities tab) — the OUTPUT language of
   // folders/names, separate from the interface language. Reads the current value
   // from /api/config, and on change persists it (POST /api/config/language) and

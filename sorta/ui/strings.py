@@ -3174,6 +3174,65 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Could not quit — the program is still running.",
         "ja": "終了できませんでした。プログラムは動作を続けています。",
     },
+    # --- F227: the waiting screen, while the launch finishes behind it -----------------
+    #
+    # The tab now opens the moment the port answers, which is BEFORE the diagnostics are
+    # done (`sorta/tray.py`), so the page has to be able to say what it is standing on. One
+    # caption per launch step, named in words rather than as a percentage: the steps differ
+    # in length by two orders of magnitude, and a bar stuck at 71% for four seconds of a
+    # torch import is worse than the sentence "checking the graphics card".
+    #
+    # These are NOT about downloading a model (F222/F225) and they must never read as if
+    # they were: that has its own line, its own megabytes and its own way of failing.
+    "startup_title": {
+        "ru": "Sorta запускается", "en": "Sorta is starting", "ja": "Sorta を起動中",
+    },
+    "startup_note": {
+        "ru": "Программа уже отвечает — осталось проверить окружение. Страница откроется "
+              "сама, перезагружать её не нужно.",
+        "en": "The program already answers — the environment is still being checked. This "
+              "page will show it by itself; there is nothing to reload.",
+        "ja": "プログラムはすでに応答しています。残っているのは環境の確認だけです。"
+              "この画面は自動的に切り替わります（再読み込みは不要です）。",
+    },
+    # "step 6 of 7" — the honest counter: it says where in the list this is without
+    # claiming to know what share of the TIME has gone.
+    "startup_step_counter": {
+        "ru": "этап {step} из {total}", "en": "step {step} of {total}",
+        "ja": "ステップ {step} / {total}",
+    },
+    "startup_step_config": {
+        "ru": "читаю настройки", "en": "reading the settings", "ja": "設定を読み込み中",
+    },
+    "startup_step_port": {
+        "ru": "проверяю, не запущена ли Sorta уже",
+        "en": "checking whether Sorta is already running",
+        "ja": "Sorta が既に起動していないか確認中",
+    },
+    "startup_step_database": {
+        "ru": "открываю индекс", "en": "opening the index", "ja": "インデックスを開いています",
+    },
+    "startup_step_server": {
+        "ru": "поднимаю локальный сервер", "en": "bringing up the local server",
+        "ja": "ローカルサーバーを起動中",
+    },
+    "startup_step_environment": {
+        "ru": "записываю окружение в журнал", "en": "writing the environment to the log",
+        "ja": "実行環境をログに記録中",
+    },
+    "startup_step_gpu": {
+        "ru": "проверяю видеокарту", "en": "checking the graphics card",
+        "ja": "グラフィックスカードを確認中",
+    },
+    "startup_step_geo": {
+        "ru": "проверяю гео-базу", "en": "checking the geo data",
+        "ja": "地理データを確認中",
+    },
+    # A step this build has no caption for still has to read as something happening — the
+    # `quit_running` fallback of F209, applied to the launch.
+    "startup_step_other": {
+        "ru": "готовлюсь к работе", "en": "getting ready", "ja": "準備中",
+    },
 }
 
 

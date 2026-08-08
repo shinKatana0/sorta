@@ -40,6 +40,19 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <span>{{quit_button}}</span></button>
 </div>
 </div>
+<!-- F227: the launch finishes behind this. Hidden in the markup on purpose — a server
+     started any other way (`sorta ui`) reports "nothing is starting", and a screen that
+     appeared first and asked afterwards would flash on every single load. -->
+<div id="startup" class="startup" hidden><div class="startup-box">
+<svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M4 7l8-3 8 3v10l-8 3-8-3V7z"/><path d="M4 7l8 3 8-3"/><path d="M12 10v10"/>
+</svg>
+<p class="startup-title">{{startup_title}}</p>
+<p class="startup-step" id="startup-step"></p>
+<div class="startup-bar"><div class="startup-bar-run"></div></div>
+<p class="startup-note">{{startup_note}}</p>
+</div></div>
 <div id="quit-done" class="quit-done" hidden><div class="quit-done-box">
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
      stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"/>

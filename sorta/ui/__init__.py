@@ -609,15 +609,19 @@ from ..sorter import _fs, _is_the_same_file
 # module defines, which the suite checks.
 from .strings import _TIER_LANGS, _UI_STRINGS, _doctor_line, _tier_strings, tiers, wizard
 from .common import (
-    DEFAULT_PORT, _CLUSTER_SAMPLE_LIMIT, _DEFAULT_ALBUM_DIRNAME, _DEST_GROUPS, _DEST_MODE,
+    DEFAULT_PORT, STARTUP_CONFIG, STARTUP_DATABASE, STARTUP_ENVIRONMENT, STARTUP_GEO,
+    STARTUP_GPU, STARTUP_PORT, STARTUP_SERVER, STARTUP_STEPS,
+    _CLUSTER_SAMPLE_LIMIT, _DEFAULT_ALBUM_DIRNAME, _DEST_GROUPS, _DEST_MODE,
     _EVENT_SAMPLE_LIMIT, _ImgCacheKey, _LANG_SELF_NAMES, _OVERVIEW_LIVE, _PLAN_PAGE_DEFAULT_LIMIT,
     _PLAN_PAGE_MAX_LIMIT, _PREVIEW_CACHE_MAX_ITEMS, _PREVIEW_MAX_EDGE, _ProgressCB,
-    _SUPPORTED_MODES, _THUMB_CACHE_MAX_ITEMS, _THUMB_DECODE_CONCURRENCY, _THUMB_MAX_EDGE,
+    _StartupState, _SUPPORTED_MODES, _THUMB_CACHE_MAX_ITEMS, _THUMB_DECODE_CONCURRENCY,
+    _THUMB_MAX_EDGE,
     _ThumbCacheKey, _UI_LANGS, _connect, _destination_json, _destinations_for, _encode_jpeg_cached,
     _is_under, _log, _page_payload, _parse_file_id, _parse_file_id_query, _parse_page_window,
-    _preview_bytes, _preview_cache, _preview_cache_lock, _resolve_path, _thumb_bytes, _thumb_cache,
+    _preview_bytes, _preview_cache, _preview_cache_lock, _resolve_path, _startup_payload,
+    _startup_state, _thumb_bytes, _thumb_cache,
     _thumb_cache_clear, _thumb_cache_lock, _thumb_decode_semaphore, _trash_files,
-    _validate_file_id_payload, _validate_file_ids_payload,
+    _validate_file_id_payload, _validate_file_ids_payload, startup_state,
 )
 from .layout import (
     PlanCache, _IMAGING_SETTING_ENV, _ManualPlace, _ModePlan, _OVERRIDE_ACTIONS, _PLACE_ACTIONS,
@@ -914,6 +918,11 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json(_settings_payload(cfg))
             elif path == "/api/env":
                 self._send_json(_env_payload())
+            elif path == "/api/startup":
+                # F227: the one route that is answered while the program is still getting
+                # ready, so it reads nothing but a lock — the page polls it every half
+                # second and the answer must not wait behind the launch it describes.
+                self._send_json(_startup_payload())
             elif path == "/api/sort/status":
                 self._serve_sort_status()
             elif path == "/api/undo/status":
