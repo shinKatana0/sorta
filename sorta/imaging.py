@@ -1,34 +1,17 @@
 """F18: a shared image-decode layer + a bounded in-process cache.
 
-Consolidates what used to be spread across four copy-pastes
-(faces._decode_for_faces, landmarks.clip_classifier._load, dedup._phash_one,
-sorter._make_thumbnail): lazy HEIF-opener registration + JPEG draft downscale
-+ convert + "any error -> None". Faces (full-resolution decode for the
-ArcFace crop) is deliberately NOT moved onto this module — it has its own branch
-(faces._decode_for_faces). The other consumers use imaging.decode_rgb[_cached].
+Lazy HEIF-opener registration, JPEG draft downscale, convert, "any error -> None".
+Faces is deliberately NOT on this module — the full-resolution decode for the ArcFace
+crop has its own branch (faces._decode_for_faces). Three layers, cheapest first:
+`decode_rgb_cached`, a bounded per-process LRU; `decode_rgb_preview` (F67), a lazy DISK
+cache of 1536px JPEGs; `video_filmstrip`/`video_frame` (F74, F80), the same cache
+serving clips one frame per key+index through PyAV. Video stays inside this layer on
+purpose: no pipeline stage decodes video (they all filter media_type = 'photo' in SQL).
 
-decode_rgb_cached caches the decode result (a small, max_edge-bounded image) —
-it is the decode that is expensive, not storing the original on disk.
-
-F74 lets that same preview cache serve VIDEO files: decode_rgb_preview extracts one
-frame through PyAV and stores it as an ordinary preview, so the UI gets tiles for
-clips too. It stays inside the preview layer on purpose — no pipeline stage decodes
-video (they all filter media_type = 'photo' in SQL) and none should start.
-
-F80 widens that one frame into a filmstrip (video_filmstrip / video_frame): one tile
-answers "what is this", six frames answer "is this mine, and was it shot there" —
-which is the question that matters on a collection where whole countries are almost
-only video. Same cache, same JPEG format, same key plus the frame index, and frame 0
-is still the very frame F74 wrote, so nothing already cached is invalidated.
-
-F67 adds a second, DISK-level layer on top of the same decode: decode_rgb_preview.
-The same frame used to be decoded 3-5 times per run (CLIP in landmarks, CLIP/OCR/VLM
-in junk, pHash in dedup) because decode_rgb_cached is bounded and per-process, and
-the stages run one after another. The preview cache decodes once, writes a 1536px
-JPEG next to nothing (a shared cache dir) and every later stage reads that instead
-of the original (HEIC full decode 473 ms -> pHash from a preview 1.4 ms, measured
-2026-07-25). It is lazy: no separate pass or command, whichever stage needs the
-frame first creates the preview.
+F67 is the one that pays: a frame used to be decoded 3-5 times per run (CLIP in
+landmarks, CLIP/OCR/VLM in junk, pHash in dedup), and now the first stage that needs it
+writes a preview the rest read — HEIC full decode 473 ms -> pHash off a preview 1.4 ms,
+measured 2026-07-25.
 """
 from __future__ import annotations
 
@@ -46,29 +29,16 @@ from PIL import Image, ImageOps
 
 _log = logging.getLogger(__name__)
 
-# LRU limit of the in-process decode_rgb_cached cache. Could be moved into config
-# (imaging.cache_max_items) when consumers are wired up.
-CACHE_MAX_ITEMS = 512
+CACHE_MAX_ITEMS = 512  # LRU limit of the in-process decode_rgb_cached cache
 
-# JPEG draft decodes directly at a reduced scale (DCT scaling), but only down to
-# the nearest power of two; we request with headroom so that after draft the exact
-# thumbnail() almost always only shrinks rather than upscales.
+# JPEG draft decodes at a reduced scale (DCT), but only down to the nearest power of two;
+# the headroom keeps the exact thumbnail() afterwards a shrink, never an upscale.
 _DRAFT_FACTOR = 2
 
-# F48: the _DRAFT_FACTOR=2× headroom is a quality trade-off (draft is asked for
-# larger than the final size so the exact thumbnail() can still polish with LANCZOS),
-# but it can also FULLY negate the draft win at large max_edge. draft() picks the
-# nearest power of two NOT SMALLER than the requested size: for a typical camera
-# frame (~4000px) a request of max_edge*2=2560 does not pass the first halving
-# threshold (4000/2=2000 < 2560) -> draft stays silent, the FULL frame is decoded
-# (see the F48 profile — 315 ms/frame on the OCR path at max_edge=1280).
-# A margin=1.0 request (no headroom) for the same frame passes the first halving
-# (2000 >= 1280) -> ~4× fewer pixels decoded (F48 measurement: ~45 ms ->
-# ~17 ms on a synthetic 4032x3024 JPEG). The parameter default is NOT changed (=
-# _DRAFT_FACTOR) — existing consumers (thumbs in ui.py/sorter.py, VLM decode)
-# behave identically; the aggressive margin is opt-in for consumers that do not
-# care about sub-pixel downscale sharpness (OCR text_frac — only needs the text-box
-# area, not the text itself).
+# F48: that headroom can FULLY negate the draft win at a large max_edge. For a ~4000px
+# frame a request of max_edge*2=2560 misses the first halving (2000 < 2560), draft stays
+# silent and the FULL frame is decoded — 315 ms/frame on the OCR path at max_edge=1280.
+# At margin=1.0 it passes: ~4× fewer pixels, ~45 ms -> ~17 ms on a 4032x3024 JPEG.
 _DRAFT_MARGIN_AGGRESSIVE = 1.0
 
 _heif_lock = threading.Lock()
@@ -76,11 +46,7 @@ _heif_registered = False
 
 
 def _ensure_heif_registered() -> None:
-    """Register the pillow_heif opener once (lazily, thread-safe).
-
-    Without the pillow_heif package, HEIC/HEIF stay unrecognized by Pillow —
-    decode_rgb returns None on them, as before in all consumers.
-    """
+    """Register the pillow_heif opener once; without it HEIC decodes to None."""
     global _heif_registered
     if _heif_registered:
         return
@@ -106,20 +72,9 @@ def decode_rgb(
 ) -> Image.Image | None:
     """Decode path into a PIL Image (RGB or L), or None on any error.
 
-    max_edge given -> the JPEG is decoded directly at a reduced scale
-    (im.draft), then finished if needed with an exact thumbnail() down to
-    max_edge on the longer side; max_edge=None -> full size.
-    grayscale=True -> mode "L" (for phash), otherwise "RGB".
-    apply_orientation=True -> the EXIF orientation is applied (exif_transpose).
-    draft_margin (F48) — the draft() request multiplier relative to max_edge; the
-    default preserves the previous behaviour for ALL existing callers (thumbs in
-    ui.py/sorter.py, VLM decode in junk.py). A smaller value (down to 1.0, see
-    _DRAFT_MARGIN_AGGRESSIVE) gives a more aggressive JPEG draft for consumers that
-    do not need sub-pixel downscale sharpness — the final size is still driven
-    exactly to max_edge by thumbnail(), and draft() is guaranteed never to return a
-    frame SMALLER than requested.
-    A decode error (corrupt/unrecognized file, missing path, HEIC without
-    pillow-heif) does not raise — the contract of all current consumers.
+    With `max_edge` the JPEG is decoded at a reduced scale (im.draft) and finished with
+    an exact thumbnail(); `draft_margin` (F48) is that request multiplier, and draft()
+    never returns a frame SMALLER than asked for.
     """
     _ensure_heif_registered()
     mode = "L" if grayscale else "RGB"
@@ -131,9 +86,8 @@ def decode_rgb(
                     im.draft(mode, (draft_edge, draft_edge))
                 except Exception:
                     pass
-            # load() before any further operations — otherwise a repeated implicit
-            # load() inside convert()/thumbnail() may fail on an already-closed fp
-            # (the same trick as in dedup._phash_one).
+            # load() first: a repeated implicit load() inside convert()/thumbnail()
+            # may fail on an already-closed fp (the trick dedup._phash_one used).
             im.load()
             transposed: Image.Image = im
             if apply_orientation:
@@ -162,18 +116,9 @@ def decode_rgb_cached(
 ) -> Image.Image | None:
     """decode_rgb with a bounded in-process LRU cache.
 
-    The key is (path, mtime, max_edge, grayscale, apply_orientation): a change of
-    mtime (file reindexed/modified) naturally invalidates the entry, since it yields
-    a different key. The cache is bounded to CACHE_MAX_ITEMS entries — on overflow
-    the least-recently-used one is evicted. None results (corrupt files) are NOT
-    cached: the decode error itself is cheap, and holding a "forever None" in the
-    cache for a file that mutates without changing mtime is risky.
-
-    Thread-safety: the cache is under a Lock for reads (+move-to-end) and writes
-    (+eviction); decode_rgb itself is called without holding the lock, so parallel
-    calls with different paths do not block each other on decode, and the only
-    possible race is "both missed and both decoded the same key" — harmless (last
-    writer wins), see the thread-safety tests.
+    The key carries mtime, so a modified file invalidates itself. None is NOT cached: a
+    "forever None" for a file that mutates without changing mtime is a trap. decode_rgb
+    runs OUTSIDE the lock, so the only race is two decodes of one key — last writer wins.
     """
     key: _CacheKey = (str(path), mtime, max_edge, grayscale, apply_orientation)
     with _cache_lock:
@@ -200,34 +145,26 @@ def cache_clear() -> None:
         _cache.clear()
 
 
-# --- F67: the lazy disk preview cache ---------------------------------------
-#
-# Configured through env vars only, on purpose: config.py is outside this feature's
-# ownership, the `imaging:` config section (preview_cache / preview_dir /
-# preview_max_edge / preview_quality) comes later and keeps env as an override.
+# --- F67: the lazy disk preview cache (env vars only: imaging cannot see Config) ---
 ENV_PREVIEW_CACHE = "SORTA_PREVIEW_CACHE"
 ENV_PREVIEW_DIR = "SORTA_PREVIEW_DIR"
 ENV_PREVIEW_MAX_EDGE = "SORTA_PREVIEW_MAX_EDGE"
 ENV_PREVIEW_QUALITY = "SORTA_PREVIEW_QUALITY"
 ENV_PREVIEW_MAX_GB = "SORTA_PREVIEW_MAX_GB"
 
-# 1536 on the long edge covers every consumer with headroom (OCR 1280, VLM 896,
-# CLIP 448, pHash 96); q88 keeps a frame at ~150 KB and is visually lossless at
-# those sizes (measured pHash drift vs a full decode: <= 2 bits at 512px already,
-# against a near-duplicate threshold of 5).
+# 1536 on the long edge covers every consumer with headroom (OCR 1280, VLM 896, CLIP
+# 448, pHash 96); q88 keeps a frame at ~150 KB, with a measured pHash drift against a
+# full decode of <= 2 bits at 512px already, against a near-duplicate threshold of 5.
 PREVIEW_MAX_EDGE = 1536
 PREVIEW_QUALITY = 88
 
-# 0 = no ceiling, which is what the cache did from F67 until now. The cache is worth
-# keeping on by default (a full run touches a frame 3-5 times), so the answer to "the
-# disk filled up" is a bound, not switching it off — measured at ~150 KB per photo,
-# 38 485 files took 12 GB, which extrapolates to ~45 GB at 300k and ~75 GB at 500k.
+# 0 = no ceiling, as the cache behaved from F67 on. The answer to "the disk filled up"
+# is a bound rather than switching the cache off: 38 485 files took 12 GB at the
+# measured ~150 KB each, which extrapolates to ~45 GB at 300k and ~75 GB at 500k.
 PREVIEW_MAX_GB = 0.0
 
-# Checking the ceiling costs a walk of the whole directory, so it cannot run per write:
-# on a cold collection that would be tens of thousands of stats per stage. Every 512th
-# write is ~75 MB of previews between checks at the measured 150 KB each — small against
-# any ceiling worth setting, and negligible against the walk it avoids.
+# Checking the ceiling costs a walk of the whole directory, so it cannot run per write.
+# Every 512th is ~75 MB between checks at the measured 150 KB each.
 _EVICT_EVERY_N_WRITES = 512
 
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -252,11 +189,7 @@ def preview_cache_enabled() -> bool:
 
 
 def preview_dir() -> Path:
-    """Where the preview JPEGs live (SORTA_PREVIEW_DIR overrides).
-
-    Default: %LOCALAPPDATA%\\sorta\\previews on Windows, ~/.cache/sorta/previews
-    elsewhere — a user-level cache, never inside the sorted collection.
-    """
+    """Where the preview JPEGs live — a user-level cache, never inside the collection."""
     override = os.environ.get(ENV_PREVIEW_DIR, "").strip()
     if override:
         return Path(override)
@@ -275,11 +208,7 @@ def preview_quality() -> int:
 
 
 def preview_cache_max_gb() -> float:
-    """Ceiling in GB; 0 (the default) means the cache grows without a bound.
-
-    Garbage and negatives fall back to the default rather than raising: this is read on
-    a hot write path, and a typo in a config file must not take a run down.
-    """
+    """Ceiling in GB, 0 = unbounded. Garbage falls back: a typo may not fail a run."""
     try:
         value = float(os.environ.get(ENV_PREVIEW_MAX_GB, "").strip())
     except ValueError:
@@ -288,10 +217,7 @@ def preview_cache_max_gb() -> float:
 
 
 def preview_cache_size() -> tuple[int, int]:
-    """(files, bytes) of the preview cache — one walker for the CLI, the UI and eviction.
-
-    A cache that was never written is not an error: a missing directory is (0, 0).
-    """
+    """(files, bytes) — one walker for the CLI, the UI and eviction; missing dir = (0, 0)."""
     directory = preview_dir()
     if not directory.exists():
         return 0, 0
@@ -310,17 +236,8 @@ def preview_cache_evict(max_bytes: int | None = None) -> tuple[int, int]:
     """Delete the least recently USED previews until the cache fits. Returns (files, bytes).
 
     Least recently used, not oldest: the read path opens these files, so atime tracks
-    what is still in play, and a preview from the first stage that every later stage
-    keeps reading is cheaper to keep than to decode again. Windows updates atime lazily,
-    so mtime is the fallback — the ordering is then "least recently written", which is
-    still far better than deleting an arbitrary half.
-
-    Purging by age alone is deliberately NOT what happens here: the ceiling is about
-    disk, so the only reason to delete a file is that the total does not fit.
-
-    `max_bytes=None` reads the configured ceiling; 0 means no ceiling and nothing is
-    deleted. Eviction never touches the directory when the cache already fits, so the
-    common call is one walk and no writes.
+    what is in play. Windows updates atime lazily, so mtime is the fallback. Purging by
+    AGE is deliberately not what happens — the ceiling is about disk, nothing else.
     """
     if max_bytes is None:
         max_bytes = int(preview_cache_max_gb() * 1e9)
@@ -357,12 +274,7 @@ def preview_cache_evict(max_bytes: int | None = None) -> tuple[int, int]:
 
 
 def _note_preview_write() -> None:
-    """Count a stored preview and enforce the ceiling every Nth one.
-
-    Called from the write path, which runs on pool threads — the counter is guarded,
-    and the eviction itself runs OUTSIDE the lock so a directory walk never serializes
-    the pool. Two overlapping evictions are harmless: both skip files the other removed.
-    """
+    """Count a stored preview; every Nth evicts OUTSIDE the lock, never serializing."""
     global _writes_since_evict
     if preview_cache_max_gb() <= 0:
         return
@@ -377,14 +289,7 @@ def _note_preview_write() -> None:
 def preview_key(path: str | Path, mtime: float, size: int, frame: int = 0) -> str:
     """Stable cache key for (file, mtime, size) — and, for video, a frame index.
 
-    A changed file yields a changed key, so invalidation is free — the same
-    principle as the in-process decode_rgb_cached key. Stale entries of the old key
-    are simply never read again (preview_cache_clear removes them).
-
-    F80: `frame` addresses one frame of a video filmstrip. Frame 0 keeps the key
-    string EXACTLY as it was, so every preview already on disk (including every F74
-    video tile) still hits — a suffix on frame 0 would silently obsolete the whole
-    cache the day this feature landed.
+    F80: frame 0 keeps the key EXACTLY as it was; a suffix would have obsoleted the cache.
     """
     raw = f"{Path(os.path.abspath(path)).as_posix()}|{mtime}|{size}"
     if frame:
@@ -393,26 +298,21 @@ def preview_key(path: str | Path, mtime: float, size: int, frame: int = 0) -> st
 
 
 def _preview_path(key: str) -> Path:
-    # Sharded by the first 2 hex chars: 37k files in a single NTFS directory
-    # degrade noticeably on lookup.
+    # Sharded by 2 hex chars: 37k files in one NTFS directory degrade on lookup.
     return preview_dir() / key[:2] / f"{key}.jpg"
 
 
-# F210: the cache is a user-level directory of decoded photographs, and one of them may
-# be a passport. Created with the umask default it is 0755 on a normal Linux box, i.e.
-# readable by every other local account. Windows ignores the mode and needs nothing —
-# %LOCALAPPDATA% inherits the ACL of the user who owns it.
+# F210: this is a user-level directory of decoded photographs, one of which may be a
+# passport, and the umask default would make it 0755 on Linux — readable by every other
+# local account. Windows ignores the mode.
 _PREVIEW_DIR_MODE = 0o700
 
 
 def _make_preview_dir(directory: Path) -> None:
-    """Create a preview directory (and the cache root above it) private to this user.
+    """Create a preview directory and the cache root above it, private to this user.
 
-    The root is created separately because `Path.mkdir(parents=True)` gives the PARENTS
-    the default mode: a 0700 shard inside a 0755 root would protect nothing, since it is
-    the root that holds every shard. Directories that already exist are left exactly as
-    they are — repairing the permissions of somebody else's directory is not the business
-    of an indexer, and a cache written before this rule is still the same person's.
+    Separately, because `Path.mkdir(parents=True)` gives the PARENTS the default mode and
+    a 0700 shard inside a 0755 root protects nothing.
     """
     root = preview_dir()
     root.mkdir(parents=True, exist_ok=True, mode=_PREVIEW_DIR_MODE)
@@ -420,23 +320,15 @@ def _make_preview_dir(directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True, mode=_PREVIEW_DIR_MODE)
 
 
-# The frames of one file are written from 0 up and contiguously (video_filmstrip), so a
-# hole normally means the end of the strip. Normally, not always: eviction removes single
-# files by their last use, so frame 2 can be gone while frame 3 is still there, and a walk
-# that stopped at the first hole would leave the tail of a reel on disk. So the walk
-# checks the whole configured strip before it is allowed to stop, and goes on past that
-# for as long as frames keep being found. The cap is a safety belt — cleaning up after one
-# file may not turn into an unbounded loop of stats.
+# Frames are written from 0 up and contiguously, so a hole normally means the end of the
+# strip — normally, because eviction removes single files by last use, and stopping at
+# the first hole would leave the tail of a reel on disk. So the walk checks the whole
+# configured strip and goes on while frames keep being found; this cap bounds it.
 _PREVIEW_DELETE_MAX_FRAMES = 1024
 
 
 def _unlink_preview(dest: Path) -> bool:
-    """Remove one preview file; True when this call is what removed it.
-
-    Never raises: a file a reader holds open (Windows), a directory with no write
-    permission, an entry evicted between the stat and the unlink — all of them are a
-    normal outcome for a cache, and none of them may reach the caller.
-    """
+    """Remove one preview file; True when this call removed it. Never raises."""
     try:
         dest.unlink()
         return True
@@ -448,18 +340,9 @@ def _unlink_preview(dest: Path) -> bool:
 def preview_delete(path: str | Path, mtime: float, size: int) -> int:
     """Delete every cached preview of one file. Returns how many were removed.
 
-    F210 — the derivative does not outlive the original. The key is a hash of
-    (path, mtime, size) and nothing else, so once the file is gone none of the three can
-    be read off the disk any more: the caller has to ask for this while the values are
-    still known (the `files` row still stands), and that ordering is the whole of the
-    problem this function is half of.
-
-    Every FRAME, not frame 0. A clip's filmstrip (F80) is one JPEG per frame under the
-    same key plus an index, and deleting the first of six would leave the reel behind.
-    A photo has exactly one — nothing writes a frame above 0 for one.
-
-    Never raises, and a preview that is not there is not an error: the cleanup of a
-    derivative may not become the reason the original is not deleted.
+    F210 — the derivative does not outlive the original. The key hashes (path, mtime,
+    size), so once the file is gone none of the three is readable: the caller has to ask
+    while the `files` row still stands. Every FRAME, not frame 0. Never raises.
     """
     # At least the DEFAULT number of frames even when fewer are configured now: a strip
     # written before somebody lowered SORTA_VIDEO_FRAMES must still be removed whole.
@@ -496,12 +379,9 @@ def _render(
     img: Image.Image, max_edge: int | None, orientation: int,
     *, grayscale: bool, apply_orientation: bool,
 ) -> Image.Image:
-    """Render a decoded frame the way decode_rgb would have returned it.
+    """decode_rgb's output shape, for when the cache is unusable.
 
-    Used only when the cache is unusable (nothing was stored to read back), so the
-    call still returns the right frame instead of failing. The orientation is passed
-    explicitly: a freshly decoded frame carries no exif of its own we can rely on,
-    while the preview ON DISK does (see _write_preview).
+    The orientation is passed in: a decoded frame has no exif to read it off.
     """
     out = img
     if apply_orientation and orientation != 1:
@@ -520,10 +400,8 @@ def _read_preview(
         return None
     img = decode_rgb(dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
     if img is None:
-        # A corrupt cache entry (bad sector, a write interrupted by a crash) must
-        # not poison the file forever — drop it, the caller falls back to the source.
-        # A spurious drop (a concurrent os.replace on Windows can make one open fail)
-        # costs nothing but one regeneration.
+        # A corrupt entry must not poison the file forever — drop it and let the caller
+        # fall back to the source. A spurious drop costs one regeneration.
         try:
             dest.unlink()
         except OSError:
@@ -534,16 +412,10 @@ def _read_preview(
 def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
     """Store img as the preview for dest. Any failure is silently ignored.
 
-    Written to a temp file next to the target + os.replace: the pool has ~20 threads
-    and readers of other stages run concurrently — nobody may ever observe a half
-    file.
-
-    Two workers on the same path at once is fine, but "last one wins" does NOT hold on
-    Windows: os.replace onto a destination another thread has OPEN fails with
-    PermissionError (WinError 5), and readers open the preview immediately after it
-    appears. Swallowing that silently meant a hot path could end up with no cached
-    file at all. The content is a pure function of the key, so an existing file is
-    always as good as ours: skip up front, and treat a lost race as success.
+    Temp file + os.replace: the pool has ~20 threads and readers of other stages run
+    concurrently, so nobody may observe a half file. "Last one wins" does NOT hold on
+    Windows — os.replace onto a destination another thread has OPEN fails with
+    PermissionError (WinError 5) — so skip up front and treat a lost race as success.
     """
     if dest.exists():
         return
@@ -572,44 +444,35 @@ def _write_preview(img: Image.Image, dest: Path, orientation: int) -> None:
             pass
 
 
-# --- F74: one extracted frame as the preview of a video ----------------------
-#
-# Same env-only configuration as the F67 block above (the `imaging:` config section
-# comes later and keeps env as an override).
+# --- F74: one extracted frame as the preview of a video, same env-only config ---
 ENV_VIDEO_PREVIEWS = "SORTA_VIDEO_PREVIEWS"
 ENV_VIDEO_WORKERS = "SORTA_VIDEO_WORKERS"
-# F80: how many frames the lightbox filmstrip is made of. 1 is the documented way to
-# switch the feature off — the UI then shows exactly the single F74 frame.
+# F80: frames per lightbox filmstrip; 1 is the documented way to switch it off.
 ENV_VIDEO_FRAMES = "SORTA_VIDEO_FRAMES"
 
-# Kept deliberately next to the decode layer instead of read from Config: imaging is a
-# leaf module with no access to Config (see the comment on ENV_PREVIEW_CACHE), and a
-# guess-by-content probe on every non-photo would cost an open per file. Mirrors
-# IndexConfig.extensions["video"].
+# By extension, not content — a probe costs an open per file. Mirrors IndexConfig.
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mts", ".m2ts", ".3gp", ".mkv")
 
-# PyAV spawns its own decoder threads and the thumb pool already runs up to 8 decodes
-# at once — together that oversubscribes the CPU. A 4K frame is also ~24 MB in RAM, so
-# 8 parallel extractions would be ~200 MB of transient frames. 4 is the compromise.
+# PyAV spawns its own decoder threads and the thumb pool already runs up to 8 decodes at
+# once; a 4K frame is ~24 MB, so 8 parallel extractions would be ~200 MB of transients.
 VIDEO_WORKERS = 4
 
-# The first frame is black surprisingly often (fade-in, an intro card), which makes a
-# useless tile. ~1 s in is recognizable on virtually any clip; for a short one take 10%
-# of the duration instead, so a 2-second clip is not seeked past its own end. No
-# brightness analysis on purpose — the goal is a recognizable tile, not the best frame.
+# The first frame is black surprisingly often (fade-in, an intro card). ~1 s in is
+# recognizable on almost any clip; a short one takes 10% of its duration, so a 2-second
+# clip is not seeked past its end. No brightness analysis: a recognizable tile, not the
+# best frame.
 VIDEO_FRAME_SECONDS = 1.0
 VIDEO_FRAME_FRACTION = 0.1
 
-# F80: six frames is what it took, on a sample of the collection, to answer "is this
-# Cuba" about as reliably as watching the clip — and it is still one screenful of dots
-# in the lightbox. The last one stops short of the very end: clips fade out, and a
+# F80: six frames answered "is this Cuba" about as reliably as watching the clip, on a
+# sample of the collection. The last stops short of the very end: clips fade out, and a
 # truncated file breaks on its last packet more often than anywhere else.
 VIDEO_FRAMES = 6
 VIDEO_LAST_FRACTION = 0.95
 
-# A seek lands on the keyframe at or before the target, and we decode forward from
-# there. The cap is a safety belt for files with minutes between keyframes or with
-# broken timestamps: an earlier frame beats decoding the whole clip for a thumbnail.
+# A seek lands on the keyframe at or before the target and decoding runs forward. The cap
+# covers minutes between keyframes or broken timestamps: an earlier frame beats decoding
+# a whole clip for a thumbnail.
 _VIDEO_MAX_DECODED_FRAMES = 300
 
 _av_lock = threading.Lock()
@@ -640,12 +503,7 @@ def is_video_path(path: str | Path) -> bool:
 
 
 def _video_gate() -> threading.Semaphore:
-    """The limit on CONCURRENT frame extractions.
-
-    Deliberately around the extraction only, not around decode_rgb_preview as a whole:
-    the photo path must not queue behind video decodes. Rebuilt when the configured
-    number changes — in a run that never happens, but tests set the env per case.
-    """
+    """Concurrency limit for the extraction alone — the photo path must not queue."""
     global _video_semaphore, _video_semaphore_slots
     slots = video_workers()
     with _video_gate_lock:
@@ -658,10 +516,8 @@ def _video_gate() -> threading.Semaphore:
 def _import_av() -> ModuleType | None:
     """The PyAV module, or None (with a single warning) when it is not installed.
 
-    Lazy, inside the call: importing av loads the FFmpeg libraries, and no command
-    except the UI ever touches a video — `import sorta.imaging` must not pay for it.
-    A missing package degrades to "no video previews", the same way HEIC degrades
-    without pillow-heif, instead of breaking the caller.
+    Lazy: importing av loads FFmpeg and only the UI touches a video. A missing package
+    degrades to "no video previews", as HEIC does without pillow-heif.
     """
     global _av_warned
     try:
@@ -697,19 +553,15 @@ def _target_seconds(container: object, stream: object) -> float:
 
 
 def _frame_rotation(frame: object, stream: object) -> int:
-    """Counter-clockwise degrees to apply so the clip stands the way a player shows it.
-
-    Phone clips keep their rotation in the container display matrix, not in the pixels:
-    without applying it every portrait video would show up lying on its side.
-    """
+    """CCW degrees so the clip stands up: phone rotation lives in the display matrix."""
     try:
         rotation = int(getattr(frame, "rotation", 0) or 0)
     except (TypeError, ValueError):
         rotation = 0
     if rotation:
         return rotation
-    # Older containers carry the angle as a `rotate` metadata tag, and there the
-    # convention is CLOCKWISE (rotate=90 -> a player turns the frame 90° CW).
+    # Older containers carry the angle as a `rotate` tag, where the convention is
+    # CLOCKWISE (rotate=90 -> a player turns the frame 90° CW).
     try:
         metadata = getattr(stream, "metadata", None) or {}
         return -int(float(metadata.get("rotate", 0)))
@@ -726,17 +578,14 @@ def _rotate_frame(img: Image.Image, rotation: int) -> Image.Image:
 
 
 def _decode_at(container: Any, stream: Any, target: float) -> Any | None:
-    """Seek to `target` seconds and decode forward to the first frame at/after it.
+    """Seek to `target` seconds, decode forward to the first frame at/after it.
 
-    Split out of _grab_frame for F80: a filmstrip is this loop run once per target
-    inside ONE open container, and both paths must land on the same frame for the
-    same second (frame 0 of the strip IS the F74 preview).
+    Shared with the filmstrip, whose frame 0 IS the F74 preview.
     """
     try:
         container.seek(int(target / stream.time_base), stream=stream)
     except Exception:
-        # A container that cannot seek (fragmented, streamed, broken index) still
-        # decodes from the start — we simply fall back to the first frame we get.
+        # A container that cannot seek still decodes from the start.
         pass
     frame = None
     for index, decoded in enumerate(container.decode(stream)):
@@ -748,12 +597,7 @@ def _decode_at(container: Any, stream: Any, target: float) -> Any | None:
 
 
 def _grab_frame(av: ModuleType, path: str | Path) -> Image.Image | None:
-    """Decode one representative frame of path, already rotated.
-
-    The container is always closed (`with av.open`) — on a collection of thousands of
-    clips a leaked descriptor per call would exhaust the process. Any AV failure
-    propagates to _extract_video_frame, which turns it into None.
-    """
+    """One representative frame, rotated; AV failures propagate to _extract_video_frame."""
     with av.open(str(path)) as container:
         stream = container.streams.video[0]  # IndexError on an audio-only file
         stream.thread_type = "AUTO"
@@ -772,8 +616,8 @@ def _extract_video_frame(path: str | Path) -> Image.Image | None:
         try:
             return _grab_frame(av, path)
         except Exception:
-            # Corrupt / truncated / unsupported file, no video stream, any PyAV error:
-            # the contract of decode_rgb_preview is None, never an exception.
+            # Corrupt, truncated, unsupported, no video stream, any PyAV error: the
+            # contract of decode_rgb_preview is None, never an exception.
             return None
 
 
@@ -788,16 +632,13 @@ def _video_preview(
 ) -> Image.Image | None:
     """decode_rgb_preview for a video: one extracted frame, in the very same cache.
 
-    Same key (path+mtime+size), same directory, same JPEG format as for photos — the
-    consumer must not need to know whether the tile came from a photo or from a clip.
-    Unlike a photo, the frame is stored ALREADY rotated (orientation=1): the rotation
-    comes from the container, so there is no exif on the source to defer it to.
+    Same key, directory and format as a photo, but stored ALREADY rotated: the rotation
+    comes from the container, not from an exif tag.
     """
     if not video_previews_enabled():
         return None
     if not preview_cache_enabled():
-        # Nothing may be written while the cache is off, but the frame is still worth
-        # returning — the alternative is a video tile that is simply missing.
+        # Nothing may be written while the cache is off, but a tile is still worth it.
         frame = _extract_video_frame(path)
         if frame is None:
             return None
@@ -817,13 +658,10 @@ def _video_preview(
     if max(frame.size) > edge:
         frame.thumbnail((edge, edge))
     _write_preview(frame, dest, 1)
-    # Read back what was written, for the same reason as on the photo path: a cold and
-    # a warm call must return the same pixels.
     stored = _read_preview(
         dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
     if stored is not None:
         return stored
-    # The cache is unusable (read-only dir, full disk) — render from what we have.
     return _render(
         frame, max_edge, 1, grayscale=grayscale, apply_orientation=apply_orientation)
 
@@ -840,22 +678,10 @@ def decode_rgb_preview(
     """decode_rgb backed by a lazy disk cache of 1536px previews.
 
     The first stage that needs the frame decodes the original once and writes the
-    preview; every later stage (pHash 96, CLIP 448, VLM 896, OCR 1280) decodes the
-    small JPEG instead. Contract is that of decode_rgb — same size/mode for the same
-    max_edge/grayscale/apply_orientation, None on an undecodable source.
-
-    The cache is skipped (a direct decode_rgb, nothing written) when it is disabled,
-    when the source is already no larger than preview_max_edge (a preview would be a
-    copy, not a saving — PNG screenshots), and on any cache read/write failure
-    (read-only dir, full disk): the call must degrade, never fail.
-
-    max_edge=None on a cache hit returns the PREVIEW-sized frame, not the original
-    resolution — this layer is for the small-frame consumers (all of them pass
-    max_edge). Full resolution (faces) still goes through decode_rgb.
-
-    F74: a video path is served by one frame extracted through PyAV (_video_preview),
-    stored in the same cache under the same key. decode_rgb is NOT touched — it stays
-    image-only, so the sorter thumbnails behave exactly as before.
+    preview; every later stage (pHash 96, CLIP 448, VLM 896, OCR 1280) reads the small
+    JPEG. The cache is skipped — a direct decode_rgb, nothing written — when it is off,
+    when the source is no larger than preview_max_edge, and on any read/write failure.
+    max_edge=None on a cache HIT returns the PREVIEW-sized frame, not the original.
     """
     if is_video_path(path):
         return _video_preview(
@@ -878,21 +704,16 @@ def decode_rgb_preview(
     if max(src_size) <= preview_max_edge():
         return decode_rgb(path, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
 
-    # draft_margin: the F48 trap, one level up. The default 2x margin asks draft() for
-    # 2*1536=3072, which a typical ~4000px camera frame cannot satisfy by halving
-    # (4000/2=2000 < 3072), so draft stays silent and the FULL frame is decoded. At
-    # margin=1.0 the request is 1536, the first halving qualifies, and ~4x fewer pixels
-    # are decoded — measured 363 -> 259 ms per 15.7 MP JPEG for a byte-identical
-    # 1536x1157 result, since thumbnail() lands on the exact size either way.
+    # The F48 trap one level up: the default 2x margin asks draft() for 2*1536=3072, which
+    # a ~4000px frame cannot satisfy by halving. At margin=1.0 it qualifies — measured
+    # 363 -> 259 ms per 15.7 MP JPEG for a byte-identical 1536x1157 result.
     full = decode_rgb(path, preview_max_edge(),  # RGB, unrotated — as stored
                       draft_margin=_DRAFT_MARGIN_AGGRESSIVE)
     if full is None:
         return None
     _write_preview(full, dest, orientation)
-    # Read back what we have just written instead of rendering `full` in memory: a
-    # cold and a warm call must return the SAME pixels, otherwise a pHash would
-    # depend on whether the cache happened to be warm. The extra decode is of a
-    # 1536px JPEG — cheap next to the full-size decode just paid for.
+    # Read back instead of rendering `full` in memory: a cold and a warm call must return
+    # the SAME pixels, or a pHash would depend on whether the cache happened to be warm.
     stored = _read_preview(
         dest, max_edge, grayscale=grayscale, apply_orientation=apply_orientation)
     if stored is not None:
@@ -903,29 +724,19 @@ def decode_rgb_preview(
 
 
 # --- F80: several frames of one clip, so it can be judged without playing it -
-#
-# Why not playback: 68% of the collection is HEVC, which Chrome/Firefox do not decode
-# by default — a <video> tag would show a black rectangle on two clips out of three.
-# Frames work on 100% of the files, because PyAV decodes what the browser will not.
-#
-# Cost on a synthetic 3840x2160 h264 clip, 10 s at 30 fps (measured 2026-07-26):
-# a cold strip of 6 frames — 3.6 s in ONE container open (six opens would re-parse the
-# index six times); the warm strip — 43 ms, and the single frame the lightbox actually
-# asks for — 7 ms. Nothing of this is paid until a lightbox is opened.
+# Not playback: 68% of the collection is HEVC, which Chrome/Firefox do not decode by
+# default, so a <video> tag would show a black rectangle on two clips out of three.
+# Cost on a synthetic 3840x2160 h264 clip, 10 s at 30 fps (measured 2026-07-26): a cold
+# strip of 6 frames — 3.6 s in ONE container open (six opens would re-parse the index six
+# times); the warm strip — 43 ms; the single frame the lightbox asks for — 7 ms.
 
 
 def _filmstrip_targets(container: object, stream: object, count: int) -> list[float]:
     """The seconds to grab, ascending — targets[0] is EXACTLY the F74 frame.
 
-    The strip is deliberately "the F74 frame plus count-1 positions spread over the
-    clip" rather than an even split of the whole duration: frame 0 has to keep landing
-    on the frame already in the cache, otherwise every tile in the UI is redrawn and
-    the cache of a 227 GB collection is thrown away for cosmetics. The rest is
-    count-1 evenly spaced fractions ending on VIDEO_LAST_FRACTION — at the default
-    count that is exactly 20/40/60/80/95% of the duration.
-
-    An unknown duration gives a single target: there is nothing to spread over, and
-    decoding a clip to its end just to measure it costs more than the strip is worth.
+    Not an even split of the duration: frame 0 has to keep landing on the frame already
+    cached, or the cache of a 227 GB collection is thrown away for cosmetics. The rest are
+    evenly spaced fractions ending on VIDEO_LAST_FRACTION — by default 20/40/60/80/95%.
     """
     first = _target_seconds(container, stream)
     duration = _duration_seconds(container, stream)
@@ -939,13 +750,9 @@ def _filmstrip_targets(container: object, stream: object, count: int) -> list[fl
 def _grab_filmstrip(av: ModuleType, path: str | Path, count: int) -> list[Image.Image]:
     """Up to `count` frames of path, already rotated, in ONE container open.
 
-    Opening a 4K clip six times means parsing its index six times; the seeks run
-    inside a single `with av.open` instead. A target that lands on a frame already
-    taken is skipped rather than returned twice — that is what turns "the clip is
-    shorter than the strip" into fewer frames instead of six copies of its last one.
-
-    A decode that blows up mid-strip keeps the frames collected so far: on a real
-    collection a truncated tail is common, and half a strip still answers the question.
+    Opening a 4K clip six times means parsing its index six times. A target landing on a
+    frame already taken is skipped: "shorter than the strip" gives fewer frames, not six
+    copies of the last one. A mid-strip failure keeps what it has.
     """
     frames: list[Image.Image] = []
     with av.open(str(path)) as container:
@@ -971,9 +778,7 @@ def _grab_filmstrip(av: ModuleType, path: str | Path, count: int) -> list[Image.
 def _extract_filmstrip(path: str | Path, count: int) -> list[Image.Image]:
     """The frames of a filmstrip, or []. Never raises.
 
-    The SAME semaphore as F74, held for the whole strip: six 4K frames are ~150 MB of
-    transient pixels, so the number of clips decoded at once must not grow just
-    because each of them now costs more.
+    The SAME F74 semaphore, held for the whole strip: six 4K frames are ~150 MB.
     """
     av = _import_av()
     if av is None:
@@ -982,8 +787,8 @@ def _extract_filmstrip(path: str | Path, count: int) -> list[Image.Image]:
         try:
             return _grab_filmstrip(av, path, count)
         except Exception:
-            # Corrupt / truncated / unsupported file, no video stream, any PyAV error:
-            # the contract of video_filmstrip is [], never an exception.
+            # Corrupt, truncated, unsupported, no video stream, any PyAV error: the
+            # contract of video_filmstrip is [], never an exception.
             return []
 
 
@@ -1019,19 +824,9 @@ def video_filmstrip(
 ) -> list[Image.Image]:
     """Several frames of a video, ascending in time. Never raises.
 
-    Contract:
-      - returns ready PIL images (as decode_rgb_preview does, not paths), oldest
-        first; [] for anything that cannot be decoded — a corrupt or truncated file,
-        no video stream, a missing path, a photo, no PyAV installed, videos switched
-        off. An empty list is a normal answer, never an exception;
-      - element 0 is byte-for-byte the frame F74 already serves, under the very same
-        cache key, so this feature invalidates nothing;
-      - `count` defaults to SORTA_VIDEO_FRAMES (6); <= 1 returns exactly the F74 list
-        of one, which is the supported way to switch the filmstrip off;
-      - a clip with fewer distinct frames than asked for returns fewer, down to [];
-      - every frame is stored in the F67 preview cache as an ordinary JPEG, under the
-        same key plus the frame index — a second call decodes nothing and does not
-        open the container again.
+    Ready PIL images, oldest first; [] for anything undecodable is a normal answer, never
+    an exception. Element 0 is byte-for-byte the frame F74 already serves under the same
+    key. `count` defaults to SORTA_VIDEO_FRAMES (6); <= 1 switches the strip off.
     """
     if not is_video_path(path) or not video_previews_enabled():
         return []
@@ -1043,8 +838,7 @@ def video_filmstrip(
         return [single] if single is not None else []
 
     def rendered(frames: list[Image.Image]) -> list[Image.Image]:
-        # Unlike a photo, a frame comes out of the container already rotated, so it
-        # carries no orientation of its own to defer (orientation=1), exactly as F74.
+        # A frame leaves the container already rotated — nothing to defer (as F74).
         return [
             _render(frame, max_edge, 1,
                     grayscale=grayscale, apply_orientation=apply_orientation)
@@ -1052,17 +846,13 @@ def video_filmstrip(
         ]
 
     if not preview_cache_enabled():
-        # Nothing may be written while the cache is off, but the frames are still
-        # worth returning — the same trade-off as on the F74 path.
-        return rendered(_extract_filmstrip(path, wanted))
+        return rendered(_extract_filmstrip(path, wanted))  # nothing written, still shown
 
     cached = _read_filmstrip(
         path, mtime, size, wanted, max_edge,
         grayscale=grayscale, apply_orientation=apply_orientation)
-    # ONE cached frame is not evidence of a built strip: F74 leaves exactly that
-    # behind for every clip whose tile the grid has drawn, which is all of them. Two
-    # or more can only have come from here, so they are the strip — including a short
-    # clip that yielded fewer frames than asked for.
+    # ONE cached frame is not evidence of a built strip: F74 leaves exactly that behind
+    # for every clip whose tile the grid has drawn. Two or more can only be from here.
     if len(cached) >= 2:
         return cached
 
@@ -1074,15 +864,12 @@ def video_filmstrip(
         if max(frame.size) > edge:
             frame.thumbnail((edge, edge))
         _write_preview(frame, _frame_path(path, mtime, size, index), 1)
-    # Read back what was written, for the same reason as on the photo path: a cold and
-    # a warm call must return the same pixels.
     stored = _read_filmstrip(
         path, mtime, size, wanted, max_edge,
         grayscale=grayscale, apply_orientation=apply_orientation)
     if len(stored) == len(extracted):
         return stored
-    # The cache is unusable (read-only dir, full disk) — render from what we have.
-    return rendered(extracted)
+    return rendered(extracted)  # the cache is unusable — render from what we have
 
 
 def video_frame(
@@ -1097,13 +884,8 @@ def video_frame(
 ) -> Image.Image | None:
     """Frame `index` of the filmstrip, or None when the clip has no such frame.
 
-    This is what the UI lightbox calls, and it is why the strip is lazy: a frame is
-    decoded only once it is actually looked at, so a grid of thousands of tiles never
-    pays for anything beyond frame 0. A cached frame is read straight back; a miss
-    builds the WHOLE strip once (one container open) and then reads it.
-
-    index 0 is the F74 frame for a clip and the ordinary preview for a photo — the
-    photo lightbox goes through this call completely unchanged.
+    Why the strip is lazy: a grid of thousands of tiles never pays beyond frame 0, and a
+    miss builds the WHOLE strip once, in one container open.
     """
     if index < 0:
         return None
