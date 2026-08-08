@@ -130,6 +130,11 @@ class Downloaded:
     `size` is what removing it frees, so it is 0 for a link and 0 for anything behind
     one — neither returns space here. `behind` is the ancestor link a directory was
     found through and it is the reason an entry is shown and NOT removed.
+
+    F225: `complete` is the probe's own rule (`tiers.download_complete`) — the entry is
+    a finished download and not the wreck of an interrupted one. It is LISTED either way,
+    because an aborted 800 MB is still 800 MB somebody asked to get back; what the flag
+    stops is this module and `sorta doctor` describing the same directory two ways.
     """
 
     weight: str
@@ -137,6 +142,7 @@ class Downloaded:
     size: int = 0
     link: bool = False
     behind: Path | None = None
+    complete: bool = True
 
     @property
     def removable(self) -> bool:
@@ -148,7 +154,10 @@ def _entry(weight: str, path: Path) -> Downloaded:
     link = is_link(path)
     return Downloaded(weight=weight, path=path,
                       size=0 if link or behind is not None else _size(path),
-                      link=link, behind=behind)
+                      link=link, behind=behind,
+                      # A link is not walked to answer this: what is behind it belongs to
+                      # somebody else, and its state is not ours to report.
+                      complete=True if link else tiers.download_complete(path))
 
 
 def _hub_entries(cache: Path) -> list[Path]:
@@ -162,14 +171,12 @@ def _matches(weight: str, name: str) -> bool:
     """Does that cache entry hold this model?
 
     The same substring rule `tiers._weights_cached` answers "is it downloaded" with, and
-    deliberately the same table rather than a second one: what a weight is CALLED in a
+    deliberately the same FUNCTION rather than a second one: what a weight is CALLED in a
     hub cache is not what the catalog calls it (`ViT-L-14` arrives as
     `models--timm--vit_large_patch14_clip_224.openai`), and two tables of that would
     disagree the first time a loader changed its mind.
     """
-    markers = tiers._WEIGHT_MARKERS.get(weight, (weight,))
-    entry = tiers._normalized(name)
-    return any(tiers._normalized(marker) in entry for marker in markers)
+    return tiers.entry_holds(weight, name)
 
 
 def downloaded(*, insightface: Path | None = None,

@@ -761,12 +761,12 @@ def tier_summary() -> list[dict]:
     return [
         {"key": tier.key, "extras": list(tier.extras), "weights": list(tier.weights),
          "download_mb": tier.download_mb, "optional": tier.optional,
-         # F223: what a tier does not work without, what Enter answers for it, and
-         # whether its weights are fetched by the wizard rather than by the first run.
-         # A summary that states the price but not those three describes a catalog the
-         # wizard no longer has — and this file is what the download page reads.
-         "requires": list(tier.requires), "default_yes": tier.default_yes,
-         "preload": tier.preload}
+         # F223: what a tier does not work without, and what Enter answers for it. A
+         # summary that states the price but not those two describes a catalog the wizard
+         # no longer has — and this file is what the download page reads. (F225 dropped
+         # `preload` with the field: every tier that carries weights downloads them at
+         # the screen now, so there was nothing left for it to distinguish.)
+         "requires": list(tier.requires), "default_yes": tier.default_yes}
         for tier in wizard.TIERS
     ]
 

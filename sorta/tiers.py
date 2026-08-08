@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import threading
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -120,29 +121,79 @@ def _normalized(text: str) -> str:
     return text.lower().replace("_", "-")
 
 
+def entry_holds(weight: str, name: str) -> bool:
+    """Does that cache entry (a directory name) hold this model of the catalog?
+
+    The marker table above, asked as a function so that everything answering "is it on
+    disk" asks it the same way — `sorta/weights.py` lists the same directories for the
+    uninstaller, and two readings of one table disagree the first time a loader changes
+    the repository it fetches from.
+    """
+    entry = _normalized(name)
+    return any(_normalized(marker) in entry
+               for marker in _WEIGHT_MARKERS.get(weight, (weight,)))
+
+
+# F225: what an ABORTED download leaves behind, by the names the two libraries give it.
+# huggingface_hub writes a blob to `<sha>.incomplete` and renames it when the last byte
+# has arrived, so a directory carrying one of these is a download that stopped halfway.
+_UNFINISHED_SUFFIXES = (".incomplete", ".part", ".tmp")
+
+
+def download_complete(path: Path) -> bool:
+    """Is the model behind this cache entry whole, or is it half a download?
+
+    F225, and the reason it is a rule of its own rather than `path.is_dir()`: the run of
+    2026-08-08 died in the middle of fetching ViT-L-14 and left
+    `models--timm--vit_large_patch14_clip_224.openai` behind with an empty snapshot and
+    a `.incomplete` blob inside it. Answering "downloaded" about that directory is the
+    worst answer available — the wizard then offers nothing to fetch, the doctor reports
+    the tier as ready, and the stage goes on failing on every run for as long as the
+    machine lives.
+
+    So two things are asked, and BOTH have to hold: nothing inside is still being
+    written, and there is at least one finished file where the loader reads them from
+    (`snapshots/<revision>/...` for the hub, the model directory itself for insightface,
+    which unpacks a zip and has no revisions).
+    """
+    if path.is_file():
+        # insightface downloads `<model>.zip` next to the directory it unpacks it into;
+        # the archive is one file and is whole or is not there.
+        return not path.name.lower().endswith(_UNFINISHED_SUFFIXES)
+    root = path / "snapshots" if (path / "snapshots").is_dir() else path
+    finished = False
+    try:
+        for item in path.rglob("*"):
+            if item.name.lower().endswith(_UNFINISHED_SUFFIXES):
+                return False
+            if not finished and (root == path or root in item.parents):
+                finished = item.is_file()
+    except OSError:  # unreadable entry — nothing can be claimed about it
+        return False
+    return finished
+
+
 def _weights_cached(name: str, *, insightface: Path | None = None,
                     hub: Path | None = None) -> bool:
-    """Are that model's files already on this disk?
+    """Are that model's files already on this disk, and all of them?
 
     Two caches, because the two families of weights are downloaded by different
     libraries: insightface keeps buffalo_l in `~/.insightface/models/<name>`, and
     everything else in the catalog comes through huggingface_hub, which names a model
     `models--<org>--<repo>`.
+
+    F225: a directory is not an answer — see `download_complete`. A partial download is
+    reported exactly as no download at all, which is the state the machine is really in.
     """
     models = _INSIGHTFACE_MODELS if insightface is None else insightface
-    folder = models / name
+    if download_complete(models / name):
+        return True
     try:
-        if folder.is_dir() and any(folder.iterdir()):
-            return True
-    except OSError:
-        pass
-    markers = tuple(_normalized(marker) for marker in _WEIGHT_MARKERS.get(name, (name,)))
-    try:
-        entries = [_normalized(child.name)
-                   for child in (hf_cache_dir() if hub is None else hub).iterdir()]
+        entries = list((hf_cache_dir() if hub is None else hub).iterdir())
     except OSError:  # no cache directory at all — nothing has been downloaded yet
         return False
-    return any(marker in entry for entry in entries for marker in markers)
+    return any(entry_holds(name, child.name) and download_complete(child)
+               for child in entries)
 
 
 def tier_states(*, package_present: Callable[[str], bool] = _package_present,
@@ -343,11 +394,97 @@ def stage_downloads(stage: str, states: list[TierState] | None = None) -> tuple[
 # log, where it belongs.
 
 
+# --- F225: how much of it has arrived, measured on the disk ---------------------------
+#
+# F222 named the model and F223 printed the progress of the wizard's own download, but
+# each did it on its own side and the run screen got neither number — 1.6 GB arrived with
+# a line saying only that it was arriving, which is what the owner read as a hang for the
+# second time on 2026-08-08.
+#
+# The measurement is the one F223 wrote and it moved HERE, unchanged in what it does,
+# because both callers have to see it: the wizard (a console, `wizard.download_weights`)
+# and the run screen (`ui/process.py`). Deliberately a question about FILES rather than
+# about the internals of somebody else's progress bar: huggingface_hub has one and
+# insightface draws none at all, and a measurement that reads a library's bar would
+# report zero for half of the catalog and break on the next release of the other half.
+
+# How often the progress is reported. Long enough not to fill the window of a slow
+# download, short enough that the gap between two lines never reads as a stall.
+PROGRESS_SECONDS = 5.0
+_MB = 1_000_000
+
+
+def megabytes(size: int) -> int:
+    """Bytes as the megabytes every screen of this project prices a download in."""
+    return size // _MB
+
+
+def downloaded_bytes(cache: Path | None = None) -> int:
+    """How much the model cache holds right now — progress measured on the disk.
+
+    Deliberately the whole cache rather than one model's directory: what a library names
+    the folder it is filling (and whether it fills a `blobs/` file under a temporary
+    name first) is its own business, and a measurement that depends on those names would
+    quietly report zero the day one of them changes.
+    """
+    directory = hf_cache_dir() if cache is None else cache
+    total = 0
+    try:
+        for item in directory.rglob("*"):
+            try:
+                if item.is_file():
+                    total += item.stat().st_size
+            except OSError:  # a file the downloader replaced between the two calls
+                continue
+    except OSError:  # no cache directory yet — nothing has been downloaded
+        return 0
+    return total
+
+
+def watch_download(work: Callable[[], None], report: Callable[[int], None], *,
+                   measure: Callable[[], int] | None = None,
+                   tick: float = PROGRESS_SECONDS) -> BaseException | None:
+    """Run `work`, telling `report` how many bytes have arrived while it runs.
+
+    Returns whatever `work` raised, or None — a refusal by the network is a sentence the
+    caller words for its own screen, never a traceback out of here (the same rule
+    `wizard.download_weights` was written under and the reason it is not an exception).
+
+    A thread and not a subprocess: the download has to land in the cache of THIS user,
+    and it is the caller's own call that knows which model to ask for.
+    """
+    measured = downloaded_bytes if measure is None else measure
+    failure: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            work()
+        except BaseException as exc:  # noqa: BLE001 — handed back, not swallowed
+            failure.append(exc)
+
+    start = measured()
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while True:
+        worker.join(tick)
+        if not worker.is_alive():
+            break
+        report(max(0, measured() - start))
+    return failure[0] if failure else None
+
+
 def download_notice(stage: str, weights: Sequence[str], lang: i18n.Lang) -> str:
     """«Downloading X for stage Y, ~N GB — this happens once»."""
     return i18n.cli_text("cli.download.started", lang,
                          stage=i18n.stage_label(stage, lang),
                          weights=", ".join(weights),
+                         size=wizard.human_size(weights_size_mb(weights), lang))
+
+
+def download_progress(weights: Sequence[str], done: int, lang: i18n.Lang) -> str:
+    """«X of Y so far» — the same measurement the run screen draws, said in a console."""
+    return i18n.cli_text("cli.download.progress", lang,
+                         done=wizard.human_size(megabytes(done), lang),
                          size=wizard.human_size(weights_size_mb(weights), lang))
 
 

@@ -55,6 +55,7 @@ class Screen:
         self.answers = answers
         self.commands: list[list[str]] = []
         self.doctor_calls: list[str] = []
+        self.doctor_states: list[object] = []
         self.install_code = 0
         self.downloaded: list[str] = []
         self.download_ok = True
@@ -66,8 +67,11 @@ class Screen:
         self.questions.append(question)
         return default if self.answers is None else self.answers
 
-    def doctor(self, config_path: str) -> None:
+    def doctor(self, config_path: str, states=None) -> None:
+        # F225: the wizard hands over the probe it has already taken — one reading of the
+        # disk for both screens of one window.
         self.doctor_calls.append(config_path)
+        self.doctor_states.append(states)
 
     def install(self, command) -> int:
         self.commands.append(list(command))
@@ -93,7 +97,7 @@ class TestTheCheckScreenIsDoctor(unittest.TestCase):
     def test_the_wizard_calls_the_doctor_command_itself(self):
         with mock.patch("sorta.cli._cmd_doctor") as doctor:
             wizard.show_doctor("some/config.yaml")
-        doctor.assert_called_once_with("some/config.yaml")
+        doctor.assert_called_once_with("some/config.yaml", states=None)
 
     def test_the_real_doctor_is_the_default_the_wizard_runs(self):
         """The tests inject a stand-in; the program must not."""
@@ -191,9 +195,10 @@ class TestAcceptingATier(unittest.TestCase):
         self.assertEqual(screen.commands, [[
             "C:/app/uv.exe", "pip", "install", "--python", "C:/app/env/python.exe",
             "transformers>=4.49,<4.52", "accelerate>=0.34"]])
-        # The 7 GB is model weights, and they arrive on the first run of the stage — a
-        # wizard that reported "installed" here would be lying about most of the cost.
-        self.assertIn("Qwen2.5-VL-3B", screen.said)
+        # F225: the 7 GB of model weights are fetched HERE, at the screen. They used to be
+        # announced as arriving "on the first run of the stage", which is what the owner
+        # met as "I choose what to download — and where is the download?".
+        self.assertEqual(screen.downloaded, ["deep"])
         self.assertIn(i18n.cli_text("cli.setup.added", "en",
                                     names=wizard.TIERS_BY_KEY["deep"].name("en")),
                       screen.said)
@@ -208,7 +213,8 @@ class TestAcceptingATier(unittest.TestCase):
                          doctor=screen.doctor, install=screen.install,
                          download=screen.download)
         self.assertEqual(screen.commands, [])
-        self.assertIn("buffalo_l", screen.said)
+        # ...and what it costs is downloaded on the spot instead of being promised (F225).
+        self.assertEqual(screen.downloaded, ["faces"])
 
     def test_the_cuda_profile_keeps_its_own_package_index(self):
         tier = wizard.TIERS_BY_KEY["gpu"]

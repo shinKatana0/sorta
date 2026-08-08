@@ -463,18 +463,25 @@ def _build_clip(cfg, stage: str) -> Classifier:
     attempt. A model that is already on disk and still will not load failed for some
     other reason, and dressing that up as a download problem would send a person to check
     a network connection that is fine.
+
+    F225: while the download lasts, how much of it has arrived — the same measurement the
+    run screen and the setup wizard show, so a run started from a terminal is not the one
+    place left where 1.6 GB arrives in silence.
     """
     lang = _lang(cfg)
     pending = tiers.stage_downloads(stage)
-    if pending:
-        print(tiers.download_notice(stage, pending, lang))
-    try:
+    if not pending:
         return clip_classifier(naming_settings(cfg))
-    except Exception as exc:
-        if not pending:
-            raise
-        _log.exception("не удалось скачать веса для стадии %r", stage)
-        raise SystemExit(tiers.download_failure(stage, pending, lang, exc)) from exc
+    print(tiers.download_notice(stage, pending, lang))
+    built: list[Classifier] = []
+    failure = tiers.watch_download(
+        lambda: built.append(clip_classifier(naming_settings(cfg))),
+        lambda done: print(tiers.download_progress(pending, done, lang)))
+    if failure is not None:
+        _log.error("не удалось скачать веса для стадии %r", stage, exc_info=failure)
+        raise SystemExit(
+            tiers.download_failure(stage, pending, lang, failure)) from failure
+    return built[0]
 
 
 class _LazySharedClassifier:
@@ -926,12 +933,17 @@ def _doctor_tier_lines(lang: Lang, states: list[TierState]) -> list[str]:
     return lines
 
 
-def _cmd_doctor(config_path: str) -> None:
+def _cmd_doctor(config_path: str, states: list[TierState] | None = None) -> None:
     """F112: `--config` is here only to know the output language — the command still
     works without a readable config (`_lang_of` falls back to the default), it just
     prints in the default language then. The two health summaries below come from
     diagnostics.py, which this feature does not own, so they stay as that module
     writes them.
+
+    F225: `states` is a probe somebody has already taken — the wizard's, which prints
+    this block and then its own answer about the same tiers. Without it the two probe the
+    disk one after the other, and one output was caught stating both "ViT-L-14 downloads
+    on the first run" and "already in place" about the same machine.
     """
     lang = _lang_of(config_path)
     # F211: name the environment BEFORE the health lines. An installed copy ships its
@@ -959,7 +971,7 @@ def _cmd_doctor(config_path: str) -> None:
     # F216: ...and what the install is made of. The installer ships one tier and offers
     # four, so both the person who installed it by hand and the workflow that installs
     # it on a clean machine ask this first.
-    for line in _doctor_tier_lines(lang, tier_states()):
+    for line in _doctor_tier_lines(lang, tier_states() if states is None else states):
         print(line)
     print(gpu_health().summary)
     # F65: the geo base failing to load is invisible at runtime (every coordinate just

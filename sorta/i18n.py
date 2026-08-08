@@ -669,6 +669,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "「{stage}」ステージ用のモデルをダウンロードしています: {weights}"
               "（約 {size}）。これは初回のみで、以降はディスクから読み込まれます。",
     },
+    # F225: ...and how far it has got, while it is getting there. The sentence above is
+    # printed once; without this one the console then says nothing for the twenty minutes
+    # the gigabytes take, which is what the run screen was reported as hanging for.
+    "cli.download.progress": {
+        "ru": "  …скачано {done} из {size}",
+        "en": "  …{done} of {size} so far",
+        "ja": "  …{size} 中 {done} まで取得",
+    },
     # The one a person actually meets. What they used to get was
     # `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` — no stage, no model, no
     # size, nothing to do about it. The traceback stays in the log.
@@ -1054,8 +1062,20 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Already in place: {names}",
         "ja": "既に配置済み: {names}",
     },
-    # F223: the weights of the tier the layout needs are fetched HERE, at the screen, so
-    # that the 1.6 GB does not arrive in the middle of a run looking like a hang. The
+    # F225: the one download that is measured in half-hours. Said BEFORE it starts, and
+    # separately from the line below, because a window that goes quiet for thirty minutes
+    # is a window somebody closes — the deep tier is 7.0 GB against 1.6 for the next
+    # biggest, and the difference is what a person has to be able to plan around.
+    "cli.setup.weights_slow": {
+        "ru": "Это большая загрузка ({size}) — она займёт десятки минут. Окно не зависло: "
+              "ниже будет видно, сколько уже скачано.",
+        "en": "This is a large download ({size}) — it takes tens of minutes. The window "
+              "is not stuck: the lines below say how much has arrived.",
+        "ja": "これは大きなダウンロードです（{size}）— 数十分かかります。ウィンドウは"
+              "固まっていません: 以下に取得済みの量が表示されます。",
+    },
+    # F223: the weights of a tier somebody said yes to are fetched HERE, at the screen, so
+    # that the gigabytes do not arrive in the middle of a run looking like a hang. The
     # progress line is not decoration: it is the difference between a download and a
     # window that has stopped answering.
     "cli.setup.weights_downloading": {
@@ -1121,17 +1141,11 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "{name} ティアの構成を読み取れませんでした（パッケージのメタデータが"
               "ありません）。このティアは追加していませんが、他は動作します。",
     },
-    "cli.setup.weights_later": {
-        "ru": "Веса ({weights}), {size}, скачаются при первом запуске стадии, которой "
-              "они нужны.",
-        "en": "The weights ({weights}), {size}, download the first time the stage that "
-              "needs them runs.",
-        "ja": "重み（{weights}、{size}）は、必要とするステージの初回実行時に"
-              "ダウンロードされます。",
-    },
-    # "Chosen" and not "installed": a tier whose whole cost is model weights installs
-    # nothing at this moment (the line above says when it downloads), and a summary
-    # claiming otherwise would be the small lie this wizard exists to avoid.
+    # F225 removed `cli.setup.weights_later` — "the weights download the first time the
+    # stage that needs them runs". It was the sentence three tiers of four printed instead
+    # of downloading anything, and it is what the owner read as "and where is the download
+    # itself?". A tier that was said yes to is fetched at the screen now, so nothing is
+    # left for that line to describe.
     "cli.setup.added": {
         "ru": "Выбрано: {names}",
         "en": "Chosen: {names}",

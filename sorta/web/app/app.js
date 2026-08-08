@@ -3318,11 +3318,21 @@
       box.style.display = "none";
       return;
     }
-    box.textContent = fmt(I18N.download_running, {
+    var line = fmt(I18N.download_running, {
       stage: processStageLabel(info.stage),
       weights: info.weights.join(", "),
       size: downloadSize(info.mb || 0)
     });
+    // F225: and how much of it has arrived. The server measures it on the disk and sends
+    // it with every status tick, so this line moves while the gigabytes come down —
+    // naming the model was not enough, and a line that never changes reads as a hang.
+    if (typeof info.done_mb === "number") {
+      line += " " + fmt(I18N.download_progress, {
+        done: downloadSize(info.done_mb),
+        size: downloadSize(info.mb || 0)
+      });
+    }
+    box.textContent = line;
     box.style.display = "";
   }
 

@@ -87,8 +87,9 @@ class Screen:
         self.questions.append((question, default))
         return default if self.answers is None else self.answers
 
-    def doctor(self, config_path: str) -> None:
-        pass
+    def doctor(self, config_path: str, states=None) -> None:
+        # F225: one probe for both screens — the wizard hands over the one it took.
+        self.doctor_states = states
 
     def install(self, command) -> int:
         self.commands.append(list(command))
@@ -148,7 +149,9 @@ class TestNoTierIsNamedAfterOneOfTheThingsItCarries(unittest.TestCase):
                 self.assertIsNotNone(key)
                 tier = wizard.TIERS_BY_KEY[str(key)]
                 self.assertTrue(tier.default_yes, f"{tier.key}: Enter has to mean yes")
-                self.assertTrue(tier.preload, f"{tier.key}: fetched at the screen")
+                # F225: fetched at the screen — which every tier of the catalog now is,
+                # so what is pinned here is that this one has a downloader at all.
+                self.assertIn(weight, wizard._FETCHERS)
 
     def test_a_no_states_the_consequence_instead_of_warning_about_it(self):
         """The refusal has to stay possible and honest: the stage fetches the same
@@ -178,7 +181,10 @@ class TestOneTierNeedingAnother(unittest.TestCase):
     def test_choosing_it_brings_the_required_tier_with_it(self):
         screen = Screen()
         screen.run(chosen=("search",))
-        self.assertEqual(screen.downloaded, ["vision"])  # ...and it was fetched
+        # ...and BOTH were fetched: F225 downloads every tier that was said yes to, and a
+        # tier pulled in by another is one of them — search by words with no pictures
+        # encoded is the half-install this dependency exists to prevent.
+        self.assertEqual(screen.downloaded, ["vision", "search"])
 
     def test_the_wizard_says_it_rather_than_doing_it_quietly(self):
         screen = Screen()
@@ -274,7 +280,7 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
         def fetch(tier, config_path):
             pass
 
-        with mock.patch.object(wizard.threading, "Thread", _StepThread):
+        with mock.patch.object(tiers.threading, "Thread", _StepThread):
             ok = wizard.download_weights(wizard.TIERS_BY_KEY["vision"], "en",
                                          say=said.append, fetch=fetch,
                                          measure=lambda: next(arrived), tick=0.0)
@@ -311,17 +317,18 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
         self.assertIn("no network", screen.said)
         self.assertIn(i18n.cli_text("cli.setup.works_anyway", "en"), screen.said)
 
-    def test_every_weight_a_preloading_tier_carries_can_actually_be_fetched(self):
+    def test_every_weight_of_every_tier_can_actually_be_fetched(self):
+        """F225 widened this from "every weight of a tier that preloads". The narrow
+        version is what let the third defect through: three tiers of four carried a model
+        nobody here could download, and the wizard answered a yes with a promise."""
         for tier in wizard.TIERS:
-            if not tier.preload:
-                continue
             for weight in tier.weights:
                 with self.subTest(tier=tier.key, weight=weight):
                     self.assertIn(weight, wizard._FETCHERS)
 
     def test_a_weight_with_no_downloader_is_named_rather_than_ignored(self):
         with self.assertRaises(LookupError):
-            wizard.fetch_weights(wizard.Tier("x", weights=("Qwen2.5-VL-3B",)))
+            wizard.fetch_weights(wizard.Tier("x", weights=("Nothing-Like-It",)))
 
     def test_a_machine_with_no_config_yet_preloads_the_default_model(self):
         """The ordinary state of a fresh install: there is no config.yaml at this point,
@@ -339,9 +346,11 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
                              ("ViT-B-32", "laion2b"))
 
     def test_progress_is_measured_on_the_disk(self):
-        with mock.patch.object(wizard, "hf_cache_dir",
+        """F225 moved the measurement to `sorta/tiers.py`, where the run screen can see
+        it too — what it does is unchanged."""
+        with mock.patch.object(tiers, "hf_cache_dir",
                                return_value=Path("nowhere-at-all")):
-            self.assertEqual(wizard.downloaded_bytes(), 0)
+            self.assertEqual(tiers.downloaded_bytes(), 0)
 
     def test_the_measurement_adds_up_the_files_of_the_cache(self):
         import tempfile
@@ -350,7 +359,7 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
             root = Path(tmp) / "models--timm--vit" / "blobs"
             root.mkdir(parents=True)
             (root / "part").write_bytes(b"x" * 2048)
-            self.assertEqual(wizard.downloaded_bytes(Path(tmp)), 2048)
+            self.assertEqual(tiers.downloaded_bytes(Path(tmp)), 2048)
 
 
 class _StepThread:
@@ -504,7 +513,6 @@ class TestTheCatalogIsStatedTheSameEverywhere(unittest.TestCase):
                 self.assertEqual(entry["download_mb"], tier.download_mb)
                 self.assertEqual(entry["requires"], list(tier.requires))
                 self.assertEqual(entry["default_yes"], tier.default_yes)
-                self.assertEqual(entry["preload"], tier.preload)
 
     def test_every_weight_of_the_catalog_is_known_to_the_probe(self):
         """Test 6: the F216 watchdog, which the new tier must not break — a model whose
