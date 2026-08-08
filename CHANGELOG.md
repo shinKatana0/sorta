@@ -529,6 +529,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **A windowed Sorta no longer opens consoles nobody asked for** (F228). Found on
+  2026-08-08 in a virtual machine: *"a console opened, but the download progress is not
+  visible in it — that is deeply counter-intuitive."* The shortcut runs `pythonw.exe`, a
+  process with **no console of its own**, and on Windows starting a console program from
+  such a parent makes the loader **create a new window** for it. Nothing in the product
+  passed `CREATE_NO_WINDOW`, and four places start children: the `nvidia-smi` probe at
+  start-up, `exiftool -ver` on the first read of metadata, **up to eight**
+  `exiftool -stay_open` sessions on the index stage (one per read worker — eight windows
+  in a row), and `uv` in the wizard. What the owner saw was a black window opening while
+  the interface said a model was downloading, with nothing happening inside it: the window
+  had no connection to the download, and no way for a person to know that.
+  **One launch helper, and every call site through it** (`sorta/launch.py`) rather than the
+  flag written four times — the fifth call arrives without it, which is not a prediction
+  but the history of this defect: F226 added the fourth one the day before. A watchdog test
+  reads the package with `ast`, lists every call that starts a process, and fails on one
+  that does not come through the helper; source-reading rather than grep, so
+  `subprocess.run` in a comment is not mistaken for a launch.
+  **Hiding depends on the parent, not on the platform.** `sorta-setup` typed into a real
+  terminal must keep showing the output of `uv` — that console is ours and the install log
+  is what somebody is reading — so the question asked is *"does this process have a console
+  at all"* (`GetConsoleWindow`), not `wizard.owns_console`'s neighbouring *"would this
+  console die with this process"*. A question that cannot be answered counts as yes, which
+  leaves the previous behaviour in place instead of swallowing output. On Linux and macOS
+  there is no such flag and nothing changes: the helper adds no argument and no caller
+  carries a branch for it.
 - **The installed copy now uses the exiftool it brought with it** (F226). The installer
   carried 25 MB of exiftool, the manifest named it — `"exiftool": "exiftool\\exiftool.exe"`,
   `"exiftool_version": "13.59"` — and `sorta/exif.py` looked for the binary exactly one

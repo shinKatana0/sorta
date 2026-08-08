@@ -38,6 +38,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import launch
+
 _LOG = logging.getLogger(__name__)
 
 # Providers that mean "onnxruntime is set up for the GPU" — i.e. a GPU is expected.
@@ -86,8 +88,12 @@ SmiRunner = Callable[[], "subprocess.CompletedProcess[str]"]
 
 
 def _run_nvidia_smi() -> subprocess.CompletedProcess[str]:
-    """Run the GPU query. Raises if the binary is missing or the call times out."""
-    return subprocess.run(
+    """Run the GPU query. Raises if the binary is missing or the call times out.
+
+    F228: through `launch.run`, so the start-up probe of a run started from the shortcut
+    does not flash a console window at somebody who asked for a photo collection.
+    """
+    return launch.run(
         _NVIDIA_SMI_CMD,
         capture_output=True,
         text=True,
