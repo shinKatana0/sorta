@@ -167,7 +167,9 @@ class TestProcessStartAndProgress(ProcessTestBase):
              "deep_requested", "deep_ran",
              # F222: the model this run is fetching right now — null between downloads —
              # and the stages it skipped while config.yaml still configures them.
-             "download", "skipped_notes"},
+             # F229: ...and whether the stage that is running is waiting for that model,
+             # which is what replaces its frame counter while frames are impossible.
+             "download", "skipped_notes", "stage_waiting_download"},
         )
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])

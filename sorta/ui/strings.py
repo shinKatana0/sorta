@@ -619,6 +619,21 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Stage {stage} ({index}/{total}): {done} of {all}",
         "ja": "ステージ {stage}（{index}/{total}）: {done}/{all}",
     },
+    # F229: what the stage line says while the model it needs is still coming down. The
+    # counter it replaces measures FRAMES, and until the weights are on disk not one frame
+    # can be processed — so "0 of 8" was the right number in the wrong unit, and it stood
+    # still for the whole download. On eight photographs that download IS the whole run,
+    # which is how the owner came to read a working program as a hung one. No percentage
+    # here on purpose: how much has arrived is the F225 line right beside this one, and
+    # two different quantities in one place stop being told apart within a month.
+    "process_stage_waiting_model": {
+        "ru": "Этап {stage} ({index}/{total}): жду модель — кадры пойдут, когда она "
+              "скачается",
+        "en": "Stage {stage} ({index}/{total}): waiting for the model — frames start "
+              "once it is downloaded",
+        "ja": "ステージ {stage}（{index}/{total}）: モデルを待機中 — "
+              "ダウンロードが終わるとコマの処理が始まります",
+    },
     "process_stage_progress_indeterminate": {  # #37: total not yet known (e.g. indexing)
         "ru": "Этап {stage} ({index}/{total}): обработано {done}",
         "en": "Stage {stage} ({index}/{total}): {done} processed",
