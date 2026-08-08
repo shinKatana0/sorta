@@ -80,7 +80,24 @@ def creation_flags(*, console: Callable[[], bool] | None = None) -> int:
     return 0 if probe() else CREATE_NO_WINDOW
 
 
-def _windowless(kwargs: dict[str, Any]) -> dict[str, Any]:
+def forced_flags(*, os_name: str = os.name) -> int:
+    """The no-window flag for a child that must never show one, console or no console.
+
+    F227 met the case this exists for while F228 was written, and the two answers were
+    nearly merged into one wrong answer. The rule of `creation_flags` above — hide the
+    window only when THIS process has no console — is right for a child whose output
+    somebody may be reading (`uv` in a terminal). It is wrong for the starting window:
+    that child is a tkinter script with both its streams on DEVNULL, so a console of its
+    own can only ever be an empty black rectangle beside the splash, including when Sorta
+    was started from a terminal.
+
+    Windows-only, like everything here: on POSIX `subprocess` refuses any non-zero
+    `creationflags`, so the answer there is 0 and no caller has to know it.
+    """
+    return CREATE_NO_WINDOW if os_name == "nt" else 0
+
+
+def _windowless(kwargs: dict[str, Any], *, hide_window: bool = False) -> dict[str, Any]:
     """The caller's keyword arguments with the no-window flag added to `creationflags`.
 
     ADDED and not assigned: `creationflags` is a bit field, and a caller that passes one
@@ -88,20 +105,27 @@ def _windowless(kwargs: dict[str, Any]) -> dict[str, Any]:
     on POSIX `subprocess` refuses any non-zero value, and passing a zero it never asked
     for is noise in the one place that must stay boring.
     """
-    flags = int(kwargs.pop("creationflags", 0)) | creation_flags()
+    forced = forced_flags() if hide_window else 0
+    flags = int(kwargs.pop("creationflags", 0)) | creation_flags() | forced
     return {**kwargs, "creationflags": flags} if flags else kwargs
 
 
-def run(command: Sequence[str], **kwargs: Any) -> "subprocess.CompletedProcess[Any]":
+def run(command: Sequence[str], *, hide_window: bool = False,
+        **kwargs: Any) -> "subprocess.CompletedProcess[Any]":
     """`subprocess.run`, without a console window when this process has no console.
+
+    `hide_window=True` asks for the stronger promise of `forced_flags`: no window even
+    when there is a console to inherit. Use it only for a child nobody reads.
 
     The command is handed on exactly as it arrived — a list, a tuple, whatever the caller
     keeps it in. Normalising it here would be a second thing this wrapper does, and the
     only way a wrapper stays trustworthy is by doing one.
     """
-    return subprocess.run(command, **_windowless(kwargs))
+    return subprocess.run(command, **_windowless(kwargs, hide_window=hide_window))
 
 
-def popen(command: Sequence[str], **kwargs: Any) -> "subprocess.Popen[Any]":
-    """`subprocess.Popen`, without a console window when this process has no console."""
-    return subprocess.Popen(command, **_windowless(kwargs))
+def popen(command: Sequence[str], *, hide_window: bool = False,
+          **kwargs: Any) -> "subprocess.Popen[Any]":
+    """`subprocess.Popen`, without a console window when this process has no console —
+    or never a window at all with `hide_window=True` (see `forced_flags`)."""
+    return subprocess.Popen(command, **_windowless(kwargs, hide_window=hide_window))

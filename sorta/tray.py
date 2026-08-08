@@ -51,7 +51,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from . import i18n, ui
+from . import i18n, launch, ui
 from .config import configure_logging, load_config
 from .db import connect
 from .diagnostics import warn_if_geo_data_missing, warn_if_gpu_mismatch
@@ -343,16 +343,6 @@ class _Splash:
             pass
 
 
-def _no_console_flag() -> int:
-    """`CREATE_NO_WINDOW` where the platform has it, 0 where it does not.
-
-    Without it a Sorta started from a terminal (`python -m sorta.tray`) would flash a
-    console next to the splash. Under `pythonw`, which is what the shortcut runs, there is
-    nothing to suppress; on POSIX there is no such flag and 0 is what `Popen` expects.
-    """
-    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-
-
 def open_splash(lang: i18n.Lang) -> _Splash | None:
     """Put a window on the screen now, and return the handle that closes it.
 
@@ -360,13 +350,18 @@ def open_splash(lang: i18n.Lang) -> _Splash | None:
     machine without tkinter, without a display or without a window manager is a machine
     where nobody can be shown anything, and that is never a reason not to start. tkinter
     is in the installer payload, so on the machine this feature is for there is one.
+
+    `hide_window=True` and not the plain helper: F228 hides a child's console only when
+    THIS process has none, which is right for `uv` in a terminal somebody is reading and
+    wrong here — both streams of the splash go to DEVNULL, so its console could only ever
+    be an empty rectangle beside the window it belongs to.
     """
     try:
-        process = subprocess.Popen(
+        process = launch.popen(
             [sys.executable, "-c", _SPLASH_SCRIPT, _SPLASH_NAME,
              i18n.cli_text("cli.tray.starting", lang)],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, creationflags=_no_console_flag())
+            stderr=subprocess.DEVNULL, hide_window=True)
     except Exception as exc:  # no interpreter to spawn, no permission, no tkinter
         _LOG.warning("tray: could not show the starting window (%s)", exc)
         return None
