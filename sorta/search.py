@@ -1,100 +1,27 @@
 """F129: search by words over the CLIP vectors the junk stage keeps — the engine, no interface.
 
-Every slice of the collection is written code today: a tab for animals, a tab for people,
-a tab for products. A search turns a slice into a QUERY — someone types a word and gets
-one — so "food", "snow", "the sea" stop being a programmer's work. What that stands on is
-already on disk: `search_embeddings` holds an L2-normalized CLIP vector per canonical
-photograph together with the name of the model that produced it.
+F141 is why search reads `search_embeddings` and not `clip_embeddings`. Over 217
+hand-labelled judgements on 8 concepts (`scripts/measure_search.py`),
+`xlm-roberta-base-ViT-B-32` gives 98% precision at top-5 in Russian and 95% in English;
+the classification model `ViT-L-14` gives 22% and 98%, four of eight concepts (cake,
+food, mountains, children) returning nothing at all in Russian. Swapping the pipeline's
+model would have invalidated the landmark (F75), animal (F122) and cascade (F130)
+thresholds calibrated on its numbers, so search got a SECOND index of its own
+(`features.search_model`, behind `features.search_index`). The classification vectors are
+deliberately not a fallback: a ranking produced by the wrong model looks like a good one.
 
-F141 is why that table is not `clip_embeddings`. A search has to answer the language the
-user types, and the classification model does not: `ViT-L-14` scores 22% precision at
-top-5 on Russian queries against 98% for `xlm-roberta-base-ViT-B-32`, with four of eight
-labelled concepts (cake, food, mountains, children) returning nothing whatsoever. Swapping
-the pipeline's model would fix that for free and would also invalidate the landmark (F75),
-animal (F122) and cascade (F130) thresholds calibrated on its numbers — so search got a
-SECOND vector, from a model of its own (`features.search_model`), written by a second pass
-behind `features.search_index`. With that toggle off this engine has nothing to rank and
-says so; the classification vectors are deliberately not a fallback, because a ranking
-produced by the wrong model looks exactly like a good one.
+Three properties, each a decision. Rows of another model never enter a ranking (the
+filter lives in `junk.read_search_embeddings`, F128). An empty table raises
+`EmbeddingsMissing` with a reason, because "nothing was found" and "nothing was ever
+computed" read identically and only one is fixed by running `sorta junk`. And this ranks
+without classifying: no threshold, now or later, `features.search_page` being a SAMPLE
+SIZE and `rank` returning a WINDOW plus the length of the whole ranking (F173) — depth is
+the one measured lever of completeness, «дети» going from 61% to 89% when the list is
+doubled. Compound queries stay the weak class: "a city at night" is 80% for both models.
 
-Three properties are the whole feature, and each of them is a decision rather than an
-implementation detail:
-
-* **The model filter is not optional.** A vector computed by another model is not
-  comparable with this query, and mixing the two produces a plausible ranking that nothing
-  in the output marks as wrong. Rows of another model never enter the ranking; if that
-  leaves nothing to rank, the caller is told so (`EmbeddingsMissing`) instead of being
-  handed a short list. The filter itself lives where F128 put it — inside
-  `junk.read_search_embeddings`, the one function that reads the table.
-* **An empty table is a reason, not an empty result.** "Nothing was found" and "nothing was
-  ever computed" read identically in a list of zero lines, and only one of them is fixed by
-  running `sorta junk`.
-* **This ranks, it does not classify.** There is no "this really is a cake" threshold and
-  there will not be one, for the same reason sharpness has none: the score orders frames
-  against each other and says nothing in absolute terms. `features.search_page` is
-  therefore a SAMPLE SIZE, not a cutoff — and since F173 it is not even the end of the
-  sample: `rank` returns a WINDOW of the ranking together with the length of the whole of
-  it, so a caller can walk down the list instead of being cut off at the first page. Depth
-  is the one lever of completeness the measurements found (the query «дети» goes from 61%
-  to 89% when the list is doubled), so it is the last thing this engine may take away.
-
-F151 adds a caller and not a mechanism. A PINNED slice — «дети», «товары» — is a saved
-query: a list of English phrases out of `features.saved_slices`, averaged into one
-direction by `encode_queries` and ranked by `rank_queries` down this very path. It gets
-the model filter, the reason instead of an empty list, the deterministic order and the
-window because it is a query; what it does not get, and what the six hand-written filters
-it replaces each had, is a threshold of its own. On the sample that decided it, asking the
-vectors beats the filter that was there (animals 60% recall against 33%) and creates the
-two slices that were not there at all (children 61%, products 65%).
-
-Known limits, measured elsewhere and repeated here so a caller does not have to guess:
-compound queries ("a cake with candles on a table by the window") are weak — CLIP takes a
-sentence as one whole and single subjects are what it does well. The population is
-personal photographs only (F120): a screenshot's vector is noise in a search over a family
-archive, and it is not in the table to begin with — which also means a document (a
-passport, a medical form) can never surface here, because the stage stores no row for one.
-
-The accuracy of this search HAS been measured on a real collection, with
-`scripts/measure_search.py` and 217 hand-labelled judgements over 8 concepts, each
-concept-frame pair judged once whatever produced it. With the search index on
-(`xlm-roberta-base-ViT-B-32`) it is 98% precision at top-5 in Russian and 95% in English;
-the classification model it replaced for this purpose gave 22% in Russian and 98% in
-English. F121/F122 is why that measurement was not optional: the animal class looked like
-it worked until 320 hand-labelled frames showed that only half of the question was right.
-The one concept still weak for both models is "a city at night" (80%) — a compound query,
-which is the class the limits above already name.
-
-F153 puts the OTHER index next to this one, behind `features.search_fusion`. The two
-models score 88/96/98% at ranks 1/3/5 apiece and return DIFFERENT frames for the same
-word — the user's own words while looking at both lists: "it disagrees with xlm english on
-which photos, but both are good, even though they differ" — and two models that are wrong
-in different places are the one case where merging beats either half. Two ways of merging
-are offered and both work on POSITIONS: `rank` (reciprocal rank fusion — agreement between
-the models wins) and `union` (the two lists as sets, each frame keeping its best place).
-Neither one adds the scores up, and `fuse` cannot: it is handed file ids and no numbers,
-because a cosine of ViT-L-14 and a cosine of xlm-roberta-base-ViT-B-32 belong to different
-spaces and look comparable anyway. Which mode is worth defaulting to is a question for
-`scripts/measure_search.py --fusion`, which prints precision AND RECALL — the half nobody
-has measured, and the half a merge is expected to move. A merged ranking is paged like any
-other (F173): the window is cut after the merge and the total is the length of the merged
-list, so «показано N из M» stays a fact about the list the reader is actually looking at.
-
-F189 puts something in this module that is NOT a ranking, and the whole feature is in
-keeping the two apart. `face_clusters.label` holds the names somebody gave the people in
-their own archive, and typing one of those names into the search line used to ask CLIP for
-frames that look like a WORD. The bridge is `match_person` + `person_page`: a name is an
-EXACT SELECTION — a frame is either in that person's cluster or it is not — and a selection
-has no threshold, no depth and no "show more by relevance", only pages of a list whose
-length is a fact. Mixing it into the ranking would hand a reader an exact answer and an
-approximate one as one homogeneous list, which is the failure F153 spent a whole feature
-avoiding between two indexes that at least share a notion of a score. Which frames belong
-to the person is not decided here either: `person_files` runs the album's own selection
-(`sorter.plan_album(kind='person')`, the `merged_into` roots of F31), because a pinned
-slice has to answer exactly what the search line answers, and two selections that agree
-today would part company silently.
-
-The real CLIP is loaded exactly once, in `text_encoder`; everything else takes an encoder
-as an argument, which is what lets the tests run the whole engine without a model.
+The population is personal photographs only (F120), so a screenshot, or a document, has
+no row here to surface. The real CLIP is loaded once, in `text_encoder`; everything else
+takes an encoder as an argument, which lets the tests run the engine without a model.
 """
 from __future__ import annotations
 
@@ -125,46 +52,35 @@ from .naming import NamingSettings, naming_settings
 
 _log = logging.getLogger(__name__)
 
-# Query strings -> their text features, one row per string, in the same order. Replaced in
-# tests; the real one is `text_encoder` below — the project's own open_clip, never a second
-# model, because a query has to land in the space the stored vectors live in.
+# Query strings -> their text features, one row per string, in order. Replaced in tests.
 TextEncoder = Callable[[Sequence[str]], np.ndarray]
 
-# The population of a search (F120), and the reason it is spelled out here rather than left
-# to the table: `search_embeddings` is written by the junk stage and only ever holds personal
-# photographs, but a file can become a duplicate or go unreadable AFTER its vector was
-# stored, and neither of those belongs in a result list.
+# The population of a search (F120): a file can become a duplicate or go unreadable
+# AFTER its vector was stored, and neither belongs in a result list.
 _CANDIDATES_SQL = """SELECT id FROM files
     WHERE dup_of IS NULL AND error IS NULL AND media_type = 'photo'"""
 
-# Why there is nothing to rank. Two states, and they need two different sentences: one is
-# fixed by running the junk stage, the other by running it AGAIN after a model change.
+# Two states needing two different sentences: one is fixed by running the junk stage,
+# the other by running it AGAIN after a model change.
 REASON_EMPTY = "empty"              # the table holds no vectors at all
 REASON_OTHER_MODEL = "other_model"  # it holds vectors, all of them of another model
 
-# The two tables a ranking can come out of, named so `_nothing_to_rank` can count the one
-# that was actually read. They are never mixed in a single ranking — that is the whole
-# point of the model column — and a fusion merges two RANKINGS, not two tables.
 _SEARCH_TABLE = "search_embeddings"  # F141: the multilingual index, search's own
 _CLASS_TABLE = "clip_embeddings"     # F128: the classification vectors, ViT-L-14
 
 # F153: the smoothing constant of reciprocal rank fusion, at the value the method was
-# published with. It is not calibrated on anything here and nothing asks it to be: any
-# positive K leaves a single list in its own order and keeps the property the mode exists
-# for — a frame both models put first outranks a frame only one of them did. What K does
-# choose is how far down a second list may still rescue a frame, and 60 is the usual
-# answer to that.
+# published with. Nothing calibrates it — any positive K keeps a frame both models put
+# first ahead of one only a single model did; K only chooses how far down a second list
+# may still rescue a frame.
 RRF_K = 60
 
 
 class EmbeddingsMissing(RuntimeError):
     """No usable vector for this query — raised instead of returning an empty list.
 
-    Carries the reason as a code rather than as a message: the sentence a user reads is
-    interface text and belongs in the i18n catalog with its three languages, while the
-    engine only knows WHICH of the two states it is in. `stored` counts the rows of the
-    query's own model, `total` every row in the table — the pair is what makes "you have
-    19 757 vectors, all of another model" sayable.
+    The reason is a code, not a message: the sentence a user reads belongs in the i18n
+    catalog with its three languages. `stored` counts the rows of the query's own model
+    and `total` every row, which makes "19 757 vectors, all of another model" sayable.
     """
 
     def __init__(self, reason: str, model: str, total: int, stored: int) -> None:
@@ -178,17 +94,12 @@ class EmbeddingsMissing(RuntimeError):
 def text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML, smoke test
     """The real open_clip text tower — the same model and weights the images went through.
 
-    Loaded through `create_model_and_transforms` like `landmarks.clip_classifier`, and
-    deliberately so: the pair (architecture, checkpoint) has to be resolved by the same call
-    the image side used, otherwise "the same model" is a claim rather than a fact. The
-    returned vectors are L2-normalized here as well, so a dot product is a cosine.
-
-    F141: WHICH settings those are is the caller's to get right, and for a search they are
-    the search side's — `junk.search_index_settings(naming_settings(cfg), model)`, which is
-    what `search_text` passes. Handed `naming_settings(cfg)` unchanged this builds the
-    classification tower, whose queries land in a space no row of the search index lives
-    in; the width check in `search` catches that and leaves nothing to rank, which is a
-    visible failure rather than a quiet one.
+    Loaded through `create_model_and_transforms` like `landmarks.clip_classifier`, so that
+    (architecture, checkpoint) is resolved by the same call the image side used, and
+    L2-normalized here too so a dot product is a cosine. F141: for a search those settings
+    are the search side's, `junk.search_index_settings(naming_settings(cfg), model)` —
+    handed `naming_settings` unchanged this builds the classification tower instead, which
+    the width check in `_rank` turns into nothing to rank rather than a quiet answer.
     """
     import open_clip
     import torch
@@ -199,11 +110,9 @@ def text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML, 
     tokenizer = open_clip.get_tokenizer(s.clip_model)
     model.eval()
 
-    # F220: wrapped, and this is the cheapest of the retreats — a text tower over a phrase
-    # somebody typed is milliseconds on a processor. What it buys is the difference between
-    # a search that answers slowly and a search that answers with a traceback: an encoder
-    # that raises leaves the query with no vector at all, and every ranking downstream with
-    # nothing to rank. Never fires on CUDA (see accel.CpuFallback).
+    # F220: the cheapest of the retreats — a text tower over one typed phrase is
+    # milliseconds on a processor, and an encoder that raises leaves every ranking
+    # downstream with nothing to rank. Never fires on CUDA (accel.CpuFallback).
     fallback = accel.CpuFallback(device, lambda dev: model.to(dev),
                                  what="search: the clip text tower")
 
@@ -219,12 +128,9 @@ def text_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cover — ML, 
     return encode
 
 
-# F153: the classification text tower, built at most once per process. The callers that
-# bring their own encoder bring the SEARCH one (the web app holds one per server, the album
-# one per run), so a fusion has to find the second half somewhere — and building it per
-# query would mean loading ViT-L-14 on every word somebody types, which is precisely what
-# those callers cache to avoid. Keyed by the model name because that pair (architecture,
-# weights) is what a tower IS.
+# F153: the classification text tower, built at most once per process — callers that
+# bring their own encoder bring the SEARCH one, and building this per query would load
+# ViT-L-14 on every typed word.
 _class_encoders: dict[str, TextEncoder] = {}
 
 
@@ -239,12 +145,9 @@ def _classification_encoder(s: NamingSettings) -> TextEncoder:  # pragma: no cov
 def encode_query(text: str, encoder: TextEncoder) -> np.ndarray:
     """A query -> a unit vector in the space the stored embeddings live in.
 
-    Normalized here even though the encoder already normalizes, for the reason
-    `junk.pack_embedding` normalizes a vector the image tower had normalized: with unit
-    vectors on both sides a search is one matmul and no per-row arithmetic, and that
-    guarantee is worth more than the trust it replaces. A zero vector (an encoder that
-    answered with nothing) is left as it is rather than divided by zero — it ranks
-    everything equally, which is the honest outcome of a query that carries no direction.
+    Normalized even though the encoder already normalizes, for the reason
+    `junk.pack_embedding` does the same: with unit vectors on both sides a search is one
+    matmul and no per-row arithmetic. A zero vector is left alone, not divided by zero.
     """
     if not text.strip():
         raise ValueError("encode_query: the query is empty")
@@ -256,36 +159,23 @@ def encode_query(text: str, encoder: TextEncoder) -> np.ndarray:
 def encode_queries(texts: Sequence[str], encoder: TextEncoder) -> np.ndarray:
     """Several phrases -> ONE unit vector: the ensemble a pinned slice is ranked by (F151).
 
-    Each phrase is brought to a norm of 1 before the mean, and the mean is normalized
-    again. Both steps matter for the same reason `encode_query` normalizes: the result has
-    to be a unit vector so that a dot product against the stored rows is a cosine, and a
-    phrase the tower answered with a longer vector must not weigh more than its neighbours
-    merely for that.
+    Each phrase is normalized before the mean and the mean again after, so a phrase the
+    tower answered with a longer vector does not weigh more for that alone. Blank phrases
+    are dropped; a slice with nothing left raises rather than ranking by an arbitrary
+    direction.
 
-    The averaging is what makes the list a list: three phrases give a direction none of
-    them has on its own, which is the difference between a slice and a query somebody
-    typed. What the ensemble does NOT do is improve accuracy — measured on 200 labelled
-    frames, one phrase, three and six are within the noise of each other — so the reason
-    for the list is that a slice can be retuned in `config.yaml` (see
-    `config.DEFAULT_SAVED_SLICES`).
-
-    The whole ensemble goes to the tower in ONE call: the phrases of a slice are known
-    together, and a call per phrase is a load of the same model N times over in the CLI.
-    Blank phrases are dropped; a slice with nothing left raises, because a pinned query
-    with no words would rank the collection by an arbitrary direction and look like an
-    answer.
+    What the ensemble does NOT do is improve accuracy — measured on 200 labelled frames,
+    one phrase, three and six are within the noise of each other. The reason for the list
+    is that a slice can be retuned in `config.yaml` (`config.DEFAULT_SAVED_SLICES`).
     """
     wanted = [t.strip() for t in texts if t and t.strip()]
     if not wanted:
         raise ValueError("encode_queries: the slice carries no query")
     # A COPY (`np.array`, not `np.asarray`): the rows are normalized in place below, and
-    # an encoder that answers out of a buffer of its own would have that buffer rewritten
-    # under it — a corruption that would show up as a ranking, never as an error.
+    # an encoder answering out of a buffer of its own would have it rewritten underneath.
     matrix = np.array(encoder(wanted), dtype=np.float32).reshape(len(wanted), -1)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    # A zero row is left alone rather than divided by zero — it contributes no direction,
-    # which is the honest outcome of a phrase the tower answered with nothing.
-    matrix = np.divide(matrix, norms, out=matrix, where=norms > 0)
+    matrix = np.divide(matrix, norms, out=matrix, where=norms > 0)  # zero rows: left alone
     mean = matrix.mean(axis=0)
     norm = float(np.linalg.norm(mean))
     return mean / norm if norm > 0 else mean
@@ -295,11 +185,9 @@ def encode_queries(texts: Sequence[str], encoder: TextEncoder) -> np.ndarray:
 class Page:
     """One window of a ranking, and how long the ranking it came out of is.
 
-    F173: `total` is the point. A list of exactly `limit` frames says nothing about whether
-    the ranking ended there or was cut there, and those are different facts — for a query
-    the second is almost always the true one. Everything a caller needs to draw «показано
-    N из M» and to decide whether a "show more" button belongs on the screen is here, so
-    that neither of the two can be recomputed slightly differently somewhere else.
+    F173: `total` is the point — a list of exactly `limit` frames says nothing about
+    whether the ranking ended there or was cut there. Everything «показано N из M» and the
+    "show more" button need is here, so neither can be recomputed differently elsewhere.
     """
 
     hits: list[tuple[int, float]]
@@ -317,28 +205,13 @@ def rank(conn: sqlite3.Connection, query: np.ndarray, model: str, *,
          limit: int, offset: int = 0) -> Page:
     """The ranking: (file_id, score), best first, windowed to [offset, offset+limit).
 
-    The score is a dot product — both sides are unit vectors, so it IS the cosine, and no
-    normalization happens per row. Ties are broken by file_id (the ids are sorted before the
-    stable argsort), which is what makes a repeated search return the same list rather than
-    whatever order the dict happened to have: a ranking that reshuffles between runs cannot
-    be measured, and measuring it is a condition of this feature.
-
-    That same determinism is what makes PAGING honest here (F173). The whole list is scored
-    and ordered on every call, and a window is taken out of it afterwards, so the second
-    page is the continuation of the first and not a second opinion about the collection: no
-    frame is shown twice and none is skipped between the pages. Only the window is turned
-    into Python objects — the argsort ran over everything either way, and materializing
-    300 000 tuples to hand back 200 of them would be the one part of this that scales badly.
-
-    Vectors of another model are absent by construction — `read_search_embeddings` filters
-    on `model` — and a row whose width does not match the query is dropped as well: a
-    truncated blob is a broken row, not a reason for the whole search to fail. That width
-    check is also the last guard against a query encoded by the classification tower (768
-    numbers) reaching the search index (512): it cannot rank, so it ranks nothing.
-
-    F153: this ranks the SEARCH index and only ever that one. `rank_classification` is the
-    other table's twin, and the two are separate functions rather than one with an argument
-    for the same reason `junk` has two readers — see there.
+    The score is a dot product of two unit vectors, so it IS the cosine. Ties break by
+    file_id (the ids are sorted before the stable argsort), and that determinism is what
+    makes paging honest (F173): the whole list is scored and ordered on every call and the
+    window taken afterwards, so the second page continues the first. Only the window
+    becomes Python objects — materializing 300 000 tuples to hand back 200 is the one part
+    that scales badly. A row whose width does not match is dropped, which is also the last
+    guard against a query from the classification tower (768) reaching the index (512).
     """
     q = np.asarray(query, dtype=np.float32).ravel()
     candidates = [int(r["id"]) for r in conn.execute(_CANDIDATES_SQL)]
@@ -350,18 +223,11 @@ def rank_classification(conn: sqlite3.Connection, query: np.ndarray, model: str,
                         limit: int, offset: int = 0) -> Page:
     """F153: the same ranking over the CLASSIFICATION index (`clip_embeddings`).
 
-    A function of its own rather than a table argument on `rank`, for the reason
-    `junk.read_search_embeddings` is a function of its own: the model filter is the safety
-    property of both, and a parameter choosing which table to apply it to is one call site
-    away from being handed the wrong one. Here the two stay apart all the way down — the
-    reader, the model name and the table counted in the refusal are picked together.
-
-    The query must be encoded by the CLASSIFICATION tower; a search-model query is 512
-    numbers against these 768 and the width check below drops every row rather than
-    ranking it, which is a visible failure and not a plausible list. This is only ever
-    reached through `features.search_fusion`: on its own the classification index is NOT a
-    fallback for search (F141), because a ranking quietly produced by the wrong model looks
-    exactly like a good one.
+    A function of its own rather than a table argument on `rank`: a parameter choosing
+    which table the model filter applies to is one call site away from the wrong one. The
+    query must come from the CLASSIFICATION tower — a search-model query is 512 numbers
+    against these 768. Only ever reached through `features.search_fusion`; on its own this
+    index is NOT a fallback for search (F141).
     """
     q = np.asarray(query, dtype=np.float32).ravel()
     candidates = [int(r["id"]) for r in conn.execute(_CANDIDATES_SQL)]
@@ -385,37 +251,26 @@ def _rank(conn: sqlite3.Connection, vectors: dict[int, np.ndarray], q: np.ndarra
 
 def search(conn: sqlite3.Connection, query: np.ndarray, model: str,
            limit: int, offset: int = 0) -> list[tuple[int, float]]:
-    """`rank` for a caller that wants the frames and not the length of the list.
-
-    What `sorta search` and the measurement script both do with a ranking: print it. Kept
-    as its own name so that the CLI is not made to unpack a page it has no use for.
-    """
+    """`rank` for a caller that wants the frames and not the length of the list."""
     return rank(conn, query, model, limit=limit, offset=offset).hits
 
 
 def search_classification(conn: sqlite3.Connection, query: np.ndarray, model: str,
                           limit: int, offset: int = 0) -> list[tuple[int, float]]:
-    """`rank_classification` for a caller that wants the frames alone (F153).
-
-    The measurement script is that caller: it compares whole lists of file ids variant by
-    variant, and the length of the classification index is not a fact it has any use for.
-    """
+    """`rank_classification` for a caller that wants the frames alone (F153)."""
     return rank_classification(conn, query, model, limit=limit, offset=offset).hits
 
 
 # --- F153: two indexes, one answer -----------------------------------------------------
+# Both models score 88/96/98% at ranks 1/3/5 apiece and return DIFFERENT frames for the
+# same word, which is the case where merging beats either half. Whether it should be the
+# default is a question for `measure_search.py --fusion`, which prints RECALL.
 
-# One index, ranked: `rank` over the search index and `rank_classification` over the
-# classification one. The two are picked together with the model name and never apart from
-# it, which is why the fusion below carries the pair around rather than a table flag.
 _Ranker = Callable[..., Page]
 
-# How deep each index is ranked before the merge: all of it. A merge of two TRUNCATED lists
-# cannot be windowed correctly — a frame just below the cut in both lists outranks a frame
-# inside the cut in one of them, which is the whole property `rank` mode exists for — and
-# it cannot state a total either, which is what F173's paging needs to be true. So the
-# opt-in mode pays for two full lists of Python tuples per query. That is query time, and
-# no pass over any image: a run does not get slower by a millisecond.
+# How deep each index is ranked before the merge: all of it. A merge of two TRUNCATED
+# lists cannot be windowed correctly — a frame just below the cut in both outranks a frame
+# inside the cut in one — nor state a total. Two full lists of tuples per query, no image.
 _WHOLE_RANKING = 1 << 30
 
 
@@ -423,17 +278,11 @@ _WHOLE_RANKING = 1 << 30
 class Fusion:
     """One answer of the search, plus which indexes are behind it (F153).
 
-    `page` is what every caller already handles — F173's window of the ranking with the
-    length of the whole of it. The other two fields exist because a merge can be a merge of
-    one: an index that has nothing to rank must not turn into a quietly shorter answer, so
-    the models that ranked are named in `used` and the ones that did not are in `missing`
-    with the engine's own reason code (`REASON_EMPTY` / `REASON_OTHER_MODEL`) next to them.
-
-    What a `score` on that page MEANS depends on `mode`, and that is not a wart: with `off`
-    it is the cosine of the search model, with a fusion it is a weight computed from
-    POSITIONS in the two lists and belongs to no vector space at all. Both are ordering
-    numbers with no absolute meaning (see the module docstring), which is why nothing in
-    the project reads a threshold off one.
+    `used`/`missing` exist because a merge can be a merge of one: an index with nothing to
+    rank must not turn into a quietly shorter answer, so the models that ranked are named
+    and the ones that did not carry a reason code (`REASON_EMPTY`/`REASON_OTHER_MODEL`).
+    What a `score` MEANS depends on `mode`: with `off` the cosine of the search model,
+    with a fusion a weight computed from POSITIONS that belongs to no vector space at all.
     """
     mode: str
     page: Page
@@ -442,7 +291,7 @@ class Fusion:
 
     @property
     def hits(self) -> list[tuple[int, float]]:
-        """The window itself — for a caller that pages through nothing."""
+        """The window itself, for a caller that does not page."""
         return self.page.hits
 
 
@@ -456,22 +305,12 @@ def fuse(rankings: Sequence[Sequence[int]], mode: str,
          limit: int) -> list[tuple[int, float]]:
     """Several rankings -> one, by POSITION alone: (file_id, weight), best first.
 
-    File ids and nothing else is what this takes, and that is the main invariant of the
-    feature rather than a convenience: the scores of two models are numbers of two
-    different spaces, they print alike, and a function that never receives them cannot add
-    them, average them or compare them. The order of `rankings` carries the only
-    information used — the place a frame holds in each list.
-
-    * `rank` (reciprocal rank fusion) sums `1 / (RRF_K + place)` over the lists a frame
-      appears in, so a frame both models rank first beats a frame only one of them does;
-    * `union` takes the BEST place instead of the sum, which is the set merge the brief
-      asks for: the two top-Ns collapsed into one list, a frame found by a single model
-      keeping the place that model gave it.
-
-    Ties are broken by file_id — with `union` they are the normal case (two frames each
-    ranked first by one model), and a search that reshuffles between runs cannot be
-    measured. An unknown mode raises: silently ranking by something else is the failure
-    this whole feature is written to avoid.
+    File ids and nothing else, which is the invariant: a cosine of ViT-L-14 and one of
+    xlm-roberta-base-ViT-B-32 belong to different spaces and print alike, so a function
+    that never receives them cannot add or compare them. `rank` (reciprocal rank fusion)
+    sums `1 / (RRF_K + place)` over the lists a frame appears in, so a frame both models
+    rank first beats a frame only one of them does; `union` takes the BEST place instead
+    of the sum. Ties break by file_id; an unknown mode raises.
     """
     if mode not in (SEARCH_FUSION_RANK, SEARCH_FUSION_UNION):
         raise ValueError(f"fuse: unknown fusion mode {mode!r}, expected one of "
@@ -495,26 +334,12 @@ def rank_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
     """`encode_query` + `rank` with everything the config already knows.
 
     The one entry point the CLI, the album, the interface and the measurement share, so
-    that "which model are we comparing against" is answered in one place
-    (`junk.search_index_model` — the architecture AND the weights) instead of four.
-    `limit=None` means `features.search_page` — a PAGE since F173, and the config comment
-    is where the difference between that and a ceiling is written down. The encoder is
-    loaded only when the caller does not bring one, which is what keeps the CLIP import out
-    of every module that merely imports this one.
-
-    F141: that model is `features.search_model` and NOT `naming.clip.*`. The two are
-    different on purpose — the classification model is the one every threshold in the
-    pipeline is calibrated on, and the search model is the one that answers a Russian query
-    — so the text tower is built from the search side's settings as well. A caller who
-    brings its own encoder brings the responsibility with it; a mismatch cannot corrupt a
-    ranking (the model filter and the width check in `search` see to that), it can only
-    leave nothing to rank.
-
-    F153: with `features.search_fusion` on, the same call ALSO ranks the classification
-    index and merges the two lists — the call site does not change, which is why the CLI,
-    the album and the web app got the feature without a line of their own. The page this
-    returns is `search_fusion(...).page`; a caller that needs to know WHICH indexes
-    answered calls that instead.
+    "which model are we comparing against" is answered once (`junk.search_index_model`).
+    `limit=None` means `features.search_page`. The encoder is loaded only when the caller
+    does not bring one, which keeps the CLIP import out of every module importing this.
+    F141: that model is `features.search_model` and NOT `naming.clip.*`, so the text tower
+    is built from the search side's settings too. A caller that needs to know WHICH
+    indexes answered calls `search_fusion` instead.
     """
     return search_fusion(cfg, conn, text, limit=limit, offset=offset, encoder=encoder,
                          class_encoder=class_encoder).page
@@ -526,27 +351,16 @@ def search_fusion(cfg: Config, conn: sqlite3.Connection, text: str, *,
                   class_encoder: TextEncoder | None = None) -> Fusion:
     """F153: `rank_text` with the merge visible — which indexes ranked, and which did not.
 
-    With `features.search_fusion: off` this is today's search exactly: `rank` over the
-    search index, the same window and the same total, and the classification index not
-    read, not counted and not encoded for — so the mode is also the switch for the second
-    CLIP text pass a query would otherwise pay for.
+    With `off` the classification index is not read, not counted and not encoded for, so
+    the mode is also the switch for the second CLIP text pass. With `rank` or `union` both
+    are ranked and `fuse` merges the positions, each side encoded by ITS OWN tower.
 
-    With `rank` or `union` both indexes are ranked and `fuse` merges the positions. Each
-    side is encoded by ITS OWN tower — the search model's for `search_embeddings`, the
-    classification model's for `clip_embeddings` — because a query has to land in the space
-    the stored vectors live in; `class_encoder` is that second tower and is built here only
-    when the caller did not bring one.
-
-    The window is taken AFTER the merge and the total is the size of the merged ranking, so
-    F173's «показано N из M» stays true with a fusion on: N and M are then about a list
-    neither index has on its own. That is also why both are ranked in full — see
-    `_WHOLE_RANKING`.
-
-    An index with nothing to rank does not sink the query: the other one answers, and the
-    fact travels out loud — a warning in the log and the reason in `missing` — because a
-    silently halved fusion is a ranking nobody can tell from a whole one. If NEITHER index
-    can rank, the search index's own refusal is raised, which is the sentence the interface
-    already knows how to say.
+    The window is taken AFTER the merge and the total is the size of the merged ranking,
+    so «показано N из M» stays true with a fusion on — which is why both are ranked in
+    full (see `_WHOLE_RANKING`). An index with nothing to rank does not sink the query:
+    the other answers and the fact travels out loud, because a silently halved fusion
+    cannot be told from a whole one. If NEITHER can rank, the search index's refusal is
+    raised.
     """
     mode = fusion_mode(cfg)
     model = search_index_model(cfg)
@@ -592,11 +406,11 @@ def rank_queries(cfg: Config, conn: sqlite3.Connection, texts: Sequence[str], *,
                  encoder: TextEncoder | None = None) -> Page:
     """`rank_text` for a PINNED slice — the same ranking, asked by several phrases (F151).
 
-    Deliberately the same path and not a second engine: a saved slice is a saved query, so
-    it gets the model filter, the width check, the reason instead of an empty list, the
-    deterministic order and the window — everything a typed query gets — and the only
-    difference between the two callers is how the vector was built. A slice that ranked by
-    rules of its own would be the sixth filter this feature exists to remove.
+    A saved slice is a saved query, so it goes down this path and not a second engine, and
+    without a threshold of its own — which each of the six hand-written filters it
+    replaces had. On the sample that decided it, asking the vectors beats the filter that
+    was there (animals 60% recall against 33%) and creates the two slices that were not
+    there at all (children 61%, products 65%).
     """
     model = search_index_model(cfg)
     if encoder is None:  # pragma: no cover — ML, smoke test
@@ -610,71 +424,47 @@ def search_text(cfg: Config, conn: sqlite3.Connection, text: str, *,
                 limit: int | None = None, offset: int = 0,
                 encoder: TextEncoder | None = None,
                 class_encoder: TextEncoder | None = None) -> list[tuple[int, float]]:
-    """`rank_text` for a caller that wants the frames alone — the CLI and the album.
-
-    Neither of those two draws a "show more" button, so neither has anything to do with
-    the length of the ranking; they get the list they asked for and nothing to unpack.
-    """
+    """`rank_text` for a caller that wants the frames alone — the CLI and the album."""
     return rank_text(cfg, conn, text, limit=limit, offset=offset, encoder=encoder,
                      class_encoder=class_encoder).hits
 
 
 # --- F189: a name is a selection, not a query ------------------------------------------
-# The owner's question that started this: "if I name a cluster and merge another into it,
-# can I then search by the name?" The capability was there and the bridge was not —
-# `album person <name>` and `sort --by person` both know the names, and the search line
-# knew only vectors, so «Ирина» asked CLIP for frames that resemble a WORD.
-#
-# What the two answers are is the reason they are not merged into one list:
-#
-#     a query over the embeddings   a RANKING: confident first, doubtful later, recall
-#                                   grows with depth and precision falls with it
-#     a person's name               an EXACT SELECTION: the frame is in that person's
-#                                   cluster or it is not
-#
-# So a name gives a LIST. No threshold, no depth, no "show more by relevance" — paging by
-# count is another matter and costs nothing. And the answer says which of the two it is,
-# because an exact selection presented like the top of a ranking is read as one.
+# A query over the embeddings is a RANKING; a person's name is an EXACT SELECTION. The two
+# are never merged into one list, because an exact selection presented like the top of a
+# ranking is read as one. So a name gives a LIST: no threshold, no depth, no "show more by
+# relevance" — paging by count is another matter.
 
-# What a person's frames ARE, and the one thing this module does not decide for itself.
-# `sorter._CTE` is the source of truth: it resolves the `merged_into` chains and takes the
-# label off the ROOT of each of them (F31), which is what makes the frames of a merged
-# cluster part of the answer — the reason people merge clusters in the first place. The
-# condition below is the album's own subject condition for `kind='person'`, over the same
-# canonical population (`dup_of IS NULL AND error IS NULL`), so that a search by a name and
-# an album of that name cannot disagree by a frame. There is a test for exactly that, and
-# it compares the two SETS rather than trusting this comment.
+# `sorter._CTE` is the source of truth for what a person's frames ARE: it resolves the
+# `merged_into` chains and takes the label off the ROOT (F31). The condition below is the
+# album's own subject condition for `kind='person'`, so a search by a name and an album of
+# that name cannot disagree by a frame — a test compares the two SETS.
 _PERSON_FILES_SQL = """SELECT f.id FROM files f
     WHERE f.dup_of IS NULL AND f.error IS NULL
       AND f.id IN (SELECT file_id FROM _person_files
                    WHERE casefold(label) = casefold(?))
     ORDER BY f.id"""
 
-# Whether the typed string IS a name. Only ROOT clusters are looked at: a cluster that was
-# merged away keeps its own row, and the label the album selects by is the root's — a name
-# left behind on a swallowed cluster names nobody. `casefold` is the project's UDF (SQLite's
-# NOCASE is ASCII-only, and these names are usually Cyrillic), which together with the
-# `strip()` in `match_person` is the whole of requirement "«ирина » and «Ирина» are one
-# name": people type names, and a search that is case-sensitive about them is broken.
-# Unnamed clusters are excluded by `label IS NOT NULL` — there is nothing to type.
+# Whether the typed string IS a name. Only ROOT clusters: a cluster that was merged away
+# keeps its own row, and a name left behind on a swallowed cluster names nobody.
+# `casefold` is the project's UDF — SQLite's NOCASE is ASCII-only and these names are
+# usually Cyrillic — which with the `strip()` in `match_person` is the whole of "«ирина »
+# and «Ирина» are one name".
 _PERSON_LABEL_SQL = """SELECT label FROM face_clusters
     WHERE merged_into IS NULL AND label IS NOT NULL AND casefold(label) = casefold(?)
     ORDER BY id LIMIT 1"""
 
-# The number on a card of a selection. A `Page` carries (file_id, score) pairs because a
-# ranking has scores; this list has none — every frame is in it for the same reason — and a
-# zero is the honest value for "not a score". Callers are expected to leave it off the
-# screen: a "closeness 0.000" under an exact answer would be a measurement nobody made.
+# A `Page` carries (file_id, score) pairs because a ranking has scores; a selection has
+# none. Callers are expected to leave this off the screen: a "closeness 0.000" under an
+# exact answer would be a measurement nobody made.
 PERSON_NO_SCORE = 0.0
 
 
 def _person_selection(conn: sqlite3.Connection) -> str:
     """The album's person CTE, with the `casefold` UDF registered on this connection.
 
-    Imported inside the function on purpose: `sorter` imports THIS module (an album of
-    `kind='query'` ranks by it), so an import at the top would be a cycle. The cost is one
-    attribute lookup per call and the gain is that the `merged_into` resolution has exactly
-    one spelling in the project.
+    Imported inside the function: `sorter` imports THIS module, so a top-level import
+    would be a cycle.
     """
     from .sorter import _CTE, _sql_casefold
     conn.create_function("casefold", 1, _sql_casefold, deterministic=True)
@@ -684,16 +474,12 @@ def _person_selection(conn: sqlite3.Connection) -> str:
 def match_person(conn: sqlite3.Connection, text: str) -> str | None:
     """The typed string as a person's NAME — the label as stored, or None.
 
-    None is the ordinary case and not a failure: almost everything typed into a search line
-    is words, and a string that names nobody must go on to the ranking untouched rather than
-    produce an empty "no frames of this person" screen.
-
-    The match is exact apart from case and surrounding blanks. Nothing fuzzy — «Ира» does
-    not find «Ирина» — because a near-miss on a name has a cost of its own kind (somebody
-    else's frames under your child's name) and deserves its own feature, its own measurement
-    and its own decision. Ambiguity (two root clusters named alike) resolves to the lowest
-    id: the answer has to be deterministic, and both would select frames of "that name"
-    anyway — the album's condition matches by label, not by cluster.
+    None is the ordinary case: a string that names nobody goes on to the ranking untouched
+    rather than producing an empty "no frames of this person" screen. The match is exact
+    apart from case and surrounding blanks, nothing fuzzy — «Ира» does not find «Ирина»,
+    because a near-miss puts somebody else's frames under your child's name. Ambiguity
+    (two root clusters named alike) resolves to the lowest id, and both select the same
+    frames anyway: the album's condition matches by label, not by cluster.
     """
     name = text.strip()
     if not name:
@@ -706,9 +492,7 @@ def match_person(conn: sqlite3.Connection, text: str) -> str | None:
 def person_files(conn: sqlite3.Connection, label: str) -> list[int]:
     """Every canonical frame of this person, in index order — the album's own selection.
 
-    Ordered by id rather than by anything about the photographs: this list has no ranking
-    in it, and index order is stable, which is what paging needs (the reason the face
-    slices order the same way).
+    Ordered by id: there is no ranking here and paging needs a stable order.
     """
     rows = conn.execute(_person_selection(conn) + _PERSON_FILES_SQL, (label,)).fetchall()
     return [int(r["id"]) for r in rows]
@@ -718,11 +502,9 @@ def person_page(conn: sqlite3.Connection, label: str, *, limit: int,
                 offset: int = 0) -> Page:
     """One window of that selection, in the shape every caller already pages through.
 
-    A `Page` and not a list of its own: «показано N из M», the "show more" button and the
-    total are drawn by the same code whatever produced the frames, and M here is a COUNT of
-    somebody's photographs rather than the length of a ranking — which is precisely why it
-    is worth stating. The window is cut in Python because the whole list is what the total
-    is about; a person's frames are thousands at the very most, not the collection.
+    A `Page` and not a list of its own, so «показано N из M» and the "show more" button
+    are drawn by the same code whatever produced the frames. The window is cut in Python —
+    a person's frames are thousands at the very most, not the collection.
     """
     ids = person_files(conn, label)
     start = max(0, offset)
@@ -732,10 +514,10 @@ def person_page(conn: sqlite3.Connection, label: str, *, limit: int,
 
 
 def file_paths(conn: sqlite3.Connection, file_ids: Sequence[int]) -> dict[int, str]:
-    """file_id -> path for a result list — the printing side of a search.
+    """file_id -> path for a result list.
 
-    Chunked for the reason `read_clip_embeddings` gives: `features.search_page` is a
-    user-set number and SQLite has a ceiling on bound parameters.
+    Chunked: `features.search_page` is a user-set number and SQLite has a ceiling on
+    bound parameters.
     """
     out: dict[int, str] = {}
     for part in batched(list(file_ids), 500):
@@ -749,17 +531,9 @@ def _nothing_to_rank(conn: sqlite3.Connection, model: str,
                      table: str = _SEARCH_TABLE) -> EmbeddingsMissing:
     """Which of the two empty states this is — counts only, no vector is read.
 
-    A count over the table rather than a second read of it: this runs on the path where the
-    answer is already known to be empty, and what is missing is the reason, not the data.
-
-    F141: the table counted is the SEARCH index. A collection with a full
-    `clip_embeddings` and no search index is `empty` here, and correctly so — those
-    vectors cannot answer this query, and saying "you have 19 757 of them" about a table
-    this search will never read would be an answer to a question nobody asked.
-
-    F153: which is why `table` is an argument now and defaults to the search index. A
-    fusion asks the same question of `clip_embeddings`, and the counts have to be about the
-    table that came up empty — the numbers end up in a sentence a person reads.
+    F141: the table defaults to the SEARCH index, so a collection with a full
+    `clip_embeddings` and no search index reads as `empty` — those vectors cannot answer
+    this query. F153 made `table` an argument for the fusion's sake.
     """
     total = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     stored = int(conn.execute(
