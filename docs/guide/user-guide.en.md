@@ -206,6 +206,8 @@ Installed tiers:
   To add a tier: run sorta-setup.
 torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop GPU)
 onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
+NVIDIA GPU in the machine (nvidia-smi): yes
+install profile: gpu (install: tool)
 mismatch: no
 geo data: /home/you/.local/share/uv/tools/sorta/lib/python3.13/site-packages/sorta/data/geo/places.tsv (9.2 MB)
 Run log: /home/you/.cache/sorta/logs/sorta.log
@@ -232,6 +234,16 @@ How to read it, line by line:
 - **`onnxruntime providers: …`** — what face detection can run on. `CUDAExecutionProvider`
   in the list means the GPU is available to it; a list without it means faces run on
   the CPU (§3.6).
+- **`install profile: gpu|cpu|mixed|unknown (install: …)`** — which of the two mutually
+  exclusive profiles this environment actually ended up on, read off the installed builds
+  rather than off what was asked for. This is **the line to read after switching profiles**:
+  `onnxruntime` and `onnxruntime-gpu` unpack into the same directory (§3.6), so "the install
+  command succeeded" is not the same statement as "the CUDA build is what gets used".
+  `mixed` means one stack is on CUDA and the other is not. The `install:` half says which
+  kind of install this is — `checkout`, `installed` (the Windows installer's copy) or
+  `tool` (`uv tool install`) — and it is what decides which repair command the `PROBLEM:`
+  lines below name: a checkout is told `uv sync --extra gpu --extra dev`, an installed copy
+  is told `sorta-setup --tiers gpu`, and neither is ever shown the other's command.
 - **`mismatch: yes`** — torch is a CPU‑only build while onnxruntime does have CUDA.
   Faces would still use the GPU while CLIP and OCR quietly run on the CPU, which is
   the slow, silent failure this line exists to catch.
@@ -327,6 +339,28 @@ and costs only the timing: the stage fetches the same file on its first run, and
 screen says so before it starts and shows how much of it has arrived (§6). If the download
 fails — no network, a certificate — the install stays exactly as it was and the program
 works.
+
+**The acceleration row is asked knowing what card is in the machine** (F230). The wizard
+runs `nvidia-smi` once before it asks, and the question follows the answer:
+
+- **a card whose driver is new enough** (CUDA 13 needs an r580 driver or newer) — the card
+  and the driver version are named, the answer defaults to **yes**, and what a refusal costs
+  is stated in **hours** rather than in megabytes: without this row the model stages run on
+  the processor;
+- **a driver that is too old** — that is said, with the version found and the version needed,
+  and the row is **not offered**: those 2.5 GB of CUDA wheels would not import at all. Update
+  the NVIDIA driver and run the setup again;
+- **no NVIDIA card** — said out loud, and the row is not offered either. Everything is
+  computed on the processor, which is a working setup and not a broken one.
+
+**There is a way back.** This is the one row installed with `--reinstall`: it *replaces* the
+working CPU profile instead of adding to it. `sorta-setup --restore-cpu` puts that profile
+back, and the wizard prints that command the moment it changes the profile. Afterwards read
+the **`install profile:`** line of `sorta doctor` (§3.5) — `onnxruntime` and `onnxruntime-gpu`
+unpack into the same directory (§3.6), so that line is the only thing that can say which
+profile actually won. In a checkout the same two moves are `uv sync --extra gpu --extra dev`
+and `uv sync --extra cpu --extra dev`, and every hint the program prints names the form that
+works on the install reading it.
 
 **Search by words needs the first row**, and the wizard says so instead of quietly adding
 it: a query is matched by encoding the pictures with ViT‑L‑14 and the words with

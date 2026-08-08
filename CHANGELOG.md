@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Each install is told the truth about itself, and the acceleration tier stops being a
+  secret** (F230). Two paths are legitimate and neither may be broken to fix the other: a
+  **checkout of the sources** (a developer, `uv sync --extra gpu`) and an **installed copy**
+  (the `sorta-setup` wizard, an item in the Start menu). Advice was being written for
+  whichever of them its author happened to be on, and the owner had caught three such lines
+  in a virtual machine over two days.
+  **1. One answer to "which install is this", and everything asks it.** `sorta doctor`
+  printed `uv sync --extra gpu --extra dev` to a copy that has neither a project directory
+  nor a `dev` extra; the help of `sorta run --deep` named `uv sync --extra vlm` (the web
+  app's version of that sentence had been fixed a release earlier by F217, the command
+  line's had not); and the tier hint chose **by operating system** —
+  `"cli.doctor.tier_hint" if os_name == "nt"` — so a developer on Windows was sent to a
+  Start menu item that only an installed copy has. **The signal was the wrong one:** the
+  question is not which OS this is but which INSTALL, and `sorta/install.py` could already
+  answer it (F226 reads the manifest the Windows build leaves beside the program).
+  `install.install_kind()` now answers it once — manifest → installed copy, `pyproject.toml`
+  above the package → checkout, neither → a wheel from `uv tool install` — and every line
+  that names a command goes through `install.advice_key`. The developer keeps `uv sync`
+  where it is true; the installed copy is never shown a command it cannot run; the
+  operating system stays what it legitimately is, the answer to which package manager
+  installs `exiftool`.
+  **2. A watchdog, not three edits.** Three cases found one at a time by a person in two
+  days means a fourth is already being written, so the guard is about FILES: every string of
+  the catalog that names a command (`uv `, `pip `, `winget `, `sorta-setup`, the Start menu)
+  has to belong to a family chosen by install kind or be justified by name in
+  `tests/test_each_install_is_told_the_truth.py`. It went red on its first run and caught a
+  fifth line written in the same session by this very feature. Same shape as F228's `ast`
+  walk over every subprocess launch and F218's payload guard.
+  **3. The wizard asks about the graphics card knowing what card is there.** It had never
+  looked: a person with an RTX 4080 was shown exactly what a machine with no card at all
+  was shown — *"2.5 GB to download … needs an NVIDIA card with a CUDA 13 driver"*, the
+  default answer no — pressed Enter as on every other question, and silently stayed on the
+  CPU profile where the model stages take hours. The knowledge was one module away
+  (`diagnostics` runs `nvidia-smi`, `doctor` prints *"NVIDIA GPU in the machine: yes"*), it
+  simply never reached the question. Now the card is probed once and **the answer decides
+  the question**: a card whose driver fits is offered with **yes** as the default and the
+  cost of a refusal stated **in hours** rather than in megabytes; a driver older than CUDA
+  13 needs (r580) is **named as such**, with "update the driver" as the action, and the tier
+  is not offered at all — those 2.5 GB of wheels would not import; no card is said out loud
+  instead of being answered with a question nobody can act on.
+  **4. A way back, and somebody who can say what happened.** The acceleration tier is the
+  one tier installed with `--reinstall`: it REPLACES the working CPU profile, and there was
+  nothing to return to but a reinstall of the whole program. `sorta-setup --restore-cpu` is
+  that way back — a named command rather than a menu entry, because a rollback offered on
+  every run to people who have no CUDA profile to roll back from is noise in the one screen
+  that must not have any — and the wizard prints it the moment it changes the profile. What
+  the change actually became is a question only `sorta doctor` can answer (`onnxruntime` and
+  `onnxruntime-gpu` unpack into the same directory, F76), so its summary gained one line:
+  **`install profile: gpu|cpu|mixed|unknown`**, read off the installed builds, and the
+  wizard sends people to it.
 - **A download is carried to the end, and it is on screen while it happens** (F225). Four
   defects of one line, found in a clean virtual machine on 2026-08-08 — the third attempt
   to check the installer.

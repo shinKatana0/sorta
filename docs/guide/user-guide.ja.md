@@ -210,6 +210,8 @@ $ sorta doctor
   ティアの追加: sorta-setup を実行します。
 torch: 2.13.0+cu130 (CUDA available: yes, device: NVIDIA GeForce RTX 5090 Laptop GPU)
 onnxruntime providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider (CUDA: yes)
+NVIDIA GPU in the machine (nvidia-smi): yes
+install profile: gpu (install: tool)
 mismatch: no
 geo data: /home/you/.local/share/uv/tools/sorta/lib/python3.13/site-packages/sorta/data/geo/places.tsv (9.2 MB)
 実行ログ: /home/you/.cache/sorta/logs/sorta.log
@@ -235,6 +237,15 @@ geo data: /home/you/.local/share/uv/tools/sorta/lib/python3.13/site-packages/sor
   エクストラがインストールコマンドに届いていません（§3.3）。
 - **`onnxruntime providers: …`** — 顔検出が動ける実行環境。`CUDAExecutionProvider`
   が一覧にあれば GPU を使えます。無ければ顔検出は CPU で動きます（§3.6）。
+- **`install profile: gpu|cpu|mixed|unknown (install: …)`** — 排他的な 2 つのプロファイル
+  のうち、この環境が実際にどちらになったか。要求ではなく、入っているビルドから読み取り
+  ます。**プロファイルを切り替えた後に読む行**です: `onnxruntime` と `onnxruntime-gpu` は
+  同じディレクトリに展開されるため（§3.6）、「インストールコマンドが成功した」ことと
+  「CUDA ビルドが使われる」ことは別の主張です。`mixed` は一方のスタックだけが CUDA の状態です。
+  後半の `install:` はインストールの種類 — `checkout`、`installed`（Windows インストーラ
+  のコピー）、`tool`（`uv tool install`）— を示し、下の `PROBLEM:` 行がどの修復コマンドを
+  挙げるかを決めます: チェックアウトには `uv sync --extra gpu --extra dev`、インストール版
+  には `sorta-setup --tiers gpu`。互いのコマンドを見せることはありません。
 - **`mismatch: yes`** — torch は CPU 専用ビルドなのに onnxruntime には CUDA がある
   状態。顔検出は GPU、CLIP と OCR は黙って CPU という、遅く静かな失敗であり、この
   行はまさにそれを捕まえるために存在します。
@@ -328,6 +339,27 @@ HEIC/RAW/動画の日付と GPS もそのまま読み取れます。
 ルをステージが初回実行時に取得し、実行画面が開始前にそれを伝え、どれだけ取得できたかも
 表示します（§6）。ダウンロードが失敗しても（ネットワークなし、証明書）、インストールは
 そのままで、プログラムは動作します。
+
+**アクセラレーションの行は、マシンにどのカードがあるかを知った上で尋ねます**（F230）。
+質問の前に `nvidia-smi` を一度実行し、その答えに従って質問が変わります:
+
+- **ドライバが十分に新しいカード**（CUDA 13 には r580 以降のドライバが必要）— カード名と
+  ドライバのバージョンを示し、既定の答えは **「はい」**、断った場合の代償はメガバイトでは
+  なく **時間** で伝えます: この行がないとモデルのステージは CPU で実行されます;
+- **ドライバが古すぎる場合** — 見つかったバージョンと必要なバージョンを挙げて言葉で伝え、
+  行は **提供しません**: その 2.5 GB の CUDA ホイールはそもそも import できません。NVIDIA
+  ドライバを更新してからセットアップをやり直してください;
+- **NVIDIA カードが無い場合** — これも口に出して伝え、行は提供しません。すべて CPU で
+  計算され、それは壊れた状態ではなく動作する構成です。
+
+**戻る道もあります。** この行は `--reinstall` で入る唯一の行で、動作している CPU
+プロファイルに追加するのではなく *置き換えます*。`sorta-setup --restore-cpu` がその
+プロファイルを戻し、プロファイルを変更した時点でウィザードがそのコマンドを表示します。
+変更後は `sorta doctor` の **`install profile:`** の行（§3.5）を読んでください:
+`onnxruntime` と `onnxruntime-gpu` は同じディレクトリに展開されるため（§3.6）、どちらの
+プロファイルが実際に残ったかを言えるのはその行だけです。チェックアウトでの同じ 2 つの
+操作は `uv sync --extra gpu --extra dev` と `uv sync --extra cpu --extra dev` であり、
+プログラムのヒントは常に、それを読んでいるインストールで通用する形を示します。
 
 **言葉による検索には最初の行が必要です**。マスターはそれを黙って追加せず、口に出して
 言います: 問い合わせは画像を ViT‑L‑14 が、言葉を XLM‑RoBERTa が符号化して照合するため、
