@@ -54,9 +54,19 @@ jobs:
   # a push (the owner is checking the Windows installer first), so everything below
   # takes effect on the first push and not before. Nobody should read it as a check
   # that has passed.
+  #
+  # ADVISORY, BY A DECISION OF 2026-08-08, and it stays that way until somebody runs
+  # Sorta on a Mac. The owner has no Apple hardware to check it on: Windows is being
+  # verified in a virtual machine, Linux will be next in one, and macOS cannot be
+  # verified at all. Three days of installer defects that only a clean machine could
+  # find are the argument — a platform nobody can try is not a platform that works
+  # because its CI is green, and it must not be able to block the two that are being
+  # tested for real. `continue-on-error` keeps the answer visible without giving it a
+  # vote. Take it off the day a Mac runs the product, not the day this job goes green.
   macos:
-    name: macos-latest · py3.13 · accelerator
+    name: macos-latest · py3.13 · accelerator (advisory — unverified platform)
     runs-on: macos-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
 
