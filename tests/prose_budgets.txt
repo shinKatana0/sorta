@@ -6,8 +6,8 @@
 # file: prose that grows has to be argued for in the diff that grows it.
 sorta/__init__.py     1
 sorta/accel.py        131
-sorta/cli.py          382
-sorta/config.py       807
+sorta/cli.py          391
+sorta/config.py       817
 sorta/dates.py        17
 sorta/db/__init__.py  97
 sorta/dedup.py        191
@@ -26,15 +26,17 @@ sorta/install.py      109
 sorta/junk.py         2644
 sorta/landmarks.py    355
 sorta/launch.py       86
+sorta/launcher.py     7
 sorta/naming.py       342
 sorta/offline.py      33
 sorta/progress.py     34
 sorta/restore.py      300
-sorta/runlog.py       270
+sorta/runlog.py       272
 sorta/search.py       225
 sorta/sorter.py       772
+sorta/splash.py       39
 sorta/tiers.py        138
-sorta/tray.py         245
+sorta/tray.py         219
 sorta/ui/__init__.py  856
 sorta/ui/common.py    140
 sorta/ui/layout.py    535
