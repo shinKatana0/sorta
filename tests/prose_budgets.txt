@@ -33,7 +33,7 @@ sorta/restore.py      300
 sorta/runlog.py       344
 sorta/search.py       225
 sorta/sorter.py       1129
-sorta/tiers.py        222
+sorta/tiers.py        138
 sorta/tray.py         311
 sorta/ui/__init__.py  856
 sorta/ui/common.py    140
