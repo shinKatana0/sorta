@@ -29,13 +29,12 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
-from . import i18n
+from . import i18n, launch
 
 if TYPE_CHECKING:  # `sorta.tiers` imports THIS module, so the probe is imported lazily
     from .tiers import TierState
@@ -359,9 +358,14 @@ def run_install(command: Sequence[str]) -> int:
 
     A tier that will not install must leave the program exactly as it was — the base one
     keeps working, and the wizard says which tier failed and that it can be tried again.
+
+    F228: through `launch.run`, which hides the child's window only when this process has
+    no console. `sorta-setup` typed into a terminal keeps showing the output of `uv` there
+    — it is the install log, and this is the one call of the four where hiding the window
+    would be hiding something a person is reading.
     """
     try:
-        return int(subprocess.run(list(command), check=False).returncode)
+        return int(launch.run(command, check=False).returncode)
     except OSError:  # no uv on this machine, no permission to run it
         return 1
 

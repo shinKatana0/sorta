@@ -281,13 +281,17 @@ class TestWhenAnInstallFails(unittest.TestCase):
                                     name=wizard.TIERS_BY_KEY["deep"].name("en")),
                       screen.said)
 
+    # F228: the install runs through `sorta.launch`, which is the only place in the
+    # package that touches `subprocess` — so that a wizard started from the shortcut opens
+    # no console window. What is hidden and when is tested in
+    # tests/test_no_console_nobody_asked_for.py; these two are about the exit code.
     def test_a_command_that_cannot_be_run_is_an_exit_code_and_not_a_traceback(self):
-        with mock.patch.object(wizard.subprocess, "run", side_effect=OSError("no uv")):
+        with mock.patch.object(wizard.launch, "run", side_effect=OSError("no uv")):
             self.assertEqual(wizard.run_install(["uv", "pip", "install", "x"]), 1)
 
     def test_a_command_that_runs_returns_its_own_code(self):
         completed = mock.Mock(returncode=7)
-        with mock.patch.object(wizard.subprocess, "run", return_value=completed):
+        with mock.patch.object(wizard.launch, "run", return_value=completed):
             self.assertEqual(wizard.run_install(["uv", "pip", "install", "x"]), 7)
 
 
