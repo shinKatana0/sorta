@@ -19,7 +19,7 @@ sorta/faces.py        412
 sorta/geo.py          343
 sorta/geodata.py      224
 sorta/hashing.py      12
-sorta/i18n.py         352
+sorta/i18n.py         304
 sorta/imaging.py      214
 sorta/indexer.py      171
 sorta/install.py      109

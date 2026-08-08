@@ -69,13 +69,10 @@ _FOLDERS: dict[str, dict[Lang, str]] = {
     # F78: neither junk nor a lost shot — forwarded/downloaded pictures the user may
     # well want to look through, so the name must not read as a verdict.
     "downloaded": {"ru": "скачанное", "en": "downloaded", "ja": "ダウンロード"},
-    # F175: this folder is the DOWNLOADED-FILM one and nothing else — `files.not_personal`
-    # is set by a heuristic over the file NAME (`S01E05`, `1080p`, a rip group; see
-    # indexer.is_not_personal_video) and marks three files out of 38 485 on the live
-    # collection. It has nothing to do with the «Служебные кадры» slice of the web app,
-    # which is about what is IN the frame (product/screenshot/document/meme, some five
-    # thousand frames, computed by the `junk` stage). Two different questions, two
-    # different stages, two different folders — and, until F175, almost the same name.
+    # F175: the DOWNLOADED-FILM folder and nothing else. `files.not_personal` comes from a
+    # heuristic over the file NAME (`S01E05`, `1080p`, a rip group) and marks three files
+    # out of 38 485 on the live collection — not to be confused with the «Служебные кадры»
+    # slice, which is about what is IN the frame and holds some five thousand of them.
     "not_personal": {"ru": "не_личное", "en": "not_personal", "ja": "非個人"},
     "no_event": {"ru": "без_события", "en": "no_event", "ja": "イベント不明"},
     "no_faces": {"ru": "без_лиц", "en": "no_faces", "ja": "顔なし"},
@@ -185,32 +182,25 @@ _COUNTRY_BY_NAME: dict[str, str] = {
 def country_cc_by_name(name: str) -> str | None:
     """A country name in ru/en/ja -> ISO cc (upper case); None — not in the dictionary.
 
-    Only the curated dictionary above, which is small and hand-checked; the bundled
-    GeoNames base carries far more spellings and is asked separately (see
-    geo._CountryFromPath). Case and surrounding whitespace are irrelevant.
+    Only the curated dictionary above; the bundled GeoNames base carries far more
+    spellings and is asked separately (see geo._CountryFromPath).
     """
     cc = _COUNTRY_BY_NAME.get(name.strip().casefold())
     return cc.upper() if cc else None
 
 
 # --- F112: the strings the command line prints ------------------------------
-# The layout folders and the served UI (ui._UI_STRINGS) had been localized for a
-# while, but the CLI spoke Russian whatever `language:` said. The `ru` variants below
-# are the texts that used to be hard-coded in cli.py, word for word: a `ru` run has to
-# stay byte-identical, this is a re-housing of the messages, not a rewrite.
+# The `ru` variants are the texts that used to be hard-coded in cli.py, word for word: a
+# `ru` run has to stay byte-identical, this was a re-housing and not a rewrite.
 #
-# Keys are named after the command and the meaning (`cli.stats.files`,
-# `cli.undo.done`), not after the order they are printed in — there will be a couple
-# of hundred of them.
+# Keys are named after the command and the meaning (`cli.stats.files`), not after the
+# order they print in — there are a couple of hundred of them.
 #
-# Substitutions are NAMED format fields, never concatenation: word order differs
-# between the three languages, and gluing fragments together is a guaranteed bad
-# translation. The padding of the aligned `stats` block is baked into each language's
-# template for the same reason — a label's width is a property of the language.
+# Substitutions are NAMED format fields, never concatenation: word order differs between
+# the three languages. The padding of the aligned `stats` block is baked into each
+# language's template for the same reason — a label's width is a property of the language.
 #
-# F114 added the `--help` texts to the same catalog — see the `cli.help.*` block at the
-# end. NOT COVERED HERE: the summaries `sorta doctor` gets from diagnostics.py — they
-# are produced by another module (see the note in cli._cmd_doctor).
+# NOT COVERED HERE: the summaries `sorta doctor` gets from diagnostics.py.
 _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # index
     "cli.index.done": {
@@ -470,11 +460,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "[stage {index}/{total}] {name}",
         "ja": "[ステージ {index}/{total}] {name}",
     },
-    # F222: the stage is skipped and the file still configures it. Said, and no more than
-    # said — the settings are not read as consent and nothing is switched on by them, or
-    # in six months nobody could explain why the stage ran. The one thing that would be
-    # worse is silence: the owner of such a file would learn about the change from a
-    # missing result.
+    # F222: the stage is skipped and the file still configures it. SAID, and no more than
+    # said — settings are not consent and nothing is switched on by them, or in six months
+    # nobody could explain why the stage ran. Silence would be worse still: the owner of
+    # such a file would learn about the change from a missing result.
     "cli.run.stage_skipped_configured": {
         "ru": "Этап «{stage}» пропущен: с этой версии он выключен по умолчанию, а в "
               "config.yaml остались его настройки ({keys}). {how}",
@@ -515,9 +504,7 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # doctor
     # F211: which interpreter and which `uv` this run is using. A shadowed PATH is
     # otherwise found nine minutes later, in a red gate, and reads as somebody else's
-    # mistake — an installed copy putting its own python first is exactly how that
-    # happens (and it already happened once, F87, with a system python that had no
-    # ruff and no pytest).
+    # mistake (F87, a system python with no ruff and no pytest).
     "cli.doctor.python": {
         "ru": "Интерпретатор: {path}",
         "en": "Interpreter: {path}",
@@ -533,12 +520,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Environment manager uv: not on PATH",
         "ja": "環境マネージャ uv: PATH にありません",
     },
-    # F213: on Linux `uv tool install` IS the installer — there is no second path and no
-    # AppImage coming — so the two ways it leaves a machine half-installed are answered
-    # here, in words, at the moment a person is looking. `sorta: command not found` is
-    # the first of them: uv writes its commands into `~/.local/bin`, which a default
-    # shell profile does not put on PATH, and uv's own warning about it scrolls past
-    # inside the install output.
+    # F213: on Linux `uv tool install` IS the installer, so the ways it leaves a machine
+    # half-installed are answered here, in words. `sorta: command not found` is the first:
+    # uv writes into `~/.local/bin`, which a default shell profile keeps off PATH, and
+    # uv's own warning scrolls past inside the install output.
     "cli.doctor.command": {
         "ru": "Команда sorta: {path}",
         "en": "Command sorta: {path}",
@@ -549,11 +534,9 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Command sorta: not on PATH (this install keeps its commands in {path})",
         "ja": "コマンド sorta: PATH にありません（このインストールのコマンドは {path}）",
     },
-    # F230: ...and the fix for it is a different command on each of the three install
-    # paths, so there are three keys and `install.advice_key` picks one. `uv tool
-    # update-shell` repairs an install made by `uv tool install` and nothing else: in a
-    # checkout the commands were never meant to be on PATH (that is what `uv run` is for),
-    # and an installed copy puts nothing there by design.
+    # F230: the fix differs per install path, so there are three keys and
+    # `install.advice_key` picks one. `uv tool update-shell` repairs a `uv tool install`
+    # and nothing else — in a checkout the commands were never meant to be on PATH.
     "cli.doctor.command_hint.tool": {
         "ru": "  Добавить этот каталог в PATH: uv tool update-shell, затем новый терминал.",
         "en": "  Add that directory to PATH: uv tool update-shell, then a new terminal.",
@@ -627,13 +610,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "  実行方法: \"{path}\" -m sorta.cli <コマンド>、"
               "またはスタートメニューのショートカット。",
     },
-    # F216: which tiers are actually on this machine. `doctor` is the check screen the
-    # wizard calls and the one command a person is pointed at when something is missing,
-    # and it described everything about the install except what the install is MADE of.
-    # A tier is two halves that fail differently — the packages `uv` put in `{app}\lib`
-    # and the model weights the stage fetches on its first run — so there are three
-    # answers and not two: the middle one is a tier whose packages are in place and whose
-    # 400 MB have not been downloaded yet.
+    # F216: which tiers are actually on this machine. A tier is two halves that fail
+    # differently — the packages in `{app}\lib` and the weights a stage fetches on first
+    # use — so there are three answers and not two: the middle one is a tier whose
+    # packages are in place and whose 400 MB have not been downloaded yet.
     "cli.doctor.tiers": {
         "ru": "Ярусы установки:",
         "en": "Installed tiers:",
@@ -670,12 +650,9 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  To add a tier: run sorta-setup.",
         "ja": "  ティアの追加: sorta-setup を実行します。",
     },
-    # F230: and the third one, which was missing and was the defect — a checkout was
-    # handed whichever of the two lines above its OPERATING SYSTEM matched, so a developer
-    # on Windows was sent to a Start menu item that does not exist on their machine. In a
-    # checkout a tier is an extra of `pyproject.toml`, and `uv sync` is what installs it;
-    # `sorta-setup` there would `uv pip install` into a synced environment, which the next
-    # `uv sync` would silently undo.
+    # F230: the third line, for a checkout. There a tier is an extra of `pyproject.toml`
+    # and `uv sync` installs it; `sorta-setup` would `uv pip install` into a synced
+    # environment, which the next `uv sync` silently undoes.
     "cli.doctor.tier_hint.checkout": {
         "ru": "  Доустановить ярус в чекауте: uv sync --extra <ярус> "
               "(например uv sync --extra gpu --extra dev).",
@@ -704,11 +681,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  …{done} of {size} so far",
         "ja": "  …{size} 中 {done} まで取得",
     },
-    # F229: what the stage itself is doing meanwhile — said in words, and used as the
-    # caption of the stage's progress bar. That bar counts FRAMES, and until the weights
-    # are on disk not one frame can be processed, so its number sits at zero for the whole
-    # download: the right number in the wrong unit, which reads as a hang exactly the way
-    # the run screen did. No percentage here — how much has arrived is the line above.
+    # F229: the caption of the stage's progress bar while the weights arrive. That bar
+    # counts FRAMES, and until the model is on disk not one can be processed, so its
+    # number sits at zero for the whole download — the right number in the wrong unit,
+    # which reads as a hang. No percentage: how much has arrived is the line above.
     "cli.download.waiting": {
         "ru": "жду модель — кадры пойдут, когда она скачается",
         "en": "waiting for the model — frames start once it is downloaded",
@@ -927,12 +903,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "sorta ui: {url} (Ctrl+C to stop)",
         "ja": "sorta ui: {url}（停止は Ctrl+C）",
     },
-    # F207: the tray icon (`sorta-tray`). Everything a person who never opens a terminal
-    # ever sees of this program's start-up and exit: two menu items, the address in the
-    # tooltip, and the question that stands between one click and a five-hour run. The
-    # questions are three whole sentences and not one sentence with the name of the
-    # operation pasted into it — «идёт прогон» and «идёт раскладка» decline differently,
-    # and gluing fragments is a guaranteed bad translation in all three languages.
+    # F207: the tray icon (`sorta-tray`) — two menu items, the address in the tooltip and
+    # the question between one click and a five-hour run. Three WHOLE sentences and not
+    # one with the operation pasted in: «идёт прогон» and «идёт раскладка» decline
+    # differently, and glued fragments translate badly in all three languages.
     "cli.tray.open": {
         "ru": "Открыть",
         "en": "Open",
@@ -1003,20 +977,16 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "sorta: プログラムを終了できませんでした（応答 {status}）",
     },
     # F227: the only line of the window that goes up while the program is still starting.
-    # One sentence, and it has to answer the question the person is actually asking after
-    # a double-click that did nothing — "did it hear me?" — without promising a duration
-    # nobody has measured on their disk. The window itself carries the product name; this
-    # is the line under it.
+    # It answers "did it hear me?" after a double-click that did nothing, without
+    # promising a duration nobody has measured on that disk.
     "cli.tray.starting": {
         "ru": "Запускается — первый запуск дольше остальных…",
         "en": "Starting — the first launch takes longer than the rest…",
         "ja": "起動中です — 初回は時間がかかります…",
     },
-    # F211: the first-run wizard of the Windows installer (`sorta-setup`). Everything a
-    # person who never opens a terminal is asked at install time, and the one place the
-    # tiers are described in words: what each one costs to download, what it buys, and —
-    # the half that is usually left out — what stays unavailable after a no. Refusing is
-    # a normal answer here, so the "without" line of every tier has to be a fact about a
+    # F211: the first-run wizard (`sorta-setup`) — the one place the tiers are described
+    # in words: what each costs, what it buys, and what stays unavailable after a no.
+    # Refusing is a normal answer, so every "without" line has to be a fact about a
     # working program rather than a warning about a broken one.
     "cli.setup.title": {
         "ru": "Sorta — первая настройка",
@@ -1042,12 +1012,9 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "exiftool がこのマシンで見つかりました — HEIC・RAW・動画を完全に"
               "読み取れます。",
     },
-    # F230 took the `winget` command out of this line. The wizard runs on Windows, on Linux
-    # and in a checkout, and this one sentence named the Windows package manager to all
-    # three — while `sorta doctor`, whose output is printed a few lines ABOVE this in the
-    # same window, already names the command for the machine it is running on
-    # (`cli.doctor.exiftool_windows` / `_macos` / `_linux`). Two answers, one of them
-    # wrong two thirds of the time, is exactly the shape of defect this feature is against.
+    # F230 took the `winget` command out of this line: the wizard also runs on Linux and
+    # in a checkout, while `sorta doctor` — printed a few lines ABOVE it in the same
+    # window — already names the command for the machine it is running on.
     "cli.setup.exiftool_absent": {
         "ru": "exiftool не найден: метаданные читает Pillow, а это только "
               "JPEG/PNG/TIFF/WEBP. У HEIC, RAW и видео не будет ни даты, ни GPS. "
@@ -1194,11 +1161,9 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "{name} ティアの構成を読み取れませんでした（パッケージのメタデータが"
               "ありません）。このティアは追加していませんが、他は動作します。",
     },
-    # F225 removed `cli.setup.weights_later` — "the weights download the first time the
-    # stage that needs them runs". It was the sentence three tiers of four printed instead
-    # of downloading anything, and it is what the owner read as "and where is the download
-    # itself?". A tier that was said yes to is fetched at the screen now, so nothing is
-    # left for that line to describe.
+    # F225 removed `cli.setup.weights_later` ("the weights download on the first run of
+    # the stage"): three tiers of four printed it instead of downloading anything. A tier
+    # said yes to is fetched at the screen now, so the line describes nothing.
     "cli.setup.added": {
         "ru": "Выбрано: {names}",
         "en": "Chosen: {names}",
@@ -1248,12 +1213,8 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "`sorta doctor` は実際のインストール内容を表示します。",
     },
     # --- F230: the wizard asks about the acceleration tier KNOWING what card is in the
-    # machine. Until this it did not look: a person with an RTX 4080 was shown the same
-    # "2.5 GB to download … needs an NVIDIA card with a CUDA 13 driver. Skipped." as a
-    # machine with no card at all, pressed Enter like on every other question, and stayed
-    # on the CPU profile where the model stages take hours. The knowledge was already in
-    # the product — `diagnostics` runs `nvidia-smi` and `doctor` prints "NVIDIA GPU in the
-    # machine: yes" — it simply never reached the question.
+    # machine, so the three answers below are three different sentences — a card that
+    # fits, a driver too old to load CUDA 13, and no card at all.
     "cli.setup.card_found": {
         "ru": "Видеокарта: {name} (драйвер {driver}) — ускорение на ней заработает.",
         "en": "Graphics card: {name} (driver {driver}) — acceleration will work on it.",
@@ -1759,9 +1720,7 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
     # F205: the two other passes that ask the same model. They reported under the caption
     # above until their measured price turned out to be a third of it, and a phase that is
-    # named is a phase that can be priced — the name is what the run log files the seconds
-    # under. Each says WHICH question is being asked, because that is the difference the
-    # reader of a bar standing at 42% needs.
+    # named is a phase the run log can price. Each says WHICH question is being asked.
     "cli.phase.junk_pets_vlm": {
         "ru": "junk: проверка животных (VLM)", "en": "junk: animal check (VLM)",
         "ja": "junk: 動物の確認（VLM）",
@@ -1777,19 +1736,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     },
 
     # --- F114: the texts `--help` prints -------------------------------------
-    # The same catalog as everything above, for the same reason: the `ru` variants are
-    # the strings that used to sit in the `typer.Option(..., help=...)` decorators and
-    # in the command docstrings of cli.py, word for word — `language: ru` has to print
-    # the help it printed yesterday.
+    # The `ru` variants are the strings that used to sit in the `typer.Option(...,
+    # help=...)` decorators and the command docstrings of cli.py, word for word. They
+    # could not be localized there: a decorator runs at import, long before anything has
+    # read the config, which is why `cli.build_app` assembles the interface from these
+    # keys once the language is known.
     #
-    # They could not be localized where they were written: a decorator runs when the
-    # module is imported, long before anything has read the config. `cli.build_app`
-    # solves that by assembling the interface only once the language is known, and
-    # these keys are what it assembles it from.
-    #
-    # The line breaks inside the multi-paragraph texts are meaningful — Typer keeps
-    # them and only wraps what is too long — so the `ru` ones repeat the line breaks of
-    # the docstrings they came from. The `en`/`ja` variants leave the wrapping to Typer.
+    # The line breaks inside the multi-paragraph texts are meaningful — Typer keeps them
+    # and only wraps what is too long — so the `ru` ones repeat the breaks they came with.
     "cli.help.app": {
         "ru": "Sorta v{version} — сортировка фотоколлекции",
         "en": "Sorta v{version} — sorting a photo collection",
@@ -2301,11 +2255,9 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Destination directory for the --by plan; without it — in place",
         "ja": "--by のプランの出力先ディレクトリ。指定しない場合は in-place",
     },
-    # F230: the requirement stays, the COMMAND moves out. This help text used to end in
-    # `uv sync --extra vlm` for everybody — the same defect F217 had already fixed on the
-    # web app's checkbox and nobody had fixed in the command line, because the two were
-    # written a release apart. `{how}` is filled from `cli.help.run.deep_how.*` by the
-    # install this help is printed on.
+    # F230: the requirement stays, the COMMAND moves out — this text used to end in
+    # `uv sync --extra vlm` for everybody. `{how}` is filled from
+    # `cli.help.run.deep_how.*` by the install the help is printed on.
     "cli.help.run.deep": {
         "ru": "Глубокий анализ VLM на этот прогон: медленнее, нужен глубокий ярус "
               "(VLM) — {how} (иначе откат на быстрый ярус); "
