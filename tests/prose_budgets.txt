@@ -34,7 +34,7 @@ sorta/runlog.py       270
 sorta/search.py       225
 sorta/sorter.py       784
 sorta/tiers.py        138
-sorta/tray.py         311
+sorta/tray.py         245
 sorta/ui/__init__.py  856
 sorta/ui/common.py    140
 sorta/ui/layout.py    535
