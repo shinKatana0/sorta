@@ -37,6 +37,7 @@ import logging
 import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -122,17 +123,25 @@ def url_for(port: int) -> str:
 # is still the line somebody reads afterwards to find out what happened.
 
 
+# How often a REDRAWN line reaches the log. A progress bar rewrites one line hundreds of
+# times per gigabyte, and a log record per redraw would bury the run in its own progress;
+# a line that ends properly is never held back by this.
+_REDRAW_SECONDS = 5.0
+
+
 class _LogStream(io.TextIOBase):
     """A text stream that has nowhere to print, so it writes the run log instead.
 
-    Line-buffered by hand: progress bars end their writes with `\\r` and would otherwise
-    put one log record per redraw. What is kept is whole lines; anything left over is
-    flushed when the writer flushes.
+    Line-buffered by hand, and the two kinds of line are treated differently: a line
+    ending in `\\n` is something somebody wrote and goes to the log as it is, while one
+    ending in `\\r` is a progress bar overwriting itself and goes at most every
+    `_REDRAW_SECONDS`. Anything left over is written when the writer flushes.
     """
 
     def __init__(self, name: str) -> None:
         self._name = name
         self._pending = ""
+        self._last_redraw = 0.0
 
     def writable(self) -> bool:
         return True
@@ -141,10 +150,16 @@ class _LogStream(io.TextIOBase):
         # Some libraries write bytes to a stream they believe is a console; refusing
         # would be the crash this class exists to prevent.
         data = text if isinstance(text, str) else bytes(text).decode("utf-8", "replace")
-        self._pending += data.replace("\r", "\n")
-        while "\n" in self._pending:
-            line, _, self._pending = self._pending.partition("\n")
-            self._emit(line)
+        self._pending += data
+        while True:
+            cuts = [at for at in (self._pending.find("\n"), self._pending.find("\r"))
+                    if at >= 0]
+            if not cuts:
+                break
+            at = min(cuts)
+            line, terminator = self._pending[:at], self._pending[at]
+            self._pending = self._pending[at + 1:]
+            self._emit(line, redraw=terminator == "\r")
         return len(data)
 
     def flush(self) -> None:
@@ -156,9 +171,15 @@ class _LogStream(io.TextIOBase):
         """No. A progress bar that believes otherwise redraws a line nobody can see."""
         return False
 
-    def _emit(self, line: str) -> None:
-        if line.strip():
-            _LOG.info("%s: %s", self._name, line.rstrip())
+    def _emit(self, line: str, redraw: bool = False) -> None:
+        if not line.strip():
+            return
+        if redraw:
+            now = time.monotonic()
+            if now - self._last_redraw < _REDRAW_SECONDS:
+                return
+            self._last_redraw = now
+        _LOG.info("%s: %s", self._name, line.rstrip())
 
 
 def ensure_streams() -> tuple[str, ...]:

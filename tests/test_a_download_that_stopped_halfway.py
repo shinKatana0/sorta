@@ -114,13 +114,26 @@ class TestAWindowedProcessHasSomewhereToPrint(unittest.TestCase):
         self.assertIn("resolving", logged)
 
     def test_a_progress_bar_redrawing_one_line_is_not_a_log_record_per_redraw(self):
+        """A bar rewrites one line hundreds of times per gigabyte; the log would be
+        nothing but that. Held to one line per `_REDRAW_SECONDS` — and what is written
+        is the LAST state, so the log still says how far the download had got."""
         with _NoStreams():
             tray.ensure_streams()
             with mock.patch.object(tray, "_LOG") as log:
-                for percent in (10, 20, 30):
+                for percent in (10, 20, 30, 40):
                     sys.stderr.write(f"\r{percent}%")
                 sys.stderr.flush()
-        self.assertEqual(log.info.call_count, 3)
+        logged = " ".join(str(call) for call in log.info.call_args_list)
+        self.assertEqual(log.info.call_count, 2)  # the first redraw, then the flush
+        self.assertIn("40%", logged)
+
+    def test_a_line_that_ends_properly_is_never_held_back(self):
+        with _NoStreams():
+            tray.ensure_streams()
+            with mock.patch.object(tray, "_LOG") as log:
+                for step in range(4):
+                    sys.stdout.write(f"fetching part {step}\n")
+        self.assertEqual(log.info.call_count, 4)
 
     def test_nothing_here_pretends_to_be_a_terminal(self):
         """A bar that believes it has one redraws a line nobody will ever see."""
