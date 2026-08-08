@@ -18,78 +18,29 @@ Invariants (must not be broken):
   - copy mode (C16, --copy): src is NOT deleted and files.path does NOT change;
     move_batches.operation='copy' lets undo distinguish it (deletes dst instead of dst -> src).
 
-F77 (manual_overrides, written by the web app): a correction the user made by eye
-outranks every automatic rule here. action='exclude' — the file drops out of the plan
-entirely (it is not moved anywhere, it stays exactly where it lies), counted in
-SortReport.manual_excluded separately from the --exclude directories; action='reassign'
-— the layout target is the folder the user picked, ahead of the dedup choice, the junk
-verdict, not_personal and geo. The reassign target comes from the DB, i.e. from
-outside, so it is validated against the sort root before a path is built from it (see
-_manual_target_parts) — an invalid target is ignored with a warning, never followed.
-F203: that target is a NAME, not a choice from a list — it may be a folder the plan
-does not contain (`Россия/` on its own, a new album directory), because the person
-knows where the frames belong and the program's own suggestions are the only thing it
-could offer otherwise. Nothing is created on disk before the apply: an unknown target is
-a folder of the plan like any other, and `_resolve_dst` gives it its `_1` suffix on a
-name conflict just the same. The naming rule is one function (`manual_target_parts`) and
-the web app asks it before it stores anything, so the folder the user is shown and the
-folder the layout writes cannot be spelled differently.
-F103 adds a third action, 'photo': "this is an ordinary photo, the classifier is
-wrong" — it neutralizes the junk/document/product verdict for ROUTING only (the file
-goes down the normal mode/date branch) and never touches media_class, so re-running the
-junk tier cannot wipe the correction.
+What a person decided outranks what the program inferred:
 
-The low_date rule: any mode's layout includes the year (YYYY), so a file without
-taken_at or with taken_at_confidence='low' (a date only from mtime — often the copy
-time, not the capture time) goes to _Unsorted/low_date/. The exception is
-event mode (F5.1): a file that fell into an event (auto or manual) takes the year
-from events.started_at, not from its own date, so low-confidence/undated files of
-manual events are laid out under <event_year>/<name>/, not low_date; low_date for
-event mode remains only as a fallback in case of an unparsable started_at (should
-not happen — the column is NOT NULL, ISO).
+F77 (manual_overrides, written by the web app). action='exclude' — the file leaves the
+plan and stays where it lies, counted apart from the --exclude directories.
+action='reassign' — the chosen folder wins over the dedup choice, the junk verdict,
+not_personal and geo. F203: the target is a NAME and not a choice from a list, so it may
+name a folder the plan does not contain; it arrives from the DB, so it is validated
+against the sort root (`_manual_target_parts`) and an invalid one is ignored with a
+warning. F103 adds action='photo': the junk/document/product verdict is neutralised for
+ROUTING only, so re-running the junk tier cannot wipe the correction.
 
-F78 splits that undated bucket in two. Measured on the live collection, 1057 of the
-1059 undated files carried no camera trace at all (no camera_make/camera_model, no
-GPS) and had numeric messenger-cache names — the bucket is not "my shots whose date
-was lost", it is forwarded and downloaded pictures. So a file with any camera trace
-(see _looks_like_a_camera_shot) stays in _Unsorted/low_date/ as before, and one
-without goes to _Unsorted/downloaded/ with its own reason code, so the two cases are
-distinguishable in the CSV. Only the branch where the year could not be determined is
-affected; the order of the checks above it (dedup_delete -> not_personal -> document
--> product -> junk) is untouched, so a screenshot or a document never reaches here.
+F85c (manual_places): a place assigned to a whole event or a whole source folder. Read
+here and NOT in geo, because `places` has a single writer and is recomputed from scratch
+on every geo run. It replaces the automatic place as a WHOLE (country, city and district
+together, never a mix) and reports place_confidence='manual'. Everything above it in
+_target_parts still outranks it — those are decisions about what the file IS, while an
+assignment only says where it was taken. One limit: `--where country=/city=` still
+selects on the AUTOMATIC place, being a SQL filter over `places` applied before the
+manual row replaces anything.
 
-F83 does the same for the one verdict that cannot be trusted on those same files: a
-`meme` on a file with no camera trace is routed as `photo` (see
-_is_indistinguishable_meme), because CLIP decides meme-vs-photo there on content alone
-and errs both ways. It is a routing change, not a classification one — the verdict in
-media_class stays as it is — and it deliberately leaves `document` and `screenshot`
-alone: a scan has no camera EXIF either, and those two folders are the ones the user
-reviews by hand.
-
-F86 does the same for city mode: a file whose country resolved but whose city no
-provider knows goes to <Country>/<year>/ (reason `country_only`) instead of
-_Unsorted/no_place/. Only a file without a country at all (place_confidence='unknown')
-still lands in no_place.
-
-F202 adds the level between the two: a place the user assigned as a REGION (a row in
-manual_places with region_geonameid and no city) goes to <Country>/<Region>/<year>/ with
-its own reason `region_only`, so the plan says at which level the decision was made. It
-is never inferred — GPS resolves to a city or to nothing, and a region only ever comes
-from a person naming it.
-
-F85c (manual_places, written by the web app): a place the user assigned to a whole event
-or a whole source folder. It is read here and NOT in geo, because `places` has a single
-writer and is recomputed from scratch on every geo run — a manual place stored there
-would live until the next run. The row replaces the automatic place as a WHOLE (country,
-city and district together, never a mix of the two sources) and the file is reported with
-place_confidence='manual', so the CSV, the HTML report and the web app all tell a place
-the user chose from one the program inferred. Everything above it in _target_parts still
-outranks it: a file marked "leave alone" or reassigned by hand (F77), a to_delete
-duplicate, a document or a junk verdict does not go to the assigned city — those are
-decisions about what the file IS, and the assignment only says where it was taken.
-One deliberate limit: `--where country=/city=` still selects on the AUTOMATIC place. It
-is a SQL filter over `places`, applied before the manual row replaces anything, and a
-selection language that answered about hand-assigned places would have to run twice.
+Where an undated or placeless file goes is decided in `_target_parts` and in the three
+helpers above it, each with its own measurements: low_date vs downloaded (F78), the meme
+that cannot be judged (F83), and the country/region levels below a city (F86, F202).
 """
 from __future__ import annotations
 
@@ -124,10 +75,9 @@ _log = logging.getLogger(__name__)
 
 
 def _report_dir(cfg: Config) -> Path:
-    """Directory for sort plan reports (CSV/HTML/thumbs). `cfg.sort.report_dir` if
-    set; otherwise `report_output/` next to the DB (F56). Isolates one-off reports
-    with real place names/paths from the DB/repo directory and keeps them gitignored
-    (`report_output/`). The directory is created on access."""
+    """Directory for sort plan reports (CSV/HTML/thumbs): `cfg.sort.report_dir`, else
+    `report_output/` next to the DB (F56) — one gitignored place for reports that carry
+    real place names and paths. Created on access."""
     d = getattr(cfg.sort, "report_dir", None)
     base = Path(d) if d else Path(cfg.database).resolve().parent / "report_output"
     base.mkdir(parents=True, exist_ok=True)
@@ -164,9 +114,8 @@ _CTE = """WITH RECURSIVE _roots(id, root) AS (
 def _layout_excluded_dirs(cfg: Config) -> list[Path]:
     """F82: the `skip_layout` section of the exclusion file, as absolute directories.
 
-    Entries there are relative to a source root (the same key the "do not scan" section
-    uses), so they are resolved against every source. Reading only — the file belongs to
-    the indexer and to the web app; `sort` never writes it.
+    Entries there are relative to a source root, so they are resolved against every
+    source. Read only — the file belongs to the indexer and the web app.
     """
     excludes = load_excludes(excludes_path(cfg))
     dirs: list[Path] = []
@@ -178,13 +127,10 @@ def _layout_excluded_dirs(cfg: Config) -> list[Path]:
 
 
 def _resolve_excludes(cfg: Config, exclude: Sequence[str] | None) -> list[Path]:
-    """Exclude directories from --exclude (repeatable) + config sort.exclude_dirs
-    + the `skip_layout` folders ticked in the web app (F82).
-
-    All three sources are COMBINED — the tree in the UI adds to what config.yaml and
-    the command line say, it does not replace either. Paths are coerced to absolute
-    resolved form for comparison by directory boundary (see _is_excluded).
-    """
+    """--exclude (repeatable) + config sort.exclude_dirs + the `skip_layout` folders
+    ticked in the web app (F82), COMBINED: the tree in the UI adds to what config.yaml
+    and the command line say. Absolute and resolved, for comparison by directory
+    boundary (see _is_excluded)."""
     dirs = list(exclude or [])
     dirs += list(cfg.sort.exclude_dirs)
     return [Path(d).resolve() for d in dirs] + _layout_excluded_dirs(cfg)
@@ -193,9 +139,8 @@ def _resolve_excludes(cfg: Config, exclude: Sequence[str] | None) -> list[Path]:
 def _is_excluded(path: Path, excludes: list[Path]) -> bool:
     """True if path is inside any of excludes (including excludes itself).
 
-    Path.is_relative_to compares path parts via each platform's flavour — on
-    Windows this is a case-insensitive comparison (ntpath casefold), so no separate
-    case normalization is needed.
+    `Path.is_relative_to` compares parts through the platform flavour, so on Windows it
+    is already case-insensitive (ntpath casefold) and needs no normalisation here.
     """
     return any(path.is_relative_to(ex) for ex in excludes)
 
@@ -222,17 +167,15 @@ def parse_where(exprs: Sequence[str], lang: i18n.Lang = "en",
                 resolver: GeoResolver | None = None) -> tuple[str, list[str | int]]:
     """Parse --where conditions into a SQL condition (joined by AND) + parameters.
 
-    The condition assumes the aliases f (files), p (places) and the CTE
-    _person_files — the query in plan_and_sort injects them. String fields are
-    compared case-insensitively (the casefold UDF); for year all operators are allowed.
+    The condition assumes the aliases f (files), p (places) and the CTE _person_files,
+    which the query in plan_and_sort injects. String fields compare case-insensitively
+    (the casefold UDF); year takes every operator.
 
-    F46: country/city with a value in the config language (lang) are resolved via
-    resolver (GeoResolver.country_cc_by_name/city_ids_by_name) into a canonical
-    ISO cc / list of geonameid — so config-language folders («Россия»/«Москва») and
-    --where in the same language stay in sync. resolver=None (as before, without it)
-    or a non-resolving value — a fallback to the previous string comparison (canonical
-    country=RU/city=Moscow keeps working). A city with several geonameid (same-named
-    cities) matches any of them.
+    F46: country/city given in the config language are resolved through `resolver` into a
+    canonical ISO cc / list of geonameid, so folders named «Россия»/«Москва» and a
+    --where in the same language stay in sync. Without a resolver, or when nothing
+    resolves, it falls back to the string comparison (country=RU/city=Moscow still work).
+    A city with several geonameid matches any of them.
     """
     conds: list[str] = []
     params: list[str | int] = []
@@ -302,12 +245,10 @@ def _sanitize(name: str) -> str:
     return s
 
 
-# F203: why a reassign target is refused, as CODES rather than sentences — the web app
-# has to say the reason in the interface language, so the catalog holds the three
-# sentences and the server sends the word (the `_ALBUM_BLOCKED_*` arrangement of F193).
-# They are four and not one because the mistakes are different: an empty field, a path
-# that is not a name at all, a climb out of the root, and invisible junk pasted in with
-# the text.
+# F203: why a reassign target is refused, as CODES and not sentences — the web app says
+# the reason in the interface language, so the catalog holds the wording and the server
+# sends the word (the `_ALBUM_BLOCKED_*` arrangement of F193). Four codes because the
+# four mistakes are different and want different sentences.
 TARGET_EMPTY = "empty"                # nothing to name a folder with
 TARGET_NOT_RELATIVE = "not_relative"  # a backslash, a colon or a leading «/»
 TARGET_PARENT = "parent"              # a «..» segment — a climb out of the sort root
@@ -318,25 +259,20 @@ def manual_target_parts(target: object) -> tuple[list[str] | None, str | None]:
     """The layout segments a reassign target names — or the reason it is no name at all.
 
     Returns `(parts, None)` or `(None, reason)`, one of the `TARGET_*` codes above.
-    Accepted: a relative POSIX path of plain segments, which is what a folder of the
-    layout is. Refused: an empty value, a backslash or a colon (`..\\..\\x`, `C:/win`,
-    UNC), a leading `/`, any `..` segment, and any control character. What survives goes
-    through `_sanitize`, like every other folder name in the layout — F203 asks the
-    question at the web app's door as well as here, and a second cleaning rule written
-    there would drift away from this one within a release.
+    Accepted: a relative POSIX path of plain segments. Refused: an empty value, a
+    backslash or a colon (`..\\..\\x`, `C:/win`, UNC), a leading `/`, a `..` segment, a
+    control character. What survives goes through `_sanitize` — the web app asks this
+    same function, so a second cleaning rule cannot drift away from it.
 
-    The remaining forbidden characters (`<>"|?*`) are NOT a refusal: `_sanitize` turns
-    them into underscores for a city name the same way, and a target is held to the
-    layout's naming rules, not to a stricter set of its own.
+    The other forbidden characters (`<>"|?*`) are NOT a refusal: `_sanitize` underscores
+    them for a city name too, and a target is held to the layout's rules, not stricter.
     """
     if not isinstance(target, str) or not target.strip():
         return None, TARGET_EMPTY
     raw = target.strip()
     if any(ord(ch) < 32 for ch in raw):
-        # `_sanitize` would quietly turn these into underscores. Here that is the wrong
-        # answer: nobody types a control character on purpose, so it arrived by a paste
-        # the user cannot see, and a folder named after it is a folder they did not ask
-        # for.
+        # `_sanitize` would turn these into underscores, which is the wrong answer here:
+        # nobody types a control character, so it arrived by an invisible paste.
         return None, TARGET_CONTROL
     if "\\" in raw or ":" in raw or raw.startswith("/"):
         return None, TARGET_NOT_RELATIVE
@@ -351,13 +287,10 @@ def manual_target_parts(target: object) -> tuple[list[str] | None, str | None]:
 def _manual_target_parts(target: str | None, src: str) -> list[str] | None:
     """F77: `manual_overrides.target` -> layout segments under the sort root, or None.
 
-    The value is written by the web app, i.e. it reaches the sorter from OUTSIDE, and
-    it is the one input of this feature that becomes a WRITE path — so it is treated as
-    untrusted and asked of `manual_target_parts` again HERE, at the moment a destination
-    is built from it. The route refusing it (F203) does not make this check redundant:
-    the table is a database file on disk, and a row that got in by any other route still
-    has to be unable to write outside the root. A refused value is ignored with a warning
-    and the caller lays the file out automatically.
+    The one input of this feature that becomes a WRITE path, so it is asked of
+    `manual_target_parts` again HERE, where the destination is built. The web app
+    refusing it (F203) does not make this redundant: the table is a file on disk, and a
+    row that arrived by another route still must not write outside the root.
     """
     parts, refusal = manual_target_parts(target)
     if parts is not None:
@@ -374,14 +307,10 @@ def _manual_target_parts(target: str | None, src: str) -> list[str] | None:
 def _looks_like_a_camera_shot(row: sqlite3.Row) -> bool:
     """F78: does the file carry ANY trace of having been shot by a camera?
 
-    Any one of camera_make / camera_model / gps_lat is enough — messengers strip most
-    of the EXIF from a forwarded photo, so demanding several signals would push real
-    (if metadata-poor) shots into the downloaded folder. The mirror image of
-    junk._is_real_photo, minus the face signal: here the question is only "was this
-    taken by a device", not "is this a memory".
-
-    gps_lat is compared to None on purpose — 0.0 is a valid latitude (see the
-    Null Island guard in geo.py), so a truthiness test would drop it.
+    One of camera_make / camera_model / gps_lat is enough — messengers strip most of the
+    EXIF from a forwarded photo, and demanding several signals would push real shots into
+    the downloaded folder. gps_lat is compared to None on purpose: 0.0 is a valid
+    latitude (the Null Island guard in geo.py), so a truthiness test would drop it.
     """
     return bool(row["camera_make"] or row["camera_model"]
                 or row["gps_lat"] is not None)
@@ -390,33 +319,22 @@ def _looks_like_a_camera_shot(row: sqlite3.Row) -> bool:
 def _is_indistinguishable_meme(row: sqlite3.Row) -> bool:
     """F83: a `meme` verdict on a file that carries nothing to judge it by.
 
-    Measured on the live collection: 3437 files have no camera trace at all
-    (camera_make, camera_model and gps_lat all NULL) — forwarded and downloaded
-    pictures whose metadata the messenger stripped. For those, `photo` vs `meme` is
-    decided by CLIP on content alone, and it is wrong in BOTH directions, so files of
-    one and the same origin end up in different folders for no reason the user can see.
-
-    This is NOT an accuracy improvement. There is nothing left in these files to tell
-    the two apart; the rule only replaces two coin flips with one predictable outcome.
-    The real fix for them is a manual correction by eye (F77). Do not read this as a
-    classifier and do not try to "improve" it.
-
-    Only `meme` collapses. `document` and `screenshot` keep their own folders: a
-    scanner writes no camera EXIF either, so a scanned document has no trace either,
-    and those are exactly the categories the user opens by hand — documents for
-    privacy, screenshots to delete. Files WITH a camera trace are untouched: among
-    20743 camera shots there were 0 false `meme`.
+    Measured on the live collection: 3437 files have no camera trace at all (camera_make,
+    camera_model and gps_lat all NULL), and for those CLIP decides `photo` vs `meme` on
+    content alone and is wrong in BOTH directions. This is NOT an accuracy improvement —
+    there is nothing left in the file to tell the two apart, and the rule only replaces
+    two coin flips with one predictable outcome; the fix for them is a correction by eye
+    (F77). Only `meme` collapses: `document` and `screenshot` are the categories a person
+    opens by hand, and a scanner writes no camera EXIF either. Among 20743 camera shots
+    there were 0 false `meme`, so files with a trace are untouched.
     """
     return row["junk_verdict"] == "meme" and not _looks_like_a_camera_shot(row)
 
 
 def _undated_parts(row: sqlite3.Row, lang: i18n.Lang) -> tuple[list[str], str]:
-    """F78: the target for a file whose year could not be determined.
-
-    A real shot with an unread date keeps the historical _Unsorted/low_date/; anything
-    without a camera trace — the overwhelming majority of this bucket — goes to
-    _Unsorted/downloaded/ under its own reason, so the report tells the two apart.
-    """
+    """F78: the target for a file whose year could not be determined. A real shot with an
+    unread date keeps _Unsorted/low_date/; anything without a camera trace goes to
+    _Unsorted/downloaded/ under its own reason, so the report tells the two apart."""
     if _looks_like_a_camera_shot(row):
         return [i18n.folder("unsorted", lang), i18n.folder("low_date", lang)], "low_date"
     return [i18n.folder("unsorted", lang), i18n.folder("downloaded", lang)], "downloaded"
@@ -426,18 +344,12 @@ def _city_display_name(city: str | None, city_gid: int | None,
                        lang: i18n.Lang, resolver: GeoResolver) -> str | None:
     """G3: the city name to lay out and to show, in `lang`.
 
-    `places` holds the English anchor plus `city_geonameid` (geo.py writes exactly
-    that and calls localizing sort's job) — so the translation happens HERE, once per
-    row, and switching the folder language changes every city name without a single
-    geo query or a write into `places`.
-
-    Without a geonameid the DB text is the only name there is and is used as-is: a
-    landmark/visual place, an online provider's answer (already in the config
-    language) and a place the user assigned by hand carry no id to translate by.
-
+    `places` holds the English anchor plus `city_geonameid`, so the translation happens
+    HERE, once per row: switching the folder language changes every city name with no geo
+    query and no write into `places`. Without a geonameid the DB text is the only name
+    there is (a landmark, an online provider's answer, a hand-assigned place). And
     `GeoResolver.name` ends its fallback chain with the geonameid itself — a folder
-    called `498817` explains nothing to anyone, so that answer is refused in favour of
-    the anchor: an English city name is an honest answer, a number is not.
+    called `498817` explains nothing, so the anchor is used instead.
     """
     if city_gid is None:
         return city
@@ -451,11 +363,9 @@ def _region_display_name(region_gid: int | None, lang: i18n.Lang,
                          resolver: GeoResolver) -> str | None:
     """F202: the name of a hand-assigned admin1 region, in `lang`; None — no region.
 
-    The region is stored as a geonameid alone (`manual_places.region_geonameid`), so
-    there is no anchor text to fall back on: an id the bundled data does not know
-    resolves to the number itself, and a folder called `552548` explains nothing to
-    anyone. Such a row is answered with None, and the caller lays the file out one level
-    up, under its country — the same refusal `_city_display_name` makes.
+    Stored as a geonameid alone (`manual_places.region_geonameid`), so there is no anchor
+    text to fall back on: an unknown id resolves to the number itself, and the caller
+    lays the file out one level up instead — the refusal `_city_display_name` makes.
     """
     if region_gid is None:
         return None
@@ -478,25 +388,20 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
                   drop_unlocalized_district: bool = True) -> tuple[list[str], str]:
     """The relative target directory (a list of segments) + a reason for the CSV.
 
-    Path segments (service folders, country) are localized via i18n.folder/
-    i18n.country by lang (F27); reason — a stable English code, not localized.
-    City/district (G3) — via resolver.name(geonameid, lang) if the geonameid is
-    known (G2); otherwise (landmark/visual without geonameid) — the original text
-    row["city"] as-is. See _city_display_name: neither name may end up being the
-    geonameid itself.
+    Service folders and countries are localized through i18n.folder/i18n.country (F27);
+    the reason is a stable English code. City and district go through the resolver when
+    a geonameid is known and stay as the DB text otherwise — and neither name may end up
+    being the geonameid itself (see _city_display_name).
     """
     if row["manual_action"] == "reassign":
-        # F77: the user dragged this frame into a folder by hand — that outranks EVERY
-        # rule below (dedup choice, not_personal, junk/document/product verdict, geo,
-        # event/person layout): they looked at the frame, the classifier did not.
-        # A target that does not validate falls through to the automatic layout.
+        # F77: dragged into a folder by hand, which outranks EVERY rule below — they
+        # looked at the frame, the classifier did not. An invalid target falls through.
         manual_parts = _manual_target_parts(row["manual_target"], row["path"])
         if manual_parts is not None:
             return manual_parts, "manual_reassign"
     if row["dedup_action"] == "to_delete":
-        # U3b: an explicit user decision from the web app (sorta ui) — the highest
-        # priority of all (city/junk/document/not_personal), the file goes to the
-        # to_delete folder («_удалить» in a ru layout) regardless of the sort mode.
+        # U3b: an explicit decision from the web app — above city/junk/document/
+        # not_personal, into «_удалить» whatever the sort mode is.
         return [i18n.folder("to_delete", lang)], "dedup_delete"
     if row["not_personal"]:
         # F17: a downloaded movie/series (release name, marked at indexing) — not
@@ -504,35 +409,27 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         return [i18n.folder("unsorted", lang), i18n.folder("not_personal", lang)], "not_personal"
     verdict = row["junk_verdict"]
     if row["manual_action"] == "photo":
-        # F103: the user opened the "Utility frames" slice, looked at the frame and
-        # said it is an ordinary photo. Only the ROUTE changes here — media_class keeps
-        # the model's verdict, because that verdict is a measurement and a correction by
-        # eye is a separate layer on top of it. Overwriting the measurement would mean a
-        # re-run of the junk tier silently wipes the correction, with nothing to tell the
-        # user why their decisions disappeared. Dropping the verdict for routing purposes
-        # lets the file fall through to the ordinary mode/date layout below — exactly
-        # where a `photo` verdict would have taken it.
+        # F103: somebody looked at the frame and said it is an ordinary photo. Only the
+        # ROUTE changes — the verdict is a measurement and a correction by eye is a layer
+        # on top of it, so a re-run of the junk tier cannot wipe the correction.
         verdict = None
     if verdict == "document":
         # F15: a photographed document — a separate review category (not junk), its
         # own top-level folder regardless of the sort mode.
         return [i18n.folder("documents", lang)], "document"
     if verdict == "product":
-        # F37-B (deep VLM tier): an item for sale — its own review folder («_Товары»),
-        # not junk and not a memory. Only with vlm_enabled (the fast tier gives no product).
+        # F37-B (deep VLM tier): an item for sale — its own review folder, not junk and
+        # not a memory. Only with vlm_enabled: the fast tier never returns `product`.
         return [i18n.folder("products", lang)], "product"
     if verdict is not None and verdict != "photo" and not _is_indistinguishable_meme(row):
-        # F83: a meme with no camera trace falls through here and is routed like a
-        # photo — down the normal branch below, i.e. into the mode/date layout or, with
-        # no reliable date, into the downloaded folder of F78. media_class keeps the
-        # verdict as it is (reports and the UI still need it), only the route changes.
+        # F83: a meme with no camera trace falls through and is routed like a photo.
+        # media_class keeps the verdict — reports and the UI still need it.
         return [i18n.folder("unsorted", lang), i18n.folder("junk", lang),
                _sanitize(verdict)], "junk"
     if mode == "event":
         if event is None:
-            # F30: the file did not fall into an event (a small group < min_event_size
-            # or no event) → lay it out by date Year/month, not into a flat service
-            # folder.
+            # F30: no event (or a group below min_event_size) → Year/month by date,
+            # not a flat service folder.
             year = _year_of(row["taken_at"], row["taken_at_confidence"])
             if year is None:
                 return _undated_parts(row, lang)
@@ -557,20 +454,16 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
         country_name = row["country_name"] or (
             i18n.country(row["country"], lang) if row["country"] else "Unknown")
         if row["city"] is None:
-            # F202: between the country and the city stands the region the user named by
-            # hand — «Карелия» for frames whose city nobody remembers. It is a level of
-            # its own in the layout and in the reason, because that is what makes a wrong
-            # one visible in the plan; it exists only on a manual row, so nothing
-            # inferred can reach this branch.
+            # F202: the region a person named by hand — «Карелия» for frames whose city
+            # nobody remembers. A level of its own in the layout and in the reason, so a
+            # wrong one is visible in the plan; only a manual row reaches this branch.
             region_name = _region_display_name(row["region_geonameid"], lang, resolver)
             if region_name is not None:
                 return ([_sanitize(country_name), _sanitize(region_name), year],
                         "region_only")
-            # F86: the country is resolved, only the city is missing (no provider knows a
-            # settlement for these coordinates — mid-ocean, a desert road). The file goes
-            # to the country level: hiding it in _Unsorted/no_place would throw away the
-            # one place signal we do have. Guessing a city by the nearest one is not an
-            # option here — that is the F75 misplacement.
+            # F86: the country resolved and no provider knows a settlement for these
+            # coordinates (mid-ocean, a desert road). The country level keeps the one
+            # place signal there is; guessing the nearest city is the F75 misplacement.
             return [_sanitize(country_name), year], "country_only"
         city_name = _city_display_name(row["city"], row["city_geonameid"], lang, resolver)
         assert city_name is not None  # row["city"] is not None here (guarded above)
@@ -582,10 +475,9 @@ def _target_parts(mode: str, strategy: str, row: sqlite3.Row,
             # foreign districts (named «Убуд»/«Кута» in the base) stay.
             if not drop_unlocalized_district or resolver.has_localized_name(district_gid, lang):
                 district_name = resolver.name(district_gid, lang)
-                # G3: the same refusal as in _city_display_name — a district the
-                # bundled base does not know resolves to its own geonameid, and there
-                # is no anchor text to fall back to here (an online district comes
-                # WITHOUT an id, see below), so the segment is simply left out.
+                # G3: the refusal of _city_display_name — an unknown district resolves to
+                # its own geonameid and has no anchor text here, so the segment is left
+                # out rather than named after a number.
                 if district_name != str(district_gid):
                     parts.append(_sanitize(district_name))
         elif row["district_name"]:
@@ -620,9 +512,8 @@ def _load_persons(conn: sqlite3.Connection) -> dict[int, list[tuple[str, float]]
 def _load_events(conn: sqlite3.Connection) -> dict[int, tuple[str, str | None]]:
     """file_id -> (event name, event year); with several — the earliest by started_at.
 
-    Year — the first 4 chars of `events.started_at` (ISO). The column is NOT NULL,
-    but in case of an unparsable value the year is None — the caller falls back to
-    the file's date (see _target_parts).
+    The year is the first 4 chars of `events.started_at` (ISO, NOT NULL); an unparsable
+    value gives None and the caller falls back to the file's own date.
     """
     out: dict[int, tuple[str, str | None]] = {}
     for r in conn.execute(
@@ -651,12 +542,10 @@ def _select_best(members: list[sqlite3.Row],
 def _resolve_near_dup_roles(
     conn: sqlite3.Connection, cfg: Config, selected_ids: set[int],
 ) -> tuple[dict[int, int], dict[int, int]]:
-    """file_id -> group index (1-based), separately for the best and the other group members.
+    """file_id -> group index (1-based), separately for the best and the other members.
 
-    Groups from near_duplicate_groups are trimmed to the files of the current plan
-    selection (--where may have excluded part of the group); groups left with one
-    file (or none) after trimming are not meaningful for dedup and are skipped.
-    width/height are read from files (near_duplicate_groups does not return them).
+    Groups are trimmed to the current plan selection (--where may have excluded part of
+    a group), and one left with a single file is no longer a duplicate group.
     """
     groups = near_duplicate_groups(conn, cfg.index.phash_max_distance)
     trimmed: list[list[sqlite3.Row]] = []
@@ -695,25 +584,20 @@ _LONG_PATH_PREFIX = "\\" * 2 + "?" + "\\"   # \\?\ — written this way to survi
 def _fs(path: Path) -> Path:
     """F97: the form a path must take at the boundary of a FILESYSTEM call on Windows.
 
-    Windows resolves an ordinary path against MAX_PATH (260 characters); the `\\\\?\\`
-    prefix lifts that limit. Without it a destination root plus a country/city folder
-    plus the original file name goes past 260 easily, and such a file lands silently
-    in `failed` — measured on the live collection, not hypothetical.
+    The `\\\\?\\` prefix lifts MAX_PATH (260 characters), which a dest root plus a
+    country/city folder plus the original name passes easily — such a file landed
+    silently in `failed` on the live collection.
 
-    The prefix also switches OFF Windows' own path normalization, so what is handed to
-    it must ALREADY be absolute, with backslash separators and without `.`/`..`
-    segments — hence os.path.abspath (it normalizes too) before the prefix is glued
-    on. A UNC path takes its own form: `\\\\server\\share` -> `\\\\?\\UNC\\server\\share`.
+    The prefix also switches OFF Windows' path normalization, so what it is glued onto
+    must ALREADY be absolute, backslash-separated and free of `.`/`..` — hence
+    os.path.abspath first. A UNC path takes its own form:
+    `\\\\server\\share` -> `\\\\?\\UNC\\server\\share`.
 
-    Paths stored in the DB (moves.src/dst, files.path) NEVER carry the prefix — the
-    project's convention is plain absolute paths and this function exists only at the
-    call boundary. On non-Windows it returns the path unchanged: the branching lives
-    here, not in every caller.
-
-    The per-component limit of 255 characters survives the prefix (verified: WinError
-    123 on a 300-character folder name). Nothing here defends against it, because
-    every component in the layout is either a short city/year folder or a file name
-    that already exists on a filesystem that enforces the same limit.
+    Paths in the DB (moves.src/dst, files.path) NEVER carry the prefix: this exists at
+    the call boundary only, and off Windows it returns the path unchanged. The
+    per-component limit of 255 characters survives the prefix (verified: WinError 123 on
+    a 300-character folder name) and is not defended against — every component is a short
+    folder or a name that already exists on a filesystem with the same limit.
     """
     if os.name != "nt":
         return path
@@ -746,17 +630,14 @@ def _transfer(src: Path, dst: Path, src_hash: str | None = None,
              copy: bool = False, link: bool = False) -> None:
     """Move (copy=False), copy (copy=True) or link (link=True) src -> dst.
 
-    dst is not overwritten. move: os.rename; on OSError (different device/volume)
-    copy -> blake3 verify -> delete src. copy (C16): always copy2 -> blake3 verify,
-    src is NOT touched (neither on success nor on failure). link (F34): os.link
-    (a hardlink to the same data); on OSError (different volumes, FAT/exFAT,
-    cross-disk) — an auto-fallback to the copy path (the same as copy=True), the
-    album is materialized anyway. After any path — a check: dst exists and the size
-    matches.
+    dst is not overwritten. move: os.rename, and on OSError (another device) copy ->
+    blake3 verify -> delete src. copy (C16): copy2 -> blake3 verify, src untouched
+    either way. link (F34): os.link, falling back to the copy path on OSError (different
+    volumes, FAT/exFAT) so the album is materialized anyway. Every path ends with the
+    same check: dst exists and the size matches.
 
-    F97: every FS call here goes through `_fs` — the long-path form on Windows. The
-    plain `src`/`dst` stay in the log/exception texts (a `\\\\?\\` prefix in a message
-    to the user means nothing) and in whatever the caller writes to the DB.
+    F97: every FS call goes through `_fs`; the plain `src`/`dst` stay in the messages and
+    in whatever the caller writes to the DB.
     """
     size = _fs(src).stat().st_size
     _fs(dst.parent).mkdir(parents=True, exist_ok=True)
@@ -785,15 +666,11 @@ def _is_the_same_file(dst: Path, src: Path, src_hash: str | None,
                       src_algo: str | None) -> bool:
     """F97: is the file already lying at `dst` the very one we would put there?
 
-    Size first (a stat, free), the blake3 of `dst` only when the size matches —
-    hashing every same-named file in the target would cost a full read per candidate.
-    The SOURCE hash comes from the index (`files.hash`, already computed at index
-    time) rather than being recomputed: a resumed apply must not pay for re-reading
-    the sources it has already read once.
-
-    Without a hash in the index, or under a different algorithm, or on any OSError,
-    the answer is "no" — the file then takes the usual `_1` suffix. That is wasteful,
-    never destructive; the opposite mistake would skip a file that was never copied.
+    Size first (a free stat), the blake3 of `dst` only when it matches; the SOURCE hash
+    comes from the index rather than being recomputed, so a resumed apply does not pay to
+    re-read what it already read. Without a hash, under another algorithm or on any
+    OSError the answer is "no" and the file takes its usual `_1` suffix — wasteful, never
+    destructive, while the opposite mistake would skip a file nobody ever copied.
     """
     if not src_hash:
         return False
@@ -814,20 +691,13 @@ def _resolve_dst(target_dir: Path, src: Path, claimed: set[str],
     """dst without overwriting -> (dst, in_place, already_copied).
 
     Suffixes _1, _2 against the disk and the names other plan items have claimed.
+    in_place=True — src == dst, nothing to do. already_copied=True (F97) — `dst` holds a
+    byte-for-byte copy of the source, i.e. a previous apply into this dest wrote it.
+    Before F97 that was indistinguishable from "another file of the same name" and got a
+    `_1`: a second `sort --apply` into the same dest re-copied 10 021 files and 140.9 GB
+    on the live collection. `_1` for a DIFFERENT file is still correct and still happens.
 
-    in_place=True — the file is already AT the target path (src == dst), an in-place
-    layout; nothing to do.
-
-    already_copied=True (F97) — `dst` is occupied by a file that is byte-for-byte our
-    source (see _is_the_same_file), i.e. a previous apply into this same dest already
-    copied it. Before F97 that case was indistinguishable from "another file happens
-    to share this name" and got a `_1` suffix: measured on the live collection, a
-    second `sort --apply` into the same dest re-copied 10 021 files and 140.9 GB of
-    duplicates. `_1` for a DIFFERENT file with the same name is still correct and
-    still happens — the two cases only had to stop being one.
-
-    The decision is made while the plan is built, so a dry-run plan shows exactly the
-    targets an apply would use.
+    Decided while the plan is built, so a dry run shows the targets an apply would use.
     """
     dst = target_dir / src.name
     if os.path.normcase(str(dst)) == os.path.normcase(str(src)):
@@ -841,8 +711,7 @@ def _resolve_dst(target_dir: Path, src: Path, claimed: set[str],
                 claimed.add(key)
                 return cand, False, False
             if _is_the_same_file(cand, src, src_hash, src_algo):
-                # claimed as well: a later file of the same name must not be handed
-                # this path either, it goes on to _1 as it always did
+                # claimed too: a later file of the same name still goes on to _1
                 claimed.add(key)
                 return cand, False, True
         n += 1
@@ -878,9 +747,8 @@ class PlanItem:
     db_algo: str | None
     near_dup_group: int | None = None   # F14: near-duplicate group index (1-based)
     near_dup_role: str | None = None    # kept | moved | deleted
-    # F97: dst already holds a byte-for-byte copy of this file (a previous apply into
-    # the same dest) — apply skips it instead of writing a `_1` twin. Distinct from
-    # in_place, which is "src and dst are one and the same path".
+    # F97: dst already holds a byte-for-byte copy of this file — apply skips it instead
+    # of writing a `_1` twin. Not in_place, which is "src and dst are one path".
     already_copied: bool = False
 
 
@@ -896,11 +764,9 @@ class SortReport:
     moved: int = 0
     failed: int = 0
     skipped_in_place: int = 0
-    # F97: deliberately NOT folded into skipped_in_place. "Skipped because source and
-    # target are the same path" and "skipped because the copy is already there" are
-    # different events, and one number for both turns diagnosing an interrupted run
-    # back into guesswork — which is exactly how the 140.9 GB of duplicates went
-    # unnoticed.
+    # F97: NOT folded into skipped_in_place. "src and dst are one path" and "the copy is
+    # already there" are different events, and one number for both is how the 140.9 GB of
+    # duplicates stayed unnoticed.
     skipped_already_copied: int = 0
     # F97: apply stopped on request (should_cancel) — the report says "cancelled,
     # N of M", never a bare "done".
@@ -908,10 +774,9 @@ class SortReport:
     deleted: int = 0   # F14: --delete-worse-dupes, permanently deleted worse near-dups
     excluded: int = 0  # F16: files skipped because of --exclude/sort.exclude_dirs
     in_place: bool = False  # F28: dest not set explicitly — layout inside the source root
-    # F77: manual corrections from the web app — deliberately NOT folded into
-    # `excluded` above: --exclude is "this directory is already sorted by hand", a
-    # manual override is "leave this frame alone"; one report number for both would
-    # hide which mechanism dropped a file.
+    # F77: NOT folded into `excluded` above — --exclude is "this directory is already
+    # sorted by hand", an override is "leave this frame alone", and one number for both
+    # would hide which mechanism dropped a file.
     manual_excluded: int = 0    # action='exclude': files left where they lie
     manual_reassigned: int = 0  # action='reassign': files laid out into a chosen folder
 
@@ -925,10 +790,9 @@ class UndoStats:
     # F97: the rollback stopped on request (should_cancel). What was already undone
     # stays undone — the rest keeps its status and a repeated undo finishes the job.
     cancelled: bool = False
-    # F97: files found in the result that are OURS by journal but NOT byte-for-byte
-    # what we wrote (a copy interrupted mid-write). They are never deleted — the user
-    # is told the path instead. Without this they stayed in the result silently,
-    # looking like ordinary photos with truncated insides.
+    # F97: files that are OURS by journal but NOT byte-for-byte what we wrote (a copy
+    # interrupted mid-write). Never deleted — the path is reported instead. Before this
+    # they stayed in the result looking like ordinary photos with truncated insides.
     stray: list[str] = field(default_factory=list)
 
 
@@ -936,11 +800,9 @@ _CSV_DEDUPE_COLUMNS = ["near_dup_group", "near_dup_role"]
 
 
 def _write_plan_csv(csv_path: Path, plan: list[PlanItem]) -> None:
-    """The CSV diagnosis — the approval document before --apply (utf-8-sig and ';' for Excel).
-
-    The near_dup_group/near_dup_role columns are added only if the plan contains
-    near-duplicates (--dedupe) — without it the CSV is no different from F5.
-    """
+    """The CSV diagnosis — the approval document before --apply (utf-8-sig and ';' for
+    Excel). The near_dup_group/near_dup_role columns appear only when the plan holds
+    near-duplicates (--dedupe)."""
     has_dedupe = any(it.near_dup_group is not None for it in plan)
     columns = _CSV_COLUMNS + _CSV_DEDUPE_COLUMNS if has_dedupe else _CSV_COLUMNS
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
@@ -1027,12 +889,8 @@ def _format_category_cell(item: PlanItem) -> str:
 
 
 def _make_thumbnail(src: Path, dst: Path) -> bool:
-    """Decode+resize src -> dst (JPEG, thumbs_dir). True on success.
-
-    Decode — via the shared imaging layer (HEIC-lazy, draft downscale, error->None,
-    F18); any failure (unrecognized format, corrupt file, no pillow-heif) — False,
-    without crashing; the report row stays without a preview.
-    """
+    """Decode+resize src -> dst (JPEG, thumbs_dir). True on success; any failure leaves
+    the report row without a preview rather than crashing the report."""
     if src.suffix.lower() not in _THUMB_EXTS:
         return False
     img = imaging.decode_rgb(src, max_edge=_THUMB_SIZE[0])
@@ -1051,9 +909,8 @@ def _generate_thumbnails(plan: list[PlanItem], thumbs_dir: Path,
                          workers: int) -> set[int]:
     """Generate plan thumbnails in parallel; returns file_ids that succeeded.
 
-    Decode — the heaviest report step (~288s serially on 2k photos); we spread it
-    across a pool (Pillow releases the GIL in the C decode, like
-    faces._prefetch_decode). One thumb per file_id; order does not matter.
+    Decoding is the heaviest report step — ~288 s serially on 2k photos — and Pillow
+    releases the GIL in the C decode, so a pool helps (as in faces._prefetch_decode).
     """
     def _one(item: PlanItem) -> tuple[int, bool]:
         thumb_file = thumbs_dir / f"{item.file_id}.jpg"
@@ -1071,10 +928,8 @@ _NEAR_DUP_ROLE_LABEL = {"kept": "оставлен", "moved": "в дубли", "d
 
 
 def _render_near_dup_section(plan: list[PlanItem]) -> str:
-    """F14: the "Near-duplicates" section — by group, who is kept and who is moved/deleted.
-
-    Empty if the plan has no near-dup items (an ordinary run without --dedupe).
-    """
+    """F14: the "Near-duplicates" section — by group, who is kept and who is moved or
+    deleted. Empty on a plan without --dedupe."""
     groups: dict[int, list[PlanItem]] = {}
     for item in plan:
         if item.near_dup_group is not None:
@@ -1097,21 +952,16 @@ def _render_near_dup_section(plan: list[PlanItem]) -> str:
 
 
 def _tree_sort_key(name: str) -> tuple[int, int | str]:
-    """Sort key of a tree segment: a year (4-digit number) — ascending, everything
-    else — alphabetically (casefold). A year is not mixed with strings at the same
-    level (see _target_parts — a year is always its own level); the numeric branch is
-    only there so we do not implicitly rely on the lexicographic order of 4-digit
-    numbers matching the numeric one.
-    """
+    """Sort key of a tree segment: a year ascending, everything else alphabetically
+    (casefold). The numeric branch exists so nothing relies on the lexicographic order of
+    4-digit numbers happening to match the numeric one."""
     return (0, int(name)) if name.isdigit() else (1, name.casefold())
 
 
 def _build_tree(plan: list[PlanItem]) -> dict:
-    """A directory tree by target_rel segments: {"files": [...], "children": {...}}.
-
-    A file goes into the node of its parent directory (the target_rel parent);
-    intermediate path segments are container nodes without files of their own.
-    """
+    """A directory tree by target_rel segments: {"files": [...], "children": {...}}. A
+    file goes into the node of its parent directory; intermediate segments are container
+    nodes with no files of their own."""
     root: dict = {"files": [], "children": {}}
     for item in plan:
         node = root
@@ -1130,9 +980,8 @@ _LEAF_COLUMNS = (
 def _render_leaf_header() -> str:
     """F24: leaf headers are clickable — sort their own table (sortaSort in <script>).
 
-    data-sort-type distinguishes the sort key: 'date' takes the cell's data-sort
-    (ISO taken_at), 'text' — textContent. onclick passes the specific <th> (this),
-    not a global list — so sorting only affects its own table.
+    data-sort-type picks the key: 'date' takes the cell's data-sort (ISO taken_at),
+    'text' its textContent. onclick passes the <th> itself, so one table is sorted.
     """
     ths = "".join(
         f'<th data-sort-type="{kind}" onclick="sortaSort(this)">{label}'
@@ -1154,8 +1003,8 @@ def _render_file_rows(items: list[PlanItem], thumbs_dir: Path | None,
             thumb_file = thumbs_dir / f"{item.file_id}.jpg"
             img_tag = (f'<img src="{escape(f"{thumbs_dir.name}/{thumb_file.name}")}" '
                       f'loading="lazy" alt="">')
-        # data-sort on the date cell — the full ISO taken_at (lexicographic = chronological);
-        # empty if there is no date — sortaSort always pushes empty keys to the end.
+        # data-sort on the date cell — the full ISO taken_at, where lexicographic is
+        # chronological; empty when there is no date, and sortaSort sinks empty keys.
         date_sort = escape(item.taken_at or "")
         rows.append(
             f'<tr><td>{img_tag}<a href="{escape(_file_uri(str(item.src)))}">'
@@ -1172,10 +1021,8 @@ def _render_tree_node(name: str, node: dict, depth: int, thumbs_dir: Path | None
                       thumb_ok: set[int]) -> tuple[str, int]:
     """Recursively render a tree node as <details>; returns (html, subtree count).
 
-    Collapsing — via native <details>/<summary>, no JS. The top level (depth=0) is
-    expanded (<details open>), deeper — collapsed (F21 #4: so there is no wall of
-    text by default). The count in <summary> — the sum of files of the whole subtree,
-    including nested nodes.
+    Native <details>/<summary>, no JS. The top level is open and everything deeper is
+    collapsed (F21 #4 — no wall of text by default). The count is the whole subtree.
     """
     children_html: list[str] = []
     total = len(node["files"])
@@ -1195,10 +1042,8 @@ def _write_plan_html(html_path: Path, plan: list[PlanItem], dest: Path,
                      thumbnails: bool = False, thumbnail_workers: int = 8) -> Path | None:
     """The plan HTML report: a collapsible tree by target_rel segments (F21).
 
-    Tested separately from FS moves — does not touch the DB and does not move files,
-    only writes html_path (and thumbs_dir next to it, if thumbnails=True).
-    Returns thumbs_dir if thumbnails are on, otherwise None. Thumbnails are
-    generated BEFORE assembling the HTML, in parallel (F18, thumbnail_workers).
+    Touches neither the DB nor the files, so it is tested apart from the moves. Returns
+    thumbs_dir when thumbnails are on; they are generated first, in parallel (F18).
     """
     thumbs_dir = html_path.parent / f"{html_path.stem}_thumbs" if thumbnails else None
     thumb_ok: set[int] = set()
@@ -1326,17 +1171,15 @@ def _precheck_hash(conn: sqlite3.Connection, batch_id: int, item: PlanItem,
 # The rows every layout decision is made from — ONE select, used by the plan itself and
 # by the destination preview below (F174).
 #
-# F85c: `mp.file_id IS NULL` (not COALESCE per column) decides between the two sources of
-# a place — a manual row wins as a WHOLE, so a hand-picked city can never end up under an
-# inferred country, and the district of the automatic place cannot survive under a city
-# the user replaced. `country_name` is dropped for a manual row on purpose: it is the
-# provider's spelling of the OLD country, and _target_parts localizes the cc through
-# i18n.country when it is absent.
+# F85c: `mp.file_id IS NULL` and not COALESCE per column — a manual row wins as a WHOLE,
+# so a hand-picked city cannot end up under an inferred country and the automatic
+# district cannot survive under a replaced city. `country_name` is dropped for such a row
+# on purpose: it is the provider's spelling of the OLD country, and _target_parts
+# localizes the cc through i18n.country when it is absent.
 #
-# F174: the FIRST placeholder is the manual action to assume for these files instead of
-# the one the table holds — NULL for the plan (it reads the marks as they are), 'photo'
-# for the preview that answers "and where would this frame go if I returned it". It sits
-# in the SELECT list, so it is bound before the parameters of `{cond}`.
+# F174: the FIRST placeholder is the manual action to ASSUME for these files — NULL for
+# the plan, 'photo' for the preview of "where would this frame go if I returned it". It
+# sits in the SELECT list, so it binds before the parameters of `{cond}`.
 _PLAN_ROWS_SQL = _CTE + """SELECT f.id, f.path, f.taken_at, f.taken_at_confidence,
            f.hash, f.hash_algo, f.not_personal, f.gps_lat, f.gps_lon,
            f.camera_make, f.camera_model,
@@ -1369,9 +1212,8 @@ _PLAN_ROWS_SQL = _CTE + """SELECT f.id, f.path, f.taken_at, f.taken_at_confidenc
 class Destination:
     """Where one file will lie after the next apply — the layout segments and the reason.
 
-    `reason` is the plan's own stable English code (`city`, `region_only`,
-    `country_only`, `no_place`, `low_date`, ...), not a sentence: the caller phrases it,
-    the way `PlanItem.reason` is phrased by the CSV and by the web app.
+    `reason` is the plan's own stable English code and not a sentence: the caller phrases
+    it, as the CSV and the web app phrase `PlanItem.reason`.
     """
     file_id: int
     parts: tuple[str, ...]
@@ -1379,9 +1221,9 @@ class Destination:
 
     @property
     def folder(self) -> str:
-        """The target DIRECTORY relative to the sort root, POSIX separators — the same
-        string `Path(PlanItem.target_rel).parent` carries (target_rel adds the file name,
-        which only `_resolve_dst` knows, because it depends on what is already there)."""
+        """The target DIRECTORY relative to the sort root, POSIX separators — what
+        `Path(PlanItem.target_rel).parent` carries. The file name is not here: it depends
+        on what already lies at the target, which only `_resolve_dst` knows."""
         return "/".join(self.parts)
 
 
@@ -1390,25 +1232,18 @@ def destinations(cfg: Config, conn: sqlite3.Connection, mode: str,
                  assume_action: str | None = None) -> dict[int, Destination]:
     """F174: where the given files will go, computed WITHOUT planning the collection.
 
-    The web app has two actions that read as one — "this is not an animal" and "return
-    this to the photos" — and neither of them used to say where the frame ends up. It is
-    not a guess: the layout is a pure function of rows that are already in the database,
-    so the answer for a handful of files costs one query. What it must not become is a
-    SECOND copy of the layout rules — a caption computed by its own code starts lying at
-    the first edit of `_target_parts`. Hence this reads `_PLAN_ROWS_SQL` and calls
-    `_target_parts`, exactly as `plan_and_sort` does, and nothing else.
+    The layout is a pure function of rows already in the database, so the answer for a
+    handful of files costs one query. It must not become a SECOND copy of the layout
+    rules — a caption with its own code starts lying at the first edit of `_target_parts`
+    — so this reads `_PLAN_ROWS_SQL` and calls `_target_parts`, and nothing else.
 
-    `assume_action` is the `manual_overrides.action` to pretend these files carry
-    ('photo' — "the classifier is wrong, this IS a photo"), so the caption can state the
-    destination of a correction BEFORE it is written. None reads the marks as they stand,
-    which is the question the animals slice asks: where does this frame lie already.
+    `assume_action` is the `manual_overrides.action` to pretend these files carry, so a
+    caption can state where a correction WOULD put the frame before it is written. None
+    reads the marks as they stand.
 
-    Deliberately NOT answered here, because they are decisions of a whole run rather than
-    of a frame: the `--exclude` directories, the near-duplicate roles (`--dedupe`) and the
-    name-conflict suffix `_resolve_dst` gives the file inside that folder. This is the
-    target FOLDER, which is what the user is being asked about.
-
-    Nothing is written and no file is touched — the marks still apply on `sort --apply`.
+    NOT answered here, being decisions of a whole run rather than of a frame: the
+    `--exclude` directories, the near-duplicate roles and the name-conflict suffix. This
+    is the target FOLDER. Nothing is written and no file is touched.
     """
     if mode not in MODES:
         raise ValueError(f"неизвестный режим {mode!r}; допустимы: {', '.join(MODES)}")
@@ -1422,8 +1257,8 @@ def destinations(cfg: Config, conn: sqlite3.Connection, mode: str,
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(_PLAN_ROWS_SQL.format(cond=f"f.id IN ({placeholders})"),
                         [assume_action, *ids]).fetchall()
-    # Both loaders walk the whole table, and only their own mode reads the result — a
-    # caption under a page of cards must not cost a scan of every face in the archive.
+    # Both loaders walk the whole table, so only the mode that needs one runs it: a
+    # caption under a page of cards must not scan every face in the archive.
     persons = _load_persons(conn) if mode == "person" else {}
     events = _load_events(conn) if mode == "event" else {}
     strategy = str(cfg.sort.multi_person)
@@ -1450,74 +1285,40 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                   should_cancel: Callable[[], bool] | None = None) -> SortReport:
     """Build a layout plan; with apply=True move files with journaling.
 
-    write_reports=False skips the CSV/HTML artefacts (the returned SortReport still
-    carries the paths they WOULD have had). The UI calls this purely to read the plan
-    into memory, and every rebuild was silently dropping six report files into
-    report_output/ as a side effect of someone opening a tab.
+    Dry-run (default): a summary plus the CSV and HTML plan next to the DB, and no FS or
+    journal operation at all. thumbnails=True adds a thumbnail cache beside the HTML
+    (decoding is heavy, hence a flag). write_reports=False skips the artefacts and still
+    fills in the paths they WOULD have had — the UI reads the plan into memory, and every
+    rebuild used to drop six files into report_output/ because somebody opened a tab.
 
-    Dry-run (default): prints a summary, writes the CSV and HTML plan next to the DB
-    and performs no FS or journal operation. where — conditions from --where.
-    thumbnails=True — additionally puts thumbnails into a cache folder next to the
-    HTML report (decode is heavy, hence behind a flag).
+    F28: dest=None lays out IN PLACE, under cfg.sources[0], and needs exactly one source
+    (a common parent of several cannot be guessed). apply=True then warns that the
+    ORIGINAL tree is being restructured. Idempotency comes from _resolve_dst /
+    PlanItem.in_place and does not depend on dest matching the source. copy=True (C16)
+    copies instead of moving, leaving files.path alone, and is journaled as
+    operation='copy' so undo deletes the copies rather than restoring src.
 
-    F28: dest=None — in-place layout, the target root = the source root
-    (cfg.sources[0]). Requires exactly one source in cfg.sources — otherwise
-    ValueError (a common parent for several sources cannot be guessed, an explicit
-    error is safer). With apply=True a warning is printed that the ORIGINAL tree is
-    being restructured (unlike a layout into a separate --dest). Idempotency (a
-    repeated apply touches nothing for already-sorted files) is provided by the
-    existing _resolve_dst / PlanItem.in_place mechanism — it does not depend on
-    whether dest matches the source.
+    F16 (--exclude): the already-hand-sorted directories (a folder and its subfolders, by
+    path boundary) leave the plan before layout, near-dup grouping and the reports; the
+    files stay in the index and the count is report.excluded. The F77 corrections of the
+    module docstring drop out at the same point, under their own counters.
 
-    copy=True (C16): instead of moving, files are COPIED into the target structure,
-    the originals stay in place — files.path is NOT updated. Journaled as
-    move_batches.operation='copy'; undo of such a batch deletes the copies (dst)
-    rather than restoring src. Only the apply stage differs — plan/CSV/HTML are the same.
+    keep_manual_excluded=True is for the web app's PREVIEW only: files marked "leave
+    alone" stay in the plan with reason='manual_exclude' and the target they would have
+    had, so the grid can still show and unmark them. Forced off whenever apply=True.
 
-    F16 (--exclude): directories of the already-manually-sorted part of the
-    collection (a folder + all subfolders, by path boundary) drop out of the plan
-    entirely — before layout, near-dup grouping (F14) and writing CSV/HTML; the files
-    stay in the index. exclude is combined with config sort.exclude_dirs; the number
-    excluded is in report.excluded.
+    F14 (--dedupe): within the current selection the best near-duplicate by quality
+    (width*height, then size) is sorted normally and the rest go to _Duplicates/. Needs a
+    computed pHash, otherwise a hint and an empty plan, as in `dupes --near`.
+    delete_worse_dupes=True PERMANENTLY deletes the worse ones instead — undo cannot
+    bring them back, and moves keeps status='deleted' for the audit.
 
-    F77 (manual_overrides, written by `sorta ui`): a per-file correction made by eye.
-    action='exclude' — the file is dropped from the plan before layout/near-dup
-    grouping/reports (it is not moved anywhere; counted in report.manual_excluded,
-    separately from --exclude); action='reassign' — its target folder is
-    `dest/<target>/<name>`, ahead of every automatic rule, with the usual name-conflict
-    suffixes (report.manual_reassigned). An invalid target (`..`, absolute, a drive) is
-    ignored with a warning and the file is laid out automatically — a correction can
-    never write outside dest. Files without a correction are laid out exactly as before.
-    action='photo' (F103) — the junk/document/product verdict is ignored for this file
-    and it is laid out like any other photo (by city/date); media_class is untouched.
-
-    keep_manual_excluded=True — for the web app's PREVIEW only: files marked "leave
-    alone" stay in the returned plan, carrying the target they WOULD have had and
-    reason='manual_exclude', so the UI can keep showing (and unmarking) them instead of
-    losing them from the grid the moment they are marked. Forced off whenever
-    apply=True, so a plan that actually moves files can never contain them.
-
-    F14 (--dedupe): among near-duplicates (pHash, only in the current --where
-    selection) the best by quality (width*height, then size) is sorted normally, the
-    rest are moved to _Duplicates/ (reason near_dup). Requires a computed pHash —
-    otherwise a hint and an empty plan (nothing is written to disk), like in
-    `dupes --near`. delete_worse_dupes=True (only with dedupe) instead of moving to
-    _Duplicates/ PERMANENTLY deletes the worse ones — not undoable via undo, the
-    status in moves is 'deleted' (audit).
-
-    F97 (should_cancel): a predicate polled at the START of each file's iteration,
-    before the moves row is written. On True the loop BREAKS — it does not raise, the
-    way the UI pipeline cancels itself out of a progress callback. An exception here
-    would fly past the code that closes the batch, and a batch left with
-    finished_at=NULL is exactly what undo (the tool the user reaches for after a
-    cancel) has to be able to read. The check is deliberately not inside `_transfer`:
-    a half-copied file must either finish or be removed, and `_copy_and_verify`
-    already guarantees that. report.cancelled says so, so "copied 4 000 of 22 364" can
-    be told apart from a plain "done".
-
-    F97 (resuming): a second apply into the same dest no longer duplicates what the
-    first one copied — see `_resolve_dst`/`report.skipped_already_copied`. Without it
-    cancelling would be useless: the run could be stopped but not continued.
+    F97 (should_cancel): polled at the START of each file, before the moves row is
+    written, and it BREAKS rather than raising — an exception would fly past the code
+    that closes the batch, and a batch with finished_at=NULL is what undo has to read
+    after a cancel. Not inside `_transfer`: a half-copied file must finish or be removed,
+    which `_copy_and_verify` guarantees. A second apply into the same dest does not
+    re-copy what the first wrote, without which a run could be stopped but not continued.
     """
     if mode not in MODES:
         raise ValueError(f"неизвестный режим {mode!r}; допустимы: {', '.join(MODES)}")
@@ -1528,8 +1329,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     if delete_worse_dupes and not dedupe:
         raise ValueError("--delete-worse-dupes требует --dedupe")
     lang = i18n.normalize_lang(cfg.raw.get("language"))
-    # sort.drop_unlocalized_district is not yet typed in SortConfig —
-    # read via getattr with a default of True.
+    # sort.drop_unlocalized_district is not typed in SortConfig yet.
     drop_unlocalized_district = bool(
         getattr(cfg.sort, "drop_unlocalized_district", True))
     if delete_worse_dupes:
@@ -1572,12 +1372,10 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                 kept_rows.append(r)
         rows = kept_rows
 
-    # F77: "leave alone" is not a target folder — such a file is not moved at all, so
-    # it leaves the plan here, before layout, near-dup grouping and the reports. Its
-    # own counter, separate from the --exclude directories above. keep_manual_excluded
-    # (preview only, never with apply — see the docstring) keeps the rows so the web app
-    # can still show the mark; they are then flagged reason='manual_exclude' below and
-    # take part in nothing that moves a file.
+    # F77: "leave alone" is not a target folder, so the file leaves the plan here —
+    # before layout, near-dup grouping and the reports. keep_manual_excluded (preview
+    # only) keeps the rows, flagged reason='manual_exclude' below, and they take part in
+    # nothing that moves a file.
     manual_excluded_count = 0
     keep_excluded = keep_manual_excluded and not apply
     if any(r["manual_action"] == "exclude" for r in rows):
@@ -1613,13 +1411,10 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     near_dup_best: dict[int, int] = {}
     near_dup_worse: dict[int, int] = {}
     if dedupe:
-        # junk/document/not_personal/dedup_delete are excluded from grouping BEFORE
-        # picking the best: otherwise such a file with a higher resolution could
-        # "win" the group and pull a normal photo into _Duplicates instead of its
-        # usual layout (they are all sorted separately, independent of near-dups);
-        # dedup_delete — an explicit manual user decision (U3b), it must not pull a
-        # near-dup group onto itself; manual_reassign (F77) — the same reasoning, and
-        # the near-dup role must not overwrite the folder the user chose by hand.
+        # These leave the grouping BEFORE the best is picked: such a file at a higher
+        # resolution would otherwise win its group and pull a normal photo into
+        # _Duplicates. dedup_delete and manual_reassign are decisions a person made, and
+        # a near-dup role must not overwrite the folder they chose.
         sortable_ids = {r["id"] for r, _parts, reason, _p, _e in row_targets
                         if reason not in ("junk", "document", "not_personal",
                                           "dedup_delete", "manual_reassign",
@@ -1649,12 +1444,10 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
             file_id=r["id"], src=src, dst=dst, in_place=in_place,
             target_rel=target_rel, reason=reason,
             taken_at=r["taken_at"], taken_at_confidence=r["taken_at_confidence"],
-            # G3: the city is carried in the layout language, not as the English
-            # anchor of `places` — the CSV/HTML reports and the web app's cards all
-            # read it from here, and a plan that lays a frame into «Санкт-Петербург»
-            # while its own Geo column says «St Petersburg» reads as two places.
-            # The country stays as the DB has it (an ISO cc or the online provider's
-            # full name): it is localized where it is FORMATTED, via i18n.country.
+            # G3: the city is carried in the layout language and not as the English
+            # anchor of `places` — a plan that files a frame under «Санкт-Петербург»
+            # while its Geo column says «St Petersburg» reads as two places. The country
+            # stays as the DB has it and is localized where it is FORMATTED.
             country=r["country"],
             city=_city_display_name(r["city"], r["city_geonameid"], lang, resolver),
             place_confidence=r["place_confidence"],
@@ -1682,8 +1475,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
                         manual_reassigned=manual_reassigned_count)
     excluded_note = (i18n.cli_text("cli.sort.plan_excluded", lang, n=excluded_count)
                      if excludes else "")
-    # F77: manual corrections are reported on their own, not merged into the excluded
-    # count — they are a person's decision, not a rule from the config.
+    # F77: reported on their own — a person's decision, not a rule from the config.
     manual_note = ""
     if manual_excluded_count or manual_reassigned_count:
         manual_note = i18n.cli_text("cli.sort.plan_manual", lang,
@@ -1720,9 +1512,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
             report.skipped_in_place += 1
             continue
         if item.already_copied:
-            # F97: the copy is already in the target from an earlier apply — leaving
-            # it alone is the whole point; a moves row here would only journal a
-            # non-event.
+            # F97: already in the target from an earlier apply — a moves row here would
+            # journal a non-event.
             report.skipped_already_copied += 1
             continue
         src_hash = _precheck_hash(conn, batch_id, item, report)
@@ -1775,38 +1566,29 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
          should_cancel: Callable[[], bool] | None = None) -> UndoStats:
     """Undo a batch by the journal in reverse order.
 
-    batch_id=None — the last batch that still has moves with status='done' (repeated
-    calls pop batches like a stack). A missing dst is logged (the status stays
-    'done'), the rollback continues. An occupied src is not overwritten — the file is
-    restored with a suffix _1, _2, ...
+    batch_id=None — the last batch that still has moves with status='done', so repeated
+    calls pop batches like a stack. A missing dst is logged, keeps its 'done' status and
+    does not stop the rollback; an occupied src is restored as _1, _2, ...
 
-    move_batches.operation='copy' (C16) — a different rollback: dst (the copy) is just
-    deleted after a hash check, files.path and src are not touched (the original
-    never moved). On a hash mismatch the copy is NOT deleted (the status stays
-    'done', failed++), since it is unclear what exactly changed.
-    operation='link' (F34) — the same path as 'copy': dst is a hardlink (or a copy
-    fallback), deleting dst is safe and does not touch the source data.
+    operation='copy' (C16) is a different rollback: dst is deleted after a hash check and
+    src is untouched, because the original never moved. On a mismatch the copy is NOT
+    deleted (status stays 'done', failed++) — it is unclear what changed. operation='link'
+    (F34) takes the same path: dst is a hardlink or a copy fallback, safe to delete.
 
-    F97 (should_cancel): polled at the start of each row, `break` and never an
-    exception — the same discipline as plan_and_sort, and for a stronger reason:
-    undoing a copy batch re-hashes every copy (blake3 over 220 GB is minutes to tens
-    of minutes), so it cannot be an operation the user is unable to stop. Rows already
-    processed keep their new status, the rest keep the old one, and a repeated undo
-    finishes the job — idempotency here matters more than speed.
+    F97 (should_cancel): polled per row, `break` and never an exception, as in
+    plan_and_sort and for a stronger reason — undoing a copy batch re-hashes every copy
+    (blake3 over 220 GB is minutes to tens of minutes). Processed rows keep their new
+    status, the rest keep the old one, and a repeated undo finishes the job.
 
-    F97 (the tail of an interrupted copy): rows still in status='planned' whose dst
-    exists. The journal is committed BEFORE the FS operation, so a run killed between
-    the two leaves a fully written file that undo used to walk straight past — an
-    orphan in the result that looks like an ordinary photo. Such a row is now handled
-    exactly like a 'done' one of the same operation, on one condition: the blake3 of
-    dst must match moves.hash. On a match it is our own complete file (deleted for
-    copy/link, moved back for move); on a mismatch it is a copy interrupted mid-write
-    — NOT deleted, reported in `stats.stray` for the user to look at by hand. A
-    'planned' row without a dst on disk means the operation never started; there is
-    nothing to undo and nothing to report.
+    F97 (the tail of an interrupted copy): rows still 'planned' whose dst exists. The
+    journal is committed BEFORE the FS operation, so a run killed between the two leaves a
+    written file undo used to walk past — an orphan that looks like an ordinary photo.
+    Such a row is treated like a 'done' one of the same operation on one condition: the
+    blake3 of dst matches moves.hash. On a mismatch it is a copy interrupted mid-write —
+    NOT deleted, reported in `stats.stray`. A 'planned' row with no dst never started.
 
-    F97: a batch left with finished_at=NULL (an interrupted apply) is closed here —
-    otherwise it goes on looking like "running right now" forever.
+    F97: a batch left with finished_at=NULL is closed here, or it goes on looking like
+    "running right now" forever.
     """
     if batch_id is None:
         row = conn.execute(
@@ -1839,8 +1621,8 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
             stats.missing += 1
             continue
         if operation in ("copy", "link") or tail:
-            # A tail row goes through the hash check whatever the operation is: only a
-            # full match proves the file at dst is ours and complete.
+            # A tail row is hashed whatever the operation is: only a full match proves
+            # the file at dst is ours and complete.
             try:
                 dst_hash = file_hash(_fs(dst))[0]
             except OSError as exc:
@@ -1888,76 +1670,56 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 
 # --- F34: album engine (export a person/event slice into a named folder) ----------
 #
-# An album is a targeted export of an index slice (not a full layout): all canonical
-# files of a person (accounting for cluster merges, F31) or an event, optionally
-# narrowed by --where, flat into dest/<album_name>/. The base city layout is not
-# touched; an album is an additional "view" (link/copy) or, on explicit request, a
-# removal from the pool (move). Journal/undo — the shared move_batches/moves
-# mechanism, operation='link'|'copy'|'move' (undo for 'link' — see _transfer/undo above).
+# An album is a targeted export of an index slice and not a full layout: the canonical
+# files of a person (cluster merges included, F31) or an event, optionally narrowed by
+# --where, flat into dest/<album_name>/. The base city layout is untouched — an album is
+# an extra view (link/copy) or, on request, a removal from the pool (move). Journal and
+# undo are the shared move_batches/moves mechanism.
 
-# F123: `animal` joins the pair. It is a slice like the other two — canonical files the
-# frame-quality stage marked as holding an animal — and the only thing that makes it
-# different is that there is nothing to select INSIDE it: the whole collection has one
-# animal view, so the selector is accepted and ignored.
-#
-# F129: `query` is the one whose slice is not written down anywhere. The selector is the
-# words a person typed, and what it selects is the top of a RANKING over the stored CLIP
-# vectors (search.py) — `features.search_limit` frames, best first. There is no threshold
-# in it and there will not be one: the score orders frames against each other and says
-# nothing in absolute terms, so the album is a sample to look through, not a claim that
-# each of its frames holds a cake. Everything else about it is an album like any other.
-#
-# F139: the rest of the slices the interface already draws. Nothing about them needed
-# inventing — the engine has gathered any slice into a folder since F34, and products,
-# screenshots, memes, blurred frames and closed eyes were left with a counter and a
-# delete button only because their views arrived after the album did.
+# F129: `query` is the one whose slice is written down nowhere. The selector is the words
+# a person typed and it selects the top of a RANKING over the stored CLIP vectors
+# (search.py), `features.search_limit` frames, best first. There is no threshold in it and
+# there will not be one: the score orders frames against each other and says nothing in
+# absolute terms, so the album is a sample to look through, not a claim about each frame.
 #
 # The class slices are one `media_class.verdict` each, over the same canonical, readable
-# population every other counter uses — so the album and the bucket's counter are the
-# same number by construction. `document` is deliberately absent from the tuple, and it
-# is a config question rather than a constant: `vlm.exclude_classes` (F133) already means
-# "this class is private", and the guard in `plan_album` reads that key, so a class moved
-# INTO it loses its album along with its preview instead of keeping one of the two.
+# population every other counter uses, so an album and its bucket's counter are the same
+# number by construction. `document` is deliberately absent and is a CONFIG question:
+# `vlm.exclude_classes` (F133) already means "this class is private" and `plan_album`
+# reads that key, so a class moved INTO it loses its album along with its preview.
 CLASS_ALBUM_KINDS = ("product", "screenshot", "meme")
 
-# The quality slices of the "Review" workspace (F126). They select on `frame_quality`,
-# and `blurred` selects through the SAME window the workspace lists — see
-# `quality_slice_where`. F177 removed a third one, `no_subject`: the question behind it is
-# no longer asked and the answers it had are gone, so the kind is now simply unknown — a
-# `sorta album no_subject` is refused like any other name that is not a slice.
+# The quality slices of the "Review" workspace (F126), selecting on `frame_quality`;
+# `blurred` uses the SAME window the workspace lists (`quality_slice_where`).
 #
-# F150 adds `low_resolution`, and it is the odd one of the three: nothing measured it.
-# The other two read a number a model or a filter left in `frame_quality`, while this one
-# reads `files.width * files.height` — what the picture IS, written down by the indexer.
-# There is therefore no accuracy to quote for it and no labelling that could produce one;
-# it is grouped here because the JOB is the same (look at a frame and decide whether it
-# stays), not because the signal is.
+# F150's `low_resolution` is the odd one: nothing measured it. The other two read a number
+# a model or a filter left behind, this one reads `files.width * files.height` — what the
+# picture IS. It is grouped here because the JOB is the same (look and decide whether the
+# frame stays), not because the signal is.
 QUALITY_ALBUM_KINDS = ("blurred", "eyes_closed", "low_resolution")
 
-# F152: `people`, `group` and `portrait` are read straight off the `faces` table, which a
-# detector filled — so membership is a FACT about boxes, not an estimate. What that fact
-# is worth was measured afterwards on 500 labelled frames: 77% of the frames a person
-# calls "people" and 64% of "children". The ceiling is the detector, not a threshold, and
-# the wording in the interface says "a face was found" rather than "your photos of
-# people". See FACE_SLICES below for the three rules.
+# F152: `people`, `group` and `portrait` come straight off the `faces` table, so
+# membership is a FACT about boxes rather than an estimate. What the fact is worth was
+# measured on 500 labelled frames: 77% of the frames a person calls "people", 64% of
+# "children". The ceiling is the detector, not a threshold, which is why the interface
+# says "a face was found". See FACE_SLICES below for the three rules.
 FACE_ALBUM_KINDS = ("people", "group", "portrait")
 
 ALBUM_KINDS = (("person", "event", "animal", "query")
                + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS + FACE_ALBUM_KINDS)
 ALBUM_MODES = ("link", "copy", "move")
 
-# The kinds with nothing to select INSIDE them: the collection has exactly one animal
-# view, one products bucket, one blurred list. An empty selector is accepted for these
-# (and only for these — for a person, an event or a query it is the subject itself, and
-# gathering "everything" would be the wrong answer to a client that lost it).
+# The kinds with nothing to select INSIDE them: one animal view, one products bucket, one
+# blurred list. An empty selector is accepted for these and only these — for a person, an
+# event or a query it IS the subject, and gathering "everything" would be the wrong
+# answer to a client that lost it.
 SELECTORLESS_ALBUM_KINDS = (("animal",) + CLASS_ALBUM_KINDS + QUALITY_ALBUM_KINDS
                             + FACE_ALBUM_KINDS)
 
-# The default album name of a slice that cannot name itself after a selector: a folder
-# name like any other the layout creates, so it comes from the catalog and follows
-# `language:`. `product` reuses the `products` folder the city layout already files that
-# bucket into — the album a person gathers by hand and the folder the plan builds should
-# not be two differently named things.
+# The default album name of a slice that cannot name itself after a selector — a folder
+# name like any other, so it comes from the catalog and follows `language:`. `product`
+# reuses the `products` folder of the city layout: the album gathered by hand and the
+# folder the plan builds must not be two differently named things.
 ALBUM_FOLDER_KEYS = {
     "animal": "animals",
     "product": "products",
@@ -1969,76 +1731,48 @@ ALBUM_FOLDER_KEYS = {
 }
 
 # F124: THE rule for "is there an animal in this frame", written down once. The user's
-# verdict (`manual_pet`, they looked at the frame) outranks the model's (it looked at the
-# frame), and COALESCE keeps the automatic answer wherever no manual row exists — a file
-# nobody has touched behaves exactly as it did before this feature.
+# verdict (`manual_pet`) outranks the model's, and COALESCE keeps the automatic answer
+# where no manual row exists. It is applied WHEN READ, never when written — `junk`
+# recomputes `frame_quality` from scratch and knows nothing about `manual_pet`, which is
+# why a mark survives a change of model, of prompts or of threshold.
 #
-# The rule is applied WHEN READ, never when written: `junk` still recomputes
-# `frame_quality` from scratch on every run and knows nothing about `manual_pet`, which is
-# precisely why a manual mark survives a change of model, of prompts or of the threshold.
+# F137 takes the automatic half the same way. `frame_quality.pet` holds the label the last
+# run wrote, with the thresholds that run had, and the thresholds are deliberately NOT
+# part of `quality_prompt_fingerprint` (they are what the stored scores exist to be
+# re-chosen with) — so a moved threshold left the database behind in silence: the live
+# archive kept 966 animals selected at a 0.30 candidate gate long after the gate went back
+# to 0.50, where the stored answers say 848. The label is therefore DERIVED here from
+# `pet_score`, `pet_vlm` and the `detections` row of F154, against the config in force
+# now. `frame_quality.pet` is still written and is still the column to grep by.
 #
-# F137 takes the automatic half the same way. It used to read `frame_quality.pet`, the
-# label the last run happened to write — with the thresholds that run happened to have.
-# The thresholds are deliberately NOT part of `quality_prompt_fingerprint` (they are what
-# the stored scores exist to be re-chosen with, and hashing them would send sharpness,
-# CLIP and the VLM round again on every edit), so a threshold that moved left the database
-# behind without a word: the live archive kept 966 animals selected at a 0.30 candidate
-# gate long after the gate went back to 0.50, where the stored answers say 848.
+# Both joins are LEFT joins: a frame marked by hand need not have a `frame_quality` row.
 #
-# So the label is DERIVED here, out of what the stage stores — `pet_score`, `pet_vlm` and,
-# since F160, the `detections` row F154 leaves behind — and out of the thresholds the
-# caller's config holds right now. `frame_quality.pet` is still written and is still the
-# column to grep a database by, but nothing reads it to decide anything; a consumer that
-# did would reopen the same gap somewhere else.
-#
-# Both joins are LEFT joins, and that is not decoration: a frame the user marked as an
-# animal need not have a `frame_quality` row at all (the stage never reached it), and it
-# belongs in the slice all the same.
-#
-# A SELECT of ids rather than a CTE, because it has to compose in two places — the album
-# query already opens with the recursive `_CTE`, and the tab needs the same rule inside a
-# SELECT list. It binds no parameters (the thresholds are interpolated as the floats they
-# are, the way F129 interpolates its ids), so it drops into either without disturbing the
-# positional parameters around it. The one consumer outside this module is ui.py (the
-# "Animals" tab and the Overview counter): two independent spellings of this expression
-# would drift, and the day they did the counter, the tab and the album would each report
-# a different collection.
+# A SELECT of ids rather than a CTE, because it composes in two places — the album query
+# already opens with the recursive `_CTE`, and the tab needs the rule inside a SELECT
+# list. It binds no parameters, so it disturbs no positional ones around it.
 
 
 def _sql_text(value: str) -> str:
-    """One string literal for an interpolated expression, quotes doubled.
-
-    These expressions bind no parameters (see the note above), so the one value in them
-    that comes from a config file — the detector's model name — is quoted here rather
-    than pasted. A name with an apostrophe in it must break nothing and must not be able
-    to close the literal it sits in.
-    """
+    """One string literal for an interpolated expression, quotes doubled. These
+    expressions bind no parameters, so the one value in them that comes from a config file
+    — the detector's model name — must not be able to close the literal it sits in."""
     return "'" + value.replace("'", "''") + "'"
 
 
-# F160: the animal classes a STORED box may carry, as a SQL list. The same boundary
-# `detect.ANIMAL_LABELS` draws for the Python spelling and read off it, so a class added
-# or removed there moves both halves of the rule at once. The writer already stores
-# nothing else (`detect.animal_boxes` filters at the model's edge and again on the way
-# into the column), and the check is repeated here for the same reason it is repeated
-# there: this is the expression a label is read off, and a `person` box that reached the
-# column somehow must not be able to become an animal.
+# F160: the animal classes a STORED box may carry, read off `detect.ANIMAL_LABELS` so a
+# class added there moves both halves of the rule at once. The writer already stores
+# nothing else; repeated here because this is where a label is READ, and a `person` box
+# that reached the column somehow must not be able to become an animal.
 _ANIMAL_LABELS_SQL = ",".join(_sql_text(label) for label in sorted(ANIMAL_LABELS))
 
 
 def _detections_exists_sql(fq: str, model: str, extra: str = "") -> str:
     """`this frame has a row from THIS detector` — correlated by `frame_quality.file_id`.
 
-    A subquery and not a join, so that every caller of `animal_auto_sql` keeps the query
-    it already had: the expression drops into the same place with the same aliases, and
-    nobody has to remember to LEFT JOIN a fourth table to get a correct answer. The
-    correlation goes through `{fq}.file_id` because that is the file id the expression is
-    already given (`frame_quality.file_id` IS `files.id`), and `detections.file_id` is the
-    primary key of its table, so each branch is one index lookup.
-
-    Keyed by `model`, exactly as `junk._DetectorPass._stored` keys incrementality: boxes
-    from another detector are not this one's answer, and a frame holding them reads as a
-    frame nobody has examined — never as a frame with no animal on it.
+    A subquery and not a join, so every caller of `animal_auto_sql` keeps the query it
+    already had instead of remembering to LEFT JOIN a fourth table. Keyed by `model`, as
+    `junk._DetectorPass._stored` keys incrementality: boxes from another detector are not
+    this one's answer, and a frame holding them reads as one nobody has examined.
     """
     return ("EXISTS(SELECT 1 FROM detections ad"
             f" WHERE ad.file_id = {fq}.file_id AND ad.model = {_sql_text(model)}{extra})")
@@ -2052,21 +1786,18 @@ def _best_box_is_an_animal_sql(threshold: float) -> str:
     """Does the best stored box of this row count as an animal at `threshold`?
 
     `boxes` is JSON written by `detect.pack_boxes`, best box first, so `$[0]` IS the best
-    one and no ordering has to be redone here. The guards around it are not decoration,
-    and each one is a way the two spellings could otherwise disagree:
+    one. Each guard is a way the SQL and Python spellings could otherwise disagree:
 
     * `json_valid` — `json_extract` RAISES on a column that is not JSON, and a broken row
-      must cost the frame its answer, never the query. `detect.unpack_boxes` is exactly
-      that lenient on the Python side, and for the same reason;
-    * the arity and the type of the score — `unpack_boxes` drops a row that is not six
-      values with a number where the score goes, and SQLite orders TEXT ABOVE every
-      number, so an unguarded `'x' >= 0.5` is TRUE and a garbled row would read as a
-      confident animal;
-    * the label — the same boundary `_ANIMAL_LABELS_SQL` states.
+      must cost the frame its answer, never the query (`detect.unpack_boxes` is as
+      lenient);
+    * the arity and the type of the score — SQLite orders TEXT ABOVE every number, so an
+      unguarded `'x' >= 0.5` is TRUE and a garbled row would read as a confident animal;
+    * the label — the boundary `_ANIMAL_LABELS_SQL` states.
 
-    Nested CASE rather than a chain of ANDs because only the branch a WHEN selects is
-    evaluated, while the terms of an AND may be reordered by the planner — and a guard
-    that runs after the thing it guards is not a guard.
+    Nested CASE rather than a chain of ANDs: only the branch a WHEN selects is evaluated,
+    while the planner may reorder the terms of an AND, and a guard that runs after the
+    thing it guards is not a guard.
     """
     return ("CASE WHEN json_valid(ad.boxes) THEN CASE"
             " WHEN json_array_length(ad.boxes, '$[0]') = 6"
@@ -2078,23 +1809,20 @@ def _best_box_is_an_animal_sql(threshold: float) -> str:
 def _detector_tier_sql(fq: str, detector: DetectorSettings | None) -> str:
     """The detector's branch of the CASE, or nothing at all when it is switched off.
 
-    Off means BYTE-FOR-BYTE the expression F137 shipped (the F145 rule, and the reason
-    this returns a string rather than a branch that happens to be false): with
-    `detect.enabled` or `features.detector` off, a `detections` table left behind by a run
-    that had them on decides nothing, and every verdict is the one the cheaper tiers give.
+    Off means BYTE-FOR-BYTE the expression F137 shipped (the F145 rule, and why this
+    returns a string rather than a branch that is false): a `detections` table left behind
+    by a run that had the detector on must decide nothing.
 
     On, the branch is `detect.cascade_label` in SQL: a frame this detector EXAMINED is
     decided by what it found, in both directions — an animal found under a CLIP score too
     low to count is an animal (87% recall against 33%), and a frame CLIP called an animal
-    with nothing detected on it stops being one (the precision half).
+    with nothing detected on it stops being one.
 
-    What is read is the BOXES and not the `label`/`score` columns, and that is the F137
-    property applied to a third threshold: those two columns hold the best box at or above
-    the threshold that was in force WHEN THE RUN HAPPENED, while `boxes` holds everything
-    above the storage floor, best first. Reading `$[0]` re-chooses
-    `features.detector_threshold` without a new pass over a single image — the same thing
-    `detect.best_animal` does over `unpack_boxes` on the Python side, which is what makes
-    the two answers the same answer.
+    The BOXES are read and not the `label`/`score` columns — the F137 property applied to
+    a third threshold. Those columns hold the best box above the threshold in force WHEN
+    THE RUN HAPPENED; `boxes` holds everything above the storage floor, best first, so
+    reading `$[0]` re-chooses `features.detector_threshold` with no new pass, exactly as
+    `detect.best_animal` does over `unpack_boxes`.
     """
     if detector is None or not detector.enabled:
         return ""
@@ -2107,45 +1835,34 @@ def animal_auto_sql(features: FeaturesConfig, fq: str = "afq",
                     detector: DetectorSettings | None = None) -> str:
     """The AUTOMATIC half of the animal rule — the whole cascade as a SQL expression.
 
-    `junk.pet_label` is the same rule in Python and is what the stage writes with; this is
-    what every reader decides by. Two spellings of one rule, and they are kept side by side
-    on purpose: the stage labels one frame it has just scored, a reader answers "which
-    files" over a whole index, and a Python loop over 20 000 rows is not the shape of that
-    question.
+    `junk.pet_label` is the same rule in Python and is what the stage WRITES with; this is
+    what every reader decides by. Two spellings on purpose: the stage labels one frame it
+    has just scored, a reader answers "which files" over a whole index. THEY ARE ONE RULE
+    AND THE SUITE PROVES IT ROW BY ROW — four sources decide this label (CLIP F122, the
+    VLM F130, the user F124, the detector F154), and F160 found the fourth missing from
+    this half: the stage ran, the answer was in the database, and no counter, tab or album
+    moved. `tests/test_detector_reaches_the_screen.py` runs its cases through both.
 
-    THEY ARE ONE RULE AND THE SUITE PROVES IT ROW BY ROW. Four sources decide this label by
-    now — the CLIP score (F122), the VLM answer (F130), the user (F124) and the detector
-    (F154) — and every one of them had to be written twice. F160 is the feature that found
-    the fourth missing from this half, which is the worst kind of gap: the stage ran, the
-    answer was in the database, and no counter, tab or album moved. So the case table lives
-    in `tests/test_detector_reaches_the_screen.py` and is run through BOTH spellings; a
-    fifth source that reaches only one of them fails that test rather than a user.
+    Precedence, highest first:
 
-    The order of precedence, highest first:
-
-    * an answer from the VLM check outranks everything below it (0.95 and "a plush toy" is
-      not an animal, 0.35 and "alive" is), and a box detector cannot be asked that question
-      at all — it calls a drawn cat a cat, which is the error F130 exists to remove;
+    * the VLM check outranks everything below it (0.95 and "a plush toy" is not an animal,
+      0.35 and "alive" is) — a box detector cannot be asked that question at all, it calls
+      a drawn cat a cat, which is the error F130 exists to remove;
     * then the detector, on the frames it examined — see `_detector_tier_sql`;
     * then `pet_score >= features.pet_threshold`, the rule that ran before any of this.
 
-    Each tier falls through to the next when it has nothing to say, and NEVER to "no
-    animal": a refusal is the fallback surviving, not a verdict.
+    A tier with nothing to say falls through to the next and NEVER to "no animal": a
+    refusal is the fallback surviving, not a verdict.
 
-    What F137 adds is the gate the VLM answer is read THROUGH: a stored answer counts only
-    for a frame the current `features.pet_candidate_threshold` would still show the model.
-    It is the same replay F130 chose that threshold with (the 0.30 → 0.50 rows of its table
-    are stored answers re-read at a higher gate, not a second pass), and without it the
-    candidate threshold would be the one setting that still needed a run to take effect.
-    In a database whose answers came from the config now in force the gate changes nothing:
-    every frame that has an answer cleared it to get one.
+    F137 adds the gate the VLM answer is read THROUGH — a stored answer counts only for a
+    frame the current `features.pet_candidate_threshold` would still show the model, which
+    is the replay F130 chose that threshold with. Without it the candidate threshold would
+    be the one setting that still needed a run to take effect.
 
     `fq` is the alias of the `frame_quality` row in the caller's query; `detector` is
-    `detect.detector_settings(cfg)` — both switches already ANDed together — and None means
-    the caller has no detector to speak of, which reads exactly as one switched off. Every
-    branch is NULL-safe: a frame with no row at all (no score, no answer, and therefore no
-    id to correlate a detection by) is not an animal, which is what the LEFT JOIN needs it
-    to be rather than a NULL that COALESCE would swallow.
+    `detect.detector_settings(cfg)`, and None reads as one switched off. Every branch is
+    NULL-safe: a frame with no row at all is not an animal, which is what the LEFT JOIN
+    needs rather than a NULL COALESCE would swallow.
     """
     return (f"CASE WHEN {fq}.pet_vlm IS NOT NULL"
             f" AND {fq}.pet_score >= {float(features.pet_candidate_threshold)!r}"
@@ -2162,48 +1879,37 @@ def animal_ids_sql(features: FeaturesConfig,
     LEFT JOIN manual_pet amp ON amp.file_id = af.id
     WHERE COALESCE(amp.is_animal, {animal_auto_sql(features, detector=detector)})"""
 
-# F139: the same idea as animal_ids_sql, for the quality slices — the membership
-# rule written down ONCE, in terms of the aliases `f` (files), `fq` (frame_quality) and
-# `mc` (media_class), and read by both consumers: the album here and the "Review"
-# workspace in ui.py, which draws the list and its counter from it. Two spellings would
-# drift, and the day they did the chip, the list and the album would each report a
-# different set of frames — which is the one thing this feature must not do, because the
-# whole point of these slices is that the decision is taken by eye, on what was shown.
+# F139: the same idea as animal_ids_sql for the quality slices — the membership rule
+# written ONCE, in terms of `f` (files), `fq` (frame_quality) and `mc` (media_class), read
+# by the album here and by the "Review" workspace in ui.py. The decision in these slices
+# is taken by eye, on what was shown, so the chip, the list and the album must be one set.
 #
 # Photographs only (F120: sharpness and open eyes mean nothing on a screenshot or a
 # receipt — and neither does a pixel count on a receipt, which is small on purpose),
-# canonical and readable. That population is shared by every kind here; what varies is
-# the FROM (`quality_slice_from`) and the one condition that names the slice.
+# canonical and readable. Only the FROM and the naming condition vary by kind.
 QUALITY_FROM = ("FROM files f JOIN frame_quality fq ON fq.file_id = f.id "
                 "JOIN media_class mc ON mc.file_id = f.id")
 
-# F150: the low-resolution slice joins NO `frame_quality`, and that is the feature rather
-# than an optimization. Its rule is `files.width * files.height`, two columns the indexer
-# fills for every photograph it reads, so a frame the quality stage never reached belongs
-# in this slice exactly like any other — requiring a `frame_quality` row would make the
-# one signal that needs no measurement depend on a measurement having been taken.
+# F150: the low-resolution slice joins NO `frame_quality`, and that is the feature and not
+# an optimization. Its rule is `files.width * files.height`, filled by the indexer for
+# every photograph, so requiring a `frame_quality` row would make the one signal that
+# needs no measurement depend on a measurement having been taken.
 LOW_RESOLUTION_FROM = "FROM files f JOIN media_class mc ON mc.file_id = f.id"
 
 QUALITY_POPULATION = "mc.verdict = 'photo' AND f.dup_of IS NULL AND f.error IS NULL"
 
 # The first two are `IS NOT NULL` and never a comparison against a stored verdict: NULL
-# means "not measured" (schema), and a frame nobody looked at must not be shown to a user
-# as an answer. F179 put the eyes on that footing too — the slice used to read
-# `fq.eyes_open = 0`, the answer a VLM gave about 135 frames before the question was
-# retired at 60% precision and 9% recall. It is now `eye_openness`, geometry over the eye
-# contour, and the number that decides membership is a WINDOW read at query time (see
-# below) rather than a verdict frozen into the row by whatever threshold the last run
-# happened to have — the F137 lesson, where a moved threshold left the live archive
-# selecting 966 animals at a gate of 0.30 long after the gate had gone back to 0.50.
+# means "not measured", and a frame nobody looked at must not be shown as an answer. F179
+# put the eyes on that footing too — the slice used to read `fq.eyes_open = 0`, the answer
+# a VLM gave about 135 frames before the question was retired at 60% precision and 9%
+# recall. It is now `eye_openness`, geometry over the eye contour, decided by a WINDOW
+# read at query time rather than a verdict frozen in by the last run's threshold.
 #
-# `low_resolution` states the same care in its own terms. `width > 0 AND height > 0`
-# excludes both a frame whose dimensions the index never learned (NULL — the pixels are
-# unknown, not few) and a zero that some broken header could leave behind; without it a
-# missing width would read as the smallest picture in the collection and sort to the very
-# top of the list. `media_type <> 'video'` is the brief's boundary written where it can be
-# tested: a video's resolution is a different question with a different answer, and today
-# it is also excluded by the `media_class` join (the classifier only ever writes rows for
-# photographs), which is exactly the kind of accident this line does not rely on.
+# `low_resolution`: `width > 0 AND height > 0` excludes both dimensions the index never
+# learned (NULL — unknown, not few) and a zero from a broken header, either of which would
+# sort to the very top of the list as the smallest picture in the collection.
+# `media_type <> 'video'` is the boundary written where it can be tested — today the
+# `media_class` join also excludes video, and that is the kind of accident not to rely on.
 _QUALITY_MEMBER = {
     "blurred": "fq.sharpness IS NOT NULL",
     "eyes_closed": "fq.eye_openness IS NOT NULL",
@@ -2222,34 +1928,28 @@ def quality_slice_where(kind: str, features: FeaturesConfig, *,
                         beyond: bool = False) -> tuple[str, list[object]]:
     """The WHERE of one quality slice + its parameters, against `quality_slice_from`.
 
-    Every number these rules need comes off `features:` and off nothing else, so a
-    threshold a person edits moves the list, its counter and its album together, with
-    nothing re-run in between.
+    Every number comes off `features:` and nothing else, so a threshold a person edits
+    moves the list, its counter and its album together with nothing re-run in between.
 
     `beyond` is the workspace's "show more": the blurred list opens to
     `features.blur_review_max` and the closed-eyes list to `features.eye_openness_max`
-    (F179), and each continues past its own window only when asked. A window is a prefix
-    of the same ordering, so continuing past it neither repeats a frame nor skips one, and
-    it bounds its own slice alone. An album is ALWAYS gathered inside the window (`beyond`
-    is never passed here by `plan_album`): the button collects what was shown, and past
+    (F179). A window is a prefix of the same ordering, so continuing past it neither
+    repeats a frame nor skips one. An album is ALWAYS gathered inside the window
+    (`plan_album` never passes `beyond`) — the button collects what was SHOWN, and past
     the window sit thousands of frames nobody has looked at.
 
     F157: for the blurred slice that window is the DEPTH OF THE FIRST PAGE and nothing
-    else. Membership is `fq.sharpness IS NOT NULL` — every measured photograph is in the
-    ranking — and the number only says how far it opens before the button. Measured on 300
-    hand-labelled frames, a cutoff there runs 29% precision at 12% recall (90) to 12% at
-    82% (700): precision falls slowly, recall climbs quickly, which is the shape that makes
+    else. Membership is `fq.sharpness IS NOT NULL`, every measured photograph in the
+    ranking. On 300 hand-labelled frames a cutoff runs 29% precision at 12% recall (90) to
+    12% at 82% (700) — precision falls slowly, recall climbs quickly, which is what makes
     a threshold the wrong instrument and a list the right one.
 
-    Both of those windows are `< the number`, on two scales that have nothing in common —
-    a variance in the hundreds and a ratio under one — because on both of them SMALLER is
-    the interesting end: a blurred frame has little variance, and a closed eye is a thin
-    slit.
+    Both windows are `< the number` on scales with nothing in common (a variance in the
+    hundreds, a ratio under one) because SMALLER is the interesting end of each.
 
-    F150: `low_resolution` binds a ceiling of its own, `features.low_resolution_mp`,
-    converted from megapixels to pixels here — the config speaks the unit a person reads
-    off a camera, the column holds the number the index wrote. It is NOT under `beyond`:
-    there the ceiling is the membership rule itself, not a window over a ranking.
+    F150: `low_resolution` binds `features.low_resolution_mp`, converted from megapixels
+    here — the config speaks the unit on a camera, the column holds what the index wrote.
+    It is NOT under `beyond`: there the ceiling IS the membership rule.
     """
     where = f"{QUALITY_POPULATION} AND {_QUALITY_MEMBER[kind]}"
     params: list[object] = []
@@ -2265,31 +1965,25 @@ def quality_slice_where(kind: str, features: FeaturesConfig, *,
 
 # --- F152: the face slices — three questions the `faces` table already answers ------
 #
-# On a hand-labelled sample of 200 frames of the live collection, 27.5% held people and
-# 22% held children: the largest populations of the archive, larger than animals,
-# products and screenshots together, and until now not one slice pointed at them. The
-# signal for them has been on disk since phase 3 — 12 952 real faces over 7 341
+# On a hand-labelled sample of 200 frames, 27.5% held people and 22% held children: the
+# largest populations of the archive, larger than animals, products and screenshots
+# together. The signal has been on disk since phase 3 — 12 952 real faces over 7 341
 # photographs — and it is precise BY CONSTRUCTION: a detector either found a box on this
-# frame or it did not. That is what separates these three from a query album, where the
-# membership of a frame is a position in a ranking.
+# frame or it did not, which is what separates these three from a query album.
 #
-# THE TRAP, and the reason `_REAL_FACE` exists at all: a `faces` row with `bbox = '[]'`
-# is not a face, it is the marker "this file was processed and had none" (see the faces
-# module docstring). On the live collection 24 195 files out of 24 196 carry one, so a
-# predicate that forgets to exclude it turns "photographs with people" into "every
-# photograph". This is F125's trap, spelled out again because it is the one way to get
-# this feature wrong.
-# One tuple, two names: the album machinery needs the kinds before this section (they are
-# part of ALBUM_KINDS), and the slice rules need them here. An alias rather than a second
-# literal — two tuples of the same three strings drift the moment a fourth appears.
+# THE TRAP, and why `_REAL_FACE` exists: a `faces` row with `bbox = '[]'` is not a face,
+# it is the marker "this file was processed and had none". On the live collection 24 195
+# files out of 24 196 carry one, so a predicate that forgets it turns "photographs with
+# people" into "every photograph" (F125's trap).
+# One tuple, two names: the album machinery needs the kinds above, the slice rules need
+# them here, and two tuples of the same three strings drift when a fourth appears.
 FACE_SLICES = FACE_ALBUM_KINDS
 
 _REAL_FACE = "fa.bbox != '[]'"
 
-# The area of a face box, in the pixels of the stored bbox — `[x1, y1, x2, y2]`, written
-# by json.dumps, so json_extract is the tool for it. abs() rather than a subtraction that
-# trusts the order of the corners: the share is the whole answer here, and a negative one
-# would silently drop a frame instead of failing.
+# The area of a face box, in the pixels of the stored bbox `[x1, y1, x2, y2]`. abs()
+# rather than a subtraction that trusts the order of the corners: a negative share would
+# silently drop a frame instead of failing.
 _FACE_AREA = ("abs(json_extract(fa.bbox, '$[2]') - json_extract(fa.bbox, '$[0]')) * "
               "abs(json_extract(fa.bbox, '$[3]') - json_extract(fa.bbox, '$[1]'))")
 
@@ -2297,12 +1991,10 @@ _FACE_AREA = ("abs(json_extract(fa.bbox, '$[2]') - json_extract(fa.bbox, '$[0]')
 def face_slice_ids_sql(cfg: Config, slice_: str) -> tuple[str, list[object]]:
     """The file ids of one face slice, as a SELECT plus its parameters.
 
-    The `ANIMAL_IDS_SQL` arrangement, with the one difference the thresholds force: two
-    of the three rules read a number out of `features:`, so this is a function returning
-    bound parameters rather than a constant string. Every consumer — the album kinds
-    below, the web app's slice panel and its "Overview" counters — goes through this one
-    function, because two spellings of "a photograph with a person on it" would be two
-    different collections the day one of them was edited.
+    The `ANIMAL_IDS_SQL` arrangement, except that two of the three rules read a number out
+    of `features:`, so this returns bound parameters rather than a constant string. Every
+    consumer goes through it: two spellings of "a photograph with a person on it" would be
+    two different collections the day one was edited.
 
     Each SELECT returns ONE row per file (`GROUP BY fa.file_id`), so it composes both as
     `f.id IN (…)` and as a subquery something counts.
@@ -2348,9 +2040,9 @@ class AlbumPlanItem:
     src: Path
     dst: Path
     persons: list[str]     # labels of all named people on the file (for the move check)
-    # (kept for every kind: the multi-person block on `move` is about who is in the
-    # frame, not about what selected it — an animal photo with two named people in it
-    # is exactly as ambiguous to carry off as a person album's.)
+    # Kept for every kind: the block on `move` is about who is in the frame, not about
+    # what selected it — an animal photo with two named people is as ambiguous to carry
+    # off as a person album's.
     multi_person: bool     # len(persons) >= 2 — with mode='move' such a file is blocked
     already_copied: bool = False   # F97: the album already holds this exact file
 
@@ -2368,18 +2060,15 @@ class AlbumReport:
     transferred: int = 0
     failed: int = 0
     blocked_multi: int = 0   # mode='move': files skipped due to multi-membership
-    # F97: re-running an album into the same folder no longer re-materializes what is
-    # already there — the same `_resolve_dst` rule as the city layout, on purpose: an
-    # album has no separate logic of its own.
+    # F97: the same `_resolve_dst` rule as the city layout, on purpose — an album has no
+    # separate logic of its own.
     skipped_already_copied: int = 0
 
 
 def _resolve_event_ids_and_name(conn: sqlite3.Connection, selector: str) -> tuple[list[int], str]:
-    """selector -> (event id, if selector is a number and such an id exists) | (all ids
-    with a casefold-matching name). Also returns the canonical name for the default
-    album_name: the exact event name on an unambiguous match, otherwise the original
-    selector (several differently-named events with the same id are impossible here,
-    but several ids can share one name — then the name is still unambiguous).
+    """selector -> the event id when it is a number that exists, else every id whose name
+    matches by casefold. The second value is the name for the default album_name: the
+    exact event name when the match is unambiguous, otherwise the selector itself.
     """
     if selector.isdigit():
         row = conn.execute(
@@ -2403,80 +2092,43 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
                file_ids: Sequence[int] | None = None) -> AlbumReport:
     """Build an album export plan; with apply=True materialize it (link/copy/move).
 
-    kind='person': selector — a person's name; the slice = canonical files (dup_of IS
-    NULL) that have a face in a cluster whose merged_into chain root (F31, via the
-    shared _CTE/_person_files) has label==selector (casefold).
-    kind='event': selector — an event name OR id; the slice = the event(s)' event_files.
-    kind='animal' (F123): the slice = the files the frame-quality stage's stored scores,
-    answers and (F160) detections make animals under the CURRENT thresholds and switches
-    (F137), corrected by the user's own marks (F124, `animal_ids_sql` — the same
-    expression the web app's tab and counter read, never a second copy of it). The selector is not used — the
-    collection has exactly one animal slice — and an empty string is accepted for it; the
-    default album name is the localized `animals` folder.
-    kind='query' (F129): selector — the words themselves; the slice = the top
-    `features.search_limit` canonical photographs of the CLIP ranking for those words
-    (search.py), and the default album name is the query. `encoder` is the CLIP text
-    encoder and exists for the same reason `detect_landmarks` takes a classifier: the real
-    one is loaded on demand, tests hand in a fake. It is ignored by every other kind.
-    kind in CLASS_ALBUM_KINDS (F139, `product`/`screenshot`/`meme`): the slice = the
-    frames the classifier filed under that verdict — `media_class.verdict = kind`, which
-    is what the bucket's counter counts, so the two cannot disagree. No selector; the
-    default album name is the class's folder from the catalog. A class listed in
-    `vlm.exclude_classes` is REFUSED here (ValueError): that key means "this class is
-    private" (F133) and a private bucket keeps its counter and gets neither a preview nor
-    an album — gathering somebody's passports into one folder in one click is exactly
-    what it exists to prevent.
-    kind in QUALITY_ALBUM_KINDS (F139, `blurred`/`eyes_closed`; F150,
-    `low_resolution`): the slice = the "Review" workspace's flat list of that name
-    (`quality_slice_where`, the shared rule), each inside its own window — blurred down to
-    `features.blur_review_max`, closed eyes down to `features.eye_openness_max` (F179) and
-    low-resolution under `features.low_resolution_mp` megapixels. No selector; the default
-    album name comes from the catalog. F157: for the blurred slice that window is the first
-    page of a ranking, and the album gathers exactly it — "the first N in order" is an
-    album, "everything below, for ever" is the whole collection.
-    kind in FACE_ALBUM_KINDS (F152, `people`/`group`/`portrait`): the slice =
-    `face_slice_ids_sql` — a fact of the `faces` table rather than an estimate, though a
-    fact that covers 77% of what a person would call a photo of people (measured). Like
-    `animal` they take no selector and their default name is a localized folder.
-    where (opt.) reuses parse_where as an additional AND condition on top of the slice
-    (person here is the subject, not a where field; --where can still carry its own
-    city/country/event/year/person conditions). junk is NOT filtered (these are the
-    person's/event's photos), but files.error IS NOT NULL is always excluded, as are
-    duplicates (dup_of).
+    The slice, by kind:
 
-    F193: `file_ids` (opt.) is the frames a person TICKED, and it is the same offer for
-    every kind — until now an album was all of a slice or none of it. It NARROWS: the ids
-    are ANDed onto the membership condition above and never substituted for it, so a
-    request sent past the interface cannot gather a file the slice does not hold, and no
-    guard a slice carries (the sensitive classes above, the window of a quality list) is
-    something a selection can walk around. `None` is the whole slice, exactly as before.
-    An EMPTY list is refused rather than gathered: "nobody ticked anything" and "this
-    slice holds nothing" are different sentences, only one of them is about the
-    collection, and a folder of zero files silently states the second (the F125 rule
-    about an unmeasured zero, applied to a selection).
+    person   — canonical files with a face in a cluster whose merged_into root (F31) has
+               label==selector, by casefold.
+    event    — the event_files of the event(s) the selector names or numbers.
+    animal   — `animal_ids_sql`, the expression the web app's tab and counter also read.
+    query    — the top `features.search_limit` photographs of the CLIP ranking for the
+               words of the selector (F129); `encoder` lets a test hand in a fake.
+    class    — `media_class.verdict = kind`, what the bucket's counter counts. A class in
+               `vlm.exclude_classes` is REFUSED (F133): gathering somebody's passports
+               into one folder in one click is what that key exists to prevent.
+    quality  — the "Review" list of that name, inside its own window.
+    face     — `face_slice_ids_sql`, a fact of the `faces` table that covers 77% of what a
+               person would call a photo of people (measured).
 
-    dry-run (apply=False, default) only prints the plan, writes nothing to the DB/FS.
-    apply=True journals into move_batches/moves BEFORE each operation
-    (move_batches.mode='album_<kind>', operation=mode) and calls _transfer.
+    The selectorless kinds accept an empty selector and name their folder from the
+    catalog. `where` is ANDed on top through parse_where; junk is NOT filtered (these are
+    the person's photos), while errors and duplicates always are.
 
-    mode='move' — a warning is always printed (dry-run and apply): the file leaves the
-    sort canon. Files with 2+ named people in the frame are NOT moved with move
-    (blocked, blocked_multi++) — it is ambiguous whose album it is; link/copy have no
-    such restriction.
+    F193: `file_ids` is the frames a person TICKED. It NARROWS — ANDed onto the membership
+    condition, never substituted for it, so nothing sent past the interface can gather a
+    file the slice does not hold or walk around a guard. `None` is the whole slice; an
+    EMPTY list is refused, because "nobody ticked anything" and "this slice holds nothing"
+    are different sentences and a folder of zero files states the second.
 
-    F97: an album goes through the same `_resolve_dst` as the city layout, so it
-    inherits the same rule — a file already sitting in the album folder byte-for-byte
-    is left alone (skipped_already_copied) instead of being re-materialized under a
-    `_1` name. No album-specific logic: gathering the same album twice was the same
-    bug as applying the same layout twice.
+    dry-run (default) prints the plan and writes nothing; apply=True journals into
+    move_batches/moves BEFORE each operation. mode='move' always warns — the file leaves
+    the sort canon — and a frame with 2+ named people is NOT moved, whose album it is
+    being ambiguous. F97: the same `_resolve_dst` as the city layout, so a file already in
+    the album folder byte-for-byte is left alone.
     """
     if kind not in ALBUM_KINDS:
         raise ValueError(f"неизвестный тип альбома {kind!r}; допустимы: {', '.join(ALBUM_KINDS)}")
     if mode not in ALBUM_MODES:
         raise ValueError(f"неизвестный режим альбома {mode!r}; допустимы: {', '.join(ALBUM_MODES)}")
-    # F193: refused here as well as in the web route, the arrangement the sensitive-class
-    # guard below already uses — this end answers the terminal, that end answers with a
-    # status code the interface can caption.
+    # F193: refused here as well as in the web route — this end answers the terminal,
+    # that end answers with a status code the interface can caption.
     if file_ids is not None and not file_ids:
         raise ValueError("пустой выбор кадров: не выбрано ни одного кадра для альбома")
     # F118: this function printed Russian whatever `language:` said — plan_and_sort read
@@ -2491,19 +2143,15 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
                         "WHERE casefold(label) = casefold(?))")
         subject_params = [selector]
     elif kind == "animal":
-        # F123/F124/F137: the one shared rule, and the thresholds it needs come off the
-        # config THIS call was handed — so a gather right after a threshold edit gathers
-        # what the tab is showing, with nothing re-run in between. dup_of/error are
-        # excluded below, with the other kinds. F160: the detector's tier comes off the
-        # same config, both of its switches at once (`detect.detector_settings`), so an
-        # album gathered with it on holds what the tab with it on lists.
+        # F123/F124/F137/F160: the one shared rule, with every threshold and both
+        # detector switches read off the config THIS call was handed — so a gather right
+        # after an edit gathers what the tab is showing, nothing re-run in between.
         resolved_name = i18n.folder(ALBUM_FOLDER_KEYS["animal"], lang)
         subject_cond = f"f.id IN ({animal_ids_sql(cfg.features, detector_settings(cfg))})"
         subject_params = []
     elif kind in CLASS_ALBUM_KINDS:
-        # F139/F133: the privacy guard is here rather than in the web app, because a
-        # button hidden in the browser is not a rule — a request sent past the interface
-        # would gather the folder all the same.
+        # F139/F133: the privacy guard is here and not in the web app — a button hidden
+        # in the browser is not a rule.
         if kind in set(cfg.vlm.exclude_classes):
             raise ValueError(
                 f"альбом класса {kind!r} запрещён: класс указан в vlm.exclude_classes")
@@ -2511,9 +2159,8 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         subject_cond = "f.id IN (SELECT file_id FROM media_class WHERE verdict = ?)"
         subject_params = [kind]
     elif kind in QUALITY_ALBUM_KINDS:
-        # The inner query brings its own `f`/`fq`/`mc`, which shadow the outer `f` for
-        # the length of the subquery — it is a plain uncorrelated set of ids, and the
-        # outer WHERE keeps applying `dup_of`/`error` to the file being planned.
+        # The inner query brings its own `f`/`fq`/`mc`, shadowing the outer `f` for the
+        # length of an uncorrelated subquery; the outer WHERE still applies dup_of/error.
         resolved_name = i18n.folder(ALBUM_FOLDER_KEYS[kind], lang)
         quality_cond, quality_params = quality_slice_where(kind, cfg.features)
         subject_cond = (f"f.id IN (SELECT f.id {quality_slice_from(kind)} "
@@ -2521,19 +2168,17 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         subject_params = list(quality_params)
     elif kind in FACE_ALBUM_KINDS:
         # F152: the marker row `bbox = '[]'` is excluded inside `face_slice_ids_sql` and
-        # nowhere else, so this album, the slice panel and the "Overview" counter cannot
-        # disagree about what a face is. dup_of/error are excluded below, as for every kind.
+        # nowhere else, so the album, the slice panel and the counter agree on what a face
+        # is.
         resolved_name = i18n.folder(_FACE_ALBUM_FOLDER[kind], lang)
         ids_sql, subject_params = face_slice_ids_sql(cfg, kind)
         subject_cond = f"f.id IN ({ids_sql})"
     elif kind == "query":
-        # F129: the ranking runs FIRST and the ids it returns are the slice. The ids are
-        # interpolated rather than bound because `features.search_limit` is a user-set
-        # number and SQLite has a ceiling on bound parameters (the reason
-        # `read_clip_embeddings` batches its own reads); they come straight out of
-        # `files.id`, so the int() is the whole sanitization there is to do.
-        # `search_text` raises when there is nothing to rank at all — a caller gets the
-        # reason (no vectors / vectors of another model) instead of an empty album.
+        # F129: the ranking runs FIRST and its ids are the slice. Interpolated rather than
+        # bound because `features.search_limit` is user-set and SQLite caps bound
+        # parameters; they come out of `files.id`, so int() is the whole sanitization.
+        # `search_text` raises when there is nothing to rank, so a caller gets the reason
+        # instead of an empty album.
         resolved_name = selector
         ids = [fid for fid, _score in search_text(cfg, conn, selector, encoder=encoder)]
         subject_cond = f"f.id IN ({','.join(str(int(i)) for i in ids)})" if ids else "0"
@@ -2551,10 +2196,8 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     full_cond = f"({subject_cond}) AND ({where_cond})"
     full_params: list[object] = [*subject_params, *where_params]
     if file_ids is not None:
-        # Interpolated rather than bound, for the reason the `query` kind above
-        # interpolates its ranking: a selection is as long as the person made it and
-        # SQLite has a ceiling on bound parameters. They come straight out of `files.id`,
-        # so int() is the whole sanitization there is to do.
+        # Interpolated for the reason the `query` kind above interpolates its ranking: a
+        # selection is as long as the person made it, and SQLite caps bound parameters.
         picked = ",".join(str(int(fid)) for fid in file_ids)
         full_cond += f" AND f.id IN ({picked})"
 

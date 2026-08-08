@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A budget for the prose of every module, with a ratchet on it** (F231d). The rule that
+  a comment stays only when it carries a measurement, a decision that reads against the
+  obvious, or a trap the next edit would spring was written down on 2026-08-08 — and
+  broken an hour later, by its own author, on six comments in a row. A rule without a
+  mechanical check goes stale even for the person who wrote it, so there is now a check.
+  `tests/prose_budgets.txt` holds one number per `sorta/**/*.py`: the lines of comment
+  plus the lines of docstring that module may hold. `tests/test_prose_budget.py` counts
+  the fact — the count IS the definition — and fails the gate on a module that grew,
+  naming the file, its budget and the number now. Under the budget is free and the run
+  says by how much, deliberately: a threshold that tracks the last measurement turns
+  every unrelated change into a red gate, the same reason the coverage floor sits below
+  the coverage the suite reaches. Lowering a number needs nothing but the shrunken file
+  (`python tests/test_prose_budget.py --update` writes them all); RAISING one is an edit
+  of that file, so growth arrives in a diff with a reason beside it instead of arriving
+  on its own. There is deliberately no limit on a single block: a trap sometimes needs
+  six lines, and a per-block limit would have it split in two rather than deleted.
+  The audit itself finished in the same pass, over the files waves A–C had not reached —
+  `sorter`, `cli`, `wizard`, `tiers`, `diagnostics`, `weights`, `exif`, `tray`, `runlog`
+  and `i18n`: **3 751 → 2 781 lines of prose (−26%)**, the package as a whole
+  **14 439 → 13 469**. Every number, date and rejected alternative stayed where it was —
+  the 1057 of 1059 undated files behind `_Unsorted/downloaded/`, the 10 021 files and
+  140.9 GB a second `sort --apply` used to re-copy, the 966/848 animals across the 0.30
+  and 0.50 gates, the r580 driver floor with both platform minors, the 5.65 s a shortcut
+  spent showing nothing. What went is the retelling of the code, the rhetoric around a
+  decision the sentence before it had already made, and the second and third accounts of
+  one defect in neighbouring modules.
 - **Each install is told the truth about itself, and the acceleration tier stops being a
   secret** (F230). Two paths are legitimate and neither may be broken to fix the other: a
   **checkout of the sources** (a developer, `uv sync --extra gpu`) and an **installed copy**

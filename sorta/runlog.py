@@ -1,35 +1,28 @@
-"""F69: a run log file — right now nothing of a run survives the console.
+"""F69: a run log file — without one, nothing of a run survives the console.
 
-Logging is wired to the console only (`config.configure_logging`), and nobody reads
-that console: `sorta ui` lives for hours in the background. On the 373 GB run of
-2026-07-25 the VLM fell back to the CLIP tier and the geo database did not load —
-both warnings went nowhere, so neither failure is reproducible after the fact, and
-the per-stage timings never existed at all.
+Logging used to be wired to the console only, and nobody reads that console: `sorta ui`
+lives for hours in the background. On the 373 GB run of 2026-07-25 the VLM fell back to
+the CLIP tier and the geo database did not load; both warnings went nowhere, so neither
+failure was reproducible afterwards, and the per-stage timings never existed at all.
 
 This module only ADDS a file sink: a rotating UTF-8 file on the ROOT logger, so the
-`_log` of every module (`geo`, `junk`, `faces`, …) lands in it. The rich console
-output is left exactly as it is — this is a second sink, not a replacement.
+`_log` of every module lands in it. The rich console output is untouched. No DB, no
+schema, no config — the overrides are `SORTA_LOG_FILE` / `SORTA_LOG_LEVEL` — and never
+fatal: a log file that cannot be opened must not take the tool down with it.
 
-Note for wiring up entry points: the file handler sees a record only if the logger
-that emitted it lets the record through first. `config.configure_logging` sets the
-level of the `sorta` logger (default `WARNING`), so warnings/errors always reach the
-file, while the INFO of `stage_timer`/`log_environment` needs `log_level: INFO`
-(the `logging:` config section is the orchestrator's part of F69).
+A trap when wiring an entry point up: the file handler sees a record only if the logger
+that emitted it let it through first. `config.configure_logging` sets the level of the
+`sorta` logger (default WARNING), so warnings and errors always reach the file, while the
+INFO of `stage_timer`/`log_environment` needs `log_level: INFO`.
 
-No DB, no schema, no config: the overrides live in the env vars `SORTA_LOG_FILE` /
-`SORTA_LOG_LEVEL`. Never fatal — a log file that cannot be opened must not take the
-tool down with it.
+F166: the file has to say what is happening NOW, not only what happened. Every timed unit
+— a stage and each phase inside it — writes `started`, a periodic `progress` and a
+summary the moment that unit is over. Writing the summary early is what stops a
+cut-short run from losing the timings of phases that had long finished.
 
-F166 adds the other half of the same idea: the file has to say what is happening NOW,
-not only what happened. Every timed unit of a run — a stage and each phase inside it —
-writes the same three kinds of line: `started`, a periodic `progress` (interval from
-`logging.progress_interval_sec`), and a summary written the moment that unit is over.
-The summary in particular is no longer held back until the stage ends, which is what
-used to make a cut-short run lose the timings of phases that had long finished.
-
-F159 closes the loop by READING those lines back (`read_measurements`). Once a machine
-has run a stage, the file holds how fast that stage is HERE — and a rate read from there
-beats any constant measured once on somebody else's collection and shipped in a wheel.
+F159 closes the loop by READING those lines back (`read_measurements`): once a machine
+has run a stage, the file holds how fast that stage is HERE, which beats a constant
+measured on somebody else's collection and shipped in a wheel.
 """
 from __future__ import annotations
 
@@ -66,12 +59,10 @@ _DATEFMT = "%Y-%m-%dT%H:%M:%S"
 # config.py) — lets tests and repeated calls tell them from foreign handlers.
 _HANDLER_MARK = "_sorta_runlog_handler"
 
-# Mirrors `geodata._DEFAULT_DATA_DIR` and its legacy fallback, in that order.
-# Deliberately not imported: `geodata` pulls in numpy/scipy at import time, and the
-# environment header must stay cheap and safe. The package directory comes FIRST — it
-# is where F65 ships the data; probing only the repository-root path (which is what
-# this did until 2026-07-26) made the header report a missing base on every correct
-# install, which is worse than useless in the one line meant to catch a real one.
+# Mirrors `geodata._DEFAULT_DATA_DIR` and its legacy fallback, in that order. Not
+# imported: `geodata` pulls in numpy/scipy at import time and the environment header must
+# stay cheap. The package directory comes FIRST — it is where F65 ships the data, and
+# probing only the repository-root path reported a missing base on every correct install.
 _GEO_DATA_DIR = Path(__file__).resolve().parent / "data" / "geo"
 _LEGACY_GEO_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "geo"
 _PLACES_FILE = "places.tsv"
@@ -143,10 +134,9 @@ def _lower_root_level(root: logging.Logger, level: int) -> None:
 def file_log_level(level: int | str | None = None) -> int:
     """Level the file sink will record at (argument, then SORTA_LOG_LEVEL, then INFO).
 
-    Callers need this to decide how far to lower their own logger: a record is
-    dropped by the level of the logger it was emitted on, long before any handler is
-    consulted, so a WARNING console setting would silently swallow the INFO stage
-    timings this module exists to write.
+    Callers need it to decide how far to lower their own logger: a record is dropped by
+    the level it was emitted on, long before any handler is consulted, so a WARNING
+    console setting would swallow the INFO stage timings this module exists to write.
     """
     return _resolve_level(level)
 
@@ -156,11 +146,9 @@ def setup_file_logging(
 ) -> Path:
     """Attach a rotating UTF-8 file sink (5 MB x 5) to the root logger.
 
-    Idempotent: a repeated call for the same path does not add a second handler
-    (otherwise every line would be written twice). Returns the path actually used.
-
-    Never raises: if the directory cannot be created / there are no rights / the disk
-    is full, the problem is reported to the console and work continues without a file.
+    Idempotent: a repeated call for the same path adds no second handler, or every line
+    would be written twice. Never raises — no rights, no directory or a full disk is
+    reported to the console and the work continues without a file.
     """
     target = _resolve_path(path)
     resolved_level = _resolve_level(level)
@@ -182,9 +170,8 @@ def setup_file_logging(
             target,
             maxBytes=_MAX_BYTES,
             backupCount=_BACKUP_COUNT,
-            # utf-8 is mandatory: the messages are full of Cyrillic, and the default
-            # file encoding on a Windows machine (cp1251) breaks the write — the same
-            # rake as the console crash behind `verbose=False` in junk.py.
+            # utf-8 is mandatory: the messages are full of Cyrillic and the default file
+            # encoding on Windows (cp1251) breaks the write.
             encoding="utf-8",
         )
     except Exception as exc:
@@ -203,11 +190,10 @@ def setup_file_logging(
 
 # --- F166: how often a running unit repeats its counters ----------------------------
 
-# Seconds between the periodic `progress` lines. 60 is the default because a stage this
-# tool runs is measured in tens of minutes: one line a minute is a heartbeat next to the
-# `stage=junk elapsed=1521.005` it explains, and not a channel of its own. 0 switches the
-# periodic line off entirely — `started` and the summaries are not affected by it, they
-# are the record of the run rather than its heartbeat.
+# Seconds between the periodic `progress` lines. 60, because a stage here is measured in
+# tens of minutes and one line a minute is a heartbeat next to the
+# `stage=junk elapsed=1521.005` it explains. 0 switches the periodic line off; `started`
+# and the summaries are the record of the run rather than its heartbeat and stay.
 DEFAULT_PROGRESS_INTERVAL_SEC = 60.0
 
 _progress_interval = DEFAULT_PROGRESS_INTERVAL_SEC
@@ -216,11 +202,10 @@ _progress_interval = DEFAULT_PROGRESS_INTERVAL_SEC
 def set_progress_interval(seconds: object) -> None:
     """Set the interval between periodic `progress` lines (`logging:` in config.yaml).
 
-    Pushed in from `config.load_config` rather than read from there: this module is a
-    leaf that every other one imports, and importing the config back would be a cycle.
-    Hence `object` and not a number — whatever the YAML happened to hold arrives here,
-    and garbage is ignored rather than fatal, the same rule as the level and the path.
-    A negative interval reads as "off" and not as "always".
+    Pushed in from `config.load_config` rather than read from there: this is a leaf module
+    and importing the config back would be a cycle. Hence `object` — whatever the YAML
+    held arrives here, and garbage is ignored rather than fatal. A negative interval reads
+    as "off", not as "always".
     """
     global _progress_interval
     try:
@@ -238,10 +223,9 @@ def progress_interval() -> float:
 class _Throttle:
     """One periodic line per interval, and no more (F166 requirement 7).
 
-    The interval is read at every check instead of being captured at construction, so
-    a config loaded after the first stage started still takes effect. The clock starts
-    at construction: the first `progress` line comes an interval after the `started`
-    line rather than right next to it.
+    The interval is read at every check rather than captured at construction, so a config
+    loaded after the first stage started still takes effect. The clock starts at
+    construction, so the first `progress` line comes an interval after `started`.
     """
 
     def __init__(self) -> None:
@@ -288,9 +272,8 @@ def _log_progress(label: str, elapsed: float, done: int | None,
                   total: int | None) -> None:
     """`<label> progress elapsed=<sec> processed=<n>[ total=<n>] rate=<n>/s` (F166).
 
-    One form for a stage and for a phase — `label` is `stage=<s>` or
-    `stage=<s> phase=<p>` — because the two are read together and a reader should not
-    have to learn a second shape to follow a run down into its phases.
+    One form for a stage and for a phase (`label` is `stage=<s>` or `stage=<s> phase=<p>`)
+    — the two are read together, and a second shape would have to be learned.
     """
     _LOG.info("%s progress elapsed=%.3f%s", label, elapsed,
               _counters(done, elapsed, total))
@@ -301,22 +284,17 @@ def log_phase(stage: str, phase: str, elapsed: float,
     """Write the timing of ONE phase inside a stage (F147).
 
     `stage=<name> phase=<name> elapsed=<sec> processed=<n> rate=<n>/s` — the same
-    key=value shape, the same logger and the same INFO level as the stage summary
-    above, so one grep collects both and both reach the file at the settings a long
-    production run is actually started with. A breakdown that only existed under DEBUG
-    would be a breakdown nobody has when they need it: the junk stage of 2026-08-02
+    key=value shape, logger and INFO level as the stage summary, so one grep collects
+    both at the settings a long production run is really started with. A breakdown only
+    under DEBUG is a breakdown nobody has when they need it: the junk stage of 2026-08-02
     took 2 070 seconds and the log held one line about it.
 
-    The unit count is not optional decoration — eighteen minutes over 1 362 model calls
-    and eighteen minutes over 22 096 frames are different news, and without the counter
-    they read the same.
+    The unit count is not decoration — eighteen minutes over 1 362 model calls and
+    eighteen minutes over 22 096 frames read the same without it.
 
-    A phase that did not run is simply never passed here. `elapsed=0` would read as
-    "it happened instantly"; absence reads as "it did not happen".
-
-    F166: written by `StagePhases` the moment the phase is over, not collected into a
-    batch at the end of the stage. The shape of the line is deliberately untouched —
-    every grep and every estimate built on F147 keeps working.
+    A phase that did not run is never passed here: `elapsed=0` would read as "instantly",
+    absence reads as "it did not happen". F166 writes it the moment the phase is over,
+    and the SHAPE of the line is untouched so every estimate built on F147 keeps working.
     """
     _LOG.info("stage=%s phase=%s elapsed=%.3f%s", stage, phase, elapsed,
               _counters(processed, elapsed))
@@ -324,13 +302,9 @@ def log_phase(stage: str, phase: str, elapsed: float,
 
 @dataclass
 class _PhaseTiming:
-    """F147: how long one phase of a stage ran, and over how many units.
-
-    Both halves are needed to price a phase. Seconds alone cannot tell an expensive
-    question asked rarely from a cheap one asked of every frame — eighteen minutes over
-    1 362 model calls and eighteen minutes over 22 096 frames look identical until the
-    denominator is written down next to them.
-    """
+    """F147: how long one phase of a stage ran, and over how many units — seconds alone
+    cannot tell an expensive question asked rarely from a cheap one asked of every
+    frame."""
 
     seconds: float = 0.0
     processed: int = 0
@@ -339,29 +313,20 @@ class _PhaseTiming:
 class StagePhases:
     """The phases of ONE stage: their clocks, their counters and their lines (F166).
 
-    F147 put this stopwatch inside the junk stage and read it once, at the end. That
-    made it an instrument that answers "where did the time go" exactly when the time
-    has already gone — and, worse, one that answers nothing at all if the run is cut
-    short: the orchestrator interrupted `junk` on 2026-08-03 and lost the numbers of
-    three phases that had finished long before. Here the same measurement writes as it
-    goes: a phase announces itself, repeats its counters once an interval, and is
-    written out the moment it is over.
+    F147 read this stopwatch once, at the end of the stage, so it answered nothing at all
+    when a run was cut short: `junk` was interrupted on 2026-08-03 and lost the numbers of
+    three phases that had finished long before. Here the measurement writes as it goes.
 
-    Two ways in, because a stage moves between its phases in two different ways:
+    Two ways in, because a stage moves between phases in two ways. `enter` relabels INSIDE
+    the current pass — the fast tier of `junk` interleaves CLIP -> OCR -> write per chunk
+    (F73) over one shared counter, so those three fill parallel buckets and none is
+    finished until the pass is. `start` opens a NEW pass over a population of its own,
+    which is the boundary at which the previous pass's phases really are over and where
+    their summaries are written; consecutive passes under one name share a bucket, because
+    the reader prices the name and not the call site.
 
-    `enter` relabels INSIDE the current pass. The fast tier of `junk` interleaves
-    CLIP -> OCR -> write per chunk (F73) over one shared counter of frames, so those
-    three accumulate seconds in parallel buckets and none of them is finished until the
-    pass is; re-entering a phase is the same phase, and its clock keeps adding up.
-
-    `start` opens a NEW pass over a population of its own. That is the boundary at
-    which the phases of the previous pass really are over, so it is where their
-    summaries are written. Consecutive passes under the same name (the deep tier asks
-    the VLM over three different candidate lists) keep sharing one bucket, exactly as
-    F147 decided — the name is what the reader prices, not the call site.
-
-    The stage owns the object and drives it; `stage_timer` only needs to be able to
-    close it, which is what `track_phases` registers it for.
+    The stage owns the object and drives it; `track_phases` registers it so `stage_timer`
+    can close it.
     """
 
     def __init__(self, stage: str) -> None:
@@ -371,9 +336,8 @@ class StagePhases:
         self._timings: dict[str, _PhaseTiming] = {}
         self._open: str | None = None
         self._since = 0.0
-        # The denominator and the position of the CURRENT pass — shared by the phases
-        # that interleave inside it, which is why they live here and not in a bucket.
-        # These are the very numbers `/api/process/status` reports as done/total.
+        # The denominator and position of the CURRENT pass, shared by the phases that
+        # interleave inside it — the same pair `/api/process/status` reports.
         self._total: int | None = None
         self._done: int | None = None
         self._throttle = _Throttle()
@@ -409,8 +373,8 @@ class StagePhases:
         self._switch(phase)
         if new:
             # No total: a phase reached mid-pass knows the size of the pass, not of its
-            # own share of it, and a denominator that does not belong to the numerator
-            # is worse than none.
+            # own share, and a denominator that does not fit its numerator is worse
+            # than none.
             _log_started(self._label(phase), None)
 
     def start(self, phase: str, total: int | None = None) -> None:
@@ -422,21 +386,17 @@ class StagePhases:
         _log_started(self._label(phase), total)
 
     def count(self, phase: str, units: int) -> None:
-        """Add `units` to what `phase` has processed (F147).
-
-        Separate from `enter` because the number is rarely known when the phase opens:
-        the CLIP phase begins at the top of a chunk and only decides a few lines later
-        how many of its frames actually need encoding.
-        """
+        """Add `units` to what `phase` has processed (F147). Separate from `enter` because
+        the number is rarely known when the phase opens: the CLIP phase begins at the top
+        of a chunk and decides a few lines later how many frames need encoding."""
         self._timings.setdefault(phase, _PhaseTiming()).processed += units
 
     def step(self, done: int, total: int | None = None) -> None:
         """Where the current pass is NOW — throttled into one line per interval.
 
         `done`/`total` are the pass counters and not the bucket's own `processed`: they
-        are what the stage is asked about while it runs, and they are the same pair
-        `/api/process/status` serves, which is the point of doing this here rather than
-        in a counter of the log's own.
+        are what the stage is asked about while it runs, and the same pair
+        `/api/process/status` serves.
         """
         self._done = done
         if total is not None:
@@ -448,10 +408,10 @@ class StagePhases:
     def _retire(self, keep: str | None = None, reason: str | None = None) -> None:
         """Write out every phase that is over and forget it.
 
-        `reason` (`failed`, `interrupted (...)`) applies to the phase that was still on
-        the clock — it did not finish, and a plain summary would claim it did. The ones
-        that finished earlier get their ordinary summary either way: keeping THOSE is
-        the whole reason this happens on the way out of a broken run at all.
+        `reason` (`failed`, `interrupted (...)`) applies to the phase still on the clock:
+        it did not finish, and a plain summary would claim it did. The ones that finished
+        earlier get their ordinary summary — keeping THOSE is why this runs at all on the
+        way out of a broken run.
         """
         stopped: str | None = None
         if self._open is not None and self._open != keep:
@@ -513,14 +473,9 @@ def _close_phases(stage: str, reason: str | None) -> None:
 
 @dataclass
 class StageResult:
-    """The handle a stage gets from `stage_timer`.
-
-    The caller fills in `processed` when the count is known only at the end
-    (`result.processed = 1234`) — the summary line then also carries the rate.
-
-    F166: `progress` does the same job while the stage is still running, so a stage
-    with no phases of its own is no less readable in the log than one that has them.
-    """
+    """The handle a stage gets from `stage_timer`. The caller fills in `processed` when
+    the count is known only at the end, and the summary line then carries the rate too;
+    F166's `progress` does the same while the stage is still running."""
 
     name: str
     total: int | None = None
@@ -529,12 +484,9 @@ class StageResult:
     _throttle: _Throttle = field(default_factory=_Throttle, compare=False, repr=False)
 
     def progress(self, done: int, total: int | None = None) -> None:
-        """Report where the stage is NOW — throttled into one line per interval.
-
-        Silent while a phase of this stage is open: the phase line carries the very
-        same counters and a name on top of them, and two heartbeats for one stage
-        would be noise rather than detail (F166 requirement 7).
-        """
+        """Report where the stage is NOW — throttled into one line per interval, and
+        silent while a phase of this stage is open: that line carries the same counters
+        plus a name, and two heartbeats for one stage are noise (F166 requirement 7)."""
         self.processed = done
         if total is not None:
             self.total = total
@@ -550,10 +502,8 @@ class _Observed:
     """A stage's progress callback with the run log tapped into it (F166).
 
     A tap and not a counter of its own: the log is fed by the same call that moves the
-    bar, so the two cannot come to disagree about where a run is — the rule F147 set
-    for the phase names, applied to the numbers next to them. Everything the wrapped
-    callback did still happens, including raising the pipeline's cancellation from
-    inside `ui`.
+    bar, so the two cannot disagree about where a run is. Everything the wrapped callback
+    did still happens, including raising the pipeline's cancellation from inside `ui`.
     """
 
     def __init__(self, result: StageResult, callback: Callable[..., None]) -> None:
@@ -581,22 +531,20 @@ def stage_timer(name: str, *, total: int | None = None) -> Iterator[StageResult]
     """Time a pipeline stage and write a machine-greppable summary line.
 
     The summary keeps a stable `stage=<name> elapsed=<sec> processed=<n>` prefix, so a
-    profile of a run can be collected from the file without parsing prose. Nothing is
-    ever swallowed — whatever came out is re-raised.
+    profile of a run can be collected without parsing prose. Nothing is swallowed.
 
-    Failures are logged as ERROR with a traceback; a BaseException that is NOT an
-    Exception is control flow, not breakage (KeyboardInterrupt, SystemExit, and the
-    pipeline's own cancellation, which subclasses BaseException precisely so that an
-    `except Exception` inside a stage cannot eat it). Pressing "Cancel" used to print
-    a full ERROR traceback, which reads as a crash for something the user asked for.
+    A failure is ERROR with a traceback; a BaseException that is NOT an Exception is
+    control flow rather than breakage (KeyboardInterrupt, SystemExit, and the pipeline's
+    own cancellation, which subclasses BaseException so an `except Exception` inside a
+    stage cannot eat it). "Cancel" used to print a full traceback, which reads as a crash
+    for something the user asked for.
 
-    F166: whichever of the three ways out it takes, the phases of the stage are closed
-    FIRST — their lines belong above the total they add up to, and on the interrupted
-    path they are the numbers the run would otherwise have taken down with it.
+    F166: on all three ways out the phases are closed FIRST — their lines belong above
+    the total they add up to, and on the interrupted path they are the numbers the run
+    would otherwise take down with it.
     """
     result = StageResult(name=name, total=total)
-    # Anything a previous run of this stage left registered is stale by definition: the
-    # stage is starting over, and its old phases must not be written into this run.
+    # Whatever a previous run of this stage left registered is stale by definition.
     _drop_phases(name)
     started = result.started = time.perf_counter()
     _log_started(f"stage={name}", total)
@@ -626,17 +574,16 @@ def stage_timer(name: str, *, total: int | None = None) -> Iterator[StageResult]
 # --- F159: reading the timings back, so an estimate stops carrying constants --------
 #
 # Everything above WRITES timings; this reads them. The run screen used to price a stage
-# with a number measured once, on a developer's collection, and baked into `ui.py` — 1.32
-# seconds for a comparative question that really costs 0.45 s plus 1.03 s per frame in it,
-# a 3.7x understatement on the collection it was checked against. The file already holds
-# the true rate of every stage ON THIS MACHINE, which is the number a person deciding
-# whether to wait four hours actually wants.
+# with a number measured once on a developer's collection and baked into `ui.py` — 1.32
+# seconds for a comparative question that really costs 0.45 s plus 1.03 s per frame, a
+# 3.7x understatement. The file already holds the true rate of every stage ON THIS
+# MACHINE, which is what somebody deciding whether to wait four hours wants.
 #
 # Only the SUMMARY lines are read. `started` and `progress` say nothing about a finished
-# unit; `failed` and `interrupted (...)` describe one that stopped early, where the
-# seconds are real but the denominator is not — a rate built from those would promise a
-# run faster than any run has ever been. The three are told apart by shape: a summary is
-# the only line where `elapsed=` follows the unit immediately.
+# unit, and `failed`/`interrupted (...)` describe one that stopped early, where the
+# seconds are real but the denominator is not — a rate from those would promise a run
+# faster than any run has been. A summary is the only line where `elapsed=` follows the
+# unit immediately, which is how the shapes are told apart.
 _MEASUREMENT_RE = re.compile(
     r"^(?P<at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+\s+\w+\s+\S+\s+\[[^\]]*\]\s+"
     r"stage=(?P<stage>[^\s=]+)(?:\s+phase=(?P<phase>[^\s=]+))?"
@@ -648,30 +595,22 @@ _MEASUREMENT_RE = re.compile(
 # collide with the pattern above.
 _BUILD_RE = re.compile(r"^\s+sorta:\s*(?P<build>\S+)\s*$")
 
-# How long a timing is worth trusting, in days. Ninety is deliberately generous: the guard
-# that actually matters is the build below, and this one only catches the case that guard
-# cannot see — the same version of the tool, running months later on a machine whose disk,
-# GPU or collection has moved on since.
+# How long a timing is worth trusting, in days. Ninety is generous on purpose: the guard
+# that matters is the build below, and this one only catches what that cannot see — the
+# same version months later, on a machine whose disk, GPU or collection has moved on.
 DEFAULT_MEASUREMENT_MAX_AGE_DAYS = 90.0
 
 
 def measurement_unit(stage: str, phase: str | None = None) -> str:
-    """The key one timed unit is remembered under — the log's own `stage=`/`phase=`.
-
-    Callers name what they want to price in the same words the file uses, so there is no
-    second vocabulary to keep in step with `log_phase`.
-    """
+    """The key one timed unit is remembered under — the log's own `stage=`/`phase=`, so a
+    caller names what it prices in the file's words and there is no second vocabulary to
+    keep in step with `log_phase`."""
     return f"stage={stage}" if phase is None else f"stage={stage} phase={phase}"
 
 
 @dataclass(frozen=True)
 class Measurement:
-    """How fast one timed unit ran here, the last time it ran (F159).
-
-    `processed` is not decoration: seconds alone cannot tell an expensive question asked
-    rarely from a cheap one asked of every frame, which is exactly why F147 wrote the
-    denominator next to the numerator in the first place.
-    """
+    """How fast one timed unit ran here, the last time it ran (F159)."""
 
     unit: str
     seconds: float
@@ -686,13 +625,12 @@ class Measurement:
 
 
 def _usable(seconds: float, processed: int) -> bool:
-    """A rate needs both halves, and neither of them may be zero.
+    """A rate needs both halves, and neither may be zero.
 
-    `processed=0` cannot be divided by. `elapsed=0.000` reads as "instant", and the far
-    likelier reading is a stage that recognised its whole population as already done
-    (the F68 incremental skip) — pricing the next run at nothing on the strength of that
-    is the one thing an estimate may not do. Falling back to the shipped default is the
-    conservative direction, and it costs only accuracy.
+    `processed=0` cannot be divided by, and `elapsed=0.000` far likelier means a stage
+    that recognised its whole population as already done (the F68 incremental skip) than
+    an instant one — pricing the next run at nothing on that is the one thing an estimate
+    may not do. The shipped default costs accuracy and nothing else.
     """
     return seconds > 0 and processed > 0
 
@@ -700,11 +638,10 @@ def _usable(seconds: float, processed: int) -> bool:
 def _measurement_files(path: Path) -> list[Path]:
     """The log and its most recent backup, oldest first.
 
-    The backup is read because rotation is not aware of runs: the 5 MB boundary can fall
-    between the environment header of a run and the stage summaries that belong to it,
-    and a measurement whose build is unknown is a measurement this module refuses to use.
-    One backup is enough for that — going further back would only offer timings older
-    than the ones already in hand.
+    The backup is read because rotation knows nothing of runs: the 5 MB boundary can fall
+    between a run's environment header and its stage summaries, and a measurement with an
+    unknown build is one this module refuses to use. One backup is enough — further back
+    lie only timings older than those already in hand.
     """
     return [p for p in (path.with_name(path.name + ".1"), path) if p.is_file()]
 
@@ -712,9 +649,8 @@ def _measurement_files(path: Path) -> list[Path]:
 def measurement_files(path: str | Path | None = None) -> list[Path]:
     """The files `read_measurements` would read, oldest first; empty — there are none.
 
-    Exposed so a caller that CACHES an answer built on them can key that cache on their
-    state, the way the web app keys the run estimate on the state of the index: a run
-    that has just written its own timings must not be answered with the old prices.
+    Exposed so a caller that CACHES an answer built on them can key the cache on their
+    state: a run that has just written its own timings must not get the old prices.
     """
     return _measurement_files(_resolve_path(path))
 
@@ -728,19 +664,18 @@ def read_measurements(
 ) -> dict[str, Measurement]:
     """The latest usable timing of every stage and phase in the run log, by unit name.
 
-    A stale measurement is worse than none, because it is believed. Two guards, and both
-    are the `frame_quality.source` device — an answer is kept only while the question
-    behind it is still the same one:
+    A stale measurement is worse than none, because it is believed. Two guards, both the
+    `frame_quality.source` device — an answer is kept only while its question is:
 
     * the BUILD. Every run opens with an environment header carrying `sorta: <version>`,
-      and a timing from another version is a timing of a stage that may since have been
-      rewritten. Deliberately blunt: it discards timings that were still valid rather
-      than keep one that is not, and a discarded timing costs only the default estimate.
-      A timing no header vouches for is discarded on the same rule.
+      and a timing from another version times a stage that may have been rewritten since.
+      Blunt on purpose: it throws away timings that were still valid rather than keep one
+      that is not, and a discarded timing costs only the default estimate. A timing no
+      header vouches for goes by the same rule.
     * the AGE, `max_age_days`. 0 or less switches it off.
 
-    Never raises and never blocks: an unreadable, missing or half-written log is simply a
-    machine with no measurements yet, which is a case the caller has to handle anyway.
+    Never raises and never blocks: an unreadable, missing or half-written log is a machine
+    with no measurements yet, which the caller has to handle anyway.
     """
     wanted = build if build is not None else _running_build()
     cutoff: datetime | None = None
@@ -797,12 +732,9 @@ def _running_build() -> str:
 
 
 def _package_origin() -> str:
-    """Where the running `sorta` package was imported from.
-
-    This is the line that tells an installed uv-tool apart from the repository working
-    tree — the root cause of F65 (the geo database was missing from the wheel while the
-    same command worked from the repo).
-    """
+    """Where the running `sorta` package was imported from — the line that tells an
+    installed uv-tool apart from the repository working tree, which was the root cause of
+    F65 (the geo database missing from the wheel while the repo worked)."""
     package_dir = Path(__file__).resolve().parent
     parts = {part.lower() for part in package_dir.parts}
     if (package_dir.parent / "pyproject.toml").exists():
@@ -816,12 +748,9 @@ def _package_origin() -> str:
 
 def _gpu_line(probe: bool = False) -> str:
     """torch/onnxruntime CUDA availability — probed, or read off what is already loaded.
-
-    Asking the diagnostics layer costs 13.96 s (measured 2026-08-08, warm cache, fast
-    machine) because the answer means importing torch. A run pays that anyway one line
-    later and passes `probe=True`; a launch does not need torch at all and gets what is
-    in `sys.modules`. `sorta doctor` always probes, on request.
-    """
+    Probing means importing torch and costs 13.96 s (measured 2026-08-08, warm cache,
+    fast machine). A run pays that anyway a line later and asks for it; a launch does
+    not. `sorta doctor` always probes, on request."""
     if not probe and "torch" not in sys.modules and "onnxruntime" not in sys.modules:
         return "not loaded (ask `sorta doctor` for the real answer)"
     try:
@@ -860,15 +789,10 @@ def _safe(getter: Callable[[], object]) -> str:
 
 
 def log_environment(probe_gpu: bool = False) -> None:
-    """Write the environment header once at the start of a run.
-
-    Exactly what was missing to catch F65 and the VLM fallback right away. Never raises:
-    an unavailable library becomes a line rather than an exception. Emitted as ONE record
-    so it is not interleaved with the pipeline thread.
-
-    `probe_gpu` is for a caller that is about to load torch anyway — a run. A launch
-    leaves it off and gets whatever is already imported; see `_gpu_line`.
-    """
+    """Write the environment header once at the start of a run — what was missing to
+    catch F65 and the VLM fallback on the spot. Never raises, and it is ONE record so the
+    pipeline thread cannot interleave with it. `probe_gpu` is for a caller about to load
+    torch anyway; see `_gpu_line`."""
     try:
         from . import __version__
 
