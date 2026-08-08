@@ -1851,27 +1851,24 @@ class FrameQuality:
     """One `frame_quality` row as Python types — None stays None, and is not a False."""
     file_id: int
     sharpness: float | None = None
-    # F155: the same laplacian inside the sharpest face box of the frame, or None for "not
-    # measured" — no face, no faces run, or a crop below FACE_CROP_MIN_PX. It ranks the
-    # blur list and decides nothing: ~25% of what it flags is actually blurred.
+    # F155: the same laplacian inside the sharpest face box, or None for "not measured" —
+    # no face, no faces run, a crop below FACE_CROP_MIN_PX.
     face_sharpness: float | None = None
-    # F179: the eye opening over the eye width of the LARGEST face, or None for "not
-    # measured" — no face, no faces run, a crop below FACE_CROP_MIN_PX, or no 106-point
-    # model on this machine. Small means closed; it ranks the slice and decides nothing.
+    # F179: the eye opening of the LARGEST face, small = closed, or None for the same
+    # reasons plus "no 106-point model on this machine".
     eye_openness: float | None = None
     pet: str | None = None
     pet_score: float | None = None
-    # F130: real | depiction | none, or None for "the model was not asked about this
-    # frame" — which is what tells a rejected frame from one below the candidate threshold.
+    # F130: real | depiction | none, or None for "not asked" — which is what tells a
+    # rejected frame from one below the candidate threshold.
     pet_vlm: str | None = None
+    # The three retired questions (F186, F177, F122): read like every other column so that
+    # a row is a row, but nothing asks them and all three are NULL everywhere.
     eyes_open: bool | None = None
-    # The two retired questions (F177, F122). The columns are read like every other one
-    # so that a row is a row, but nothing asks them any more; `has_subject` was emptied
-    # of the answers it did collect by the v26 migration, so both are NULL everywhere.
     has_subject: bool | None = None
     is_accidental: bool | None = None
-    # F140: the zero-shot "screenshot rather than photograph" margin, or None for "not
-    # computed" — the toggle is off, or this frame has no stored CLIP vector to read it off.
+    # F140: the zero-shot "screenshot rather than photograph" margin, or None — the toggle
+    # is off, or the frame has no stored CLIP vector to read it off.
     junk_score: float | None = None
     source: str = QUALITY_SOURCE_CLASSIC
 
@@ -1884,9 +1881,8 @@ def _bool_or_none(value: object) -> bool | None:
 def _parse_bbox(raw: object) -> FaceBox | None:
     """One `faces.bbox` string -> (x1, y1, x2, y2); None for anything that is not one.
 
-    Tolerant on purpose. The column is a JSON list written by another stage, and a row
-    this cannot read has to cost that frame its face number and nothing else — the
-    laplacian over the whole frame, the pets, the verdict all stand.
+    Tolerant on purpose: the column is JSON written by another stage, and a row this
+    cannot read costs that frame its face number and nothing else.
     """
     try:
         values = json.loads(str(raw))
@@ -1905,14 +1901,10 @@ def read_face_boxes(conn: sqlite3.Connection,
                     file_ids: Sequence[int]) -> dict[int, FaceBoxes]:
     """The real faces of `file_ids`, with the size of the frame they were found in (F155).
 
-    `bbox = '[]'` is EXCLUDED, and that is not tidiness: the marker means "this file was
-    processed and had no face in it", and on the live collection 24 195 of 24 196 files
-    carry one (F125's trap). A predicate that forgets it answers "every file has a face"
-    and then tries to crop a zero-length box out of every frame in the archive.
-
-    A file with no width/height recorded is left out too — the boxes are in pixels of that
-    frame, so without its size there is nothing to scale them by. Files missing from the
-    result simply have no faces: the caller reads it with `NO_FACES` as the default.
+    `bbox = '[]'` is EXCLUDED (see NO_FACES_BBOX — F125's trap), and so is a file with no
+    width/height recorded: the boxes are in pixels of that frame, and without its size
+    there is nothing to scale them by. A file missing from the result has no faces; the
+    caller reads it with `NO_FACES` as the default.
     """
     out: dict[int, FaceBoxes] = {}
     for part in batched(list(file_ids), 500):
@@ -1937,9 +1929,9 @@ def read_frame_quality(conn: sqlite3.Connection,
                        file_ids: Sequence[int] | None = None) -> dict[int, FrameQuality]:
     """`frame_quality` by file_id — the reading side of the "NULL is not False" rule.
 
-    The consumers of this table (F114: the web app, the sorter, the events stage) must not
-    each rebuild the 0/NULL distinction out of raw rows; one of them would get it wrong
-    exactly once and quietly discard frames nobody had looked at.
+    The consumers (F114: the web app, the sorter, the events stage) must not each rebuild
+    the 0/NULL distinction out of raw rows; one of them would get it wrong exactly once
+    and quietly discard frames nobody had looked at.
     """
     sql = ("SELECT file_id, sharpness, face_sharpness, eye_openness, pet, pet_score,"
            " pet_vlm, eyes_open, has_subject, is_accidental, junk_score, source"
@@ -1979,16 +1971,9 @@ def read_frame_quality(conn: sqlite3.Connection,
 
 
 # The fast half of the cascade writes the row; the model halves update it in place. Every
-# model column is reset to NULL by the fast half on purpose: this run has not asked yet,
-# and a leftover answer from a previous run would describe a frame the current settings
-# may never look at. F130 puts `pet_vlm` under the same rule — the fast half re-walks a
-# frame only when its own marker went stale (a prompt edit among other things), and a
-# stale prompt is exactly when a stored answer must not survive.
-#
-# F186: `eyes_open` joins `has_subject` and `is_accidental` as a column this statement
-# only ever sets to NULL. All three questions are retired and nothing updates them
-# afterwards any more — NULL is what "not asked" means here, and it is now the only value
-# the three of them ever hold.
+# model column is reset to NULL here on purpose: this run has not asked yet, and the fast
+# half re-walks a frame only when its own marker went stale — a prompt edit among other
+# things, which is exactly when a stored answer must not survive.
 _QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, face_sharpness,
                          eye_openness, pet, pet_score, pet_vlm, eyes_open, has_subject,
                          is_accidental, junk_score, source, updated_at)
@@ -2001,9 +1986,8 @@ _QUALITY_UPSERT = """INSERT INTO frame_quality (file_id, sharpness, face_sharpne
                          has_subject = NULL, is_accidental = NULL, junk_score = NULL,
                          source = excluded.source, updated_at = excluded.updated_at"""
 # F130: the answer AND the label it decides, written together — `pet` is a function of
-# `pet_vlm` (see pet_label), so leaving the two to be reconciled by a later reader would
-# be two sources of truth for one fact. `pet_score` is untouched: it is what a threshold
-# is re-chosen from, and a rejected frame keeps it like every other one.
+# `pet_vlm` (see pet_label), and reconciling the two in a later reader would be two sources
+# of truth for one fact. `pet_score` is untouched: it is what a threshold is re-chosen from.
 _PET_ANSWER_UPDATE = """UPDATE frame_quality
                         SET pet_vlm = ?, pet = ?, updated_at = ?
                         WHERE file_id = ?"""
@@ -2014,10 +1998,8 @@ _JUNK_SCORE_UPDATE = """UPDATE frame_quality
                         SET junk_score = ?, updated_at = ?
                         WHERE file_id = ?"""
 # F154: the animal label after the detector has spoken. `pet_vlm` is untouched — the two
-# tiers answer different questions (which object is in the frame; whether the animal in it
-# is alive) and overwriting one with the other would lose the fact that the model was
-# asked. `pet_score` is untouched for the same reason it survives the F130 check: it is
-# what a threshold is re-chosen from.
+# tiers answer different questions (which object is in the frame; whether it is alive), and
+# overwriting one with the other would lose the fact that the model was asked.
 _PET_DETECTOR_UPDATE = """UPDATE frame_quality
                           SET pet = ?, updated_at = ?
                           WHERE file_id = ?"""
@@ -2033,50 +2015,36 @@ _DETECTIONS_UPSERT = """INSERT INTO detections (file_id, label, score, boxes, mo
                             updated_at = excluded.updated_at"""
 
 # The verdict of one frame. F68: `tier` is written on every path and always equals the
-# run's active tier — a row the active tier touched must never stay unmarked (or marked by
-# an older tier), otherwise it is reclassified on every run. Lifted out of classify() by
-# F140 for the same reason F90 lifted the gate functions: a second writer of this row
-# (the rescue) must write it the same way, and a paraphrase would drift.
+# run's active tier — a row the active tier touched but left unmarked is reclassified on
+# every run. Lifted out of classify() by F140 for the reason F90 lifted the gate functions:
+# the rescue writes this row too, and a paraphrase would drift.
 #
-# HOW THIS ROW IS WRITTEN, AND WHY IT IS NOT BATCHED (F164). The F147 phase table read
-# `junk_write 470,3 s / 24 196 frames / 19,4 ms` and the obvious suspect was a commit per
-# row — 19,4 ms for one INSERT would be more than CLIP spends on a frame in the same
-# stage (11,7 ms on the GPU). It is not what happens. Every write of the fast pass goes
-# through ONE transaction: sqlite3 is left at its default isolation, so no statement
-# autocommits, `with conn:` sits OUTSIDE the chunk loop in classify(), and the single
-# COMMIT happens when that loop is done. The deep tier and every later pass have one
-# `with conn:` each, for the same reason.
-#
-# Measured on this machine (scripts/measure_junk_write.py, 24 196 rows, this exact
-# statement, a throwaway database on the same disk, three runs):
+# WHY IT IS NOT BATCHED (F164). The F147 phase table read `junk_write 470,3 s / 24 196
+# frames / 19,4 ms` and the obvious suspect was a commit per row. It is not what happens:
+# every write of the fast pass goes through ONE transaction (`with conn:` sits outside the
+# chunk loop, sqlite3 is at its default isolation so nothing autocommits), and the deep
+# tier and every later pass have one each. Measured on this machine
+# (scripts/measure_junk_write.py, 24 196 rows, this exact statement, three runs):
 #
 #     commit strategy            commits   ms/row, best run   ms/row, worst run
 #     one transaction (today)          1              0,004               0,005
 #     one commit per 16 rows       1 513              0,003               0,157
 #     one commit per row          24 196              0,014               2,271
 #
-# The spread on the two lower rows is not noise to be averaged away: it is the operating
-# system deciding whether a COMMIT really reaches the disk, and it is exactly what makes
-# committing often a gamble — two of three runs never flushed and one paid 55 s for the
-# same 24 196 rows. The row that matters has no spread at all: what the stage does today
-# costs 0,004-0,005 ms whatever the disk feels like, i.e. 0,1 s of the 470,3 s the phase
-# was billed for — 0,02%.
+# The spread on the lower two rows is the operating system deciding whether a COMMIT really
+# reaches the disk — two of three runs never flushed, one paid 55 s for the same rows —
+# which is what makes committing often a gamble. Today's shape has no spread at all: 0,1 s
+# of the 470,3 s the phase was billed for, 0,02%. It also gives for free the property a
+# batch size would break: a run that dies mid-pass leaves the whole collection with its
+# PREVIOUS verdicts, never half of today's and half of yesterday's.
 #
-# So the lever the brief proposed was already pulled, and there is nothing left to batch.
-# A batch size in the config would buy those 0,02% back at best, would be slower whenever
-# the flush is real, and would break the property this shape gives for free: a run that
-# dies mid-pass leaves the whole collection with its PREVIOUS verdicts, never half of
-# today's and half of yesterday's.
-#
-# Where the phase's seconds actually are: `report.enter(CLASSIFY_PHASE_WRITE)` covers the
-# per-frame loop that also measures the laplacian (`_QualityPass.measure`) and stores the
-# CLIP vector (`_EmbeddingPass.store`). The same script prices those on real frames of the
-# live collection: 26,9 ms for the sharpness of one frame, 0,06 ms for its vector, 0,005
-# ms for its verdict. 79% of the frames of that run got a quality row (19 216 of 24 196),
-# and 0,79 x 26,9 = 21,3 ms against the 19,4 ms the phase was billed — the laplacian IS
-# the phase. Making it cheaper is a question about `features.sharpness_max_edge` and the
-# preview cache, not about SQLite; whoever picks it up should start from that number and
-# not from this statement.
+# WHERE THE PHASE'S SECONDS ACTUALLY ARE, because the name says otherwise:
+# `report.enter(CLASSIFY_PHASE_WRITE)` covers the per-frame loop that also measures the
+# laplacian and stores the CLIP vector. The same script prices them on live frames — 26,9
+# ms for the sharpness of a frame, 0,06 ms for its vector, 0,005 ms for its verdict — and
+# 79% of that run's frames got a quality row (19 216 of 24 196): 0,79 x 26,9 = 21,3 ms
+# against the 19,4 ms billed. The laplacian IS the phase, so making it cheaper is a
+# question about `features.sharpness_max_edge` and the preview cache, not about SQLite.
 _MEDIA_CLASS_UPSERT = """INSERT INTO media_class (file_id, verdict, source, score,
                                                   updated_at, tier)
                          VALUES (?, ?, ?, ?, ?, ?)
@@ -2089,8 +2057,8 @@ def _unused_classifier(paths: list[str], prompts: list[str]) -> np.ndarray:
     """The classifier of a run that asks CLIP nothing — being called is a bug, not a case.
 
     A backfill of sharpness alone (F113, both toggles off, junk already classified) needs
-    no model, and building one would be the entire cost of such a run. This stands in for
-    it so nothing downstream has to carry an optional classifier around.
+    no model, and building one would be the entire cost of such a run. This stands in so
+    that nothing downstream has to carry an optional classifier around.
     """
     raise AssertionError(  # pragma: no cover — unreachable by construction
         "junk: CLIP вызван в прогоне, где он не нужен")
@@ -2101,22 +2069,15 @@ def quality_prompt_fingerprint(pets: bool, *, verify_pets: bool = False,
                                rescue_vlm: bool = False) -> str:
     """Eight hex characters over the TEXT that decides what lands in `frame_quality`.
 
-    F120: the marker used to name the tier and nothing else, so editing a prompt left
-    every stored answer looking fresh. That is not hypothetical — F120 rewrote the pet
-    group (five anti-classes for drawings, toys, food, screens and clothing) and the old
-    labels would have survived it untouched, because a tier called `vlm` still equals a
-    tier called `vlm`. Nobody should have to remember to empty a table by hand after
-    editing a prompt.
+    F120: the marker used to name the tier and nothing else, so editing a prompt left every
+    stored answer looking fresh — F120 rewrote the pet group with five new anti-classes and
+    the old labels would have survived it untouched, because a tier called `vlm` equals a
+    tier called `vlm`. Nobody should have to remember to empty a table by hand.
 
-    Only the text that actually reaches the stored columns is hashed: the CLIP prompt
-    list (the pet group writes `pet`/`pet_score`, the junk group decides through the
-    subject score who is asked at all) and, when the model runs, the question it is
-    asked. Sharpness depends on neither, which is why the `classic` tier carries no
-    fingerprint and a sharpness-only collection is not invalidated by prompt work.
-
-    F186 dropped the `with_vlm` half of that — the frame-quality prompt is retired, so
-    there is no longer a question of the model whose wording could reach `eyes_open`. The
-    hash a collection already carries does not move: `with_vlm=False` appended nothing.
+    Only text that actually reaches the stored columns is hashed: the CLIP prompt list and,
+    when the model runs, the question it is asked. Sharpness depends on neither, which is
+    why the `classic` tier carries no fingerprint and a sharpness-only collection is not
+    invalidated by prompt work.
     """
     parts = list(clip_prompts(pets))
     if pets:
@@ -2125,20 +2086,15 @@ def quality_prompt_fingerprint(pets: bool, *, verify_pets: bool = False,
         # meaning of `frame_quality.pet` without touching a prompt, and a marker blind to
         # that would have left every row saying `cat` and looking fresh.
         parts.append(PET_CLASS)
+    # Each question below enters the hash ONLY when it was actually asked: a collection
+    # measured without a check must not be invalidated by a prompt nobody put to it.
     if verify_pets:
-        # F130: the check's question decides `pet_vlm` and, through it, `pet` — so an edit
-        # to its wording has to invalidate the rows it produced, exactly as an edit to the
-        # CLIP prompts does. Only when the check actually ran: a collection measured
-        # without it must not be invalidated by a prompt nobody asked.
         parts.append(_PET_VLM_PROMPT)
     if rescue:
-        # F140: these prompts decide `junk_score` and, through the threshold, which frames
-        # are shown to the model at all — so an edit has to invalidate the stored scores
-        # (brief requirement 1) and, with them, the candidate list a later run rebuilds.
+        # F140: these decide `junk_score` and, through the threshold, the candidate list a
+        # later run rebuilds (brief requirement 1).
         parts.extend(junk_rescue_prompts())
     if rescue_vlm:
-        # And the question itself, only when it is asked: a collection scored without the
-        # deep tier must not be invalidated by wording nobody used on it.
         parts.append(_JUNK_RESCUE_PROMPT)
     raw = "\x00".join(parts)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
@@ -2158,18 +2114,11 @@ def _quality_source(use_clip: bool, pets: bool, pet_ask: PetAskFn | None = None,
                     rescue_ask: JunkAskFn | None = None) -> str:
     """The tier marker this run writes — and therefore what it considers up to date.
 
-    F130: the pet check is a model too, so a run that only does that one still writes the
-    `vlm` tier — the marker names WHICH TIER processed the row, and a row whose animal
-    label came from the model did not come from the CLIP tier.
-
-    F140: the rescue score is a CLIP signal (text vectors against a stored image vector),
-    so switching it on moves the row to the `clip` tier at worst — and to `vlm` when the
-    deep tier is there to answer for its candidates. Either way the fingerprint carries the
-    prompts, which is what makes the score recomputable after an edit.
-
-    F186 removed the third asker (the frame-quality question) from the list. A collection
-    marked by a run that asked only the pet check or only the rescue keeps the marker it
-    has: the fingerprint of those runs never carried the retired prompt.
+    The marker names WHICH TIER processed the row, so the pet check alone is enough to
+    make it `vlm` (F130). The rescue score is a CLIP signal — text vectors against a
+    stored image vector — so it reaches `clip` at worst and `vlm` when the deep tier is
+    there to answer for its candidates. Either way the fingerprint carries the prompts,
+    which is what makes a score recomputable after an edit.
     """
     if pet_ask is not None or rescue_ask is not None:
         fingerprint = quality_prompt_fingerprint(
@@ -2184,102 +2133,63 @@ def _quality_source(use_clip: bool, pets: bool, pet_ask: PetAskFn | None = None,
     return QUALITY_SOURCE_CLASSIC
 
 
-# F100: the phases `classify` reports. Stable identifiers, not captions — the served
-# UI localizes them (ui._UI_STRINGS), the CLI labels them for the rich bar
-# (cli._CLUSTER_PHASE_LABELS is the precedent). The keys mirror the three parts F73
-# split the per-chunk loop into, plus the deep tier.
-#
-# The difference from faces.CLUSTER_PHASE_* (F84) is the point of this feature: there
-# the long phase (HDBSCAN) is ONE blocking call, so it can only show a stopwatch;
-# here EVERY phase is measurable, the VLM one included — its candidate list is known
-# before the loop starts, because the gate has already run. That is also why the VLM
-# phase needs a caption more than the others: it is the only one that changes the
-# denominator under the user (24 196 frames -> 7 896 candidates on the live run), and
-# a bar that restarts from zero without a word reads as a bar that lost its place.
+# F100: the phases `classify` reports — stable identifiers and not captions, localized by
+# the served UI (ui._UI_STRINGS) and labelled by the CLI. The VLM phase is the one that
+# changes the denominator under the user (24 196 frames -> 7 896 candidates on the live
+# run), and a bar that restarts from zero without a word reads as a bar that lost its place.
 CLASSIFY_PHASE_CLIP = "junk_clip"
 CLASSIFY_PHASE_OCR = "junk_ocr"
 CLASSIFY_PHASE_VLM = "junk_vlm"
-# F205: the model is asked in THREE places, and until this feature all three reported
-# under the name above. The run of 2026-08-05 measured what that cost: the deep tier ran
-# 7 951 frames at 1.4 frames/s (pipelined), the animal check 2 997 at 0.42 and the rescue
-# 1 284 at 0.41-0.49 — one name over three prices that differ by a factor of three, so no
-# reader of the log and no arithmetic over it could price any of them. A phase name IS the
-# unit a measurement is filed under (runlog.measurement_unit), which is why three prices
-# need three names.
-#
-# The deep tier KEEPS `junk_vlm`. It is the one of the three whose seconds a log written
-# before this split can still be trusted for — it dominated that shared bucket — and
-# renaming it would throw those measurements away and buy nothing. The two questions of
-# the back half get the new names, and a log without them simply has no measurement for
-# them, which the estimate already handles by falling back to its default.
+# F205: three model passes, three names. The run of 2026-08-05 had all three under the name
+# above — the deep tier 7 951 frames at 1.4 frames/s (pipelined), the animal check 2 997 at
+# 0.42, the rescue 1 284 at 0.41-0.49 — so no arithmetic over that log could price any of
+# them. The deep tier KEEPS `junk_vlm`: it dominated the shared bucket, so older logs can
+# still be trusted for it, and renaming would throw those measurements away for nothing.
 CLASSIFY_PHASE_PETS_VLM = "junk_pets_vlm"
 CLASSIFY_PHASE_RESCUE_VLM = "junk_rescue_vlm"
-# F164: this phase is NOT the cost of writing. Its seconds are the per-frame loop the
-# writes share with the laplacian and the stored vector, and the laplacian is ~99% of
-# them — see the measured breakdown at _MEDIA_CLASS_UPSERT before reading a number under
-# this name as a number about SQLite.
+# F164: this phase is NOT the cost of writing — the laplacian is ~99% of it. See the
+# measured breakdown at _MEDIA_CLASS_UPSERT before reading a number under this name as a
+# number about SQLite.
 CLASSIFY_PHASE_WRITE = "junk_write"
-# F141: the search index — a phase of its own and not part of `junk_clip`, because it is
-# the one pass here that is a SECOND encode of the same frames rather than a use of the
-# first. Its seconds are the price of `features.search_index` and nothing else, and that
-# is exactly the number somebody deciding whether to switch it on needs to read.
+# F141/F154: a phase each, because their seconds price one toggle each —
+# `features.search_index` (the only SECOND encode of the same frames) and
+# `features.detector` (a second model over a short list, 83.8 ms where a VLM costs 0.78 s).
 CLASSIFY_PHASE_SEARCH = "junk_search"
-# F154: the object detector over the candidates of the animal query — its own phase for
-# the reason the search index has one. It is neither the fast CLIP pass (it is a second
-# model over a short list) nor the VLM tier (it is not a VLM, and it costs 83.8 ms where
-# that one costs 0.78 s), so its seconds price `features.detector` and nothing else.
 CLASSIFY_PHASE_DETECT = "junk_detect"
 
-# F147: the name this stage is timed under in the run log — the same one the pipeline
-# calls it by (`cli._pipeline_steps`), because the phase lines are read next to the
-# `stage=junk elapsed=...` line they break down, and a second spelling would break
-# every grep that puts the two together.
+# F147: the name this stage is timed under, the same one the pipeline calls it by
+# (`cli._pipeline_steps`) — the phase lines are read next to the `stage=junk elapsed=...`
+# line they break down, and a second spelling would break every grep over the two.
 CLASSIFY_STAGE = "junk"
 
-# F165: and the name of the half that runs BEFORE faces — the verdicts alone. The phases
-# keep their `junk_*` identifiers: they are the same passes, run by the same function, and
-# renaming them per caller would break the captions (i18n `cli.phase.junk_*`), the UI
-# labels and every grep over a run log written before this split. What the stage name
-# decides is which `stage=` the phase lines are filed under, and that one has to match the
-# `stage_timer` the caller opened or the F166 close-out would look for phases nobody
-# registered.
+# F165: and the half that runs BEFORE faces. The phases keep their `junk_*` identifiers —
+# same passes, same function, and renaming per caller would break the captions (i18n
+# `cli.phase.junk_*`), the UI labels and every older run log. What the stage name decides
+# is which `stage=` the phase lines are filed under, and it has to match the `stage_timer`
+# the caller opened or the F166 close-out looks for phases nobody registered.
 VERDICTS_STAGE = "classify"
 
 
 class _PhaseProgress:
     """Phase + `(done, total)` reporting for `classify` (F100).
 
-    The phase channel is optional and duck-typed exactly as in faces (F84): a callback
-    that can show a caption exposes `phase(name)` (progress.TaskProgress,
-    ui._StageProgress), a bare `(done, total)` function simply gets no phases, and
-    without a callback at all every method is a no-op — the CLI path, the quiet mode
-    and most of the suite call classify() that way.
+    The phase channel is optional and duck-typed as in faces (F84): a callback that can
+    show a caption exposes `phase(name)`, a bare `(done, total)` function gets no phases,
+    and without a callback every method is a no-op — the CLI path, the quiet mode and most
+    of the suite call classify() that way.
 
-    Unlike clustering, the fast-tier phases interleave INSIDE the per-chunk loop
-    (CLIP -> OCR -> write, F73) over one shared counter of frames, so `enter` only
-    relabels and never touches the count — a bar that restarted three times per chunk
-    would be worse than no phases at all. Repeating the current phase is not re-sent:
-    the UI restarts the phase clock on every report. `start` is for the one place
-    where the denominator really does change (the VLM tier counts its own candidates),
-    and it changes the caption at the same moment, which is what makes the new numbers
-    readable instead of a bar that silently slid backwards.
+    The fast-tier phases interleave INSIDE the per-chunk loop (CLIP -> OCR -> write, F73)
+    over one shared counter, so `enter` only relabels and never touches the count: a bar
+    that restarted three times per chunk would be worse than no phases at all. Repeating
+    the current phase is not re-sent, because the UI restarts the phase clock on every
+    report. `start` is for the passes that count their OWN items, and it moves caption and
+    denominator together — which is what makes new numbers readable instead of a bar that
+    silently slid backwards.
 
-    F147 hangs the stopwatch on the very same object, and that is the whole design: the
-    phases are timed under the names they are ANNOUNCED under, so the breakdown in the
-    run log and the caption on the bar can never drift apart. It follows that timing
-    happens with no callback at all — every method here already works that way.
-
-    F205 is what that design cost once the passes it covered stopped being alike: the
-    three model passes re-`start`ed ONE phase over three candidate lists, so one bucket
-    held three prices that differ threefold. They now announce three names — still one
-    name each for the caption and for the stopwatch, which is the part of the design that
-    holds.
-
-    F166 moved the stopwatch itself into `runlog.StagePhases` and kept that design
-    intact: the same `enter`/`start` call still drives both the caption and the clock,
-    one after the other. What changed is WHEN the clock is read out — as the stage
-    goes rather than at its end — and that the object is registered under the stage
-    name, so a run cut short in the middle still leaves the phases that finished.
+    F147/F166: the stopwatch (`runlog.StagePhases`) hangs on this same object, so a phase
+    is timed under the name it is ANNOUNCED under and the run log cannot drift from the
+    caption. Timing therefore happens with no callback at all, and the clock is read out
+    as the stage goes: a run cut short still leaves the phases that finished.
     """
 
     def __init__(self, progress: ProgressCB | None,
@@ -2294,22 +2204,19 @@ class _PhaseProgress:
     def count(self, name: str, units: int) -> None:
         """Add `units` to what phase `name` has processed (F147).
 
-        Separate from `enter` because the number is rarely known when the phase opens:
-        the CLIP phase begins at the top of a chunk and only decides a few lines later
-        how many of its frames actually need encoding. Only ever called for a phase the
-        stage has entered — a counter alone must not conjure a line for work that did
-        not happen.
+        Separate from `enter` because the number is rarely known when the phase opens: the
+        CLIP phase begins at the top of a chunk and decides a few lines later how many of
+        its frames need encoding. Only ever called for a phase the stage has entered — a
+        counter alone must not conjure a line for work that did not happen.
         """
         self._log.count(name, units)
 
     def log_timings(self) -> None:
-        """Write out whatever the phases still hold (F147/F166).
+        """Write out whatever the phases still hold — the pass that was running at the end.
 
-        Most of the breakdown has been written on the way already; what is left here is
-        the pass that was running when the stage reached its end. Still called at the
-        exits rather than from a `finally`, because the broken paths are not this
-        object's business any more: `stage_timer` closes the phases it registered, and
-        it is the one that knows whether the stage failed, was cancelled or finished.
+        Called at the exits rather than from a `finally`: `stage_timer` closes the phases
+        it registered, and it is the one that knows whether the stage failed, was cancelled
+        or finished.
         """
         self._log.close()
 
