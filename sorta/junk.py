@@ -2245,28 +2245,23 @@ class _PhaseProgress:
 
 # --- F128: the CLIP vector, kept ----------------------------------------------------
 
-# The stored element type, and it is part of the file format rather than a local choice:
-# a reader on another machine has to get back the numbers this machine wrote, so the byte
-# order is spelled out instead of left to the platform.
+# The stored element type, part of the file format rather than a local choice — the byte
+# order is spelled out so a reader on another machine gets back what this one wrote.
 #
-# float32 AND NOT float16, which is what the brief proposed for the size. The brief also
-# made the format conditional on a measurement — half precision "has to be checked, not
-# taken on trust" — and the measurement (tests/test_clip_embeddings.py) says it does not
-# hold: over 256 unit vectors of the real width, 18 of 20 queries come back in a different
-# order in float16, and at 2 000 vectors all 20 do. The reordering is small in score
-# (max |delta| 3e-5 of a cosine) and it is always a pair the format cannot tell apart, but
-# the rule was pre-committed for exactly this outcome, so it is followed rather than argued
-# with: float32 stores the encoder's own numbers and reproduces its ranking exactly.
-# The price is the table, doubled — ~60 MB per 20 000 photos instead of ~30, ~920 MB at
-# 300 000 instead of ~460. Same wire format as `faces.embedding`, which is little-endian
-# float32 for the same reason.
+# float32 AND NOT float16, which is what the brief proposed for the size and made
+# conditional on a measurement. The measurement (tests/test_clip_embeddings.py) says half
+# precision does not hold: over 256 unit vectors of the real width 18 of 20 queries come
+# back in a different order, and at 2 000 vectors all 20 do. The reordering is small in
+# score (max |delta| 3e-5 of a cosine) and always between a pair the format cannot tell
+# apart, but the rule was pre-committed for exactly this outcome. The price is the table
+# doubled — ~60 MB per 20 000 photos, ~920 MB at 300 000. Same wire format as
+# `faces.embedding`.
 _EMBEDDING_DTYPE = np.dtype("<f4")
 
-# paths -> the image feature of each path, in the same order; None where the frame did not
-# encode. The real source is `landmarks.CachingFeatureClassifier.features` — the cache the
-# scoring call has just filled, NOT a second encode, which is the whole economy of this
-# feature. A classifier without such a method (a plain function in a test) simply hands
-# back nothing and no vector is stored.
+# paths -> the image feature of each, in order; None where the frame did not encode. The
+# real source is `landmarks.CachingFeatureClassifier.features` — the cache the scoring call
+# has just filled and NOT a second encode, which is the whole economy of this feature. A
+# classifier without that method (a plain function in a test) hands back nothing.
 FeatureSource = Callable[[list[str]], list[np.ndarray | None]]
 
 _EMBEDDING_UPSERT = """INSERT INTO clip_embeddings (file_id, model, dim, vec, updated_at)
@@ -2280,9 +2275,8 @@ def embedding_model(s: NamingSettings) -> str:
     """What produced a vector: the open_clip model AND its weights, as one name.
 
     The weights belong in the name as much as the architecture does — the same
-    `ViT-L-14-quickgelu` loaded with `openai` and with a laion checkpoint produces two
-    incomparable spaces, and a row that recorded only the architecture would let them mix
-    silently. A mismatch means recompute; see `read_clip_embeddings` for the reading side.
+    `ViT-L-14-quickgelu` under `openai` and under a laion checkpoint is two incomparable
+    spaces, and a row naming only the architecture would let them mix silently.
     """
     return f"{s.clip_model}/{s.clip_pretrained}"
 
@@ -2290,12 +2284,10 @@ def embedding_model(s: NamingSettings) -> str:
 def pack_embedding(vec: np.ndarray) -> bytes:
     """A CLIP feature -> the stored blob: L2-normalized, float32, little-endian.
 
-    Normalizing HERE and not in every consumer is the point of doing it at all: with unit
-    vectors cosine similarity is a dot product, so a search does one matmul and no
-    per-query normalization. The encoder already returns unit vectors, and this does it
-    again anyway — the cost is a norm over 768 numbers and the guarantee is worth more than
-    the trust. A zero vector (no direction to preserve) is stored as it is rather than
-    divided by zero; it can only come from a caller that made one up.
+    Normalized HERE and not in every consumer: with unit vectors a cosine is a dot
+    product, so a search is one matmul. The encoder already returns unit vectors and this
+    repeats it anyway — a norm over 768 numbers is worth more than the trust. A zero vector
+    has no direction to preserve and is stored as it is rather than divided by zero.
     """
     v = np.asarray(vec, dtype=np.float32).ravel()
     norm = float(np.linalg.norm(v))
@@ -2307,9 +2299,9 @@ def pack_embedding(vec: np.ndarray) -> bytes:
 def unpack_embedding(blob: bytes) -> np.ndarray:
     """The stored blob -> a float32 vector, ready to be dotted with another one.
 
-    A copy rather than the buffer itself: `np.frombuffer` gives a read-only view over
-    memory that belongs to the sqlite row, and a consumer that stacks a few thousand of
-    those has no reason to care which of them may be written to.
+    A copy and not the buffer: `np.frombuffer` gives a read-only view over memory owned by
+    the sqlite row, and a consumer stacking a few thousand of those should not have to
+    care which of them may be written to.
     """
     return np.frombuffer(blob, dtype=_EMBEDDING_DTYPE).astype(np.float32)
 
@@ -2319,14 +2311,13 @@ def read_clip_embeddings(conn: sqlite3.Connection, model: str,
                          ) -> dict[int, np.ndarray]:
     """Stored vectors OF THIS MODEL by file_id — the model filter is not optional.
 
-    A consumer that read every row regardless of `model` would mix two incomparable
-    spaces and return plausible nonsense that nothing in the output marks as wrong, so the
-    filter lives here, in the one function that reads the table, rather than in each
-    caller. Rows of another model are absent from the result exactly like frames that were
-    never encoded — and the stage recomputes them on its next run.
+    A consumer reading every row regardless of `model` would mix two incomparable spaces
+    and return plausible nonsense nothing in the output marks as wrong, so the filter lives
+    in the one function that reads the table. Rows of another model are absent exactly like
+    frames that were never encoded, and the stage recomputes them next run.
 
-    Chunked over `file_ids` for the reason `read_frame_quality` gives: asking about a whole
-    collection is the expected case and SQLite has a ceiling on bound parameters.
+    Chunked over `file_ids` for the reason `read_frame_quality` gives: a whole collection
+    is the expected case, and SQLite has a ceiling on bound parameters.
     """
     sql = "SELECT file_id, vec FROM clip_embeddings WHERE model = ?"
 
@@ -2346,17 +2337,15 @@ def read_clip_embeddings(conn: sqlite3.Connection, model: str,
 class _EmbeddingPass:
     """The F128 half of `classify`: keep the vector the stage has already paid for.
 
-    Owns the same three things the quality half owns and nothing more: which frames want a
-    vector this run (its own incrementality, on `clip_embeddings.model`), where the vector
-    comes from (the classifier's cache, never a new encode), and the rule that only a
-    personal photograph gets a row. It writes on the caller's thread inside the caller's
-    transaction — SQLite stays single-writer, as everywhere in this stage.
+    Owns the three things every pass here owns: which frames want a vector this run (its
+    own incrementality, on `clip_embeddings.model`), where the vector comes from (the
+    classifier's cache, never a new encode), and the rule that only a personal photograph
+    gets a row. It writes on the caller's thread inside the caller's transaction — SQLite
+    stays single-writer, as everywhere in this stage.
 
-    Staleness is the MODEL and only the model. That is what makes a stored vector unusable
-    rather than merely old, and it is the one thing a row can be checked against without a
-    column that repeats what `files` already knows; a frame whose content changed is
-    revisited by the same rule that has it reclassified, and re-encoding it then costs the
-    one CLIP call the stage was making anyway.
+    Staleness is the MODEL and only the model: that is what makes a stored vector unusable
+    rather than merely old, and it needs no column repeating what `files` already knows. A
+    frame whose content changed is revisited by the rule that has it reclassified anyway.
     """
 
     def __init__(self, conn: sqlite3.Connection, model: str, ids: set[int],
@@ -2388,15 +2377,13 @@ class _EmbeddingPass:
         """Write the vector of one frame — or drop the row this frame must not have.
 
         Two things leave a frame without a row, and neither is a NULL: a verdict that is
-        not a personal photograph (F120 — the embedding of a screenshot is noise in a
-        search over personal photos, and a row a previous run left is removed), and a frame
-        that did not encode at all.
+        not a personal photograph (F120 — a screenshot's embedding is noise in a search
+        over personal photos, and a row a previous run left is removed), and a frame that
+        did not encode.
 
-        A frame that did not encode is therefore selected again by every later run. That is
-        the accepted price of "no row rather than a NULL row": the alternative is a marker
-        row saying "this one is hopeless", which is a claim about a file that may simply
-        have been on a disconnected drive. The retry costs one decode attempt on a file the
-        stage is already walking, and only for files that are actually broken.
+        The second is therefore selected again by every later run, which is the price of
+        "no row rather than a NULL row": a marker saying "this one is hopeless" is a claim
+        about a file that may simply have been on a disconnected drive.
         """
         if verdict is not None and verdict != QUALITY_VERDICT:
             self._conn.execute(
@@ -2411,10 +2398,10 @@ class _EmbeddingPass:
     def purge(self) -> None:
         """Drop the rows of everything this run decided is not a personal photograph.
 
-        The same statement, and for the same reason, as the `frame_quality` purge below
-        it: incrementality skips a frame whose row already looks current, so a collection
-        embedded before this rule would keep its screenshots PRECISELY because they are up
-        to date, and the deep tier reclassifies frames after the fast pass wrote them.
+        The same statement and the same reason as the `frame_quality` purge: incrementality
+        skips a frame whose row already looks current, so a collection embedded before this
+        rule would keep its screenshots PRECISELY because they are up to date — and the
+        deep tier reclassifies frames after the fast pass has written them.
         """
         if not self._enabled:
             return  # `features.store_embeddings` off: the table is not this run's business
@@ -2425,28 +2412,22 @@ class _EmbeddingPass:
 
 # --- F141: the search index, a second vector with a model of its own ------------------
 #
-# The vector above is the CLASSIFICATION vector and it stays that. This one is the SEARCH
-# vector, and the two are separate because the measurement said so twice over.
-#
 # `ViT-L-14` is accurate in English and does not work in Russian: over 217 hand-labelled
 # judgements on 8 concepts it gives 22% precision at top-5 against 98% for
-# `xlm-roberta-base-ViT-B-32`, and four of the eight concepts (cake, food, mountains,
-# children) return nothing at all. The multilingual model is not weaker in English either
-# (95% against 98% at top-5, three points on forty judgements), which was the objection
-# that had to be ruled out before its smaller image tower could be trusted.
+# `xlm-roberta-base-ViT-B-32`, with four of the eight (cake, food, mountains, children)
+# returning nothing at all. The multilingual model is not weaker in English either (95%
+# against 98% at top-5 over forty judgements), which had to be ruled out before its smaller
+# image tower could be trusted.
 #
-# The cheap fix — swap `naming.clip.*` — is the one thing that must not happen. The
+# THE CHEAP FIX — swapping `naming.clip.*` — IS THE ONE THING THAT MUST NOT HAPPEN. The
 # landmark threshold 0.85 with corroboration (F75), the animal threshold 0.70 (F122), the
 # cascade selection at 0.50 (F130) and the junk classification are all calibrated on L14's
-# numbers; a swap invalidates every one of them at once, and nothing in the pipeline would
+# numbers, and a swap invalidates every one of them at once with nothing in the pipeline to
 # say so. So the search side pays for a pass of its own: ~10.5 minutes per 20 000 frames,
 # behind `features.search_index`, off until a person switches it on.
 #
-# Everything else is `clip_embeddings`' arrangement, deliberately unchanged: the model
-# name is written into every row (F128's rule, not weakened — a vector that does not say
-# what computed it is rubbish that looks like data), a mismatch means recompute rather
-# than use, the wire format is L2-normalized little-endian float32, and the population is
-# canonical photographs only (F120).
+# Everything else is `clip_embeddings`' arrangement unchanged: the model name in every row,
+# a mismatch means recompute, L2-normalized little-endian float32, the F120 population.
 
 _SEARCH_UPSERT = """INSERT INTO search_embeddings (file_id, model, dim, vec, updated_at)
                     VALUES (?, ?, ?, ?, ?)
@@ -2454,11 +2435,9 @@ _SEARCH_UPSERT = """INSERT INTO search_embeddings (file_id, model, dim, vec, upd
                         model = excluded.model, dim = excluded.dim,
                         vec = excluded.vec, updated_at = excluded.updated_at"""
 
-# Which frames this pass owes a vector: a canonical photograph (F120 — the same population
-# `clip_embeddings` and `frame_quality` have) whose stored vector is missing or was
-# computed by another model. A frame with no verdict yet is included for the reason the
-# F128 selection includes it: a first run has classified nothing, and the purge below
-# settles whatever this run turns out to have decided.
+# Which frames this pass owes a vector: a canonical photograph (the F120 population) whose
+# stored vector is missing or was computed by another model. A frame with no verdict yet is
+# included — a first run has classified nothing, and the purge below settles it.
 _SEARCH_PENDING_SQL = """SELECT f.id, f.path
     FROM files f LEFT JOIN media_class mc ON mc.file_id = f.id
                  LEFT JOIN search_embeddings se ON se.file_id = f.id
@@ -2472,9 +2451,9 @@ def search_index_model(cfg: Config) -> str:
     """What the search side computes with — `features.search_model`, as one name.
 
     A key of its own and not `naming.clip.*`: that model is what the classification
-    thresholds are calibrated on, and the whole feature is the refusal to change it. The
-    string is `<architecture>/<weights>` in the same spelling `embedding_model` writes, so
-    a row of either table answers "which model" the same way.
+    thresholds are calibrated on, and this whole feature is the refusal to change it. Same
+    `<architecture>/<weights>` spelling as `embedding_model`, so a row of either table
+    answers "which model" the same way.
     """
     features = getattr(cfg, "features", None) or FeaturesConfig()
     return str(getattr(features, "search_model", FeaturesConfig.search_model))
@@ -2489,11 +2468,9 @@ def search_index_enabled(cfg: Config) -> bool:
 def search_index_settings(s: NamingSettings, model: str) -> NamingSettings:
     """The CLIP settings of the SEARCH model: `s` with its model name replaced.
 
-    Everything else about the encode is deliberately inherited — the batch size, the
-    decode pool, and through them the shared preview cache — because this pass reads the
-    very same previews the classification pass does (the brief's requirement, and the
-    reason its ten minutes are ten and not thirty). Only the pair (architecture, weights)
-    differs, and it is split here, once, so no caller has to know the name is a pair.
+    Everything else is inherited — the batch size, the decode pool, and through them the
+    shared preview cache — because this pass reads the very same previews, which is why its
+    ten minutes are ten and not thirty. The name is split into its pair here, once.
     """
     architecture, _, weights = model.partition("/")
     return replace(s, clip_model=architecture, clip_pretrained=weights)
@@ -2504,10 +2481,9 @@ def read_search_embeddings(conn: sqlite3.Connection, model: str,
                            ) -> dict[int, np.ndarray]:
     """Stored SEARCH vectors of this model by file_id — the same rule, the other table.
 
-    A separate function rather than a table argument on `read_clip_embeddings`: the model
-    filter is the safety property of both (mixing two spaces produces a plausible ranking
-    nothing marks as wrong), and a parameter that selects which table to apply it to is
-    one call site away from being passed the wrong one.
+    A separate function and not a table argument on `read_clip_embeddings`: the model
+    filter is the safety property of both, and a parameter selecting which table to apply
+    it to is one call site away from being passed the wrong one.
     """
     sql = "SELECT file_id, vec FROM search_embeddings WHERE model = ?"
 
@@ -2527,10 +2503,9 @@ def read_search_embeddings(conn: sqlite3.Connection, model: str,
 def search_image_encoder(s: NamingSettings) -> FeatureSource:  # pragma: no cover — ML
     """The image tower of the search model: paths -> a unit vector each, None where not.
 
-    `landmarks.clip_classifier` and nothing new: it already decodes through the shared
-    preview cache, in a pool, in one GPU batch, and returns None for a frame that would
-    not decode. What this pass needs is its `encode` half alone — there are no prompts
-    here, the vector IS the answer — so the classifier is built and its encoder taken.
+    `landmarks.clip_classifier` and nothing new — it already decodes through the shared
+    preview cache, in a pool, in one GPU batch. This pass needs its `encode` half alone:
+    there are no prompts here, the vector IS the answer.
     """
     classifier = clip_classifier(s)
     if not isinstance(classifier, CachingFeatureClassifier):
@@ -2541,19 +2516,16 @@ def search_image_encoder(s: NamingSettings) -> FeatureSource:  # pragma: no cove
 class _SearchIndexPass:
     """F141: the second CLIP pass, the one that pays for itself in Russian queries.
 
-    The only pass of this stage that ENCODES IMAGES AGAIN, and every property of it
-    follows from that being expensive. It runs last, over the verdicts everything above
-    has settled, so a frame the deep tier has just called a screenshot is never encoded;
-    it is incremental on `search_embeddings.model`, so switching the model recomputes and
-    a repeated run does nothing; and it is built lazily — a run with no frames to encode
-    loads no weights, which is what makes leaving the toggle on cheap for a collection
-    that is already indexed.
+    The only pass of this stage that ENCODES IMAGES AGAIN, and every property follows from
+    that being expensive: it runs LAST, over the verdicts everything above has settled, so
+    a frame the deep tier has just called a screenshot is never encoded; it is incremental
+    on `search_embeddings.model`; and it is built lazily, so leaving the toggle on costs a
+    collection that is already indexed nothing.
 
-    The failures are the same shape as every other optional half here. A model that will
-    not build leaves the run exactly as it was (the search index simply stays as it is,
-    and search says so rather than ranking with the classification vectors); a chunk that
-    will not encode is logged and skipped, and its frames are selected again next run,
-    which is the same "no row rather than a wrong row" rule `_EmbeddingPass.store` states.
+    The failures are the shape every optional half here has. A model that will not build
+    leaves the table as it was, and search says so rather than ranking with the
+    classification vectors; a chunk that will not encode is logged, skipped and selected
+    again next run — `_EmbeddingPass.store`'s "no row rather than a wrong row".
     """
 
     def __init__(self, conn: sqlite3.Connection, model: str,
@@ -2595,9 +2567,8 @@ class _SearchIndexPass:
                 chunk: Sequence[tuple[int, str]]) -> list[np.ndarray | None]:
         """One batch through the tower; a batch that raises costs the run nothing.
 
-        The encoder answers None per unreadable frame on its own — this catches the
-        failure of the CALL, which is a batch of frames and not one of them, and turns it
-        into the same "no vector" every one of them would have got individually.
+        The encoder answers None per unreadable frame on its own — this catches a failure
+        of the CALL, which is a whole batch, and turns it into the same "no vector".
         """
         try:
             return list(encode([path for _file_id, path in chunk]))
@@ -2621,11 +2592,9 @@ class _SearchIndexPass:
     def _purge(self) -> None:
         """Drop the rows of everything this run decided is not a personal photograph.
 
-        The same statement and the same reason as `_EmbeddingPass.purge`: incrementality
-        skips a frame whose row already looks current, so a screenshot indexed before its
-        verdict changed would stay in the search index PRECISELY because its vector is up
-        to date. Runs whenever the toggle is on, including on the runs that have no frame
-        left to encode — that is the state a collection settles into.
+        `_EmbeddingPass.purge`'s statement and reason. Runs whenever the toggle is on,
+        including on runs with no frame left to encode — the state a collection settles
+        into.
         """
         with self._conn:
             self._conn.execute(
