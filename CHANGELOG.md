@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The public documents say what was actually run** (F235). The README opened with
+  *"60 GB+ tested, 300 GB+ by design"* — the only full run there has ever been was
+  **380 GB / 38 485 files** (2026-07-26/27, 0 read errors), so the claim was smaller than
+  the fact and hedged on top. It now states the measurement, in all three READMEs and all
+  three guides, and nothing is rounded up to "terabytes". The nine features of
+  2026-08-07/09 (F222–F230) were read back against the prose they had outlived: the launch
+  order (a window before the program is imported, the interface handed over as soon as the
+  server can answer, a second click on the shortcut costing a TCP connect), the wizard
+  downloading **every** tier answered yes to on one line redrawn in place rather than the
+  classification tier alone, the bundled `exiftool` on Windows against
+  `apt install libimage-exiftool-perl` on Linux, the two model tiers priced apart, the
+  **Uninstall Sorta** item in the Start menu and its two questions, and the acceleration
+  tier that is offered only where there is a card and a driver for it
+  (`sorta-setup --restore-cpu` back off it). **macOS is no longer listed as a platform
+  this runs on**: there is no Mac here, the CI job for it is advisory, and an untested
+  platform in a requirements table is a promise. `docs/ARCHITECTURE.md` gained the six
+  modules the launch and the install split off (`launcher`, `splash`, `launch`, `install`,
+  `tiers`, `accel`) and the launch scenario in its new order; `docs/DECISIONS.md` gained
+  the three answers of those two days. `tests/test_docs_say_what_was_run.py` holds it
+  there: the retired size cannot come back, and a number, command or tier name present in
+  one language and missing from another fails the gate.
+
 ### Added
 - **The prose of `junk.py`, the fifth of the package the audit had skipped** (F231e). Wave
   A was meant to start with this file and died on limits after `search`, `imaging` and
