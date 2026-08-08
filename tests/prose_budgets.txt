@@ -30,7 +30,7 @@ sorta/naming.py       342
 sorta/offline.py      33
 sorta/progress.py     34
 sorta/restore.py      300
-sorta/runlog.py       344
+sorta/runlog.py       270
 sorta/search.py       225
 sorta/sorter.py       784
 sorta/tiers.py        138
