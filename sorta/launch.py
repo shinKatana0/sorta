@@ -93,10 +93,15 @@ def _windowless(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 
 def run(command: Sequence[str], **kwargs: Any) -> "subprocess.CompletedProcess[Any]":
-    """`subprocess.run`, without a console window when this process has no console."""
-    return subprocess.run(list(command), **_windowless(kwargs))
+    """`subprocess.run`, without a console window when this process has no console.
+
+    The command is handed on exactly as it arrived — a list, a tuple, whatever the caller
+    keeps it in. Normalising it here would be a second thing this wrapper does, and the
+    only way a wrapper stays trustworthy is by doing one.
+    """
+    return subprocess.run(command, **_windowless(kwargs))
 
 
 def popen(command: Sequence[str], **kwargs: Any) -> "subprocess.Popen[Any]":
     """`subprocess.Popen`, without a console window when this process has no console."""
-    return subprocess.Popen(list(command), **_windowless(kwargs))
+    return subprocess.Popen(command, **_windowless(kwargs))

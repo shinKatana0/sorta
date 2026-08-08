@@ -367,8 +367,8 @@ class TestTheHelperPassesItOn(unittest.TestCase):
                 mock.patch.object(subprocess, "Popen") as popen:
             launch.popen(("exiftool", "-stay_open", "True"), stdin=subprocess.PIPE)
         args, kwargs = popen.call_args
-        # A tuple in, a list out: `_exiftool_cmd()` and `_NVIDIA_SMI_CMD` are tuples.
-        self.assertEqual(args, (["exiftool", "-stay_open", "True"],))
+        # Handed on as it arrived: `_NVIDIA_SMI_CMD` is a tuple and stays one.
+        self.assertEqual(args, (("exiftool", "-stay_open", "True"),))
         self.assertEqual(kwargs["creationflags"], launch.CREATE_NO_WINDOW)
         self.assertEqual(kwargs["stdin"], subprocess.PIPE)
 
@@ -398,7 +398,7 @@ class TestTheCallSitesUseIt(unittest.TestCase):
         with mock.patch.object(launch, "run") as run:
             diagnostics._run_nvidia_smi()
         command, kwargs = run.call_args
-        self.assertEqual(tuple(command[0]), diagnostics._NVIDIA_SMI_CMD)
+        self.assertEqual(command[0], diagnostics._NVIDIA_SMI_CMD)
         self.assertEqual(kwargs["timeout"], diagnostics._NVIDIA_SMI_TIMEOUT_S)
 
     def test_the_exiftool_version_probe_goes_through_the_helper(self):
