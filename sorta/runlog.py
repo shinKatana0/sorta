@@ -746,11 +746,12 @@ def _package_origin() -> str:
     return f"{package_dir} ({origin})"
 
 
-def _gpu_line() -> str:
-    """torch/onnxruntime CUDA availability, but only if somebody has already loaded them:
-    asking the diagnostics layer means importing torch and costs 13.96 s (measured
-    2026-08-08, warm cache, fast machine). `sorta doctor` probes for real, on request."""
-    if "torch" not in sys.modules and "onnxruntime" not in sys.modules:
+def _gpu_line(probe: bool = False) -> str:
+    """torch/onnxruntime CUDA availability — probed, or read off what is already loaded.
+    Probing means importing torch and costs 13.96 s (measured 2026-08-08, warm cache,
+    fast machine). A run pays that anyway a line later and asks for it; a launch does
+    not. `sorta doctor` always probes, on request."""
+    if not probe and "torch" not in sys.modules and "onnxruntime" not in sys.modules:
         return "not loaded (ask `sorta doctor` for the real answer)"
     try:
         from . import diagnostics
@@ -787,10 +788,11 @@ def _safe(getter: Callable[[], object]) -> str:
         return f"недоступно ({exc})"
 
 
-def log_environment() -> None:
+def log_environment(probe_gpu: bool = False) -> None:
     """Write the environment header once at the start of a run — what was missing to
-    catch F65 and the VLM fallback on the spot. Never raises and never loads a model, and
-    it is ONE record so the pipeline thread cannot interleave with it."""
+    catch F65 and the VLM fallback on the spot. Never raises, and it is ONE record so the
+    pipeline thread cannot interleave with it. `probe_gpu` is for a caller about to load
+    torch anyway; see `_gpu_line`."""
     try:
         from . import __version__
 
@@ -799,7 +801,7 @@ def log_environment() -> None:
         version = "unknown"
 
     try:
-        gpu = _gpu_line().replace("\n", "; ")  # the diagnostics summary is multi-line
+        gpu = _gpu_line(probe_gpu).replace("\n", "; ")  # the summary is multi-line
         lines = [
             "environment:",
             f"  sorta: {version}",

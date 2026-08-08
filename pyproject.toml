@@ -92,7 +92,10 @@ sorta-setup = "sorta.wizard:main"
 # the browser and one that does not. The whole feature is for the person who never sees
 # a terminal; a launcher that pops one up would undo it.
 [project.gui-scripts]
-sorta-tray = "sorta.tray:main"
+# `sorta.launcher` and not `sorta.tray`: importing the tray costs 3.59 s of
+# `sorta.ui` before its first line runs, and the starting window has to be on the
+# screen by then. The launcher imports stdlib and the window, nothing else.
+sorta-tray = "sorta.launcher:main"
 
 [build-system]
 requires = ["hatchling"]
