@@ -44,8 +44,8 @@ from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
 from ..tiers import (
-    MB, PartState, TierState, download_failure, run_parts, stage_downloads, tier_states,
-    watch_download, weights_size_mb,
+    PartState, TierState, download_failure, megabytes, run_parts, stage_downloads,
+    tier_states, watch_download, weights_size_mb,
 )
 from .common import _ProgressCB, _connect, _log
 from .layout import PlanCache
@@ -483,7 +483,7 @@ class _ProcessState:
                 "download": ({"stage": self.download_stage,
                               "weights": list(self.download_weights),
                               "mb": weights_size_mb(self.download_weights),
-                              "done_mb": self.download_done // MB}
+                              "done_mb": megabytes(self.download_done)}
                              if self.download_weights else None),
                 # F222: the stages this run skipped whose settings the file still holds.
                 # Almost always empty — a note on every run is noise, and noise is what

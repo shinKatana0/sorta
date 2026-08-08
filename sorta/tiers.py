@@ -411,7 +411,12 @@ def stage_downloads(stage: str, states: list[TierState] | None = None) -> tuple[
 # How often the progress is reported. Long enough not to fill the window of a slow
 # download, short enough that the gap between two lines never reads as a stall.
 PROGRESS_SECONDS = 5.0
-MB = 1_000_000
+_MB = 1_000_000
+
+
+def megabytes(size: int) -> int:
+    """Bytes as the megabytes every screen of this project prices a download in."""
+    return size // _MB
 
 
 def downloaded_bytes(cache: Path | None = None) -> int:
@@ -479,7 +484,7 @@ def download_notice(stage: str, weights: Sequence[str], lang: i18n.Lang) -> str:
 def download_progress(weights: Sequence[str], done: int, lang: i18n.Lang) -> str:
     """«X of Y so far» — the same measurement the run screen draws, said in a console."""
     return i18n.cli_text("cli.download.progress", lang,
-                         done=wizard.human_size(done // MB, lang),
+                         done=wizard.human_size(megabytes(done), lang),
                          size=wizard.human_size(weights_size_mb(weights), lang))
 
 
