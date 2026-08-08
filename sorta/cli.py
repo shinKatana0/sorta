@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover — a sandbox/CI without typer, see _arg
 else:
     _TYPER_AVAILABLE = True
 
-from . import __version__, imaging, tiers, weights, wizard
+from . import __version__, exif, imaging, install, tiers, weights, wizard
 from .config import Config, configure_logging, load_config, skipped_stage_notes
 from .db import connect, reset_index
 from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
@@ -841,14 +841,28 @@ def _scripts_dir() -> Path:
 
 def _doctor_install_lines(lang: Lang, *, command: str | None, scripts: Path,
                           exiftool: str | None,
-                          hint_key: str | None = None) -> list[str]:
-    """The `sorta`-on-PATH and `exiftool` lines, in the state this machine has them."""
+                          hint_key: str | None = None,
+                          bundled: bool = False,
+                          installed_python: str | None = None) -> list[str]:
+    """The `sorta`-on-PATH and `exiftool` lines, in the state this machine has them.
+
+    F226 added the two states an INSTALLED copy is in, and both of them used to be
+    described as failures of a machine that had installed nothing: `exiftool` is on the
+    disk (`bundled`), and the command is not on PATH because it was never supposed to be
+    (`installed_python` — the interpreter the payload carries, which is how that copy is
+    run). A checkout passes neither and every line below it is what it always was.
+    """
     if command:
         lines = [_t("cli.doctor.command", lang, path=command)]
+    elif installed_python:
+        lines = [_t("cli.doctor.command_installed", lang),
+                 _t("cli.doctor.command_hint_installed", lang, path=installed_python)]
     else:
         lines = [_t("cli.doctor.command_missing", lang, path=scripts),
                  _t("cli.doctor.command_hint", lang)]
-    if exiftool:
+    if exiftool and bundled:
+        lines.append(_t("cli.doctor.exiftool_bundled", lang, path=exiftool))
+    elif exiftool:
         lines.append(_t("cli.doctor.exiftool", lang, path=exiftool))
     else:
         lines.append(_t("cli.doctor.exiftool_missing", lang))
@@ -930,9 +944,20 @@ def _cmd_doctor(config_path: str) -> None:
     # F213: ...and the two things `uv tool install` leaves broken on a clean Linux
     # machine — the command it put somewhere PATH does not look, and the `exiftool` it
     # does not install at all.
+    # F226: both of those answers are different on an installed copy, and both of them
+    # used to be wrong there. The exiftool named is the one the READER will really use —
+    # the same resolution, not a second lookup that can disagree with it — and the
+    # manifest says whether that one came in the installer.
+    manifest = install.load_manifest()
+    exiftool = exif.resolve_exiftool(which=shutil.which, manifest=manifest)
+    shipped = install.tool_path(manifest, "exiftool")
     for line in _doctor_install_lines(lang, command=shutil.which("sorta"),
                                       scripts=_scripts_dir(),
-                                      exiftool=shutil.which("exiftool")):
+                                      exiftool=exiftool,
+                                      bundled=exiftool is not None
+                                      and exiftool == shipped,
+                                      installed_python=install.tool_path(manifest,
+                                                                         "python")):
         print(line)
     # F216: ...and what the install is made of. The installer ships one tier and offers
     # four, so both the person who installed it by hand and the workflow that installs
