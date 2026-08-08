@@ -35,20 +35,15 @@ def configure_logging(level: str) -> None:
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         handler._sorta_handler = True  # type: ignore[attr-defined]
         logger.addHandler(handler)
-    # F69: every command already funnels through here, so this is the one place that
-    # gives all of them a run log without touching twenty call sites. The console
-    # handler above is untouched — the file is added, not substituted. A failure to
-    # open it must never take a command down, hence the broad guard.
+    # F69: the file log is added here because every command funnels through this
+    # function. Failing to open it must never take a command down — hence the guard.
     try:
         from .runlog import file_log_level, setup_file_logging
 
         setup_file_logging()
-        # A record is dropped by the level of the LOGGER it was emitted on, before any
-        # handler is consulted. With log_level=WARNING (the default) that swallowed the
-        # INFO `stage=... elapsed=...` lines the run log exists for — the file stayed
-        # silent about exactly the thing it was added to measure. Lower the logger to
-        # whatever the file wants, and give the console its own level back so its
-        # output does not become chattier.
+        # A record is dropped by the level of the LOGGER, before any handler is
+        # consulted: log_level=WARNING swallowed the INFO `stage=... elapsed=...` lines
+        # the run log exists for. Lower the logger, give the console its level back.
         for existing in logger.handlers:
             if getattr(existing, "_sorta_handler", False):
                 existing.setLevel(console_level)
@@ -61,14 +56,12 @@ def configure_logging(level: str) -> None:
 
 @dataclass
 class LoggingConfig:
-    """F166: the `logging:` section — how the run log paces itself.
+    """F166: the `logging:` section — how often the run log repeats a running stage.
 
-    Separate from the top-level `log_level`, which decides WHAT gets written; this
-    decides how often a stage that is still running repeats where it has got to.
+    Separate from the top-level `log_level`, which decides WHAT gets written.
     """
 
-    # Seconds between the periodic `stage=... progress ...` lines. 0 switches them off;
-    # the start and summary lines are not affected either way.
+    # 0 switches the periodic lines off; start and summary lines are not affected.
     progress_interval_sec: float = 60.0
 
 
@@ -103,39 +96,24 @@ class DatesConfig:
 @dataclass
 class DedupConfig:
     canonical_strategy: str = "prefer_exif_then_largest"
-    # F186 retired `keeper_vlm` — the comparative question about which frame of a group to
-    # keep. Measured on 2026-08-04 over 111 groups labelled blind by the owner: the model
-    # agreed with the person on 32% of them against 30.4% for picking a frame at random,
-    # for 451 seconds of GPU. Nothing replaced it, because there was nothing to buy.
+    # F186 retired `keeper_vlm`, the comparative "which frame of the group to keep"
+    # question: measured 2026-08-04 over 111 groups labelled blind by the owner, the model
+    # agreed with the person on 32% against 30.4% for a random pick, for 451 s of GPU.
+    # F194 retired what its answers were used for — on the same 111 groups every signal
+    # sits at the level of a coin (sharpness 27%), so `group_keeper` is read as the ORDER
+    # the frames are shown in, not as the group's answer.
     #
-    # F194 retired what those answers were being USED for. The same 111 groups say every
-    # signal we have sits at the level of a coin — sharpness (27%) below it — so the
-    # Duplicates tab recommends nothing among similar frames, and `group_keeper` is read
-    # as the ORDER the frames are shown in rather than as the group's answer.
-    #
-    # The two sizes below outlive the question they were chosen for: they describe the
-    # POPULATION of near-duplicate groups (`dedup.keeper_groups`, the ranking that fills
-    # the rows) and the measurement worksheet still reads them.
-    #
-    # How many frames of a group go into ONE question. The live collection holds a group
-    # of 38 near-duplicates: a 3B model asked to compare 38 pictures answers nothing
-    # usable and the context grows for no return. The frames sent are the best N by
-    # sharpness, and the answer applies to the group as a whole.
+    # The two sizes below outlive that question: they describe the POPULATION of
+    # near-duplicate groups (`dedup.keeper_groups`) and the measurement worksheet reads
+    # them. `keeper_max_frames` is the best N by sharpness of a group — the live
+    # collection holds a group of 38 near-duplicates, which no 3B model answers usably.
     keeper_max_frames: int = 5
-    # The smallest group worth asking about. MEASURED 2026-08-02 and moved 2 -> 3.
-    #
-    # 85% of the groups on a live collection are PAIRS (676 of 791). The model was asked
-    # about 73 of them and picked a different frame from sharpness in 40 — 55%, against
-    # the 10% a 20-pair timing sample had suggested. That looked alarming until the pairs
-    # were looked at: the two frames are INDISTINGUISHABLE. The two signals disagree so
-    # often not because one of them is right but because there is nothing to choose
-    # between — both are pointing at whichever of two identical pictures they happened to
-    # score higher.
-    #
-    # So a pair costs 1.44 s of VLM to answer a question that has no answer. At 3 the
-    # model is asked about the 115 groups where the frames actually differ: 791 calls ->
-    # 115, ~17 minutes -> ~2.5. Pairs fall back to sharpness, which F120 established is a
-    # fair comparison inside a group — one scene, one scale.
+    # The smallest group worth asking about. MEASURED 2026-08-02 and moved 2 -> 3: 85% of
+    # the groups on a live collection are PAIRS (676 of 791), and in 40 of the 73 pairs
+    # asked (55%) the model differed from sharpness only because the two frames are
+    # INDISTINGUISHABLE — 1.44 s of VLM for a question with no answer. At 3 the 115 groups
+    # whose frames actually differ are asked: 791 calls -> 115, ~17 min -> ~2.5. Pairs
+    # fall back to sharpness (F120: a fair comparison inside a group, one scene one scale).
     keeper_min_group_size: int = 3
 
 
@@ -143,12 +121,8 @@ def _dedup_from(raw: dict) -> DedupConfig:
     """The `dedup:` section — every value tolerant of garbage, like `features:` below.
 
     `canonical_strategy` keeps its plain str() reading (dedup._canonical falls back to
-    `largest` for anything it does not know); the F132 sizes go through the shared
-    validators, so a typo in a number cannot leave a group of 0 frames.
-
-    A `keeper_vlm` still written in somebody's config.yaml is simply not read (F186) —
-    an unknown key here has never been an error, which is what lets a retired question
-    disappear without taking a working file down with it.
+    `largest` for anything it does not know). A retired `keeper_vlm` still in somebody's
+    config.yaml is simply not read: an unknown key here has never been an error.
     """
     d = DedupConfig()
     return DedupConfig(
@@ -164,32 +138,20 @@ def _dedup_from(raw: dict) -> DedupConfig:
 class EstimateConfig:
     """F159: what the run screen prices a run with when it has nothing measured here.
 
-    The rest of the budget is read out of the run log — after F147 the file holds how
-    fast every stage ran ON THIS MACHINE, and that beats any number measured once
-    somewhere else.
-
-    F186 emptied this section of the two prices it was created for. They priced the
-    comparative keeper question, which was asked inside the junk stage's VLM phase and so
-    could not be told from the per-frame questions by the log — and that question is gone,
-    because it agreed with a person no more often than a coin does. A budget must not
-    quote a price for a stage that no longer runs.
+    The rest of the budget comes from the run log (F147: how fast every stage ran ON THIS
+    MACHINE). F186 emptied this section of `keeper_call_sec`/`keeper_frame_sec` — they
+    priced the comparative keeper question, which no longer runs.
     """
 
-    # How many days a timing from the run log is worth trusting. Mirrors
+    # How long a timing from the run log is worth trusting. Mirrors
     # `runlog.DEFAULT_MEASUREMENT_MAX_AGE_DAYS`; 0 or less switches the expiry off. The
-    # guard that does the real work is the build check inside `read_measurements` — this
-    # one only catches the same version running months later on a machine that has moved
-    # on since.
+    # real guard is the build check inside `read_measurements`; this one only catches the
+    # same version running months later on a machine that has moved on since.
     measurement_max_age_days: float = 90.0
 
 
 def _estimate_from(raw: dict) -> EstimateConfig:
-    """The `estimate:` section — garbage-tolerant like every section around it.
-
-    The retired `keeper_call_sec`/`keeper_frame_sec` (F186) are read by nobody now, and a
-    config.yaml that still carries them loads exactly as it did: an unknown key in a
-    section has never been an error here.
-    """
+    """The `estimate:` section — garbage-tolerant like every section around it."""
     d = EstimateConfig()
     return EstimateConfig(
         measurement_max_age_days=_as_float(
@@ -205,14 +167,12 @@ class GeoConfig:
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     nominatim_user_agent: str = "sorta-photo-organizer"  # required by the OSM policy
     nominatim_timeout: float = 10.0
-    # F93: coordinate rounding for the GRID FALLBACK key of the online-geo cache —
-    # used only for coordinates the bundled base cannot place (everything else is keyed
-    # by city+district geonameid, which is both faster and exact). 3 digits ≈ 110 m.
-    # Fewer digits = faster, but coarser (may confuse districts).
+    # F93: rounding for the GRID FALLBACK key of the online-geo cache, used only for
+    # coordinates the bundled base cannot place (the rest is keyed by city+district
+    # geonameid — faster and exact). 3 digits ≈ 110 m; fewer may confuse districts.
     cache_coord_digits: int = 3
-    # F93: how long a cached provider answer stays fresh, in days. City and district
-    # borders move rarely, but not never — 180 days ≈ half a year, an expired row is
-    # re-asked once and rewritten. 0 turns the expiry off entirely.
+    # F93: how long a cached provider answer stays fresh, in days — borders move rarely
+    # but not never. An expired row is re-asked once and rewritten; 0 turns expiry off.
     cache_max_age_days: int = 180
 
 
@@ -240,14 +200,13 @@ class SortConfig:
     # ui/cli fall back to "_Albums" next to the DB
     album_dir: str | None = None
     # F56: directory for sort plan reports (CSV/HTML/thumbs). None → report_output/
-    # next to the DB. Isolates one-off reports (real place names/paths) from the
-    # DB/repo directory and keeps them gitignored (report_output/).
+    # next to the DB, which keeps real place names and paths out of the repo directory
+    # and gitignored.
     report_dir: str | None = None
-    # F49 (#4-B): drop the district level in the city layout when the district name
-    # is not localized in the config language (foreign transliteration Wichit/Tuban ->
-    # Country/City/Year path). RU and localized foreign districts (Ubud/Kuta) stay;
-    # an online district from Nominatim (already localized) is not affected. False —
-    # previous behaviour (transliterated district in the path).
+    # F49 (#4-B): drop the district level in the city layout when the district name is
+    # not localized in the config language (Wichit/Tuban -> Country/City/Year). RU and
+    # localized foreign districts (Ubud/Kuta) stay; an online Nominatim district is
+    # already localized and unaffected. False — the transliterated district in the path.
     drop_unlocalized_district: bool = True
 
 
@@ -259,39 +218,21 @@ class FacesConfig:
     max_distance: float = 0.5    # cosine similarity threshold (Immich default)
 
 
-# F102: the local VLM used to be configured out of the `naming:` section — the toggle
-# (naming.vlm_enabled), the model (naming.classify_vlm_model) and the preparation
-# threads (naming.vlm_workers) all sat under "naming" because there was no other
-# address, even though the first of them switches JUNK CLASSIFICATION on. The one knob
-# that decides what the pass costs — the input resolution — was not in the config at all
-# but a constant in the code, against the project rule that thresholds live in
-# config.yaml. `vlm:` is that address. The dividing line: what describes the shared
-# model RUNTIME lives here, what belongs to a consumer stays with the consumer
+# F102 gave the local VLM its own `vlm:` section. The dividing line: what describes the
+# shared model RUNTIME lives there, what belongs to a consumer stays with the consumer
 # (naming.provider chooses who names events; naming.product_candidate_min is the junk
-# gate deciding which frame is worth a VLM call at all — a property of the gate, not of
-# the model).
+# gate deciding which frame is worth a call at all — a property of the gate).
 DEFAULT_VLM_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
-# The VLM input is not for fine details like OCR, a large frame is not needed; it saves
-# VRAM and generation time. Since F102 this is only the DEFAULT — the value in use comes
-# from vlm.max_edge, and scripts/measure_vlm_resolution.py prices what lowering it buys
-# and what it costs in verdicts.
+# The VLM is not asked for fine detail like OCR, so a large frame buys nothing and costs
+# VRAM and generation time. Only the DEFAULT since F102 (`vlm.max_edge` is what runs);
+# scripts/measure_vlm_resolution.py prices what lowering it buys and costs in verdicts.
 DEFAULT_VLM_MAX_EDGE = 896
-# The workers cap is deliberately modest and NOT "all your cores": the machine that runs
-# this may well have two, the GPU half is a single consumer that only needs to be kept
-# fed, and every worker in flight holds a preprocessed frame in RAM (F101).
-#
-# F164 was sent to raise it and MEASURED THAT IT MUST NOT BE RAISED. The case for more
-# threads was arithmetic from the F101 profile — ~0.6 s of CPU to prepare a frame against
-# ~0.19 s of GPU to answer about it, so a card needs three preparing threads to stay fed —
-# plus the live run of 2026-08-03, where `junk_vlm` held the card at 51% on a machine with
-# 24 cores and four threads. Both are true and the conclusion drawn from them is not,
-# because the premise expired: F105 gave the runtime the FAST image processor, and the
-# 0.6 s of one core became ~0.12 s of about seven. Four threads on a 24-core machine
-# therefore already ask for more cores than exist.
-#
-# Measured with scripts/measure_vlm_workers.py (120 frames of the live collection, the
-# real decode and the real processor, the model's turn replaced by a sleep of the measured
-# 0.19 s — see the script for what that mode can and cannot say):
+# F164 was sent to RAISE this cap and measured that it must not be raised. The case for
+# more threads was the F101 profile — ~0.6 s of CPU per frame against ~0.19 s of GPU — but
+# that premise expired with F105's fast image processor: the 0.6 s of one core became
+# ~0.12 s of about seven, so four threads on a 24-core machine already ask for more cores
+# than exist. Measured with scripts/measure_vlm_workers.py (120 frames, real decode and
+# processor, the model's turn stubbed by a sleep of the measured 0.19 s):
 #
 #     threads   ms/frame   frames/s   vs 1 thread   model half busy   peak RSS
 #           1        290       3,45         x1,00               66%      551 MB
@@ -301,26 +242,16 @@ DEFAULT_VLM_MAX_EDGE = 896
 #           8        295       3,39         x0,98               66%     2061 MB
 #          12        334       2,99         x0,87               57%     2599 MB
 #
-# More threads are SLOWER from two on, monotonically, and a second run of the sweep gives
-# the same curve to within 2%. Nothing here is a queue that grew too long: it is ONE
-# preparation saturating the machine on its own (the row's own CPU column reads 7.6 cores
-# busy with a single worker), so the next thread takes cores from the previous one. The
-# 51% of the live run has the same cause and is not a starving card — 0.12 s of
-# preparation against 0.19 s of generation is 66% busy with NO overlap at all, which is
-# exactly what the one-thread row measures.
+# Monotonically slower from two on (reproducible to within 2%): ONE preparation already
+# saturates the machine — 7.6 cores busy with a single worker — so the next thread takes
+# cores from the previous one. The 51% card utilization of the 2026-08-03 live run has
+# the same cause, not a starving card. The pool costs ~170 MB per thread.
 #
-# The last column is the brief's third question, answered: the frames in flight are real
-# memory (~2 per worker, CPU tensors), and the pool costs ~170 MB per thread — 2.6 GB at
-# twelve of them, next to a model that already holds 20.5 GB of VRAM.
-#
-# So the default stays min(4, cores) — a function of the machine, as it always was, and
-# four is inside 8% of the best row of a curve whose peak was measured against a STUBBED
-# model half. Moving it to two on that evidence would be the same mistake in the other
-# direction: a sleep releases the interpreter lock for its whole duration and a real
-# `generate()` does not, so where the peak sits is a question for
-# `scripts/measure_vlm_workers.py --full` on a free card. What would actually make this
-# pass faster is a CHEAPER preparation, not a wider one. `vlm.workers` remains the way to
-# say otherwise: it is the default that is capped here, never what a user may ask for.
+# The default stays min(4, cores), inside 8% of the best row, because that peak was
+# measured against a STUBBED model half: a sleep releases the interpreter lock for its
+# whole duration and a real `generate()` does not, so moving it to two needs
+# `scripts/measure_vlm_workers.py --full` on a free card. Only the DEFAULT is capped
+# here — `vlm.workers` is never clamped to it.
 _VLM_WORKERS_CAP = 4
 
 
@@ -329,24 +260,21 @@ def default_vlm_workers() -> int:
     return min(_VLM_WORKERS_CAP, os.cpu_count() or 1)
 
 
-# F153: how the two indexes answer one query. Two vectors per photograph exist once the
-# search index is on (F141) — the classification one (`clip_embeddings`, ViT-L-14) and the
-# search one (`search_embeddings`, the multilingual model) — and the measurement that
-# produced them said the two are equally accurate at the top and WRONG IN DIFFERENT
-# PLACES. That is the condition under which putting the two lists together is worth
-# anything, and it is also the reason the two ways of doing it below both work on RANKS:
+# F153: how the two indexes answer one query — `clip_embeddings` (ViT-L-14) and
+# `search_embeddings` (the multilingual model), which are equally accurate at the top and
+# WRONG IN DIFFERENT PLACES. That is what makes fusion worth anything, and it is why both
+# modes work on RANKS:
 #
-#   off     one index, today's behaviour — the search index alone
+#   off     the search index alone
 #   rank    reciprocal rank fusion: a frame is weighted by its POSITION in each list,
 #           so agreement between the models outranks a single model's favourite
 #   union   the two lists merged as sets: a frame keeps its best position, so a frame
 #           found by one model only is not pushed out by one both models found
 #
-# What no mode does is ADD THE SCORES. A cosine of ViT-L-14 and a cosine of
-# xlm-roberta-base-ViT-B-32 are numbers of two different spaces: they look comparable,
-# they print alike, and summing them is exactly the mistake F128's `model` column exists
-# to prevent. The fusion functions in `search.py` are given file ids and no scores at all,
-# which is that rule made mechanical rather than remembered.
+# No mode ADDS THE SCORES: a cosine of ViT-L-14 and a cosine of
+# xlm-roberta-base-ViT-B-32 live in different spaces, look comparable and print alike.
+# The fusion functions in `search.py` are handed file ids and no scores at all, which
+# makes that rule mechanical rather than remembered.
 SEARCH_FUSION_OFF = "off"
 SEARCH_FUSION_RANK = "rank"
 SEARCH_FUSION_UNION = "union"
@@ -356,13 +284,10 @@ SEARCH_FUSION_MODES = (SEARCH_FUSION_OFF, SEARCH_FUSION_RANK, SEARCH_FUSION_UNIO
 # the `media_class.verdict` values; `photo` is deliberately absent — excluding personal
 # photographs would leave the tier with nothing to do.
 VLM_EXCLUDABLE_CLASSES = ("document", "product", "screenshot", "meme")
-# Documents by default: this bucket holds passports, medical forms and bank papers, and
-# the project already refuses to DECODE them for display. Sending them to a model is a
-# weaker act than showing them — the model here is local and nothing leaves the machine
-# — but it is the user's call, not ours, and the safe default is the one that asks
-# nothing. The cost is stated in config.example.yaml and in the guides: the deep tier is
-# what CORRECTS a wrong `document` verdict, so an excluded class keeps whatever the fast
-# tier decided about it.
+# Documents by default: the bucket holds passports, medical forms and bank papers, which
+# the project already refuses to DECODE for display. The cost of excluding them is that
+# the deep tier is what CORRECTS a wrong `document` verdict, so an excluded class keeps
+# whatever the fast tier decided.
 DEFAULT_VLM_EXCLUDE_CLASSES = ("document",)
 
 
@@ -370,62 +295,48 @@ DEFAULT_VLM_EXCLUDE_CLASSES = ("document",)
 class VlmConfig:
     """`vlm:` — the shared runtime of the local VLM (F102).
 
-    Both consumers — the deep junk tier and the `vlm` event namer — run the SAME
-    weights, one copy per process (the peak is 20.5 GB of VRAM, a second instance does
-    not fit), so the model, its input size and the preparation pool describe that
-    runtime rather than either stage.
+    Both consumers — the deep junk tier and the `vlm` event namer — run the SAME weights,
+    one copy per process (the peak is 20.5 GB of VRAM; a second instance does not fit).
 
-    `enabled` is mirrored onto `NamingConfig.vlm_enabled` by load_config, and that is
-    deliberate: `--deep` and the "Deep analysis (VLM)" checkbox force the tier for ONE
-    run by replacing `cfg.naming.vlm_enabled` on their own copy of the config, so that
-    field stays the effective per-run toggle — this section is where the config FILE
-    states the default it starts from.
+    `enabled` is mirrored onto `NamingConfig.vlm_enabled` by load_config: `--deep` and the
+    "Deep analysis (VLM)" checkbox force the tier for ONE run by replacing that field on
+    their own copy of the config, so it stays the effective per-run toggle.
     """
     enabled: bool = False
-    # F161: the deep junk tier, which is the one thing `enabled` used to switch on BY
-    # ITSELF. That made the master switch the only line of the run screen with an effect
-    # of its own and no price next to it, and the effect it had was not "deep analysis"
-    # in general: the tier is the only producer of the `product` class (the fast tier
-    # never emits one), and on the live run of 2026-07-28 it moved 2 202 of its 2 592
-    # verdicts into exactly that class. So the effect gets a key, a line and a price, and
-    # `enabled` goes back to meaning permission alone.
+    # F161: the deep junk tier, which `enabled` used to switch on by itself. It is the
+    # only producer of the `product` class — on the live run of 2026-07-28 it moved 2 202
+    # of its 2 592 verdicts into exactly that class — so the effect gets a key of its own
+    # and `enabled` goes back to meaning permission alone.
     #
-    # Default TRUE, unlike every other subordinate key here: a config file written before
-    # this key existed must run what it ran yesterday, and yesterday `vlm.enabled: true`
-    # meant the tier. It is subordinate all the same — see `products_allowed`: with the
-    # master off nothing is raised, whatever this says.
+    # Default TRUE, unlike every other subordinate key here: before this key existed
+    # `vlm.enabled: true` meant the tier, and such a file must run what it ran yesterday.
+    # Still subordinate — see `products_allowed`.
     products: bool = True
     model: str = DEFAULT_VLM_MODEL
     workers: int = field(default_factory=default_vlm_workers)
     max_edge: int = DEFAULT_VLM_MAX_EDGE
-    # F186 retired `quality` and `quality_scope`. The frame-quality question the model was
-    # asked had been down to one line — "are the eyes open" — and F179 answered it off the
-    # eyelid geometry the faces stage already produces: 62% precision at 48% recall
-    # against the model's 60% at 9%, for no call at all. The replacement arrived; the
-    # question it replaced is removed here, along with the scope that chose who was asked.
+    # F186 retired `quality` and `quality_scope`: the frame-quality question was down to
+    # "are the eyes open", and F179 answered it off eyelid geometry the faces stage
+    # already produces — 62% precision at 48% recall against the model's 60% at 9%, for
+    # no call at all.
     # F120: privacy — media classes no VLM is ever shown, by verdict of the fast tier.
     # Empty tuple = send everything, which is what happened before this key existed.
     exclude_classes: tuple[str, ...] = DEFAULT_VLM_EXCLUDE_CLASSES
 
 
-# F102: the pre-`vlm:` address of each knob. A live config.yaml holds
-# `naming.vlm_enabled: false`, and silently ignoring that would switch a 20 GB tier ON
-# on somebody else's machine — so the old keys keep working. The new key wins when it is
-# given; otherwise the old one is used and says so ONCE per run (this is read once at
-# startup anyway, and a warning per frame is how a log becomes unreadable).
+# Retired key names already warned about. F102 moved three knobs out of `naming:`, and a
+# live config.yaml holding `naming.vlm_enabled: false` must not have a 20 GB tier switched
+# ON by that move — so the old keys keep working, the new one winning when both are given:
 #
 #     vlm.enabled  <- naming.vlm_enabled
 #     vlm.model    <- naming.classify_vlm_model
 #     vlm.workers  <- naming.vlm_workers
 #
-# vlm.max_edge has no old address: it was a constant in the code.
+# vlm.max_edge has no old address: it was a constant in the code. F173 added a rename
+# inside one section (`features.search_page` <- `features.search_limit`, see
+# `_renamed_value`), which is why an alias is registered by its full `section.key`.
 #
-# F173 put a second rename through the same set, inside one section this time
-# (`features.search_page` <- `features.search_limit`, see `_renamed_value`); it registers
-# its alias by the full `section.key` address, so two sections can retire a key of the
-# same name without silencing each other's warning.
-#
-# Process-wide on purpose — "once per run", not once per load_config call (the web app
+# Process-wide on purpose — once per RUN, not once per load_config call (the web app
 # reloads the config on every request). Tests clear it.
 _ALIAS_WARNED: set[str] = set()
 
@@ -452,12 +363,8 @@ def _vlm_value(new: dict, old: dict, new_key: str, old_key: str) -> Any:
 def _renamed_value(raw: dict, section: str, new_key: str, old_key: str) -> Any:
     """The raw value of a knob that was renamed INSIDE one section: new spelling wins.
 
-    The `_vlm_value` rule with one section instead of two, and it exists for the same
-    reason: a key that moved must not take somebody's setting with it. A live config.yaml
-    holds the old name, silently ignoring it would hand that machine the default, and a
-    default is exactly what the person edited the file to get away from. The warning is
-    once per process (`_ALIAS_WARNED`) — this is read at startup, and the web app reloads
-    the config on every request.
+    The `_vlm_value` rule with one section instead of two, and for the same reason: a key
+    that moved must not take somebody's setting with it. Warns once per process.
     """
     if new_key in raw:
         return raw[new_key]
@@ -475,8 +382,8 @@ def _renamed_value(raw: dict, section: str, new_key: str, old_key: str) -> Any:
 def _as_bool(value: Any, default: bool) -> bool:
     """YAML truth for a toggle; anything unrecognizable -> `default`, never a crash.
 
-    Strings are parsed instead of being handed to bool(): a quoted "false" is truthy in
-    Python, and a config that says false must never switch a heavy tier on.
+    Strings are parsed rather than handed to bool(): a quoted "false" is truthy in Python,
+    and a config that says false must never switch a heavy tier on.
     """
     if isinstance(value, bool):
         return value
@@ -492,11 +399,7 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _as_positive_int(value: Any, default: int) -> int:
-    """A positive whole number; absent / 0 / negative / garbage -> `default`.
-
-    A bad number in a config file is a typo, not a reason to refuse to start — and a
-    silent 0 threads or a 0-pixel frame would be worse than the default either way.
-    """
+    """A positive whole number; absent / 0 / negative / garbage -> `default`."""
     if isinstance(value, bool):  # bool is an int in Python; `max_edge: true` is garbage
         return default
     try:
@@ -509,8 +412,8 @@ def _as_positive_int(value: Any, default: int) -> int:
 def _as_float(value: Any, default: float) -> float:
     """A finite number; absent / garbage -> `default` (a typo must not stop a run).
 
-    Booleans are rejected for the same reason `_as_positive_int` rejects them: YAML `true`
-    is a 1 nobody meant as a threshold.
+    Booleans are rejected like in `_as_positive_int`: YAML `true` is a 1 nobody meant as
+    a threshold.
     """
     if isinstance(value, bool):
         return default
@@ -521,15 +424,12 @@ def _as_float(value: Any, default: float) -> float:
     return number if number == number and abs(number) != float("inf") else default
 
 
-# F170: who may name an event — and every one of them runs on this machine. The cloud
-# provider that used to be the fourth name here uploaded the sample frames of an event to
-# a vendor API, which made it the only code in the product capable of putting a photograph
-# on the network; it is deleted rather than defaulted off, so "no code sends images
-# anywhere" is a property of the sources instead of a promise about a setting.
+# F170: who may name an event — every one of them runs on this machine. The fourth name
+# here uploaded an event's sample frames to a vendor API; it was DELETED rather than
+# defaulted off, so "no code sends images anywhere" is a property of the sources.
 NAMING_PROVIDERS = ("template", "vlm", "local_vlm")
-# A value that named a REAL feature until it was removed. Not a typo and not treated as
-# one: a config.yaml carrying it is somebody's working file, so it earns a sentence
-# saying what happened and a fallback, never a crash on the first line of a run.
+# Values that named a REAL feature until it was removed — not typos, so they earn a
+# sentence and a fallback rather than a crash on the first line of a run.
 REMOVED_NAMING_PROVIDERS = ("claude",)
 
 
@@ -545,10 +445,8 @@ def removed_provider_message(provider: str) -> str:
 def _as_provider(value: Any, default: str) -> str:
     """`naming.provider`, with a removed provider answered rather than obeyed.
 
-    Anything else — including a typo — is passed through untouched: `make_namer` is the
-    one place that decides what a provider name means, and an unknown one is still an
-    error there. Only the values this feature deleted are answered here, because only
-    they used to work.
+    Anything else, typos included, passes through untouched: `make_namer` is the one place
+    that decides what a provider name means, and an unknown one is still an error there.
     """
     name = value.strip().lower() if isinstance(value, str) else value
     if name in REMOVED_NAMING_PROVIDERS:
@@ -560,11 +458,8 @@ def _as_provider(value: Any, default: str) -> str:
 def _as_repo_id(key: str, value: Any, default: str) -> str:
     """A huggingface repo id (`owner/name`); anything else -> the default, with a warning.
 
-    Weaker than `_as_model_name` below and deliberately so: that one validates an
-    open_clip `<architecture>/<weights>` pair, where a missing half builds an untrained
-    tower and fills a table with rubbish. Here the string is handed to
-    `from_pretrained`, which fails loudly by itself — all this has to stop is an empty
-    or non-string value turning into a download attempt for "".
+    Deliberately weaker than `_as_model_name`: the string goes to `from_pretrained`, which
+    fails loudly by itself, so all this stops is a download attempt for "".
     """
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -577,9 +472,7 @@ def _as_repo_id(key: str, value: Any, default: str) -> str:
 def _as_fusion(value: Any, default: str) -> str:
     """F153: one of SEARCH_FUSION_MODES; anything else -> the default, with a warning.
 
-    A misspelled mode must not silently become a fusion nobody asked for, and it must not
-    silently become `off` either: which of the three is running decides what the ranking
-    IS, so the fallback is announced.
+    Announced rather than silent: which of the three runs decides what the ranking IS.
     """
     if isinstance(value, str) and value.strip().lower() in SEARCH_FUSION_MODES:
         return value.strip().lower()
@@ -592,11 +485,8 @@ def _as_fusion(value: Any, default: str) -> str:
 def _as_model_name(value: Any, default: str) -> str:
     """F141: `<open_clip architecture>/<weights>`; anything else -> the default.
 
-    Both halves are required, and that is the whole check: a name carrying only the
-    architecture resolves to a model with no weights, which open_clip is happy to build
-    and which would fill the search index with vectors of an untrained tower. The pair is
-    also what `junk.embedding_model` writes into every row, so the two spellings of "which
-    model" cannot drift apart.
+    Both halves are required and that is the whole check: open_clip happily builds a model
+    with no weights, filling the search index with vectors of an untrained tower.
     """
     text = value.strip() if isinstance(value, str) else ""
     architecture, sep, weights = text.partition("/")
@@ -611,12 +501,9 @@ def _as_model_name(value: Any, default: str) -> str:
 def resolve_vlm_workers(raw: dict | None) -> int:
     """Threads preparing frames for the VLM — `vlm.workers` (was `naming.vlm_workers`).
 
-    Default min(4, cpu_count). 1 means the serial pass, which is what the deep tier did
-    before F101 and what a runtime without split halves does anyway. Absent / 0 /
-    negative / garbage -> the default; the result is always >= 1.
-
-    Takes the raw YAML rather than a Config so the measurement scripts can ask the same
-    question of a config they only parsed.
+    Default min(4, cpu_count); 1 means the serial pass. Absent / 0 / negative / garbage ->
+    the default, and the result is always >= 1. Takes the raw YAML rather than a Config so
+    the measurement scripts can ask the same question of a config they only parsed.
     """
     data = _mapping(raw)
     value = _vlm_value(_mapping(data.get("vlm")), _mapping(data.get("naming")),
@@ -627,10 +514,9 @@ def resolve_vlm_workers(raw: dict | None) -> int:
 def _as_exclude_classes(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
     """F120: `vlm.exclude_classes` — a list of media classes, or `[]` to send everything.
 
-    An EMPTY list is a real answer ("show the model everything") and must survive, so
-    absence and emptiness cannot be conflated: only `None`/a non-list falls back to the
-    default. An unknown class name is dropped with a warning rather than taken on faith —
-    a typo there silently sends the very bucket the user meant to protect.
+    An EMPTY list is a real answer ("show the model everything"), so only `None`/a non-list
+    falls back to the default. An unknown class name is dropped with a warning: a typo
+    there would silently send the very bucket the user meant to protect.
     """
     if value is None or isinstance(value, (str, bytes)) or not isinstance(value, list):
         if value is not None:
@@ -646,10 +532,9 @@ def _as_exclude_classes(value: object, default: tuple[str, ...]) -> tuple[str, .
             _log.warning("config: vlm.exclude_classes — неизвестный класс %r, "
                          "допустимы %s", name, "/".join(VLM_EXCLUDABLE_CLASSES))
     if value and not out:
-        # Every name was a typo. Falling through to "nothing excluded" here would turn
-        # the protection OFF for someone who was writing it down — the opposite of what
-        # they asked for, and silently. An empty list stays empty; a list of typos does
-        # not become one.
+        # Every name was a typo. Falling through to "nothing excluded" would silently turn
+        # the protection off for somebody who was writing it down. An empty list stays
+        # empty; a list of typos does not become one.
         _log.warning("config: vlm.exclude_classes — ни одно имя не распознано, "
                      "использую %r", list(default))
         return default
@@ -657,12 +542,7 @@ def _as_exclude_classes(value: object, default: tuple[str, ...]) -> tuple[str, .
 
 
 def _vlm_from(data: dict) -> VlmConfig:
-    """The `vlm:` section of the whole YAML, with the legacy `naming.*` keys honoured.
-
-    `quality` and `quality_scope` are retired (F186) and simply not read: a live
-    config.yaml carrying either loads unchanged, which is the whole point of tolerating
-    unknown keys in a section.
-    """
+    """The `vlm:` section of the whole YAML, with the legacy `naming.*` keys honoured."""
     new = _mapping(data.get("vlm"))
     old = _mapping(data.get("naming"))
     d = VlmConfig()
@@ -678,12 +558,11 @@ def _vlm_from(data: dict) -> VlmConfig:
     )
 
 
-# F154: the object detector's weights. torchvision's own COCO checkpoint, resolved by
-# name — NO NEW DEPENDENCY (torchvision 0.28 is installed for the CLIP side already),
-# only the weights are downloaded. The mobilenet backbone and not a ResNet one because
-# the whole shape of the feature rests on the detector being cheap: 83.8 ms per frame is
-# 30.8 minutes over 22 096 photographs as a pass, and ~3 minutes over the ~2 000
-# candidates a query selects.
+# F154: torchvision's own COCO checkpoint, resolved by name — no new dependency
+# (torchvision 0.28 is already installed for the CLIP side), only weights are downloaded.
+# The mobilenet backbone and not a ResNet one because the feature rests on the detector
+# being cheap: 83.8 ms per frame is 30.8 min over 22 096 photographs as a pass, and
+# ~3 min over the ~2 000 candidates a query selects.
 DEFAULT_DETECT_MODEL = "fasterrcnn_mobilenet_v3_large_fpn"
 
 
@@ -691,17 +570,12 @@ DEFAULT_DETECT_MODEL = "fasterrcnn_mobilenet_v3_large_fpn"
 class DetectConfig:
     """`detect:` — the runtime of the object detector (F154), and its master switch.
 
-    A section of its own for the reason `vlm:` is one: what describes a MODEL RUNTIME
-    lives with the runtime, what describes a QUESTION stays with the consumer — here
-    `features.detector*`, which says whether the animal cascade wants a detector at all,
-    how deep the candidate list goes and which confidence counts.
+    A section of its own for the reason `vlm:` is one: the RUNTIME lives here, the
+    QUESTION stays with the consumer (`features.detector*`).
 
-    `enabled` is the F145 rule applied to a second kind of model. That rule was written
-    about the VLM and it is not ABOUT the VLM: nothing modelled may be raised because one
-    subordinate key happens to be true in a config file. The master switch here is
-    deliberately NOT `vlm.enabled` — this is not a VLM, and somebody who cleared the deep
-    tier did not thereby ask for a detector — but the hierarchy is the same, and
-    `detector_allowed()` below is where it is written down.
+    `enabled` is the F145 rule applied to a second kind of model — nothing modelled may be
+    raised because one subordinate key happens to be true. Deliberately NOT `vlm.enabled`:
+    somebody who cleared the deep tier did not thereby ask for a detector.
     """
     enabled: bool = False
     model: str = DEFAULT_DETECT_MODEL
@@ -722,23 +596,19 @@ def _detect_from(data: dict) -> DetectConfig:
 class SavedSlice:
     """F151: one pinned query — the name of a slice and the phrases it is ranked by.
 
-    A slice, not a filter with a threshold. The whole point of the shape is that both
-    halves are DATA: the name is what the interface labels the pin with, and the phrases
-    are what the search index is asked, so a slice can be added, retuned or dropped by
-    editing `config.yaml` and never by editing code.
+    A slice, not a filter with a threshold: both halves are DATA, so a slice is added,
+    retuned or dropped by editing `config.yaml` and never by editing code.
 
-    The phrases are ENGLISH and stay English whatever `language:` says. They are not shown
-    as an interface string but sent to a CLIP text tower, and while the measured pairs
-    (children 61%/89%, products 65%/95%) were produced by English wording, translating
-    them is a change nobody has measured — see `DEFAULT_SAVED_SLICES`.
+    The phrases are ENGLISH whatever `language:` says. They are not an interface string
+    but input to a CLIP text tower, and the measured pairs (children 61%/89%, products
+    65%/95%) came from English wording; translating them is unmeasured.
     """
 
     name: str
     queries: tuple[str, ...]
 
 
-# The three slices this ships with, and why these three rather than six (measured
-# 2026-08-02 on a hand-labelled sample of 200 frames out of 22 096):
+# Why these three (measured 2026-08-02 on 200 hand-labelled frames out of 22 096):
 #
 #     concept    today's filter          the same vectors, asked
 #                recall  precision       recall@N  recall@2N  precision@N
@@ -746,20 +616,16 @@ class SavedSlice:
 #     products      0%        —             65%        95%         65%
 #     animals      33%       71%            60%        87%         60%
 #
-# Children and products had no slice in the product at all and the query makes them out of
-# nothing. Animals HAS one (the `pet` label, CLIP plus a VLM cascade) and keeps it: at 71%
-# precision that label answers "is this confidently an animal", which is a different
-# question from "show me every animal", so the two coexist and the interface labels them
-# apart.
+# The animal slice does NOT replace the `pet` label: at 71% precision the label answers
+# "is this confidently an animal", a different question, so the two coexist.
 #
-# Blurred is deliberately NOT here. The sharpness filter is 100% precise on that sample
-# and the query is 36%, so folding them together would sink an exact signal into an
-# approximate one; joining those two is a different feature with a different order.
+# Blurred is deliberately NOT here: the sharpness filter is 100% precise on that sample
+# against the query's 36%, so folding them together would sink an exact signal into an
+# approximate one.
 #
-# Three phrases each, and the count is NOT the reason it works — measured on the same
-# sample, one phrase, three, and six differ by less than the noise floor (animals 67/60/73,
-# children 68/61/68, products 65/65/60, where one labelled frame is worth ~6.7 points).
-# The list exists so a slice can be retuned without a release, not for accuracy.
+# Three phrases each is not what makes it work — on the same sample one, three and six
+# phrases differ by less than the noise floor (animals 67/60/73, children 68/61/68,
+# products 65/65/60, one labelled frame being worth ~6.7 points).
 DEFAULT_SAVED_SLICES: tuple[SavedSlice, ...] = (
     SavedSlice("children", ("a photo of a child",
                             "children playing",
@@ -778,14 +644,9 @@ def _as_saved_slices(value: object,
     """F151: `features.saved_slices` — a mapping of slice name -> list of phrases.
 
     An EMPTY mapping is a real answer ("pin nothing") and survives, the
-    `_as_exclude_classes` rule: absence and emptiness are different wishes. Anything that
-    is not a mapping falls back to the default with a warning, a name with no usable
-    phrase is dropped (a pin that ranks nothing would be a slice that cannot answer), and
-    a mapping in which nothing at all survived falls back rather than silently emptying
-    the row — a file full of typos is not a request to remove every slice.
-
-    The ORDER of the mapping is kept: it is the order of the pins on screen, and YAML
-    mappings load into ordered dicts, so what a person wrote is what they get.
+    `_as_exclude_classes` rule. A name with no usable phrase is dropped; a mapping in
+    which nothing survived falls back to the default, because a file full of typos is not
+    a request to remove every slice. The ORDER is kept — it is the order of the pins.
     """
     if not isinstance(value, dict):
         if value is not None:
@@ -796,8 +657,7 @@ def _as_saved_slices(value: object,
     out: list[SavedSlice] = []
     for raw_name, raw_queries in value.items():
         name = str(raw_name).strip()
-        # A single phrase written as a plain string is a list of one, not a mistake — and
-        # one phrase is as good as three (the table above), so it must not be refused.
+        # A single phrase written as a plain string is a list of one, not a mistake.
         items = [raw_queries] if isinstance(raw_queries, str) else raw_queries
         phrases = items if isinstance(items, (list, tuple)) else []
         queries = tuple(dict.fromkeys(
@@ -816,19 +676,18 @@ def _as_saved_slices(value: object,
 class FeaturesConfig:
     """`features:` — the F113 frame-quality cascade: one toggle, then its thresholds.
 
-    The rule the section exists for: every signal is taken with the cheapest tool that
-    can answer it, and a new function gets a new toggle. Sharpness has none — it is a
-    laplacian over a preview that every other stage has already paid for, and both the
-    "best frame of a group" and the "blurred junk" consumers need it — while pets, which
-    cost a prompt group inside the junk stage's CLIP call, do.
+    The rule the section exists for: every signal is taken with the cheapest tool that can
+    answer it, and a new function gets a new toggle. Sharpness has none — it is a laplacian
+    over a preview every other stage has already paid for — while pets, which cost a prompt
+    group inside the junk stage's CLIP call, do.
 
-    The thresholds are HERE and not in the code because none of them can be guessed:
-    `scripts/measure_frame_quality.py` prints the distributions they have to be chosen
-    from, on the collection they will be applied to.
+    The thresholds are here and not in the code because none can be guessed:
+    `scripts/measure_frame_quality.py` prints the distributions to choose them from, on the
+    collection they will be applied to.
     """
-    # F222: the landmark stage, which until now had no switch at all — it ran on every
-    # run, downloaded 1.6 GB of CLIP weights the first time and spent minutes of every
-    # one after that. MEASURED on the owner's collection (26 137 frames, 2026-08-07):
+    # F222: the landmark stage, which until then had no switch — it ran on every run and
+    # downloaded 1.6 GB of CLIP weights the first time. MEASURED on the owner's collection
+    # (26 137 frames, 2026-08-07):
     #
     #     places by source        landmarks contributed
     #       exact_gps      14 254     Prague     121
@@ -838,22 +697,16 @@ class FeaturesConfig:
     #       visual            143  <- this stage
     #       path_inferred      66
     #
-    # 143 places out of 26 137 is 0.55%, and practically one trip. 45.3% of the frames
-    # have no GPS, but what rescues them is `session_inferred` and `trip_inferred`
-    # (4 052 together) — neighbours and clocks, which need no model whatsoever. So the
-    # stage is off unless somebody asks for it, and asking is one checkbox.
-    #
-    # Off does NOT mean gone: a config that switches it on runs exactly the stage it ran
-    # before, and the `visual` places already in a database are never touched by the
-    # stage being skipped — nothing recomputes or devalues them.
+    # 143 of 26 137 is 0.55%, practically one trip. 45.3% of the frames have no GPS, and
+    # what rescues them is `session_inferred` + `trip_inferred` (4 052), which need no
+    # model at all. Off does NOT mean gone: `visual` places already in a database are
+    # never recomputed or devalued by the stage being skipped.
     landmarks: bool = False
     pets: bool = False
     # F130: check every candidate with the local VLM before the label is written — one
-    # question with three answers (a live animal / a picture of one / no animal). Its own
-    # toggle by the rule above, and it additionally needs `pets`: it verifies what the
-    # CLIP group found, it does not look for animals by itself. With it off the stage
-    # behaves exactly as it did — the label is `pet_score >= pet_threshold` and no frame
-    # is shown to a model.
+    # question, three answers (a live animal / a picture of one / no animal). Needs `pets`
+    # as well: it verifies what the CLIP group found, it does not look by itself. Off, the
+    # label is `pet_score >= pet_threshold` and no frame is shown to a model.
     pets_verify: bool = False
     # F122: MEASURED, on 320 hand-labelled frames stratified by score and weighted back
     # to the collection:
@@ -867,22 +720,20 @@ class FeaturesConfig:
     #
     # 0.70 dominates 0.85 outright — the same precision for nine more points of recall —
     # and buys three points of precision over 0.60 for four of recall. With ~40 frames a
-    # band the interval is about ±8 points, so this is a justified preference rather than
-    # a proven optimum; the scores are stored, so re-choosing needs no new pass.
+    # band the interval is about ±8 points, so this is a preference, not a proven optimum;
+    # the scores are stored, so re-choosing needs no new pass.
     pet_threshold: float = 0.7
-    # F130: the OTHER threshold — who is shown to the model when `pets_verify` is on.
-    # Far below the one above, and deliberately so: 0.70 is high because nothing was
-    # checking CLIP's answer, and once something does, the selection can be widened. The
-    # arithmetic is counted on the stored `pet_score` of the live collection, not
-    # estimated — 0.70 selects 805 frames (10.5 min at 0.78 s/frame), 0.50 993 (12.9),
-    # 0.30 1 331 (17.3), 0.20 1 679 (21.8), everything 19 757 (4.3 h).
+    # F130: the OTHER threshold — who is shown to the model when `pets_verify` is on. Far
+    # below the one above, because 0.70 is high only for want of anything checking CLIP.
+    # Counted on the stored `pet_score` of the live collection: 0.70 selects 805 frames
+    # (10.5 min at 0.78 s/frame), 0.50 993 (12.9), 0.30 1 331 (17.3), 0.20 1 679 (21.8),
+    # everything 19 757 (4.3 h).
     #
-    # F158: 0.30 is MEASURED, and it replaces the 0.50 F130 shipped. F130 read its gate
-    # off a REPLAY against the F122 labels — a set stratified by score band, which counts
-    # the confident frames the gate is not about and leaves the low band resting on a
-    # handful of labels. Re-measured on 500 RANDOM frames labelled by hand (36 animals
-    # among them), scored by the product's own rule — `pet_label`, where the answer
-    # outranks the score and an unreadable answer falls back to the threshold:
+    # F158 replaced the 0.50 F130 shipped. F130 had read its gate off a REPLAY against the
+    # F122 labels, a set stratified by score band that leaves the low band resting on a
+    # handful of labels. Re-measured on 500 RANDOM hand-labelled frames (36 animals),
+    # scored by `pet_label` — the answer outranks the score, an unreadable answer falls
+    # back to the threshold:
     #
     #     way                             marked  correct  precision  recall
     #     threshold 0.70 (before F130)        18       17        94%     47%
@@ -891,24 +742,20 @@ class FeaturesConfig:
     #     gate 0.50, no check                 21       18        86%     50%
     #     cascade 0.50 + VLM (F130 shipped)   20       18        90%     50%
     #
-    # At 0.50 the cascade is close to pointless: three points of recall over the bare
-    # 0.70 threshold, for 21 model calls. The point of it appears at 0.30 — SEVENTEEN
-    # points of recall (47% -> 64%) for twelve of precision (94% -> 82%). The check is
-    # weaker than the F130 brief promised but it is what makes the wider gate payable: at
-    # 0.30 it removed 6 of the 11 false marks and lost not one correct one. The price on
-    # the live collection is ~1 500 frames against ~930, i.e. ~19 minutes against ~12 at
-    # the measured 0.77 s/frame.
+    # At 0.50 the cascade buys three points of recall over the bare 0.70 threshold for 21
+    # model calls. At 0.30 it buys seventeen (47% -> 64%) for twelve of precision (94% ->
+    # 82%), removing 6 of the 11 false marks and losing no correct one. The price on the
+    # live collection is ~1 500 frames against ~930 — ~19 min against ~12 at 0.77 s/frame.
     pet_candidate_threshold: float = 0.3
     # F140: score every photograph on how much it looks like a screenshot, a photographed
-    # screen or a receipt, and show the ones above `junk_rescue_threshold` to the VLM. Its
-    # own toggle by the rule above; the score itself costs no model pass (it is a matmul
-    # over the vectors `store_embeddings` already keeps), but the frames it selects cost
-    # ~0.78 s each in the deep tier, and with the deep tier off nothing is reclassified at
-    # all — the score is written, the candidates are marked, the verdicts stay.
+    # screen or a receipt, and show the ones above `junk_rescue_threshold` to the VLM. The
+    # score costs no model pass (a matmul over the vectors `store_embeddings` keeps), but
+    # each frame it selects costs ~0.78 s in the deep tier. With the deep tier off nothing
+    # is reclassified: the score is written, the candidates are marked, the verdicts stay.
     junk_rescue: bool = False
     # Who is shown to the model. MEASURED by eye on the live collection (19 753 stored
-    # vectors, every one of them classified `photo` — the frames below are the
-    # classifier's own misses, not junk that leaked into the index):
+    # vectors, every one classified `photo` — these are the classifier's own misses, not
+    # junk that leaked into the index):
     #
     #     threshold   frames   share of the photographs   what the review found
     #      +0.05          93            0.5%              junk outright
@@ -916,36 +763,29 @@ class FeaturesConfig:
     #                                                     the band +0.02..+0.05
     #       0.00        5688           28.8%              junk in single figures
     #
-    # 0.02 is the selection threshold and NOT a verdict: at ~85% precision, reclassifying
-    # by it directly would throw ~150 living photographs out of the city layout, which is
-    # the mistake F130 measured for animals. 955 frames is ~12 minutes of the deep tier.
+    # A selection threshold, NOT a verdict: at ~85% precision, reclassifying by it directly
+    # would throw ~150 living photographs out of the city layout — the mistake F130
+    # measured for animals. 955 frames is ~12 minutes of the deep tier.
     junk_rescue_threshold: float = 0.02
-    # F154: the animal label gets a THIRD tier — an object detector, over the candidates a
-    # query picks out of the stored vectors. Its own toggle by the rule above, and it needs
-    # `detect.enabled` (the master switch, see DetectConfig): this key says the cascade
-    # wants a detector, that one says a detector may be loaded at all.
+    # F154: a THIRD tier for the animal label — an object detector over the candidates a
+    # query picks out of the stored vectors. Needs `detect.enabled` as well (this key says
+    # the cascade wants a detector, that one says a detector may be loaded at all).
     #
-    # It exists for exactly one of the three slices a detector was measured on, and the
-    # other two are the reason it is not a pass over everything (200 hand-labelled frames,
-    # 2026-08-02, at confidence 0.5):
+    # Animals only, and the other two slices a detector was measured on are why (200
+    # hand-labelled frames, 2026-08-02, at confidence 0.5):
     #
     #     animals   62% precision, 87% recall   against the CLIP label's 71% / 33%
     #     people    42% precision, 96% recall   against ~100% precision from faces (F152)
     #     food      20% precision, 15% recall   COCO has a banana and a pizza, not a meal
     #
-    # The animal row was re-measured on 500 frames (2026-08-03) and reads 78% / 69% at that
-    # same confidence — see the table at `detector_threshold` below for what the numbers are
-    # now and which row is the default. What did not move is the boundary this table draws,
-    # and that is what it is kept here for.
-    #
-    # So animals only — see detect.ANIMAL_CLASSES, where the boundary is written down
-    # again next to the classes it draws. With it off nothing is loaded and the label is
-    # what F122/F130 make it.
+    # The animal row re-measured on 500 frames (2026-08-03) reads 78% / 69% at that same
+    # confidence — see `detector_threshold` below. The boundary this table draws is what it
+    # is kept for; see detect.ANIMAL_CLASSES for the classes it draws.
     detector: bool = False
     # How deep into the query ranking the candidate list goes — the ONE number that decides
-    # what this feature costs, because the detector never sees anything else. MEASURED
-    # (2026-08-03, 500 hand-labelled frames, 36 animals), where the last column is the share
-    # of the known animals the query put in front of the detector at all:
+    # what this feature costs, since the detector sees nothing else. MEASURED (2026-08-03,
+    # 500 hand-labelled frames, 36 animals); the last column is the share of the known
+    # animals the query put in front of the detector at all:
     #
     #     depth   candidates     time    recall ceiling
     #       500          500   0.7 min        25%
@@ -955,15 +795,14 @@ class FeaturesConfig:
     #     10000        10000  14.0 min       100%
     #
     # THE CEILING BOUNDS EVERY RECALL BELOW IT: a frame the query never showed is not found
-    # at any threshold, and at 2 000 candidates 17% of the animals were unreachable in
-    # principle. 4 000 frames is 5.6 minutes at the measured 83.8 ms per frame — 2.8 minutes
-    # more than the old default bought the whole remaining ceiling, against the ~19 minutes
+    # at any threshold, so at 2 000 candidates 17% of the animals were unreachable in
+    # principle. 2.8 minutes more bought the whole remaining ceiling, against the ~19 min
     # the animal stage already spends on the VLM and the 30.8 a pass over all 22 096 frames
     # would cost. 10 000 buys nothing: the same ceiling for three times the time.
     detector_candidates: int = 4000
-    # The confidence at which a detected box counts. CHOSEN FROM A TABLE, not in advance:
-    # `python scripts/measure_detector.py` prints precision and recall over a labelled
-    # sample. The rows, on the same 500 frames:
+    # The confidence at which a detected box counts. CHOSEN FROM A TABLE, not in advance —
+    # `python scripts/measure_detector.py` prints it over a labelled sample. On the same
+    # 500 frames:
     #
     #                            precision   recall
     #     the CLIP label today       94%       47%
@@ -971,47 +810,38 @@ class FeaturesConfig:
     #     detector at 0.60           86%       69%   <- chosen
     #     detector at 0.70           86%       67%
     #
-    # 0.60 DOMINATES 0.50 WITH NOTHING TRADED AWAY: the same recall, 25 correct marks out of
-    # 29 instead of 25 out of 32 — three false ones gone for free, which is a clean win and
-    # not a trade. F154 shipped 62% / 87% here, read off 200 frames where fifteen animals
-    # made every one of them worth 6.7 points of recall; both figures moved by two dozen
-    # points on the larger sample. That spread is what a thin class does to a small sample,
-    # and it is the reason a row is not chosen off one. The lower rows are where a
-    # detector's precision collapses — the F130 lesson about 0.30 being the worst row of its
-    # table — and the boxes are stored with their scores, so re-choosing this needs no new
-    # pass over any image.
+    # 0.60 dominates 0.50 with nothing traded away: the same recall, 25 correct marks out
+    # of 29 instead of 25 out of 32. F154 shipped 62% / 87% here, read off 200 frames where
+    # fifteen animals made each one worth 6.7 points of recall; both figures moved by two
+    # dozen points on the larger sample, which is why a row is not chosen off a small one.
+    # The boxes are stored with their scores, so re-choosing needs no new pass.
     detector_threshold: float = 0.6
     # F131: the same cascade for places — CLIP proposes a landmark, the local VLM is asked
-    # what place the frame shows, and only a proposal the model names itself goes on to
-    # F75 corroboration. Its own toggle, default off, and with it off the stage is
-    # byte-for-byte today's: `naming.landmark_threshold` alone selects, nothing is shown
-    # to a model, and `landmark_checks` stays empty.
+    # what place the frame shows, and only a proposal the model names itself goes on to F75
+    # corroboration. Off, `naming.landmark_threshold` alone selects, nothing is shown to a
+    # model, and `landmark_checks` stays empty.
     #
-    # The cascade was NOT assumed to work here. F75 measured the landmark failure as one
-    # of DISCRIMINATING KNOWLEDGE (the wrong cities scored 0.980 against 0.991 — no
-    # threshold splits them), not of perception like the animal one, and a 3B model could
-    # easily share it. The phase-0 probe asked 104 frames with a known answer, 24 of them
-    # hard negatives — proposals above 0.50 that CLIP believed and corroboration threw
-    # away — and got ZERO false confirmations, at 92% accuracy. The mechanism is not
-    # knowledge but silence: 71 of the 104 answers named nothing at all, which is exactly
-    # the behaviour a gate needs.
+    # The cascade was NOT assumed to work here: F75 measured the landmark failure as one of
+    # DISCRIMINATING KNOWLEDGE (wrong cities scored 0.980 against 0.991 — no threshold
+    # splits them) rather than perception, and a 3B model could easily share it. The phase-0
+    # probe asked 104 frames with a known answer, 24 of them hard negatives, and got ZERO
+    # false confirmations at 92% accuracy. The mechanism is silence, not knowledge: 71 of
+    # the 104 answers named nothing at all.
     landmarks_verify: bool = False
-    # Who is shown to the model when `landmarks_verify` is on. Like the pet gate above,
-    # this is the SECOND threshold and it sits far below `naming.landmark_threshold`
-    # (0.85): that one is high because nothing was checking CLIP's proposal.
-    #
-    # MEASURED by the same probe, on the live collection (proposals over the 7 619
-    # place-less frames, and what F75 corroboration would do with them):
+    # Who is shown to the model when `landmarks_verify` is on — the second threshold, far
+    # below `naming.landmark_threshold` (0.85), which is high only because nothing was
+    # checking CLIP's proposal. MEASURED by the same probe over the 7 619 place-less frames
+    # of the live collection, against what F75 corroboration would do with them:
     #
     #     threshold  proposals  F75 keeps  F75 drops
     #       0.85            10          8          2   <- the CLIP-only gate today
     #       0.70            66         52         14
     #       0.50           151        127         24
     #
-    # 151 questions is a couple of minutes of VLM — an order of magnitude cheaper than the
-    # animal cascade's 1 331 — so the band is taken whole. Never ABOVE
+    # 151 questions is a couple of minutes of VLM, an order of magnitude cheaper than the
+    # animal cascade's 1 331, so the band is taken whole. Never ABOVE
     # `naming.landmark_threshold`: raising it there would narrow the population the stage
-    # already finds today, and the check exists to widen it.
+    # already finds, and the check exists to widen it.
     landmark_candidate_threshold: float = 0.5
     # The longer side the frame is scaled to before the laplacian. FIXED on purpose: the
     # variance of the laplacian is scale-dependent, so two frames measured at different
@@ -1025,13 +855,12 @@ class FeaturesConfig:
     # CLIP saying it does not know what it is looking at.
     subject_score_min: float = 0.9
     # F126/F157: how far down the blur review list opens by default — the DEPTH OF THE
-    # FIRST PAGE of a ranking, and not the edge of "blurred". The slice is ordered by
-    # ascending sharpness and "show more" walks straight on past this number; where to
-    # stop reading is the person's call, which is the whole reason this is not a filter.
+    # FIRST PAGE of a ranking ordered by ascending sharpness, not the edge of "blurred".
+    # "Show more" walks straight on past this number.
     #
-    # F157 raised it from 90, and the two measurements say why. On 300 frames labelled by
-    # the STRICT criterion the user chose ("visibly smeared", not "a little soft"; 17
-    # blurred), a cutoff buys recall far faster than it loses precision:
+    # F157 raised it from 90. On 300 frames labelled by the STRICT criterion the user chose
+    # ("visibly smeared", not "a little soft"; 17 blurred), a cutoff buys recall far faster
+    # than it loses precision:
     #
     #     threshold  flagged  right  precision  recall
     #        90          7      2       29%       12%    <- the old default
@@ -1040,14 +869,12 @@ class FeaturesConfig:
     #       450         73     10       14%       59%
     #       700        120     14       12%       82%
     #
-    # And the same signal read as an ordering, with no threshold at all: the top 5% of the
-    # list holds 24% of the blurred frames, the top 10% 41%, the top 20% 53%, the top 30%
-    # 65%. Precision falls slowly, recall climbs quickly — the profile where a threshold is
-    # the wrong instrument and a list is the right one.
+    # The same signal read as an ordering, with no threshold: the top 5% of the list holds
+    # 24% of the blurred frames, the top 10% 41%, the top 20% 53%, the top 30% 65%.
     #
-    # How long that list is on a real archive (2026-08-04, 19 211 photographs carrying a
-    # sharpness; `python scripts/measure_frame_quality.py --features sharpness` prints
-    # this sweep for any collection):
+    # How long the list is on a real archive (2026-08-04, 19 211 photographs carrying a
+    # sharpness; `python scripts/measure_frame_quality.py --features sharpness` prints this
+    # sweep for any collection):
     #
     #     threshold  first page  of the photographs
     #        90            523         2.7%
@@ -1056,22 +883,16 @@ class FeaturesConfig:
     #       450          4 988        26.0%
     #       700          7 859        40.9%
     #
-    # 300 is where those two tables meet: half of the blurred frames inside the first
-    # page, and a first page of ~15% of the collection rather than the 41% that 700 opens.
-    # Below it the list simply stops too early — 90 cut it at 12% recall.
+    # 300 is where the two tables meet: half the blurred frames inside a first page of ~15%
+    # of the collection, against the 41% that 700 opens and the 12% recall 90 cut it at.
     #
-    # NOT a verdict, at any value. Four of five frames on that page are not blurred, and
-    # nothing is ever deleted by this number: "almost everything is blurred and I would
-    # delete it, except a couple I keep for the memory" — a frame this cannot know about
-    # is exactly why the human marks.
+    # NOT a verdict at any value — four of five frames on that page are not blurred, and
+    # nothing is ever deleted by this number.
     blur_review_max: float = 300.0
     # F150: the ceiling of the "low resolution" slice, in MEGAPIXELS — a photograph whose
-    # `files.width * files.height` is below this many million pixels is in it.
-    #
-    # The one number in this section that measures nothing. Width and height are a FACT
-    # the indexer wrote down, so this is not a threshold over a model's confidence and
-    # there is no precision or recall to quote for it: the slice does not find frames
-    # that look small, it lists the frames that ARE small.
+    # `files.width * files.height` is below this many million pixels is in it. The one
+    # number here that measures nothing: width and height are a FACT the indexer wrote
+    # down, so there is no precision or recall to quote.
     #
     # MEASURED (2026-08-02, 22 095 photographs) — the distribution the default comes from:
     #
@@ -1083,19 +904,17 @@ class FeaturesConfig:
     #     5 - 12        2 942   13.3%              6%
     #     > 12         17 493   79.2%              2%
     #
-    # 1.0 selects 706 frames, and the shape is what makes the round number the right one:
-    # phones do not take pictures of that size, so what lies under a megapixel is what
-    # arrived through a messenger or came off a download. It is also a population no other
-    # slice sees — 682 of those 706 are formally sharp (a 3% intersection with the blur
-    # window), so they are invisible everywhere else in the product.
+    # 1.0 selects 706 frames, and the shape is what makes the round number right: phones do
+    # not take pictures of that size, so what lies under a megapixel arrived through a
+    # messenger or a download. No other slice sees them — 682 of the 706 are formally sharp,
+    # a 3% intersection with the blur window.
     #
-    # NOT a verdict, and the wording of the slice says so: a small frame can be the only
-    # surviving photograph of somebody, and nothing here deletes or reclassifies anything.
+    # NOT a verdict: a small frame can be the only surviving photograph of somebody.
     low_resolution_mp: float = 1.0
-    # F155: the same laplacian measured INSIDE the face boxes of a frame, and the number
-    # below which such a frame is a blur candidate. A separate setting from
-    # `blur_review_max` because the two are not on one scale: one is a variance over a
-    # whole preview, the other over a 100-200 px crop of it, and no factor converts them.
+    # F155: the same laplacian measured INSIDE the face boxes, and the number below which
+    # such a frame is a blur candidate. A separate setting from `blur_review_max` because
+    # the two are not on one scale — a variance over a whole preview against one over a
+    # 100-200 px crop — and no factor converts them.
     #
     # MEASURED (2026-08-02, the 68 frames of a 200-frame hand-checked sample that have a
     # face; 13 of them blurred):
@@ -1106,20 +925,16 @@ class FeaturesConfig:
     #     the face crop          200       33      8       24%      62%
     #     the face crop          400       44     10       23%      77%
     #
-    # 200 is the row that quadruples recall for a comparable number of frames flagged, and
-    # it is where this starts rather than where it ends: the sample holds 13 blurred frames,
-    # so one frame is worth ~8 points of recall and the direction is what was measured, not
-    # the figure. `python scripts/measure_frame_quality.py --features sharpness` prints the
-    # sweep on a real collection — read it before moving this.
+    # 200 quadruples recall for a comparable number of frames flagged, and it is a
+    # direction rather than a figure: 13 blurred frames make each one worth ~8 points of
+    # recall. Read `scripts/measure_frame_quality.py --features sharpness` before moving it.
     #
-    # NOT A VERDICT. Precision is ~25% at every row above: three of four flagged frames are
-    # not blurred. It orders the blur list; nothing in the pipeline deletes or reclassifies
-    # anything by it.
+    # NOT A VERDICT: precision is ~25% at every row above.
     face_sharpness_max: float = 200.0
-    # F179: how open the eyes of the largest face are (column `frame_quality.eye_openness`
-    # — the height of the eye opening over its width, off the 106-point contour), and the
-    # number BELOW which the frame joins the "closed eyes" slice. The only threshold here
-    # a smaller number passes: a closed eye is a thin slit.
+    # F179: how open the eyes of the largest face are (`frame_quality.eye_openness` — the
+    # height of the eye opening over its width, off the 106-point contour), and the number
+    # BELOW which the frame joins the "closed eyes" slice. The only threshold here a
+    # smaller number passes: a closed eye is a thin slit.
     #
     # MEASURED (F178, 2026-08-03, the same 249 hand-labelled frames the retired VLM
     # question was judged on, weighted back to the collection):
@@ -1132,135 +947,105 @@ class FeaturesConfig:
     #     a classifier over the crop  0.9      46%      57%
     #     CLIP over the crop          0.8      58%      49%
     #
-    # 0.18 was chosen by a rule fixed before the run, not by eye, and the two neighbouring
-    # rows are printed so the price of moving it is visible: 0.16 buys six points of
-    # precision for fourteen of recall, 0.22 the other way about. The population it points
-    # at is ~948 frames — 15.6% of everything with a face in it.
+    # 0.18 was chosen by a rule fixed before the run, not by eye; the neighbouring rows
+    # price moving it. The population is ~948 frames, 15.6% of everything with a face.
     #
-    # NOT A VERDICT. At 62% precision one frame in three of that slice has its eyes open,
-    # so this ORDERS the list (most closed first) and opens it to a window that "show more"
-    # continues past. Nothing is deleted or reclassified by it.
+    # NOT A VERDICT: at 62% precision one frame in three of the slice has its eyes open, so
+    # this ORDERS the list (most closed first).
     eye_openness_max: float = 0.18
     # F128: keep the CLIP vector the junk stage already computes instead of discarding it
-    # (table `clip_embeddings`). ON by default, which is the deliberate half of this
-    # setting: the price is small — ~60 MB per 20 000 photos, written inside a pass that
-    # is already running — while the off state is today's, where every feature of that
-    # class (search by words, an album from a query, "frames like this one") starts with a
-    # full CLIP pass over the collection. The switch is for very large collections, where
-    # 300 000 photos mean ~920 MB.
+    # (table `clip_embeddings`). ON by default: ~60 MB per 20 000 photos, written inside a
+    # pass that is already running, against an off state where search by words, an album
+    # from a query and "frames like this one" each start with a full CLIP pass. The switch
+    # is for very large collections — 300 000 photos mean ~920 MB.
     store_embeddings: bool = True
-    # F129: how many frames a search by words takes at a time — `sorta search` prints this
-    # many and an album from a query gathers this many. NOT a similarity threshold, and
-    # there will not be one, for the same reason sharpness has none: a CLIP score orders
-    # frames against each other and means nothing in absolute terms, so "this really is a
-    # cake" is not a line anybody can draw.
+    # F129: how many frames a search by words takes at a time. NOT a similarity threshold,
+    # and there will not be one, for the reason sharpness has none: a CLIP score orders
+    # frames against each other and means nothing in absolute terms.
     #
-    # F173 renamed it from `search_limit`, and the name is the fix. A CEILING cuts the
-    # result off; a PAGE only decides how much arrives first, and the rest is one press
-    # away. That difference is the whole feature: depth is the single measured lever of
-    # completeness (2026-08-02/03 — doubling the list adds ~25 points on average, and the
-    # query «дети» goes from 61% to 89%), so a number that quietly ended the list was
-    # taking away the one handle that works. The old spelling keeps working (see
-    # `_features_from`): a config file on somebody's machine must not lose its setting to
-    # a rename. 200 is a screenful a human can actually go through in one sitting.
+    # F173 renamed it from `search_limit`, and the name is the fix: a CEILING cuts the
+    # result off, a PAGE only decides how much arrives first. Depth is the single measured
+    # lever of completeness (2026-08-02/03 — doubling the list adds ~25 points on average,
+    # and the query «дети» goes from 61% to 89%), so a number that quietly ended the list
+    # took away the one handle that works. The old spelling keeps working (`_features_from`).
+    # 200 is a screenful a person can go through in one sitting.
     search_page: int = 200
-    # F151: the pinned queries — name -> the phrases that slice is ranked by. A slice is a
-    # SAVED QUERY here and not a filter of its own: the engine (F129), the index (F141) and
-    # the paging (F173) already exist, so "children" costs a config entry rather than a
-    # threshold, a calibration and a code path. `DEFAULT_SAVED_SLICES` above carries the
-    # measurement these three were chosen by and the reason the phrases are English.
-    #
-    # The page of one of them is `search_page` and the depth past it is the "show more"
-    # button: doubling the list is the one lever of completeness the measurement confirmed
-    # (children 61% -> 89%), and there is no membership threshold anywhere in this.
+    # F151: the pinned queries — name -> the phrases that slice is ranked by. A SAVED QUERY
+    # and not a filter of its own: the engine (F129), the index (F141) and the paging
+    # (F173) already exist, so "children" costs a config entry rather than a threshold, a
+    # calibration and a code path. There is no membership threshold anywhere in this; see
+    # `DEFAULT_SAVED_SLICES` above for how these three were chosen.
     saved_slices: tuple[SavedSlice, ...] = DEFAULT_SAVED_SLICES
-    # F156: how many pins the interface will let a person add to that list. NOT a resource
-    # bound — a pin costs a config entry and one matrix multiplication when it is opened —
-    # but the same bound F133 put on the screen when it took thirteen controls off it: a row
-    # of forty pins is a remote control again, and the slice somebody actually wanted is
-    # then the hardest thing on the tab to find. Twelve is roughly two rows of pins beside
-    # the built-in ones. Raising it is a line in this file; the limit is stated to the person
-    # who reaches it (never a pin that silently does not appear), and a file edited BY HAND
-    # past the limit keeps every slice in it — this number governs what the interface adds,
-    # not what the config file is allowed to say.
+    # F156: how many pins the interface will let a person add. NOT a resource bound — a pin
+    # costs a config entry and one matmul when opened — but the F133 bound on the screen: a
+    # row of forty pins is a remote control again. Twelve is roughly two rows beside the
+    # built-in ones. The limit is stated to the person who reaches it, and a file edited BY
+    # HAND past it keeps every slice: this governs what the interface adds, not what the
+    # config file may say.
     max_pinned_slices: int = 12
-    # F152: the two numbers the face slices need, and the only two they have. Everything
-    # else about those slices is a FACT of the `faces` table — either the detector found
-    # a face on this frame or it did not — so these are not confidence thresholds and
-    # nothing here is being ranked. Both are GEOMETRIC: a count of boxes and a share of
-    # the frame.
+    # F152: the two numbers the face slices need. Everything else about them is a FACT of
+    # the `faces` table, so neither is a confidence threshold — both are GEOMETRIC.
     #
-    # How many real faces make a photograph a GROUP photograph. Three, because two people
-    # in a frame are a couple or a passer-by and the slice exists to find the gatherings —
-    # and because the same number is what the keeper VLM was moved to on 2026-08-02 ("ask
-    # about groups of three or more, not about pairs").
+    # How many real faces make a photograph a GROUP photograph. Three: two people are a
+    # couple or a passer-by, and 2026-08-02 moved the keeper VLM to the same number.
     group_photo_faces: int = 3
-    # A portrait is ONE face taking a noticeable share of the frame: the bbox area over
-    # `files.width * files.height`. 0.08 is the brief's starting value and is stated here
-    # as geometry rather than as a measurement — a face box covering 8% of the frame area
-    # is roughly 28% of each side, i.e. head-and-shoulders rather than a person standing
-    # in a landscape. It has NOT been calibrated on the live collection yet; the boxes are
-    # stored, so re-choosing it costs a query and no new pass over any image.
+    # A portrait is ONE face taking a noticeable share of the frame: bbox area over
+    # `files.width * files.height`. 0.08 is stated as geometry rather than measurement — 8%
+    # of the area is roughly 28% of each side, head-and-shoulders rather than a person in a
+    # landscape — and has NOT been calibrated on the live collection. The boxes are stored,
+    # so re-choosing costs a query and no new pass.
     portrait_face_share: float = 0.08
     # F141: the SEARCH index — a second CLIP vector per photograph, computed by a
-    # multilingual model and read by search alone (table `search_embeddings`). OFF by
-    # default, and that is the deliberate half of this setting: unlike `store_embeddings`
-    # it is not free, it is a SECOND CLIP pass over the collection — 19 753 frames in
-    # 635 s (~10.5 minutes) on the machine it was measured on, plus ~40 MB per 20 000
-    # photographs. A cost like that is switched on by a person, not by a default.
+    # multilingual model and read by search alone (`search_embeddings`). OFF by default
+    # because unlike `store_embeddings` it is not free: a SECOND CLIP pass over the
+    # collection, 19 753 frames in 635 s (~10.5 min) on the machine it was measured on,
+    # plus ~40 MB per 20 000 photographs.
     #
-    # What it buys is measured, on 217 hand-labelled judgements over 8 concepts: Russian
-    # queries go from 22% to 98% precision at top-5, and four of the eight concepts (cake,
-    # food, mountains, children) go from returning NOTHING to working. English does not
-    # regress (95% against 98% — three points on forty judgements).
+    # What it buys, on 217 hand-labelled judgements over 8 concepts: Russian queries go
+    # from 22% to 98% precision at top-5, and four of the eight (cake, food, mountains,
+    # children) go from returning NOTHING to working. English does not regress (95%
+    # against 98% — three points on forty judgements).
     #
-    # Switching it off leaves search with nothing to rank, and it says so (F134) instead
-    # of returning an empty list: the classification vectors are NOT a fallback, because a
-    # search silently answered by the wrong model is the one outcome nobody can see.
+    # Off, search says it has nothing to rank (F134) rather than returning an empty list.
+    # The classification vectors are NOT a fallback: a search silently answered by the
+    # wrong model is the one outcome nobody can see.
     search_index: bool = False
-    # The model of the search side, `<open_clip architecture>/<weights>` — and a key of
-    # its own rather than `naming.clip.*`, which is the entire point of the feature.
-    # `naming.clip.*` stays ViT-L-14 because the landmark threshold (F75), the animal
-    # threshold (F122), the cascade selection (F130) and the junk classification are
-    # calibrated on ITS numbers; changing it to fix search would invalidate all of them.
+    # The model of the search side, `<open_clip architecture>/<weights>` — a key of its own
+    # rather than `naming.clip.*`, which is the entire point of the feature. `naming.clip.*`
+    # stays ViT-L-14 because the landmark threshold (F75), the animal threshold (F122), the
+    # cascade selection (F130) and the junk classification are calibrated on ITS numbers.
     search_model: str = "xlm-roberta-base-ViT-B-32/laion5b_s13b_b90k"
-    # F149: the model behind "try to improve" — the button that makes a processed COPY of
-    # ONE frame a person opened and chose. No toggle, because there is nothing to switch
-    # on: nothing loads until the button is pressed, and pressing it is the opt-in. The
-    # price, for the same reason it is not hidden: ~400 MB of weights, downloaded once
-    # from the network, and ~1 second per frame on the card this was measured on.
+    # F149: the model behind "try to improve" — a processed COPY of ONE frame a person
+    # opened and chose. No toggle: nothing loads until the button is pressed, and pressing
+    # it is the opt-in. The price is ~400 MB of weights, downloaded once, and ~1 s per
+    # frame on the card this was measured on.
     #
-    # `realworld`, not `classical`, and that distinction is the whole measurement. The
-    # first comparison used `swin2SR-classical-sr-x2` and lost to a plain unsharp mask —
-    # "classical" is trained on clean bicubic downscaling, a degradation an archive of
-    # real photographs does not contain. Against `realworld-sr-x4` the mask lost outright.
+    # `realworld`, not `classical`: the first comparison used `swin2SR-classical-sr-x2` and
+    # lost to a plain unsharp mask, "classical" being trained on clean bicubic downscaling,
+    # a degradation an archive of real photographs does not contain. Against
+    # `realworld-sr-x4` the mask lost outright.
     restore_model: str = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
-    # F169: the longer side the frame is scaled to BEFORE that model — and, until this
-    # key existed, a constant in `restore.py` that decided for everybody. The model is x4
-    # and works at the UPSCALED resolution, so 1024 becomes 4096 in memory and a full 12
-    # Mpx frame would become 16 000 px, which fits on no card here.
+    # F169: the longer side the frame is scaled to BEFORE that model. It is x4 and works at
+    # the UPSCALED resolution, so 1024 becomes 4096 in memory and a full 12 Mpx frame would
+    # become 16 000 px, which fits on no card here.
     #
-    # What that costs is the reason the number is a setting. A frame BELOW it is handed to
-    # the model as it is — a small scan, a downloaded picture, the case the action was
-    # built for, pure gain. A frame ABOVE it is reduced first and the x4 brings it back to
-    # roughly its own size: same pixels count, real detail dropped, plausible detail drawn
-    # in its place. The interface says so on such a frame instead of calling it an
-    # improvement, and `scripts/measure_restore.py` prints what raising this costs in time
-    # and memory on the three frame populations separately.
+    # A frame BELOW it is handed to the model as it is — a small scan, a downloaded
+    # picture, the case the action was built for. A frame ABOVE it is reduced first and the
+    # x4 brings it back to roughly its own size: real detail dropped, plausible detail drawn
+    # in its place, and the interface says so instead of calling it an improvement.
+    # `scripts/measure_restore.py` prices raising this on the three populations separately.
     restore_max_edge: int = 1024
     # F153: how a query uses the two indexes at once — `off` | `rank` | `union` (see
-    # SEARCH_FUSION_MODES above for what each does). The price is one extra matmul over a
-    # stored table, ~0.9 ms per index, and no pass over any image: this is query time and
-    # a run does not get slower by a millisecond.
+    # SEARCH_FUSION_MODES above). The price is one extra matmul over a stored table,
+    # ~0.9 ms per index, at query time and no pass over any image.
     #
-    # OFF, and that value is a MEASUREMENT RESULT ONLY ONCE THE MEASUREMENT EXISTS. The
-    # observation this feature comes from is that the two models return DIFFERENT frames
-    # at the same precision (88/96/98% at 1/3/5 for both), so the gain expected from
-    # putting them together is in RECALL — and recall has never been measured for either
-    # of them. `scripts/measure_search.py --fusion --labels ...` prints precision AND
-    # recall at each depth for all four variants; until that has been run on a labelled
-    # collection there is no number here to choose a default by, and a fusion switched on
-    # by hope would be exactly the assumed accuracy F121/F122 cost 320 labels to unlearn.
+    # OFF until the measurement exists. The observation behind the feature is that the two
+    # models return DIFFERENT frames at the same precision (88/96/98% at 1/3/5 for both),
+    # so the expected gain is in RECALL — which has never been measured for either.
+    # `scripts/measure_search.py --fusion --labels ...` prints precision AND recall at each
+    # depth for all four variants; until it has been run there is no number to choose a
+    # default by, and a fusion switched on by hope is the assumed accuracy F121/F122 cost
+    # 320 labels to unlearn.
     search_fusion: str = SEARCH_FUSION_OFF
 
 
@@ -1321,19 +1106,17 @@ def _features_from(raw: dict) -> FeaturesConfig:
 class NamingConfig:
     """Phase 5 (F6): places without GPS, event names, junk. A flat view of the
     nested naming section of config.yaml (clip.*/local_vlm.* — see load_config)."""
-    provider: str = "template"           # template | vlm | local_vlm (NAMING_PROVIDERS)
+    provider: str = "template"           # template | vlm | local_vlm (NAMING_PROVIDERS).
     #                                      F95: `vlm` describes the event with the local
-    #                                      Qwen2.5-VL of classify_vlm_model (the junk model,
-    #                                      one copy per run); opt-in, template stays the default
+    #                                      Qwen2.5-VL of classify_vlm_model, one copy per run
     landmark_threshold: float = 0.85     # CLIP threshold for places — conservative: 0.35
     #                                      gave false matches (cafe→Istanbul), and a wrong
-    #                                      city is worse than unknown. Proper fix — a geo model (backlog #11)
+    #                                      city is worse than unknown (backlog #11: a geo model)
     # F75: a single CLIP score does not separate a right city from a wrong one — on the
-    # live collection the wrong ones scored 0.980 against 0.991 for the right one — so a
-    # match is corroborated by its neighbours: within one directory, a city held by less
-    # than `dominance` of at least `min` matches is dropped back to unknown (one card
-    # dump is one trip; you cannot be in Prague and Berlin at once). Raising `min` or
-    # `dominance` makes the rule fire less often.
+    # live collection the wrong ones scored 0.980 against 0.991 — so a match is
+    # corroborated by its neighbours: within one directory, a city held by less than
+    # `dominance` of at least `min` matches drops back to unknown (one card dump is one
+    # trip). Raising either makes the rule fire less often.
     landmark_group_min: int = 5
     landmark_group_dominance: float = 0.6
     junk_threshold: float = 0.85         # CLIP threshold for junk classes (high: CLIP
@@ -1346,14 +1129,12 @@ class NamingConfig:
     text_rescue_docscore_min: float = 0.3  # F38: FN rescue runs OCR only if doc_score ≥ this
     #                                        (clear scenes doc_score≈0 spend no OCR — perf)
     text_frac_downscale_px: int = 1280   # F38: downscale the frame to this before easyocr.detect (×3–10 speed)
-    vlm_enabled: bool = False            # F37-B: deep tier — VLM 3-way (memory/document/product).
-    #                                      opt-in (needs the [vlm] extra); default OFF, graceful fallback to CLIP.
-    #                                      F102: the config key moved to `vlm.enabled` and load_config keeps this
-    #                                      field equal to it — but the field itself stays, because --deep and the
-    #                                      UI checkbox force the tier for one run through it (see _legacy_naming_view)
-    classify_vlm_model: str = DEFAULT_VLM_MODEL  # F37-B: classifier VLM (NOT vlm_model — that is for
-    #                                      event-naming/llava; a separate field to avoid a collision).
-    #                                      F102: superseded by `vlm.model`, kept in sync by load_config
+    vlm_enabled: bool = False            # F37-B: deep tier — VLM 3-way (memory/document/product),
+    #                                      needs the [vlm] extra, falls back to CLIP. The config key
+    #                                      is `vlm.enabled`; this field stays because --deep and the
+    #                                      UI checkbox force the tier through it (_legacy_naming_view)
+    classify_vlm_model: str = DEFAULT_VLM_MODEL  # F37-B: classifier VLM. NOT vlm_model, which is
+    #                                      event-naming/llava. Kept in sync with `vlm.model`
     product_candidate_min: float = 0.4   # #14/V1: product-CLIP above this → the file goes to the VLM (candidate gate, not final)
     landmarks_file: str = "data/landmarks.yaml"
     clip_model: str = "ViT-L-14-quickgelu"  # the quickgelu variant for the openai weights (without it — a mismatch)
@@ -1401,12 +1182,9 @@ def _naming_from(raw: dict) -> NamingConfig:
 def _legacy_naming_view(naming: NamingConfig, vlm: VlmConfig) -> NamingConfig:
     """`naming.vlm_enabled`/`classify_vlm_model` held equal to the resolved `vlm:` (F102).
 
-    The two fields stay on NamingConfig instead of being deleted, and not only for the
-    sake of old configs: `--deep` (cli) and the "Deep analysis (VLM)" checkbox force the
-    tier for one run by replacing `cfg.naming.vlm_enabled` on their own copy of the
-    config, so that field is the effective toggle the junk stage reads. This makes it
-    agree with the section the value now comes from — whichever of the two addresses the
-    file happened to use.
+    The two fields stay on NamingConfig because `--deep` and the "Deep analysis (VLM)"
+    checkbox force the tier for one run by replacing `cfg.naming.vlm_enabled` on their own
+    copy of the config, making it the effective toggle the junk stage reads.
     """
     return replace(naming, vlm_enabled=vlm.enabled, classify_vlm_model=vlm.model)
 
@@ -1435,26 +1213,21 @@ class Config:
 
 # --- F222: a stage that is skipped while its settings sit in the file ------------------
 #
-# The case this exists for is one real config.yaml. It holds
+# The case is one real config.yaml holding
 #
 #     naming:    landmark_threshold: 0.50      # lowered from 0.85 for a measurement
 #     features:  landmarks_verify: true        # switched on 2026-08-02 for the cascade
 #
 # and no `features.landmarks`, because that key did not exist when those lines were
-# written — the stage ran unconditionally. After F222 the stage stops running for that
-# file, and its owner would find out from a missing result rather than from the program.
+# written. After F222 the stage stops running for that file, and its owner would find out
+# from a missing result rather than from the program.
 #
-# What is NOT done here, deliberately: the settings are not read as an intention and the
-# stage is not switched back on by them. Six months later nobody would be able to say why
-# it ran, and a program that infers consent from a leftover number is worse than one that
-# asks. What IS done is saying it out loud, once, in the run that skips the stage.
+# The settings are deliberately NOT read as an intention: a program that infers consent
+# from a leftover number is worse than one that asks. It says so out loud instead, once.
 #
-# Keyed by stage rather than written as `if landmarks` because the situation is not about
-# landmarks: it is about any stage whose default changes under a file that already
-# configures it. Today there is exactly one, and the reason the other two opt-in stages
-# (`faces`, `events`) are not here is not that they have no settings — it is that they
-# have been opt-in since the day their settings existed, so no file was ever reinterpreted
-# under its author.
+# Keyed by stage rather than written as `if landmarks` because it is about any stage whose
+# default changes under a file that already configures it. `faces` and `events` are not
+# here because they have been opt-in since the day their settings existed.
 
 
 @dataclass(frozen=True)
@@ -1462,15 +1235,14 @@ class StageSettings:
     """One stage, the config keys that belong to it, and how it is switched on.
 
     `keys` are `section.key` paths read against the RAW YAML: what matters is whether the
-    person wrote them down, not what they evaluate to — a threshold set by hand to its
-    own default is still evidence that somebody was using this stage.
+    person wrote them down, not what they evaluate to — a threshold set by hand to its own
+    default is still evidence that somebody was using this stage.
     """
 
     stage: str
     keys: tuple[str, ...]
-    # The catalog key of the sentence naming every way to switch the stage back on. Per
-    # stage because the ways differ: a flag, a config key and a checkbox are three
-    # different things and only the stage knows which of them it has.
+    # Catalog key of the sentence naming every way to switch the stage back on. Per stage,
+    # because a flag, a config key and a checkbox are three different things.
     enable_key: str
 
 
@@ -1491,9 +1263,8 @@ STAGE_SETTINGS_BY_STAGE: dict[str, StageSettings] = {
 def configured_settings_of(cfg: Config, stage: str) -> tuple[str, ...]:
     """Which of that stage's settings this config file actually spells out.
 
-    Empty for a stage nobody has configured — and that half matters as much as the other
-    one: a line printed on every run is noise, and noise is learned and then not read on
-    the single run it was written for.
+    Empty for a stage nobody has configured, and that half matters as much: a line printed
+    on every run is learned and then not read on the single run it was written for.
     """
     entry = STAGE_SETTINGS_BY_STAGE.get(stage)
     if entry is None:
@@ -1515,10 +1286,7 @@ def skipped_stage_notes(cfg: Config, skipped: Sequence[str],
     """One line per skipped stage this config still configures. Usually none.
 
     Both entry points call this — `sorta run` prints the lines, the web app carries them
-    into the status of the run — so the two cannot say different things about the same
-    file. "Usually none" is the property the line depends on: one that appeared on every
-    run would be learned and stopped being read, and then it would not work on the single
-    run it was written for.
+    into the status of the run — so the two cannot say different things about one file.
     """
     notes: list[str] = []
     for stage in skipped:
@@ -1537,17 +1305,13 @@ def vlm_allowed(cfg: Config) -> bool:
     """F145: may this run load the VLM at all? — `vlm.enabled`, the master switch.
 
     Every question the model is asked has a toggle of its own (`vlm.products`,
-    `features.pets_verify`, `features.landmarks_verify`, `features.junk_rescue`), and
-    until F145 each of them could raise the weights by
-    itself: a run started WITHOUT deep analysis still loaded 20 GB because one
-    subordinate key was true in config.yaml. The hierarchy nobody wrote down is this
-    function — the subordinate keys decide WHAT to ask, this one decides whether there
-    is anybody to ask at all.
+    `features.pets_verify`, `features.landmarks_verify`, `features.junk_rescue`), and until
+    F145 each could raise the weights by itself: a run started WITHOUT deep analysis still
+    loaded 20 GB because one subordinate key was true in config.yaml. Those keys decide
+    WHAT to ask; this one decides whether there is anybody to ask.
 
-    Read off `cfg.naming.vlm_enabled` and not off `cfg.vlm.enabled` for the F102 reason:
-    the two agree after load_config, and `--deep` / the "Deep analysis (VLM)" checkbox
-    force the tier for ONE run by replacing exactly that field on their own copy of the
-    config, so it is the effective per-run toggle.
+    Read off `cfg.naming.vlm_enabled` rather than `cfg.vlm.enabled`: the two agree after
+    load_config, and that field is the effective per-run toggle (see `_legacy_naming_view`).
     """
     return bool(getattr(getattr(cfg, "naming", None), "vlm_enabled", False))
 
@@ -1555,15 +1319,9 @@ def vlm_allowed(cfg: Config) -> bool:
 def products_allowed(cfg: Config) -> bool:
     """F161: may this run ask the model what a frame IS? — the deep junk tier.
 
-    The F145 rule with one more subordinate key in it, and the key is new because the
-    question was not asked before: the deep tier was what `vlm.enabled` did by itself,
-    which left the master switch doing something under a name that describes a
-    technology. `vlm.products` is that something, named by its result — the tier is the
-    only producer of the `product` class — and the master keeps the veto.
-
-    Absent (an old config, or the settings object a measurement script builds by hand)
-    is TRUE: the tier is what a master switch alone used to mean, and a run started off
-    a file written before this key existed must do what it did yesterday.
+    The F145 rule with `vlm.products` as the subordinate key, and the master keeping the
+    veto. Absent (an old config, or the settings object a measurement script builds by
+    hand) is TRUE: the tier is what a master switch alone used to mean.
     """
     return vlm_allowed(cfg) and bool(
         getattr(getattr(cfg, "vlm", None), "products", True))
@@ -1572,12 +1330,10 @@ def products_allowed(cfg: Config) -> bool:
 def detector_allowed(cfg: Config) -> bool:
     """F154: may this run load the object detector at all? — `detect.enabled`.
 
-    The F145 hierarchy, applied to the second kind of model this project runs.
-    `features.detector` says WHAT the detector is wanted for (the animal cascade); this
-    one says whether there is anybody to ask. Its own switch and not `vlm_allowed` on
-    purpose: a detector is not a VLM, it costs 83.8 ms and no VRAM to speak of rather than
-    0.78 s and 20 GB, and the two decisions belong to the user separately. What must not
-    differ is the RULE — a subordinate key never raises a model by itself.
+    The F145 hierarchy applied to the second kind of model. Its own switch and not
+    `vlm_allowed`: a detector costs 83.8 ms and no VRAM to speak of against 0.78 s and
+    20 GB, so the two decisions belong to the user separately. The RULE is the same — a
+    subordinate key (`features.detector`) never raises a model by itself.
     """
     return bool(getattr(getattr(cfg, "detect", None), "enabled", False))
 
@@ -1585,9 +1341,9 @@ def detector_allowed(cfg: Config) -> bool:
 def _apply_logging_config(cfg: LoggingConfig) -> None:
     """Hand the `logging:` section to the run log (F166).
 
-    Pushed the same way `_apply_imaging_config` pushes the imaging keys, and for the
-    same reason: `runlog` is a leaf module that everything else imports, so it cannot
-    read the config back. Never fatal — pacing a log is not worth a crash.
+    Pushed like `_apply_imaging_config` pushes the imaging keys, and for the same reason:
+    `runlog` is a leaf module everything else imports, so it cannot read the config back.
+    Never fatal — pacing a log is not worth a crash.
     """
     try:
         from .runlog import set_progress_interval
@@ -1598,10 +1354,11 @@ def _apply_logging_config(cfg: LoggingConfig) -> None:
 
 
 def _known(cls, raw: dict) -> dict:
-    """Keep from raw only the declared fields of the dataclass cls. Config sections
-    may carry "raw" keys that a module reads directly from cfg.raw (e.g.
-    faces.decode_workers in faces.py) or future-phase keys — they are kept in
-    Config.raw but must not break the section constructor."""
+    """Keep from raw only the declared fields of the dataclass cls.
+
+    A section may carry keys a module reads straight off cfg.raw (faces.decode_workers) or
+    keys of a future phase: they stay in Config.raw but must not break the constructor.
+    """
     names = {f.name for f in fields(cls)}
     return {k: v for k, v in raw.items() if k in names}
 
@@ -1643,23 +1400,19 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     return cfg
 
 
-# F67 follow-up: the preview cache is configured through env vars, because imaging.py
-# is a leaf module with no access to Config (decode_rgb_preview is called from pool
-# workers that only carry a path). Rather than thread settings through every caller,
-# the config file seeds those env vars — and only when they are NOT already set, so a
-# variable exported in the shell still wins, which is the documented contract.
+# F67 follow-up: imaging.py is a leaf module with no access to Config
+# (decode_rgb_preview is called from pool workers that only carry a path), so the config
+# file seeds its env vars instead — and only when they are NOT already set, so a variable
+# exported in the shell still wins. That is the documented contract.
 _IMAGING_ENV = {
     "preview_cache": "SORTA_PREVIEW_CACHE",
     "preview_dir": "SORTA_PREVIEW_DIR",
     "preview_max_edge": "SORTA_PREVIEW_MAX_EDGE",
     "preview_quality": "SORTA_PREVIEW_QUALITY",
-    # F117: a ceiling in GB, 0 = unbounded (the behaviour since F67). The cache stays on
-    # by default — the answer to a full disk is a bound, not switching off a cache that
-    # pays for itself on every full run.
+    # F117: a ceiling in GB, 0 = unbounded (the behaviour since F67). The answer to a full
+    # disk is a bound, not switching off a cache that pays for itself on every full run.
     "preview_cache_max_gb": "SORTA_PREVIEW_MAX_GB",
-    # F74/F80: video tiles and the lightbox filmstrip sit in the same leaf module and
-    # were env-only until now, so config.example.yaml documented keys that nothing
-    # read. They seed their vars exactly like the preview ones — env still wins.
+    # F74/F80: video tiles and the lightbox filmstrip, same leaf module, same rule.
     "video_previews": "SORTA_VIDEO_PREVIEWS",
     "video_workers": "SORTA_VIDEO_WORKERS",
     "video_frames": "SORTA_VIDEO_FRAMES",
@@ -1676,9 +1429,8 @@ def _apply_imaging_config(raw: dict) -> None:
         os.environ[env_name] = str(value)
 
 
-# F104: words YAML reads as something other than a plain string. A model name will
-# never be one of them, but a saver that emits `model: no` and reads back `False` is a
-# trap waiting for the one value that hits it — quoting them costs nothing.
+# F104: words YAML reads as something other than a plain string. A saver that emits
+# `model: no` and reads back `False` is a trap waiting for the one value that hits it.
 _YAML_RESERVED = frozenset({
     "y", "n", "yes", "no", "true", "false", "on", "off", "null", "none", "~",
 })
@@ -1750,12 +1502,10 @@ def _set_in_section(text: str, section: str, key: str, scalar: str) -> str:
 def save_setting(path: str | Path, key: str, value: bool | int | float | str) -> None:
     """Persist one `key: value` into config.yaml, preserving the rest of the file.
 
-    `key` is either a top-level name (`language`) or one level of nesting
-    (`vlm.enabled`) — the two shapes the settings column of the web app writes (F104).
-
-    A line-level edit, not a YAML round-trip: the file belongs to the user and is full
-    of their comments, ordering and blank lines, all of which `yaml.safe_dump` would
-    silently throw away on the first change of a checkbox. A missing file is created.
+    `key` is a top-level name (`language`) or one level of nesting (`vlm.enabled`) — the
+    two shapes the settings column of the web app writes (F104). A line-level edit, not a
+    YAML round-trip: `yaml.safe_dump` would throw the user's comments, ordering and blank
+    lines away on the first change of a checkbox. A missing file is created.
     """
     p = Path(path)
     text = p.read_text(encoding="utf-8") if p.exists() else ""
@@ -1771,14 +1521,11 @@ def _set_block_in_section(text: str, section: str, key: str,
     """`_set_in_section` for a value that is a BLOCK rather than a scalar (F156).
 
     `block` is written relative to the key — its first line is `key:` with no indentation
-    of its own — and every line is prefixed here with the indentation the file already
-    uses, so a config written with four spaces stays written with four.
+    of its own — and is prefixed here with the indentation the file already uses.
 
-    The old block is everything under its `key:` line that is blank or indented deeper
-    than the key: that is what a nested mapping looks like, and it is the only thing
-    removed. Whatever stood ABOVE the key — the comments explaining the setting, and in
-    `config.example.yaml` there are thirty lines of them — is untouched, which is the
-    whole reason this is a line-level edit and not `yaml.safe_dump`.
+    The old block is everything under its `key:` line that is blank or indented deeper, and
+    that is the only thing removed: whatever stood ABOVE the key (thirty lines of comments,
+    in `config.example.yaml`) is untouched. Hence a line-level edit, not `yaml.safe_dump`.
     """
     lines = text.split("\n")
     header = re.compile(rf"^{re.escape(section)}:\s*(#.*)?$")
@@ -1833,15 +1580,12 @@ def _saved_slices_block(slices: Sequence[SavedSlice]) -> list[str]:
 def save_saved_slices(path: str | Path, slices: Sequence[SavedSlice]) -> None:
     """Persist `features.saved_slices` into config.yaml, preserving the rest of the file.
 
-    F156: the pins a person makes for themselves live HERE and not in the index. The index
-    is rebuilt by `reset` and by any re-processing, and a slice somebody named and ordered
-    must not be one re-index away from gone — while the config file is the one thing in
-    this product that is never rewritten from the collection.
+    F156: the pins live HERE and not in the index, which `reset` and any re-processing
+    rebuild — a slice somebody named must not be one re-index away from gone.
 
-    The phrases are written back exactly as they were typed. They go to a CLIP text tower,
-    so quoting is the only transformation there is (`_yaml_scalar`): a name like «горы» or
-    a phrase with a colon in it has to survive the round trip through the file unchanged,
-    or the slice on screen stops being the slice that was pinned.
+    The phrases are written back exactly as typed, quoting (`_yaml_scalar`) being the only
+    transformation: they go to a CLIP text tower, so a name like «горы» or a phrase with a
+    colon in it has to survive the round trip unchanged.
     """
     p = Path(path)
     text = p.read_text(encoding="utf-8") if p.exists() else ""
@@ -1851,10 +1595,5 @@ def save_saved_slices(path: str | Path, slices: Sequence[SavedSlice]) -> None:
 
 
 def save_language(path: str | Path, lang: str) -> None:
-    """Persist `language: <lang>` into config.yaml, preserving the rest of the file.
-
-    `lang` is normalized to a supported code (ru|en|ja) — an invalid value falls back
-    to the i18n default. The writing itself is `save_setting` (F104), which generalized
-    what this function used to do inline.
-    """
+    """Persist `language: <lang>` into config.yaml, normalized to ru|en|ja."""
     save_setting(path, "language", i18n.normalize_lang(lang))

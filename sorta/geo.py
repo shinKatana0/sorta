@@ -1,80 +1,37 @@
 """F2/G2 (Phase 2): the geo layer.
 
-Contract: reads files (gps_lat/gps_lon, taken_at), writes ONLY into places.
-Does not touch files, faces, events, moves.
+Contract: reads files (gps_lat/gps_lon, taken_at), writes ONLY into places. A re-run
+recomputes the table in full.
 
-Confidence levels:
-- exact_gps        — coordinates from EXIF, offline resolve via geodata.GeoResolver
-- session_inferred — place inherited from a file with GPS in the same time session
-- trip_inferred    — place inherited from the TRIP the file belongs to (F85a), when the
-                     GPS frames of that trip agree about the city
-- path_inferred    — the COUNTRY read off the name of a folder on the file's path
-                     (F85c), the last signal in the queue and the only one that is not
-                     geometry at all
+Confidence levels, in the order they are tried:
+- exact_gps        — coordinates from EXIF, resolved through the chosen provider
+- session_inferred — inherited from a file with GPS in the same time session
+- trip_inferred    — inherited from the TRIP (F85a), when its GPS frames agree on a city
+- path_inferred    — the COUNTRY read off a folder name (F85c); the only signal here
+                     that is not geometry, and deliberately the last one
 - unknown          — could not resolve (visual — landmarks.py, Phase 5/F6)
 
-`exact_gps` requires a place that ACTUALLY resolved (F65): coordinates whose resolve
-came back empty stay `unknown` and are counted in `GeoStats.gps_unresolved` — such a
-file must not look confidently placed nor become a donor for session inheritance.
+`exact_gps` requires a place that ACTUALLY resolved (F65): coordinates whose resolve came
+back empty stay `unknown` and are counted in `GeoStats.gps_unresolved`, so such a file
+neither looks confidently placed nor becomes a donor for inheritance.
 
-The provider is chosen by `cfg.geo.provider`: offline (default) — bundled GeoNames
-via geodata.GeoResolver; online (G2b) — Nominatim/OSM reverse geocoding, names as
-text already in cfg.language (no geonameids). Online answers that carry a country but
-no city are completed from the bundled offline base (F86, see _CityFallbackResolver) —
-the online provider stays the primary source for NAMES; the offline base is asked
-for every coordinate anyway since F93 — it supplies the cache key — and only
-completes a city the provider did not give.
+`cfg.geo.provider` picks between the bundled GeoNames base (offline, default) and
+Nominatim/OSM (online, G2b — names as text, no geonameids). Since F93 the offline base is
+asked for every coordinate either way, because it supplies the cache key.
 
-Canonically we write geonameid (city_geonameid/district_geonameid) + the city NAME in
-`cfg.language` (for --where/CSV/landmark fallback and for every source that carries no
-geonameid). The folder segment is still localized by sort (G3) out of the geonameid —
-that is what makes a change of `language` cost no geo run at all for a place the
-bundled base knows. `region` — DEPRECATED, no longer written (stays NULL).
-`district_name` — online only (district name as text, offline leaves it NULL and
-writes geonameid into district_geonameid).
+We write geonameid + the city NAME in `cfg.language`; the folder segment is localized by
+sort (G3) out of the geonameid, so a change of `language` costs no geo run for a place the
+bundled base knows. `region` is DEPRECATED (stays NULL); `district_name` is online-only.
 
-F172: the name of a place is decided in ONE function (`_place_name`) and by one
-explicit chain — `cfg.language` -> en -> the native name the source gave. Before that
-the two sources disagreed about the language of `places.city`: the bundled base was
-asked for the English anchor while the online provider answered in the language of the
-request, so a live ru collection held «Сочи» (the provider named the suburb too) and
-«Sochi» (the provider gave no city and the base completed it) for one and the same
-geonameid — one city in two folders, and its 179 Samara / 382 Nizhny Novgorod
-neighbours filed in Latin under a Russian country folder. Nothing about WHERE a file
-is placed changed with it; only what the place is called.
+F172: what a place is CALLED is decided in `_place_name` alone. Before it the two sources
+disagreed about the language of `places.city` — a live ru collection held «Сочи» and
+«Sochi» for one geonameid, with the 179 Samara / 382 Nizhny Novgorod files filed in Latin
+under a Russian country folder.
 
-One asymmetry stays and is deliberate. A place the BASE knows is renamed by the reader
-out of its geonameid, so a change of `language` costs nothing at all; a place only the
-provider named has no id to translate by, and its row has to be recomputed — but the
-network is not asked again for it, because the cache of F93 holds all three languages
-of every answer.
-
-F85a: inheritance has a second level. A time session is six hours wide, and 1 758 files
-of the live collection sat in a session where nobody had GPS while the TRIP around them
-was placed perfectly well. Widening the session window is the wrong knob — it stretches
-an arbitrary interval of time, and twelve hours later the camera may be in another city.
-A trip is a unit of MEANING (sessions merged by time AND geographic proximity), so the
-place of a trip is inheritable inside it — but only when the trip's own GPS frames agree
-about the city AND the file lies between two of them in time (see _inherit_trip_places).
-
-F85c: after every geometric signal has had its turn there are still files with no place
-at all — old scans, forwarded pictures, frames shot with GPS off. There is nothing left
-in them to infer from, but the FOLDER they lie in often carries the answer: people name
-their directories after trips («Тайланд 2023», «Greece»). Measured on the files of this
-collection that DO have GPS (so the guess can be scored against the truth): a country
-read off a folder name is right 99.5% of the time over 2 105 hints — and a CITY read the
-same way is right 4.3% of the time, because the bundled base holds 150 000 settlements
-and any ordinary word finds a hamlet somewhere. So the hint is COUNTRY-ONLY, by
-construction, and it is deliberately the last rule to run: it never overrides GPS or an
-inheritance, it only fills what nothing else could (see _CountryFromPath).
-
-F93: the ONLINE answers live in the `geo_cache` table, not in the process. A re-run
-still recomputes places from scratch (session inheritance needs the whole collection),
-but it no longer re-asks the network about coordinates it already knows — and it stores
-all three languages side by side, so switching folder language costs no requests at
-all. The offline path never touches that table: recomputing it takes two seconds.
-
-Idempotency: a re-run fully recomputes places.
+F85a: 1 758 files of the live collection sat in a six-hour session where nobody had GPS
+while the TRIP around them was placed perfectly well. Widening the session window is the
+wrong knob — twelve hours later the camera may be in another city — so a trip, a unit of
+MEANING, lends its place instead (_inherit_trip_places).
 """
 from __future__ import annotations
 
@@ -105,34 +62,28 @@ _PROGRESS_EVERY = 1000
 _INHERIT_CONFIDENCE = ("high", "medium")
 _NAME_FALLBACK_LANG: Lang = "en"  # F172: the second step of the naming chain, after cfg.language
 _NOMINATIM_MIN_INTERVAL = 1.0  # OSM policy: no more than 1 request/sec
-# coordinate rounding for the grid fallback key — from cfg.geo.cache_coord_digits
-# F93: a cached answer holds every interface language at once. Language is a property
-# of the DATA, not of the run: the user switched folders to Japanese and the cities
-# stayed Russian until the next full geo pass, i.e. 35 minutes of network. Completing
-# the missing languages from the bundled base is not an option — measured on the live
-# collection, GeoNames has ja names for 36 of its 83 cities.
+# F93: a cached answer holds every interface language at once, because language is a
+# property of the DATA, not of the run — switching folders to Japanese used to leave the
+# cities Russian until the next full geo pass, 35 minutes of network. Completing the
+# missing languages from the bundled base is not an option: GeoNames has ja names for 36
+# of the live collection's 83 cities.
 _CACHE_LANGS: tuple[Lang, ...] = ("ru", "en", "ja")
 _PROVIDER_ONLINE = "online"  # the only provider that writes into geo_cache
-# F86: how often the "an answer came back without a city" warning is written. Per file
-# it would be thousands of lines on a real collection; silence is what let the defect
-# live through a full production run (zero warnings for 1 596 lost cities).
+# F86: per file this warning would be thousands of lines on a real collection — and
+# silence is what let the defect live through a full run (1 596 cities lost, 0 warnings).
 _CITY_MISSING_WARN_EVERY = 50
-# F85a: defaults for the trip thresholds, read from the `events:` section (see the
-# block comment above _TripLocality). Same numbers as events._DEFAULT_* — the config
-# normally supplies them, these are only the fallback for an EventsConfig without them.
+# F85a: the fallback for an EventsConfig without the trip thresholds; the config normally
+# supplies them. Same numbers as events._DEFAULT_*.
 _DEFAULT_TRIP_MERGE_GAP_HOURS = 48.0
 _DEFAULT_TRIP_MERGE_MAX_KM = 120.0
 _EARTH_RADIUS_KM = 6371.0088
-# F85c: a maximal run of letters — one WORD of a folder name («Тайланд 2023» -> «Тайланд»).
-# Digits and punctuation are separators, so a year or a date glued to the name does not
-# hide the country behind it.
+# F85c: one WORD of a folder name («Тайланд 2023» -> «Тайланд»). Digits and punctuation
+# are separators, so a year glued to the name does not hide the country behind it.
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
-# A single word inside a longer name is only tried as a country from this length up.
-# The measured rule ("the folder plus the words in it") had no such limit; this is one
-# notch stricter than what was scored, because the short country names — «Чад», «Мали»,
-# «Того» — double as ordinary words, and one wrongly filed folder costs more than the
-# handful of files a three-letter country would add. The WHOLE segment is still matched
-# at any length, so a folder actually named «Чад» resolves.
+# A word inside a longer name is only tried as a country from this length up — one notch
+# stricter than the rule that was scored, because the short country names («Чад», «Мали»,
+# «Того») double as ordinary words. The WHOLE segment is still matched at any length, so
+# a folder actually named «Чад» resolves.
 _PATH_HINT_MIN_WORD = 4
 
 
@@ -183,12 +134,10 @@ def _coord(v: object) -> float | None:
 def _is_null_island(lat: float, lon: float) -> bool:
     """Exactly (0, 0) — a camera writing zeros because it never got a fix.
 
-    The pair matters, not the individual values: latitude 0 is the equator and
-    longitude 0 is Greenwich, both perfectly real on their own. Only both at once is
-    the sentinel. Left unfiltered it is worse than a missing place, because the
-    nearest land to 0°N 0°E is Ghana and a nearest-neighbour resolver answers
-    confidently — 35 files landed in a country the user has never visited, and 16
-    more inherited it through the time-session rule.
+    Only the PAIR is the sentinel: latitude 0 and longitude 0 are each perfectly real on
+    their own. Unfiltered it is worse than a missing place — the nearest land to 0°N 0°E
+    is Ghana, and a nearest-neighbour resolver answers confidently: 35 files landed in a
+    country the user has never visited and 16 more inherited it through the session rule.
     """
     return lat == 0.0 and lon == 0.0
 
@@ -196,24 +145,17 @@ def _is_null_island(lat: float, lon: float) -> bool:
 def _place_name(lang: Lang, *, geonameid: int | None = None,
                 resolver: GeoResolver | None = None,
                 provider_name: str | None = None) -> str | None:
-    """F172: the ONE rule for what a place is called, whichever source found it.
+    """F172: the ONE rule for what a place is called: `lang` -> en -> the native name.
 
-    The chain is written down here and nowhere else: `lang` -> en -> the native name.
-    Its first two steps live in `GeoResolver.name` (names.tsv holds ru/en/ja per
-    geonameid), the third is whatever the source knew — the asciiname of places.tsv for
-    the bundled base, the provider's own text for an online answer.
+    A geonameid outranks the text, so two files of one city cannot land in two folders —
+    except that `GeoResolver.name` ends its own chain with the geonameid itself, and a
+    folder called `498817` explains nothing; that answer is refused here in favour of the
+    text (sorter._city_display_name refuses it too).
 
-    A geonameid outranks the text: two files of the same city must not end up in two
-    folders because one of them was named by a different source. `GeoResolver.name`
-    ends its chain with the geonameid itself, and a folder called `498817` explains
-    nothing — that answer is refused in favour of the text (sorter._city_display_name
-    refuses it the same way, for the same reason).
-
-    The online provider passes through here WITHOUT a geonameid on purpose. It has
-    none, and the id the local base gives for the same coordinates is not its id: the
-    base answers with the nearest city of cities1000 while Nominatim names the hamlet
-    the photo was actually taken in (F86/F93). Substituting one for the other would
-    move the file to another place — this feature only renames.
+    The online provider passes through WITHOUT a geonameid on purpose: the id the local
+    base gives for the same coordinates is not its id — the base answers with the nearest
+    city of cities1000, Nominatim names the hamlet the photo was taken in (F86/F93).
+    Substituting one for the other would MOVE the file; this only renames.
     """
     if geonameid is not None and resolver is not None:
         name = resolver.name(geonameid, lang)
@@ -225,8 +167,8 @@ def _place_name(lang: Lang, *, geonameid: int | None = None,
 class _OfflineBatchResolver:
     """A wrapper over geodata.GeoResolver: resolve coordinates + name the city (F172).
 
-    A geonameid → name cache — on a batch of photos of the same city/district we do
-    not call name() repeatedly.
+    Caches geonameid -> name: a batch of photos of one city must not call name() again
+    for every frame.
     """
 
     def __init__(self, resolver: GeoResolver, lang: Lang) -> None:
@@ -251,9 +193,8 @@ class _OfflineBatchResolver:
         self, coords: list[tuple[float, float]],
         progress: Callable[[int, int], None] | None = None,
     ) -> list[_Place]:
-        # offline resolve — bundled data, no network: the stage is fast anyway, and
-        # total is already visible from the initial progress(0, len(rows)) before the
-        # write loop below (see resolve_places) — no extra ticks needed here.
+        # No network here, so no ticks are needed: the total is already on screen from the
+        # progress(0, len(rows)) that resolve_places emits before its write loop.
         del progress
         places = []
         for lat, lon in coords:
@@ -268,13 +209,12 @@ class _OfflineBatchResolver:
 
 
 class _NominatimClient:
-    """One Nominatim/OSM reverse-geocoding request in ONE language (variant B: names as text).
+    """One Nominatim/OSM reverse-geocoding request in ONE language (names as text).
 
-    No geonameids — city/district come back as ready names in the language that was
-    asked for. Respects the OSM policy: a mandatory User-Agent and no more than
-    1 request/sec. Deduplicating coordinates, the three languages and the persistent
-    cache all live one level up (_CachedOnlineResolver) — this class only knows how to
-    ask politely.
+    No geonameids: city/district come back as ready names in the language asked for.
+    Respects the OSM policy — a mandatory User-Agent and at most 1 request/sec.
+    Deduplication, the three languages and the persistent cache live one level up
+    (_CachedOnlineResolver).
     """
 
     def __init__(self, cfg: Config) -> None:
@@ -315,10 +255,9 @@ class _NominatimClient:
             return _UNKNOWN_PLACE
 
         country_code = address.get("country_code")
-        # F86: outside cities Nominatim names the settlement with whatever key fits it —
-        # hamlet/locality/isolated_dwelling for the countryside. `county`/`state` are
-        # deliberately NOT read: an administrative region is not a city, and putting a
-        # file into a folder named after an oblast would be worse than the country level.
+        # F86: outside cities Nominatim names the settlement with whatever key fits —
+        # hamlet/locality/isolated_dwelling. `county`/`state` are deliberately NOT read:
+        # a folder named after an oblast would be worse than the country level.
         city = address.get("city") or address.get("town") or address.get("village") \
             or address.get("municipality") or address.get("hamlet") \
             or address.get("locality") or address.get("isolated_dwelling")
@@ -337,11 +276,9 @@ class _NominatimClient:
 def _pick_lang(values: dict[str, str | None], lang: str) -> str | None:
     """The variant for `lang`, falling back to en and then to any language present.
 
-    The provider's half of the chain of `_place_name`, over the three answers the cache
-    holds instead of over names.tsv. An honest fallback, not a substitution: OSM has no
-    `name:ja` for a Balinese village, so its ja answer is the local latin name — which
-    is exactly the string the sorter used to write anyway. Returning nothing instead
-    would hide a resolved place.
+    The provider's half of the `_place_name` chain, over the three cached answers rather
+    than over names.tsv. OSM has no `name:ja` for a Balinese village, so its ja answer is
+    the local latin name — returning nothing instead would hide a resolved place.
     """
     for candidate in (lang, _NAME_FALLBACK_LANG, *_CACHE_LANGS):
         value = values.get(candidate)
@@ -372,9 +309,8 @@ class _CachedAnswer:
     def place(self, lang: Lang) -> _Place:
         """The place as the current run needs it — the variant for `lang`.
 
-        F172: the city goes through `_place_name` like every other source, so the rule
-        for naming a place stays in one function even though the provider answers with
-        text and no geonameid to translate by.
+        F172: the city goes through `_place_name` like every other source, even though the
+        provider answers with text and no geonameid to translate by.
         """
         return _Place(
             country=self.country,
@@ -389,11 +325,9 @@ class _CachedAnswer:
 def _all_answered(places: dict[str, _Place]) -> bool:
     """Did EVERY language come back with a place? Only then may the row be cached.
 
-    A one-off network failure (or the "nominatim пустой address" of a bad minute — two
-    of them in one live run) must not be frozen into the collection forever, and a
-    half-written row would pin the missing language until the expiry date. Either all
-    three languages, or nothing: the files still get the answer of this run, and the
-    next run tries again.
+    A one-off network failure (two in one live run) must not be frozen into the collection:
+    a half-written row would pin the missing language until the expiry date. The files
+    still get the answer of this run, and the next run tries again.
     """
     return bool(places) and all(p.country is not None for p in places.values())
 
@@ -401,13 +335,11 @@ def _all_answered(places: dict[str, _Place]) -> bool:
 class _GeoCacheTable:
     """Access to `geo_cache` (schema v13): provider answers that outlive the run.
 
-    The key has two shapes, built by the code (SQLite would count NULLs in a composite
-    primary key as distinct rows):
-      `c:<city_geonameid>/<district_geonameid>` — the normal one;
-      `g:<lat>/<lon>` — the fallback for coordinates the local base cannot place.
-    The provider is part of the key: offline and online give different answers and
-    mixing them would be a silent misplacement. The language is NOT — it became a
-    dimension of the value.
+    The key is built by the code, because SQLite counts NULLs in a composite primary key
+    as distinct rows. Two shapes: `c:<city_geonameid>/<district_geonameid>`, and
+    `g:<lat>/<lon>` for coordinates the local base cannot place. The provider is part of
+    the key (mixing offline and online answers would be a silent misplacement); the
+    language is not — it is a dimension of the value.
     """
 
     def __init__(self, conn: sqlite3.Connection, provider: str, max_age_days: int) -> None:
@@ -421,8 +353,8 @@ class _GeoCacheTable:
     def _fresh(self, updated_at: str | None) -> bool:
         """Is the row still within cfg.geo.cache_max_age_days? (0 — the expiry is off.)
 
-        City and district borders move rarely, but not never; an unreadable timestamp
-        counts as expired — asking again is cheap next to trusting a row we cannot date.
+        An unreadable timestamp counts as expired: asking again is cheap next to trusting
+        a row we cannot date.
         """
         if self._max_age_days <= 0:
             return True
@@ -480,10 +412,9 @@ def geo_cache_size(conn: sqlite3.Connection) -> int:
 def clear_geo_cache(conn: sqlite3.Connection) -> int:
     """Drop every cached provider answer; returns how many rows went away.
 
-    The escape hatch of F93: a cache can freeze a WRONG answer of the provider, and
-    "Start over" deliberately no longer wipes it — so there has to be one command that
-    does (`sorta cache --clear-geo`, `sorta reset --clear-geo`, the checkbox in the
-    reset dialog of the web app).
+    The escape hatch of F93: a cache can freeze a WRONG provider answer, and "Start over"
+    deliberately no longer wipes it (`sorta cache --clear-geo`, `sorta reset --clear-geo`,
+    the checkbox in the web app's reset dialog).
     """
     removed = geo_cache_size(conn)
     with conn:
@@ -494,10 +425,9 @@ def clear_geo_cache(conn: sqlite3.Connection) -> int:
 def _median_coord(points: list[tuple[float, float]]) -> tuple[float, float]:
     """The representative of a group — the median latitude and longitude.
 
-    The median and not the mean: one frame shot from a plane over the same district
-    would drag an average out of the place entirely. For a district of an awkward shape
-    even the median can land outside its border — the same caveat F92 carries about its
-    own trip centres.
+    Median and not mean: one frame shot from a plane would drag an average out of the
+    place entirely. For a district of an awkward shape even the median can land outside
+    its border — the caveat F92 carries about its own trip centres.
     """
     return (statistics.median(p[0] for p in points),
             statistics.median(p[1] for p in points))
@@ -506,28 +436,23 @@ def _median_coord(points: list[tuple[float, float]]) -> tuple[float, float]:
 class _CachedOnlineResolver:
     """F93: the online provider behind a cache keyed by the place of the LOCAL base.
 
-    Two things used to die with the process. The answers — `geo` recomputes places from
-    scratch every run (session inheritance looks at neighbours in time, so a partial
-    recompute gives a different result), and the in-memory cache went with the resolver:
-    adding 200 photos cost the same ~35 minutes of Nominatim as a full run. And the
-    language — it was asked for once, at `accept-language`, so switching folder language
-    left the cities in the old one until the next full pass.
+    Before it, adding 200 photos cost the same ~35 minutes of Nominatim as a full run, and
+    the language was fixed at `accept-language`, so switching folder language left the
+    cities in the old one until the next full pass.
 
-    The key is the pair (city_geonameid, district_geonameid) that every coordinate gets
-    for free from the bundled KD-tree. It beats a coordinate grid on both axes at once —
+    The key is the (city_geonameid, district_geonameid) pair every coordinate gets for free
+    from the bundled KD-tree, and it beats a coordinate grid on both axes at once —
     measured on 14 254 GPS files: 603 requests against 6 219 for a 110 m grid, and zero
-    localities mixed against 0.9% of districts. The reason is that the local base has
-    already partitioned the map by MEANING, while a grid invents squares that do not
-    know where a district ends. Coordinates the local base cannot place fall back to a
-    grid key (`g:`) — there are few of them, and the cost of a mistake there is higher.
+    localities mixed against 0.9% of districts. The base has partitioned the map by
+    MEANING; a grid invents squares that do not know where a district ends. Coordinates the
+    base cannot place fall back to a grid key (`g:`).
 
-    A side effect worth as much as the speed: an online place is now anchored to a city
-    of the local base, so event names find a dominant locality again. Nominatim answers
-    with a village or a suburb, dozens per trip, and the name used to fall back to the
-    COUNTRY («Тайланд» instead of «Пхангнга» for 1 359 files).
+    A side effect worth as much as the speed: an online place is now anchored to a city of
+    the local base, so event names find a dominant locality again instead of falling back
+    to the COUNTRY («Тайланд» instead of «Пхангнга» for 1 359 files).
 
-    On a miss the provider is asked THREE times (ru/en/ja) about ONE representative
-    coordinate — the median of the group — and the row is written once.
+    On a miss the provider is asked THREE times (ru/en/ja) about the median coordinate of
+    the group, and the row is written once.
     """
 
     def __init__(self, cfg: Config, conn: sqlite3.Connection,
@@ -565,9 +490,9 @@ class _CachedOnlineResolver:
             keys.append(key)
             groups.setdefault(key, []).append(i)
 
-        # The network phase itself (~1 request/sec, most of the run can go here):
-        # progress after every GROUP, not once at the end — otherwise the counter hangs
-        # at "0 of N" for all those minutes and then instantly races to the end.
+        # Progress after every GROUP, not once at the end: this loop is ~1 request/sec and
+        # can be most of the run, so a counter that ticks only at the end hangs at "0 of N"
+        # for those minutes and then races.
         by_key: dict[str, _Place] = {}
         done = 0
         for key, indices in groups.items():
@@ -593,26 +518,20 @@ class _CachedOnlineResolver:
 class _CityFallbackResolver:
     """F86: the online provider first, the bundled offline base as insurance for the city.
 
-    Nominatim answers for suburbs and the countryside without any of the city keys it
-    is read by, and the place used to end up as "country known, city NULL". On the live
-    collection that is 1 596 files (1 471 exact_gps + 125 inherited) that the sorter then
-    hid in _Unsorted/no_place — while the SAME coordinates resolve to a city in the
-    bundled GeoNames data (55.4138, 37.8976 -> «Домодедово»; -8.79806, 115.2349 ->
-    Jabajero). Turning the online provider on made the result worse than offline; here
-    the online answer stays primary and only a missing city is completed offline. Since
-    F93 the offline lookup happens for every coordinate regardless (it is what the cache
-    key is built from), so this costs nothing extra — but it is no longer true that the
-    base is "only touched on a miss".
+    Nominatim answers for suburbs and the countryside without any of the city keys it is
+    read by, so the place used to end up as "country known, city NULL" — 1 596 files of the
+    live collection (1 471 exact_gps + 125 inherited) that the sorter then hid in
+    _Unsorted/no_place, while the SAME coordinates resolve offline (55.4138, 37.8976 ->
+    «Домодедово»; -8.79806, 115.2349 -> Jabajero).
 
     Country, city and district always come from ONE source: an offline city replaces the
-    whole place, so a Nominatim country name never gets glued onto a GeoNames city. If
-    the two providers disagree about the country, the offline answer is dropped — a
-    nearest-neighbour city in the wrong country is exactly the silent misplacement F75
-    guards against; the file keeps the online country and is laid out at country level.
+    whole place, so a Nominatim country name is never glued onto a GeoNames city. If the
+    two disagree about the country the offline answer is dropped — a nearest-neighbour city
+    in the wrong country is the silent misplacement F75 guards against.
 
     A place with no country at all (a failed request, an empty address) is NOT asked
-    offline: there the provider gave no answer to complete, and F65 keeps its meaning —
-    such coordinates stay `unknown` instead of quietly switching provider mid-run.
+    offline: there is no answer to complete, and F65 keeps its meaning — such coordinates
+    stay `unknown` instead of quietly switching provider mid-run.
     """
 
     def __init__(self, primary: _PlaceBatchResolver, offline: _OfflineBatchResolver) -> None:
@@ -662,15 +581,14 @@ def _resolver_for(cfg: Config, conn: sqlite3.Connection,
                   offline: GeoResolver) -> _PlaceBatchResolver:
     """Provider abstraction by `cfg.geo.provider`.
 
-    offline -> geodata.GeoResolver (bundled GeoNames, no network) — never reads or
-               writes geo_cache: a full offline recompute takes two seconds.
-    online  -> Nominatim/OSM reverse geocoding (G2b) — names as text, no geonameids,
-               behind the persistent cache of F93 and wrapped in the offline city
-               fallback of F86 (both only if the bundled data is actually there: online
-               must keep working on an install without it).
+    offline -> geodata.GeoResolver, which never touches geo_cache: a full offline
+               recompute takes two seconds.
+    online  -> Nominatim/OSM (G2b), behind the F93 cache and the F86 city fallback — both
+               only if the bundled data is actually there, since online must keep working
+               on an install without it.
 
-    `offline` is the bundled resolver of the whole stage (see resolve_places) — it is
-    passed in rather than created here so the path hint of F85c shares one loaded base.
+    `offline` is passed in rather than created here so the F85c path hint shares one
+    loaded base with this stage.
     """
     provider = cfg.geo.provider
     lang = i18n.normalize_lang(cfg.language)
@@ -697,8 +615,8 @@ def _parse_dt(s: str | None) -> datetime | None:
     if not s:
         return None
     try:
-        # drop tzinfo: taken_at is local capture time, a mix of aware/naive would
-        # break sorting
+        # drop tzinfo: taken_at is local capture time, and a mix of aware and naive
+        # values would break sorting
         return datetime.fromisoformat(s).replace(tzinfo=None)
     except ValueError:
         return None
@@ -722,22 +640,18 @@ def _split_sessions(
 # DUPLICATED RULE. The twin lives in events.py (_split_sessions/_merge_sessions/
 # _same_trip) — change a threshold on one side and look at the other.
 #
-# It has to be duplicated. The stages run index -> geo -> landmarks -> faces -> events,
-# so when geo works the `events` table does not exist yet on a clean run and there is
-# nothing to read; moving the inheritance into the events stage is not allowed either,
-# because `places` has exactly one writer (docs/ARCHITECTURE.md §2), and the stage order
-# cannot change (events needs `country` from places). So geo groups its own sessions
-# into trips by the same rule, reading the SAME thresholds — cfg.events.trip_merge_gap_hours
-# and cfg.events.trip_merge_max_km.
+# It has to be duplicated: the stages run index -> geo -> landmarks -> faces -> events, so
+# on a clean run the `events` table does not exist yet when geo works; and the inheritance
+# cannot move into events either, because `places` has exactly one writer
+# (docs/ARCHITECTURE.md §2) and the order cannot change (events needs `country` from
+# places). So geo groups its own sessions by the same rule and the SAME thresholds.
 #
-# Two deliberate differences, both in the direction of "inherit less":
-# * no admin1-region branch. events has a loaded GeoResolver at hand; geo would have to
-#   load the bundled base a second time just for this. A trip here can therefore only
-#   come out SHORTER than the events one, never wider — no file is placed further away
-#   than the rule above allows.
-# * a session where nobody has GPS does not break a trip: it neither confirms nor denies
-#   the locality, and those sessions are exactly what this feature exists for. In events
-#   such a session starts a new group, because there a group IS the event.
+# Two deliberate differences, both toward "inherit less":
+# * no admin1-region branch — geo would have to load the bundled base a second time for
+#   it, so a trip here can only come out SHORTER than the events one, never wider;
+# * a session where nobody has GPS does not break a trip (it neither confirms nor denies
+#   the locality, and those sessions are what this feature exists for). In events such a
+#   session starts a new group, because there a group IS the event.
 
 
 @dataclass(frozen=True)
@@ -752,9 +666,9 @@ class _TripLocality:
 def _city_key(place: _Place) -> tuple[str, object] | None:
     """The locality key of a resolved place: geonameid, else the city name, else none.
 
-    events._city_key prefers `district_name` for the string fallback — an event wants
-    the most specific name it can print. Here the only question is which CITY the trip
-    agreed on, so a suburb must not split one city into three localities.
+    events._city_key prefers `district_name` for the string fallback, wanting the most
+    specific name it can print. Here the question is which CITY the trip agreed on, so a
+    suburb must not split one city into three localities.
     """
     if place.city_geonameid is not None:
         return ("i", place.city_geonameid)
@@ -779,9 +693,9 @@ def _session_donors(
 ) -> list[_Donor]:
     """The exact_gps files of a session — the only ones that may vouch for a place.
 
-    Session-inherited files are deliberately left out: their place is a copy of these
-    same coordinates, and counting it again would let one GPS frame outvote another
-    just by having more dateless neighbours.
+    Session-inherited files are left out: their place is a copy of these same coordinates,
+    and counting it again would let one GPS frame outvote another just by having more
+    dateless neighbours.
     """
     donors: list[_Donor] = []
     for dt, r in session:
@@ -857,15 +771,11 @@ def _merge_trips(
 def _brackets(first: datetime, last: datetime, dt: datetime) -> bool:
     """Is `dt` between the first and the last frame that vouches for the trip's city?
 
-    The evidence a trip offers is not uniform over its length. In the MIDDLE it is an
-    alibi: the camera was in this city before the file and in the same city after it, and
-    nothing in between could have taken it a thousand kilometres away and back. Past the
-    ends there is no such alibi — the last GPS frame does not say when the trip's owner
-    left, and a day-trip out of town lands exactly there.
-
-    The measurement agrees, and not by a small margin: on the validation collection the
-    span holds 414 of the 554 inferences and 4 of the 32 mistakes — the other 28 all sat
-    past an end. Precision inside 99.0%, outside 80.0%.
+    Inside the span the trip is an alibi: the camera was in this city before the file and
+    after it. Past an end there is none — the last GPS frame does not say when its owner
+    left, and a day-trip out of town lands exactly there. Measured on the validation
+    collection: the span holds 414 of the 554 inferences and 4 of the 32 mistakes, the
+    other 28 all sitting past an end. Precision inside 99.0%, outside 80.0%.
     """
     return first <= dt <= last
 
@@ -873,8 +783,8 @@ def _brackets(first: datetime, last: datetime, dt: datetime) -> bool:
 def _trip_place(places: list[_Place]) -> _Place:
     """The place a trip lends: the dominant one of its city, minus the district.
 
-    What the trip agreed on is the CITY; a district would be a finer claim than the
-    evidence supports — the frame may well have been shot in another part of town.
+    The trip agreed on a CITY; a district would be a finer claim than the evidence
+    supports — the frame may have been shot in another part of town.
     """
     rep = Counter(places).most_common(1)[0][0]
     return replace(rep, district_geonameid=None, district_name=None)
@@ -886,22 +796,19 @@ def _inherit_trip_places(
 ) -> None:
     """F85a: a file with no place inherits the place of its TRIP. Mutates `resolved`.
 
-    Runs AFTER session inheritance — that one is more precise and keeps its priority;
-    only what it did not reach is considered here.
-
-    Two conditions, both measured on scripts/measure_place_inference.py (hide the GPS of
-    files that have it, infer, compare with the truth — 554 trip-level cases):
+    Runs AFTER session inheritance, which is more precise and keeps its priority. Two
+    conditions, both measured on scripts/measure_place_inference.py (hide the GPS of files
+    that have it, infer, compare with the truth — 554 trip-level cases):
 
     1. the trip's own GPS frames agree about the city: the dominant city holds MORE than
-       half of them (a frame whose place came back as country-only counts in the
-       denominator — it is a GPS frame that does not confirm the city). A trip across
-       three cities leaves its place-less files as they are: a foreign city is worse than
-       an empty folder, because the user will not look there (the principle of F75/F86);
+       half of them, a country-only frame counting in the denominator. A trip across three
+       cities leaves its place-less files alone — a foreign city is worse than an empty
+       folder, because the user will not look there (F75/F86);
     2. the file lies BETWEEN two frames of that city in time — see `_brackets`.
 
-    Rule 1 alone measured 94.2% precision, below the 95% this feature has to clear; every
-    single mistake was a file outside the span of the trip's GPS frames. Adding rule 2
-    brings it to 99.0% and costs about a quarter of the reach.
+    Rule 1 alone measured 94.2% precision, below the 95% this feature has to clear, and
+    every mistake was a file outside the span. Rule 2 brings it to 99.0% and costs about a
+    quarter of the reach.
     """
     trip_gap_hours = float(getattr(cfg.events, "trip_merge_gap_hours",
                                    _DEFAULT_TRIP_MERGE_GAP_HOURS))
@@ -935,9 +842,9 @@ def _path_segments(path: str) -> list[str]:
     """The DIRECTORY names of a file path, deepest first.
 
     Split by hand rather than through `Path`: the index stores whatever separator the
-    machine that wrote it uses, and a POSIX interpreter would see `D:\\Фото\\Греция\\a.jpg`
-    as a single segment. The file name itself is dropped — a camera names files, a
-    person names folders.
+    machine that wrote it used, and a POSIX interpreter reads `D:\\Фото\\Греция\\a.jpg` as
+    a single segment. The file name is dropped — a camera names files, a person names
+    folders.
     """
     parts = [p for p in re.split(r"[\\/]+", path.strip()) if p]
     return list(reversed(parts[:-1]))
@@ -946,9 +853,8 @@ def _path_segments(path: str) -> list[str]:
 def _name_candidates(segment: str) -> list[str]:
     """What in one folder name may be a country: the whole name, then its words.
 
-    The whole name first, because it is the more specific claim («Коста-Рика» is one
-    name and two words). Words shorter than _PATH_HINT_MIN_WORD are left out — see
-    the constant.
+    The whole name first, being the more specific claim («Коста-Рика» is one name and two
+    words). Words shorter than _PATH_HINT_MIN_WORD are left out.
     """
     name = segment.strip()
     out = [name] if name else []
@@ -961,30 +867,24 @@ def _name_candidates(segment: str) -> list[str]:
 class _CountryFromPath:
     """F85c: country (never city) from the names of the folders a file lies in.
 
-    The two halves of the rule are both deliberate.
-
-    COUNTRY ONLY. Measured on the files of the live collection that have GPS — hide it,
-    guess from the path, compare with the truth: a country from a folder name is right
-    99.5% of 2 105 hints, a city 4.3% of 1 152. The reason is not that folder names lie
-    about cities; it is that the bundled base holds 150 000 settlements, so ANY ordinary
-    word resolves to some hamlet. `city_ids_by_name` is therefore not called here at all,
-    and must not be added: 4.3% would poison everything this feature exists for.
+    COUNTRY ONLY. Measured on the GPS files of the live collection — hide it, guess from
+    the path, compare: a country from a folder name is right 99.5% of 2 105 hints, a city
+    4.3% of 1 152, because the bundled base holds 150 000 settlements and any ordinary word
+    resolves to some hamlet. `city_ids_by_name` is not called here and must not be added.
 
     DEEPEST FIRST. The folder nearest the file is the most specific thing the user said
-    about it: under «Отпуска/Греция 2019» the answer is Greece, and a collection root
-    named after the country the owner lives in must not outvote it.
+    about it: under «Отпуска/Греция 2019» the answer is Greece, and a collection root named
+    after the country the owner lives in must not outvote it.
 
-    Two name sources, both bundled, both offline: the curated dictionary of i18n (small,
-    hand-checked) and the GeoNames country names of the resolver in all three languages
-    (~250 countries, and the spellings people actually type — «Тайланд» is in there).
-    Without the bundled data the hint simply produces nothing; it never becomes a
-    network call or a guess.
+    Two bundled offline name sources: the curated i18n dictionary and the resolver's
+    GeoNames country names in all three languages (~250 countries, and the spellings people
+    actually type — «Тайланд» is in there). Without the bundled data the hint produces
+    nothing; it never becomes a network call or a guess.
     """
 
     def __init__(self, resolver: object) -> None:
-        # getattr, not a direct call: the resolver is whatever `GeoResolver()` returned
-        # for this run (tests inject a mini one), and a resolver without the reverse
-        # lookups must degrade to the curated dictionary instead of crashing the stage.
+        # getattr, not a direct call: a resolver without the reverse lookups (tests inject
+        # a mini one) must degrade to the curated dictionary rather than crash the stage.
         self._lookup = getattr(resolver, "country_cc_by_name", None)
         self._cache: dict[str, str | None] = {}
 
@@ -1023,14 +923,13 @@ def _inherit_path_countries(
 ) -> None:
     """F85c: fill the still-place-less files with the country of their folder name.
 
-    Runs LAST, after both inheritance levels: the hint is a person's label, not a
-    measurement, and it may never overwrite what GPS or a neighbour in time established.
-    `taken_at_confidence` is not consulted (unlike the two inheritance rules) — a folder
-    name says nothing about time, and a file whose date is unusable is laid out by the
-    sorter's own undated branch anyway.
+    Runs LAST: the hint is a person's label, not a measurement, and may never overwrite
+    what GPS or a neighbour in time established. `taken_at_confidence` is not consulted
+    (unlike the two inheritance rules) — a folder name says nothing about time, and an
+    undated file goes down the sorter's own undated branch anyway.
 
-    The place is country-only by construction: no city, no district, no coordinates. The
-    sorter has a branch for exactly this shape (`country_only`, F86) — `<Country>/<year>/`.
+    The place is country-only by construction; the sorter has a branch for exactly that
+    shape (`country_only`, F86) — `<Country>/<year>/`.
     """
     for r in rows:
         if r["id"] in resolved:
@@ -1055,15 +954,13 @@ def resolve_places(
         """SELECT id, path, taken_at, taken_at_confidence, gps_lat, gps_lon
            FROM files WHERE dup_of IS NULL AND error IS NULL"""
     ).fetchall()
-    # One bundled resolver for the whole stage: the batch resolver below and the path
-    # hint of F85c both read the same 12 MB of GeoNames, and loading it twice would
-    # double both the seconds and the memory. Construction loads nothing (GeoResolver
-    # reads lazily), so this costs nothing when neither of them is reached.
+    # One bundled resolver for the whole stage: the batch resolver below and the F85c path
+    # hint read the same 12 MB of GeoNames. Construction loads nothing (GeoResolver reads
+    # lazily), so this costs nothing when neither is reached.
     local = GeoResolver()
 
-    # 1) exact_gps: all files with valid coordinates.
-    #    Coordinates may be garbage ('' from broken EXIF), so we coerce to float and
-    #    skip the unparsable ones (otherwise geodata/scipy crashes).
+    # 1) exact_gps. Coordinates may be garbage ('' from broken EXIF), so the unparsable
+    #    ones are skipped — geodata/scipy would crash on them.
     gps_rows: list[sqlite3.Row] = []
     coords: list[tuple[float, float]] = []
     for r in rows:
@@ -1072,29 +969,25 @@ def resolve_places(
             gps_rows.append(r)
             coords.append((lat, lon))
     resolved: dict[int, tuple[_Place, str]] = {}
-    # F85a: the coordinates of the GPS files by id — a trip locality's center is the
-    # median of the files' OWN GPS (F92), so the distance check needs them again below.
+    # F85a: a trip locality's center is the median of the files' OWN GPS (F92), so the
+    # distance check needs the coordinates again below.
     gps_by_id = {r["id"]: c for r, c in zip(gps_rows, coords)}
     gps_unresolved = 0
     if coords:
         resolver = _resolver_for(cfg, conn, local)
-        # online: the entire network phase sits right here (in the resolve) (~1
-        # request/sec to Nominatim, minutes on a real collection) — progress must
-        # move here, not in the write loop below (which is instant for online: the
-        # network already ran, the rest is pure SQLite).
+        # Online, the whole network phase is this call (~1 request/sec, minutes on a real
+        # collection), so progress moves here and not in the write loop below.
         places = resolver.resolve_places(coords, progress=progress)
         for r, place in zip(gps_rows, places):
-            # F65: honest confidence — coordinates alone do not make an exact_gps.
-            # An empty place (missing geo data offline, a failed request online) stays
-            # "unknown" instead of filling the DB with confident-looking NULLs, and
-            # never becomes a donor for session inheritance below.
+            # F65: coordinates alone do not make an exact_gps. An empty place (missing geo
+            # data offline, a failed request online) stays "unknown" rather than filling
+            # the DB with confident-looking NULLs, and never becomes an inheritance donor.
             if place.country is None:
                 gps_unresolved += 1
                 continue
             resolved[r["id"]] = (place, "exact_gps")
         if gps_unresolved:
-            # the offline resolver knows where it read from; online (Nominatim) has
-            # already logged each failed request itself — here it is the total
+            # Online has already logged each failed request; this is the total.
             data_dir = getattr(resolver, "data_dir", None)
             _log.warning(
                 "geo: %d из %d файлов с координатами не разрезолвились в место%s — "
@@ -1103,8 +996,8 @@ def resolve_places(
                 f" (гео-данные: {data_dir})" if data_dir else "",
             )
 
-    # 2) session_inferred: inheritance of the FULL place (country + both geonameids
-    #    + city) within a time session.
+    # 2) session_inferred: the FULL place (country + both geonameids + city) inherited
+    #    within a time session.
     timed = [(dt, r) for r in rows if (dt := _parse_dt(r["taken_at"])) is not None]
     sessions = _split_sessions(timed, gap_hours)
     for session in sessions:
@@ -1118,13 +1011,12 @@ def resolve_places(
             _, place = min(sources, key=lambda s: abs((s[0] - dt).total_seconds()))
             resolved[r["id"]] = (place, "session_inferred")
 
-    # 2b) trip_inferred (F85a): what the six-hour session could not reach — a session
-    #     where nobody has GPS inherits from the trip around it. Deliberately second:
-    #     session inheritance is the more precise of the two and keeps priority.
+    # 2b) trip_inferred (F85a): a session where nobody has GPS inherits from the trip
+    #     around it. Second on purpose — session inheritance is the more precise of the two.
     _inherit_trip_places(cfg, sessions, resolved, gps_by_id)
 
-    # 2c) path_inferred (F85c): what no geometric signal reached at all — the COUNTRY
-    #     off the name of a folder on the file's path. Last in the queue by design.
+    # 2c) path_inferred (F85c): the COUNTRY off a folder name, for what no geometric
+    #     signal reached at all. Last in the queue by design.
     _inherit_path_countries(rows, resolved, _CountryFromPath(local))
 
     # 3) write: full recomputation of the places table in one transaction
@@ -1132,8 +1024,7 @@ def resolve_places(
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if progress:
         progress(0, len(rows))  # total right away, even if the stage is small/fast (#37)
-    # The write loop is pure SQLite (the network, if any, already ran in the resolve
-    # above), the throttle does not depend on the provider.
+    # Pure SQLite from here — the network, if any, already ran in the resolve above.
     with conn:
         conn.execute("DELETE FROM places")
         for i, r in enumerate(rows, 1):

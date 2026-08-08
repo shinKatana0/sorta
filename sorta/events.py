@@ -1,41 +1,19 @@
-"""F4/F30/F44 (Phase 4): events.
+"""F4/F30/F44 (Phase 4): events. Parameters come from cfg.events.
 
 Contract: reads files + places, writes ONLY into events and event_files.
 
-Rules:
-- auto events (origin='auto'): sessions by a gap > events.gap_hours (default 6);
-  adjacent sessions merge into one event (a large trip) when the gap is <
-  events.trip_merge_gap_hours (default 48) AND the same "trip locality":
-  the same country (places.country), AND (the same city OR the same admin1 region OR
-  localities closer than events.trip_merge_max_km, F44/#19). City — places.city_geonameid;
-  if it is NULL (online provider, G2b), the string fallback
-  places.district_name/city (F44/#19-A1) is used — such cities have no region, so the
-  region branch applies only to geonameid cities. Proximity is measured between the
-  CENTERS OF THE LOCALITIES, and a center is the median GPS of the locality's own
-  files (F92) — coordinates the files carry themselves, so the distance branch works
-  under any geo provider; geodata coordinates of city_geonameid remain the fallback
-  for a locality where no file has GPS. An unknown locality does not confirm a merge.
-  Files with taken_at_confidence='low' do not enter auto events.
-- Size threshold (F30): groups (after merging) with a file count <
-  events.min_event_size (default 5) do not become an auto event — their files
-  do not enter event_files (the sorter routes them down the no_event branch).
-- The event name and `place_city` — the localized locality of the group (F44/#19-B):
-  one city per group → the city name (geodata.GeoResolver.name/string fallback);
-  several cities → the admin1 region of the DOMINANT (by file count) city
-  (GeoResolver.region_name), and if there is no region — the country (country_name),
-  and if not that either — the name of the dominant city. No file has a locality
-  → no city.
-- Recomputation recreates auto events; a manual name (name_is_manual=1) is carried
-  over to a new event if it overlaps the old one by files > 50% (of the old one).
-- Manual events (origin='manual', add_manual_event) are NOT recreated by
-  recomputation — only the canonical files of the range are reattached by taken_at
-  (including 'low': an explicit user instruction outranks heuristics). Their files
-  are excluded from auto-clustering. Overlapping ranges of two manual events is an
-  error. Manual events are not subject to the size threshold.
+An AUTO event is a session (a gap > `gap_hours`), possibly merged with its neighbours into
+a trip — see `_merge_sessions`/`_same_trip` and `_group_place_name`. Files with
+taken_at_confidence='low' stay out of them, as do groups below `min_event_size` (F30),
+which the sorter then routes down its no_event branch.
 
-Parameters — the typed config.yaml `events:` section (cfg.events). The
-`min_event_size`/`trip_merge_gap_hours` fields — F30, still read via getattr with a
-default (EventsConfig does not type them yet).
+A MANUAL event (add_manual_event) is not recreated by a recomputation — only the canonical
+files of its range are reattached by taken_at, 'low' included, because an explicit user
+instruction outranks a heuristic. Its files leave auto events, its range may not overlap
+another manual event's, and the size threshold does not apply to it.
+
+A manual NAME (name_is_manual=1) is carried over to a new event that overlaps the old one
+by more than 50% of the old one's files.
 """
 from __future__ import annotations
 
@@ -72,10 +50,10 @@ class _File:
     id: int
     dt: datetime
     confidence: str | None
-    city_id: int | None  # places.city_geonameid — the city itself (G2), not a district/string
-    city_str: str | None  # F44/#19-A1: the string fallback (district_name/city) when city_id is NULL
-    country_cc: str | None  # places.country (ISO cc) — for the "same country" check (F44/#19-B)
-    gps_lat: float | None  # F92: the file's own GPS — the locality center for the distance check
+    city_id: int | None  # places.city_geonameid — the city itself (G2), not a district
+    city_str: str | None  # F44/#19-A1: the fallback when city_id is NULL (online provider)
+    country_cc: str | None  # places.country (ISO cc)
+    gps_lat: float | None  # F92: the file's own GPS — the locality center for distances
     gps_lon: float | None
 
 
@@ -94,8 +72,8 @@ def _parse_dt(s: str | None) -> datetime | None:
     if not s:
         return None
     try:
-        # drop tzinfo: taken_at is local capture time, a mix of aware/naive would
-        # break sorting and comparisons
+        # drop tzinfo: taken_at is local capture time, and a mix of aware and naive
+        # values would break sorting and comparisons
         return datetime.fromisoformat(s).replace(tzinfo=None)
     except ValueError:
         return None
@@ -104,9 +82,9 @@ def _parse_dt(s: str | None) -> datetime | None:
 def _file_gps(lat: object, lon: object) -> tuple[float, float] | None:
     """A file's GPS as a pair of floats, or None when it is unusable (F92).
 
-    Unusable is: missing, garbage ('' from broken EXIF — the index stores what the
-    camera wrote), or exactly (0, 0) — the "never got a fix" sentinel that geo.py
-    filters out for the same reason (it resolves confidently to Ghana).
+    Unusable: missing, garbage ('' from broken EXIF — the index stores what the camera
+    wrote), or exactly (0, 0), the "never got a fix" sentinel geo.py filters for the same
+    reason (it resolves confidently to Ghana).
     """
     try:
         pair = (float(lat), float(lon))  # type: ignore[arg-type]
@@ -118,11 +96,9 @@ def _file_gps(lat: object, lon: object) -> tuple[float, float] | None:
 def _load_files(conn: sqlite3.Connection) -> list[_File]:
     """Canonical files with a date, sorted by time.
 
-    City — geonameid from places.city_geonameid; when it is NULL (online provider,
-    G2b does not resolve geonameid), city_str is the string fallback district_name/city
-    (F44/#19-A1) so the online path does not lose the place. GPS comes from the same
-    row (F92) — the locality center for trip merging is built from it, so no separate
-    query is needed.
+    The online provider resolves no geonameid, so a NULL city_geonameid falls back to the
+    district_name/city string (F44/#19-A1) rather than losing the place. GPS comes off the
+    same row (F92), which saves a second query for the trip-merge centers.
     """
     rows = conn.execute(
         """SELECT f.id, f.taken_at, f.taken_at_confidence AS confidence,
@@ -161,8 +137,7 @@ def _split_sessions(files: list[_File], gap_hours: float) -> list[list[_File]]:
 
 
 def _dominant_city_id(files: list[_File]) -> int | None:
-    """By city_geonameid only (no string fallback) — for manual events, whose logic
-    brief F44 says not to change."""
+    """By city_geonameid only, no string fallback — F44 left the manual-event logic alone."""
     ids = Counter(f.city_id for f in files if f.city_id is not None)
     return ids.most_common(1)[0][0] if ids else None
 
@@ -191,9 +166,8 @@ def _file_city_name(resolver: GeoResolver, lang: i18n.Lang, f: _File) -> str | N
 def _median_center(files: list[_File]) -> tuple[float, float] | None:
     """The center of a set of files by their own GPS; None — nobody has GPS (F92).
 
-    The MEDIAN of each coordinate, not the mean: a single stray frame (a shot from an
-    airport on the way) must not drag the center of a locality hundreds of kilometres
-    away and break the merge for the whole trip.
+    The MEDIAN of each coordinate, not the mean: one stray frame (a shot from an airport on
+    the way) must not drag a locality hundreds of kilometres and break the whole trip.
     """
     pts = [(f.gps_lat, f.gps_lon) for f in files
            if f.gps_lat is not None and f.gps_lon is not None]
@@ -205,9 +179,8 @@ def _median_center(files: list[_File]) -> tuple[float, float] | None:
 def _dominant_locality(files: list[_File]) -> _Locality:
     """The dominant (by file count) locality among files + the dominant country.
 
-    The center (F92) is the median GPS of the files of THAT locality — not of the
-    whole session, so files of a neighbouring city in the same session do not shift
-    it. An unknown locality (no key) has no center: it does not confirm a merge anyway.
+    The center (F92) is the median GPS of the files of THAT locality and not of the whole
+    session, so a neighbouring city in the same session does not shift it.
     """
     keys = Counter(k for f in files if (k := _city_key(f)) is not None)
     country_ccs = Counter(f.country_cc for f in files if f.country_cc)
@@ -231,10 +204,9 @@ def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
 def _locality_coords(loc: _Locality, resolver: GeoResolver) -> tuple[float, float] | None:
     """Where the locality is: the median GPS of its own files, else geodata (F92).
 
-    The files' own GPS is provider-independent, so the distance branch keeps working
-    when city_geonameid is NULL (online, G2b). coords_of stays as the fallback for a
-    locality whose files carry no GPS at all — the city there came in by session
-    inheritance, and only geodata knows where it is.
+    The files' own GPS is provider-independent, so the distance branch keeps working when
+    city_geonameid is NULL. `coords_of` is the fallback for a locality whose files carry no
+    GPS — its city came in by session inheritance, and only geodata knows where that is.
     """
     if loc.coords is not None:
         return loc.coords
@@ -244,11 +216,10 @@ def _locality_coords(loc: _Locality, resolver: GeoResolver) -> tuple[float, floa
 def _same_trip(
     anchor: _Locality, cand: _Locality, resolver: GeoResolver, max_km: float,
 ) -> bool:
-    """F44/#19-B: the same country AND (the same city OR the same admin1 region OR
+    """F44/#19-B: same country AND (same city OR same admin1 region OR closer than max_km).
 
-    localities closer than max_km). The region is known only for cities with a
-    geonameid; the distance is measured between locality centers (F92), which exist
-    for online string cities too.
+    The region is known only for cities with a geonameid; the distance is measured between
+    locality centers (F92), which exist for online string cities too.
     """
     if not anchor.country_cc or not cand.country_cc or anchor.country_cc != cand.country_cc:
         return False
@@ -274,15 +245,12 @@ def _merge_sessions(
 ) -> list[tuple[list[_File], _Locality]]:
     """Merge adjacent sessions into a trip: gap < trip_gap_hours AND _same_trip.
 
-    DUPLICATED RULE: geo.py carries a copy of this (_merge_trips/_same_trip/
-    _session_locality) because it needs trips one stage EARLIER than they exist here —
-    see the block comment there for why it cannot be shared. Both sides read the same
-    cfg.events.trip_merge_gap_hours/trip_merge_max_km; change a threshold or the rule
-    here and look at geo.py.
+    DUPLICATED RULE: geo.py carries a copy (_merge_trips/_same_trip/_session_locality)
+    because it needs trips one stage EARLIER than they exist here — the block comment there
+    says why it cannot be shared. Change a threshold or the rule and look at geo.py.
 
-    The group's anchor locality is taken from the FIRST session and is not
-    recomputed on further merges (as before for city_id) — the comparison always
-    runs against it, not against the last added session.
+    The anchor locality comes from the FIRST session and is not recomputed on further
+    merges: the comparison always runs against it, not against the last session added.
     """
     trip_gap = timedelta(hours=trip_gap_hours)
     groups: list[tuple[list[_File], _Locality]] = []
@@ -299,11 +267,10 @@ def _merge_sessions(
 
 
 def _group_place_name(files: list[_File], resolver: GeoResolver, lang: i18n.Lang) -> str | None:
-    """The group locality AFTER merging (F44/#19-B): one city -> its name;
+    """The group locality AFTER merging (F44/#19-B).
 
-    several cities -> the admin1 region of the dominant (by file count) city,
-    else the country, else the name of the dominant city. No known city at all
-    -> None.
+    One city -> its name; several -> the admin1 region of the dominant (by file count)
+    city, else the country, else that city's own name. No known city at all -> None.
     """
     keys = Counter(k for f in files if (k := _city_key(f)) is not None)
     if not keys:
@@ -354,8 +321,8 @@ def build_events(
     files = _load_files(conn)
     stats = EventStats()
     with conn:
-        # 1) manual events: not recreated; the range files (including low) are
-        #    reattached — newly indexed ones are picked up
+        # 1) manual events: not recreated; the range files ('low' included) are reattached,
+        #    which is what picks up newly indexed ones
         manual_ids: set[int] = set()
         manual_rows = conn.execute(
             "SELECT id, started_at, ended_at FROM events WHERE origin = 'manual'"
@@ -397,8 +364,8 @@ def build_events(
         auto = [f for f in files if f.confidence != "low" and f.id not in manual_ids]
         groups = _merge_sessions(
             _split_sessions(auto, gap_hours), trip_gap_hours, resolver, trip_merge_max_km)
-        # F30: small groups (< min_event_size) do not become an auto event —
-        # their files simply do not enter event_files (sorter: the no_event branch)
+        # F30: a group below min_event_size does not become an auto event, and its files
+        # simply do not enter event_files (the sorter's no_event branch).
         created = [g for g in groups if len(g[0]) >= min_event_size]
         for group, _anchor in created:
             start, end = group[0].dt, group[-1].dt
@@ -457,11 +424,10 @@ def add_manual_event(
 ) -> int:
     """A manual event (origin='manual', name_is_manual=1) over a date range.
 
-    Attaches ALL canonical files of the range by taken_at, including
-    taken_at_confidence='low', and takes them from existing auto events.
-    Manual-event ranges cannot overlap. Does not take cfg (the same call from cli.py
-    without a config) — `place_city` is localized with the default language
-    (i18n.normalize_lang(None)), not the config.yaml language.
+    Attaches ALL canonical files of the range by taken_at, 'low' confidence included, and
+    takes them away from existing auto events. Ranges of two manual events may not overlap.
+    Takes no cfg (cli.py calls it without one), so `place_city` is localized with the
+    DEFAULT language rather than the config.yaml one.
     """
     start = _parse_bound(date_from, end=False)
     end = _parse_bound(date_to, end=True)
