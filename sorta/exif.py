@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import install
+from . import install, launch
 
 _EXIFTOOL_TAGS = [
     "-DateTimeOriginal", "-CreateDate", "-GPSLatitude", "-GPSLongitude",
@@ -81,8 +81,8 @@ def _starts(binary: str) -> bool:
     version is the cheap way to tell the two apart, and it is asked once per process.
     """
     try:
-        proc = subprocess.run([binary, "-ver"], capture_output=True, text=True,
-                              timeout=_PROBE_TIMEOUT)
+        proc = launch.run([binary, "-ver"], capture_output=True, text=True,
+                          timeout=_PROBE_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0 and bool(proc.stdout.strip())
@@ -232,7 +232,10 @@ class ExifToolSession:
         if self._proc is None or self._proc.poll() is not None:
             if self._proc is not None:
                 _close_pipes(self._proc)
-            self._proc = subprocess.Popen(
+            # F228: `launch.popen` and not `subprocess.Popen` — there are as many of these
+            # as there are read workers, so a run from the shortcut used to open up to
+            # eight console windows in a row on the index stage.
+            self._proc = launch.popen(
                 [*_exiftool_cmd(), "-stay_open", "True", "-@", "-"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -379,7 +382,7 @@ def read_batch_exiftool(paths: list[Path], chunk: int = 200) -> dict[str, ExifDa
     out: dict[str, ExifData] = {}
     for i in range(0, len(paths), chunk):
         batch = [str(p) for p in paths[i:i + chunk]]
-        proc = subprocess.run(
+        proc = launch.run(
             [*_exiftool_cmd(), *_QUERY_ARGS, *_EXIFTOOL_TAGS, *batch],
             capture_output=True, text=True,
         )
