@@ -519,8 +519,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **The last five modules with dense prose are cut to what they have to say** (F231f).
   The tail of the audit: `config`, `restore`, `detect`, `install` and `accel`, which
-  waves A–C and F231d had reached only in part. **1 557 → 1 380 lines of prose (−11%)**
-  — `config.py` 817 → 765, `restore.py` 300 → 248, `detect.py` 200 → 174, `install.py`
+  waves A–C and F231d had reached only in part. **1 557 → 1 382 lines of prose (−11%)**
+  — `config.py` 817 → 766, `restore.py` 300 → 248, `detect.py` 200 → 175, `install.py`
   109 → 91, `accel.py` 131 → 102, and `tests/prose_budgets.txt` carries the new numbers
   so none of them can grow back without a diff that says why. Every measurement stayed
   where it was: the 320-frame pet cutoffs and the 500-frame detector rows, the two blur
