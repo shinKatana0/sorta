@@ -52,7 +52,7 @@ from unittest import mock
 
 import pytest
 
-from sorta import i18n, runlog, tray, ui
+from sorta import i18n, launcher, runlog, splash as splash_mod, tray, ui
 from sorta.ui.common import _StartupState
 
 from tests.test_ui import UiServerTestBase
@@ -291,7 +291,7 @@ class TestTheSurplusLaunchLeavesImmediately(unittest.TestCase):
     def main_against_our_own_server(self, *extra: str) -> tuple:
         with mock.patch.object(tray, "port_holder",
                                return_value=tray.PORT_OURS) as holder, \
-             mock.patch.object(tray, "open_splash") as splash, \
+             mock.patch.object(splash_mod, "open_splash") as splash, \
              mock.patch.object(tray, "connect") as index, \
              mock.patch.object(tray.webbrowser, "open") as opened:
             code = tray.main(["--config", str(self.config), "--port", "8756", *extra])
@@ -347,11 +347,16 @@ class TestTheWindowComesFirst(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def launch(self, *extra: str) -> tuple[list[str], mock.Mock]:
-        """`main` with everything after the port question replaced by a note of order."""
+        """`launcher.main` with everything it calls replaced by a note of order.
+
+        The window opens in `sorta.launcher` and not in `sorta.tray`: importing the tray
+        pulls `sorta.ui`, 3.59 s on the payload interpreter with a warm cache, and a
+        window opened after that cannot be on the screen during it.
+        """
         order: list[str] = []
         splash = mock.Mock(name="splash")
 
-        def opened(lang):
+        def opened(lang=None):
             order.append("splash")
             return splash
 
@@ -364,11 +369,12 @@ class TestTheWindowComesFirst(unittest.TestCase):
             self.started = kwargs
             return 0
 
-        with mock.patch.object(tray, "port_holder", return_value=tray.PORT_FREE), \
-             mock.patch.object(tray, "open_splash", side_effect=opened), \
+        with mock.patch.object(splash_mod, "open_splash", side_effect=opened), \
+             mock.patch.object(tray, "port_holder", return_value=tray.PORT_FREE), \
              mock.patch.object(tray, "connect", side_effect=index), \
              mock.patch.object(tray, "start", side_effect=start):
-            self.code = tray.main(["--config", str(self.config), "--port", "0", *extra])
+            self.code = launcher.main(["--config", str(self.config), "--port", "0",
+                                       *extra])
         return order, splash
 
     def test_the_window_is_up_before_the_index_and_before_the_server(self):
@@ -385,13 +391,30 @@ class TestTheWindowComesFirst(unittest.TestCase):
         self.assertEqual(order, ["database", "start"])
         self.assertIsNone(self.started["splash"])
 
+    def test_the_launcher_reaches_nothing_heavy_before_the_window(self):
+        """Asked of the source rather than of a clock: the module-level imports of
+        `sorta/launcher.py` are stdlib, and the program is reached inside `main`."""
+        import ast
+
+        tree = ast.parse((_ROOT / "sorta" / "launcher.py").read_text(encoding="utf-8"))
+        top_level = [node for node in tree.body
+                     if isinstance(node, (ast.Import, ast.ImportFrom))]
+        for node in top_level:
+            names = ([alias.name for alias in node.names]
+                     if isinstance(node, ast.Import) else [node.module or ""])
+            for name in names:
+                with self.subTest(imported=name):
+                    self.assertNotIn("tray", name)
+                    self.assertNotIn("ui", name.split("."))
+                    self.assertFalse(isinstance(node, ast.ImportFrom) and node.level)
+
     def test_the_window_names_the_product_and_says_it_is_starting(self):
         """One line, in the language the config asked for, and the product name above it.
         A window that said nothing would be indistinguishable from a hung program."""
         for lang in _LANGS:
-            with self.subTest(lang=lang), mock.patch.object(tray.subprocess,
+            with self.subTest(lang=lang), mock.patch.object(splash_mod.subprocess,
                                                             "Popen") as popen:
-                handle = tray.open_splash(lang)
+                handle = splash_mod.open_splash(lang)
             argv = popen.call_args.args[0]
             self.assertEqual(argv[:2], [sys.executable, "-c"])
             self.assertEqual(argv[3], "Sorta")
@@ -402,22 +425,22 @@ class TestTheWindowComesFirst(unittest.TestCase):
         """No tkinter, no display, no permission to spawn — the same rule as the tray
         icon: the absence of a screen is a property of somebody's desktop, never a reason
         not to start."""
-        with mock.patch.object(tray.subprocess, "Popen",
+        with mock.patch.object(splash_mod.subprocess, "Popen",
                                side_effect=OSError("no display")):
-            self.assertIsNone(tray.open_splash("en"))
+            self.assertIsNone(splash_mod.open_splash("en"))
 
     def test_the_window_script_is_a_program_and_not_a_string(self):
         """It runs in another interpreter, so a syntax error in it would first be seen on
         somebody's desktop. Compiling it here is the cheapest way that cannot happen."""
-        compile(tray._SPLASH_SCRIPT, "<splash>", "exec")
+        compile(splash_mod._SPLASH_SCRIPT, "<splash>", "exec")
         for needle in ("tkinter", "Progressbar", "indeterminate", "stdin", "mainloop"):
             with self.subTest(needle=needle):
-                self.assertIn(needle, tray._SPLASH_SCRIPT)
+                self.assertIn(needle, splash_mod._SPLASH_SCRIPT)
 
     def test_the_window_is_told_to_close_itself_before_it_is_ended(self):
         """EOF on its stdin first, because that is the only shutdown tkinter likes."""
         process = _FakeSplashProcess()
-        splash = tray._Splash(process)
+        splash = splash_mod._Splash(process)
         splash.close()
         self.assertTrue(process.stdin.closed)
         self.assertEqual(process.terminated, 0)
@@ -425,21 +448,21 @@ class TestTheWindowComesFirst(unittest.TestCase):
 
     def test_a_window_that_will_not_go_is_ended(self):
         process = _FakeSplashProcess(wait_times_out=True)
-        tray._Splash(process).close()
+        splash_mod._Splash(process).close()
         self.assertEqual(process.terminated, 1)
 
     def test_closing_twice_is_closing_once(self):
         """`start` closes it when the tab opens and again in its `finally`; a second close
         must not wait another three seconds for a process that has long gone."""
         process = _FakeSplashProcess()
-        splash = tray._Splash(process)
+        splash = splash_mod._Splash(process)
         splash.close()
         splash.close()
         self.assertEqual(process.waits, 1)
 
     def test_a_window_that_is_already_gone_is_not_an_error(self):
         process = _FakeSplashProcess(stdin_raises=True, wait_raises=True)
-        tray._Splash(process).close()  # must not raise
+        splash_mod._Splash(process).close()  # must not raise
         self.assertEqual(process.terminated, 0)
 
 

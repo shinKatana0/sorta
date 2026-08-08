@@ -262,6 +262,23 @@ class TestASkippedStageWhoseSettingsAreInTheFile(unittest.TestCase):
                 self.assertEqual(skipped_stage_notes(self.config(raw),
                                                      ["landmarks"], "en"), [])
 
+    def test_a_setting_left_at_its_default_is_not_a_decision(self):
+        """A key at the value the product shipped is documentation, not intent."""
+        cfg = self.config({"naming": {"landmark_threshold": 0.85},
+                           "features": {"landmarks_verify": False}})
+        self.assertEqual(configured_settings_of(cfg, "landmarks"), ())
+        self.assertEqual(skipped_stage_notes(cfg, ["landmarks"], "en"), [])
+
+    def test_the_shipped_example_config_says_nothing_on_a_fresh_install(self):
+        """The installer writes config.yaml from config.example.yaml, and that file
+        spells every key out — so until 2026-08-08 every fresh install met this note on
+        every run, about settings its owner had never touched."""
+        from sorta.config import load_config
+
+        cfg = load_config("config.example.yaml")
+        self.assertEqual(configured_settings_of(cfg, "landmarks"), ())
+        self.assertEqual(skipped_stage_notes(cfg, ["landmarks"], "en"), [])
+
     def test_a_stage_that_runs_says_nothing_however_configured_it_is(self):
         """The note is about what was SKIPPED — the caller passes the skipped ones, and
         a run with the stage on passes none."""

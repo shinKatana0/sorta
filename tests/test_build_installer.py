@@ -352,10 +352,19 @@ class TestTheShortcutsAndTheAbsences(unittest.TestCase):
     def test_the_shortcut_starts_the_tray_without_a_console(self):
         entry = iss_entry("Icons", "{group}\\{#AppName}\"")
         self.assertIn("pythonw.exe", entry)
-        self.assertIn("-m sorta.tray", entry)
+        # `sorta.launcher` and not `sorta.tray`: importing the tray costs 3.59 s of
+        # `sorta.ui` before its first line runs, and the starting window has to be on the
+        # screen by then.
+        self.assertIn("-m sorta.launcher", entry)
+        self.assertNotIn("-m sorta.tray", entry)
         # The working directory is where config.yaml and the index live: the program
         # reads `config.yaml` from the current directory.
         self.assertIn('WorkingDir: "{userappdata}\\sorta"', entry)
+
+    def test_the_start_menu_offers_a_way_to_uninstall(self):
+        """Inno writes the uninstaller into the install directory, where nobody looks."""
+        entry = iss_entry("Icons", "Uninstall {#AppName}")
+        self.assertIn("{uninstallexe}", entry)
 
     def test_the_wizard_runs_once_at_the_end_of_the_installation(self):
         entry = iss_entry("Run", "sorta.wizard")

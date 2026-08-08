@@ -1234,9 +1234,11 @@ class Config:
 class StageSettings:
     """One stage, the config keys that belong to it, and how it is switched on.
 
-    `keys` are `section.key` paths read against the RAW YAML: what matters is whether the
-    person wrote them down, not what they evaluate to — a threshold set by hand to its own
-    default is still evidence that somebody was using this stage.
+    `keys` are `section.key` paths, read against the raw YAML and compared with the
+    defaults: what counts is a value somebody CHOSE. Presence alone used to count, and
+    the installer writes config.yaml from the shipped example, which spells every key
+    out — so a fresh install printed the note on every run, about settings nobody had
+    touched.
     """
 
     stage: str
@@ -1259,12 +1261,28 @@ STAGE_SETTINGS: tuple[StageSettings, ...] = (
 STAGE_SETTINGS_BY_STAGE: dict[str, StageSettings] = {
     entry.stage: entry for entry in STAGE_SETTINGS}
 
+# A config nobody edited, built once: the yardstick for "did somebody choose this value".
+_DEFAULT_CONFIG = Config()
+# A key with no default at all (a section this Config does not carry) counts as chosen —
+# the safe direction: a note too many is read, a note missing is not.
+_NO_DEFAULT = object()
+
+
+def _default_setting(path: str):
+    """What that `section.key` is worth in a config nobody edited."""
+    section, _, key = path.partition(".")
+    return getattr(getattr(_DEFAULT_CONFIG, section, None), key, _NO_DEFAULT)
+
 
 def configured_settings_of(cfg: Config, stage: str) -> tuple[str, ...]:
-    """Which of that stage's settings this config file actually spells out.
+    """Which of that stage's settings this person actually chose.
 
     Empty for a stage nobody has configured, and that half matters as much: a line printed
-    on every run is learned and then not read on the single run it was written for.
+    on every run is learned and then not read on the single run it was written for. Which
+    is what happened until 2026-08-08 — the test was "is the key in the file", and the
+    installer writes the file from an example that spells every key out, so every fresh
+    install got the note on every run. A value equal to the default is documentation the
+    product shipped, not a decision somebody made.
     """
     entry = STAGE_SETTINGS_BY_STAGE.get(stage)
     if entry is None:
@@ -1276,7 +1294,10 @@ def configured_settings_of(cfg: Config, stage: str) -> tuple[str, ...]:
     for path in entry.keys:
         section, _, key = path.partition(".")
         values = raw.get(section)
-        if isinstance(values, dict) and key in values:
+        if not isinstance(values, dict) or key not in values:
+            continue
+        default = _default_setting(path)
+        if default is _NO_DEFAULT or values[key] != default:
             found.append(path)
     return tuple(found)
 

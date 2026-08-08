@@ -99,11 +99,16 @@ Source: "{#PayloadDir}\config.example.yaml"; DestDir: "{userappdata}\sorta"; Des
 [Icons]
 ; The one a person clicks: pythonw.exe, so the web app opens with a tray icon and no
 ; console window anywhere behind it (which is what F207 was for).
-Name: "{group}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m sorta.tray"; WorkingDir: "{userappdata}\sorta"; IconFilename: "{app}\favicon.ico"
+Name: "{group}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m sorta.launcher"; WorkingDir: "{userappdata}\sorta"; IconFilename: "{app}\favicon.ico"
 ; ...and the way a refused tier gets added later. A console this time: the wizard is a
 ; conversation. `-X utf8` because its catalog is Russian, English and Japanese and a
 ; Windows console still runs on a legacy code page unless it is told otherwise.
 Name: "{group}\{#AppName} setup"; Filename: "{app}\python\python.exe"; Parameters: "-X utf8 -m sorta.wizard"; WorkingDir: "{userappdata}\sorta"; IconFilename: "{app}\favicon.ico"
+; ...and the way out. Inno writes the uninstaller as unins000.exe inside the install
+; directory, where nobody looks: removing a program that has a Start-menu folder otherwise
+; means opening Settings and searching a list. Same executable, named by what it does, and
+; it opens the uninstall page with the two questions (F224).
+Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\favicon.ico"
 
 [Run]
 ; The first-run wizard, once, at the end of the installation. `skipifsilent` because a

@@ -39,7 +39,6 @@ import io
 import json
 import logging
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -51,7 +50,8 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from . import i18n, launch, ui
+from . import i18n, ui
+from .splash import _Splash
 from .config import configure_logging, load_config
 from .db import connect
 from .diagnostics import warn_if_geo_data_missing, warn_if_gpu_mismatch
@@ -124,48 +124,6 @@ QUIT_QUESTION_FALLBACK = "cli.tray.quit_running"
 #    lines into the log and their steps into `ui.startup_state()`, which is what the
 #    waiting screen in the tab reads while it waits.
 #
-# The name and the line the window shows. `_SPLASH_NAME` is the product, not a translated
-# caption: it is the same word the tray tooltip, the page and the shortcut carry.
-_SPLASH_NAME = "Sorta"
-# How long to wait for the window to take the hint and close itself before ending it.
-# Short on purpose — the tab is already open by then, and nothing is lost by killing a
-# window that is about to be redundant.
-_SPLASH_CLOSE_TIMEOUT_S = 3.0
-# The window itself, in a process that has nothing else to do. Deliberately tiny and
-# import-light: `tkinter` plus `ttk` for the bar, no sorta module at all, so it draws
-# while THIS process is still importing whatever it imports.
-#
-# The bar is indeterminate because there is no honest percentage to show — see the note in
-# `ui/common.py`. It closes on EOF of its own stdin, which is how it goes away if the
-# program that opened it dies without asking.
-_SPLASH_SCRIPT = (
-    "import sys, threading, tkinter\n"
-    "from tkinter import ttk\n"
-    "root = tkinter.Tk()\n"
-    "root.title(sys.argv[1])\n"
-    "root.resizable(False, False)\n"
-    "frame = ttk.Frame(root, padding=28)\n"
-    "frame.pack()\n"
-    "ttk.Label(frame, text=sys.argv[1], font=('', 18, 'bold')).pack()\n"
-    "ttk.Label(frame, text=sys.argv[2]).pack(pady=(10, 14))\n"
-    "bar = ttk.Progressbar(frame, mode='indeterminate', length=280)\n"
-    "bar.pack()\n"
-    "bar.start(12)\n"
-    "def watch():\n"
-    "    try:\n"
-    "        sys.stdin.readline()\n"
-    "    except Exception:\n"
-    "        pass\n"
-    "    root.after(0, root.destroy)\n"
-    "threading.Thread(target=watch, daemon=True).start()\n"
-    "try:\n"
-    "    root.attributes('-topmost', True)\n"
-    "    root.eval('tk::PlaceWindow . center')\n"
-    "except Exception:\n"
-    "    pass\n"
-    "root.mainloop()\n"
-)
-
 # The log line of one launch step. `runlog`'s shape (one line, INFO, key=value) so that a
 # launch is greppable the way a run already is — and deliberately `startup step=` rather
 # than `stage=`, because `runlog.read_measurements` reads `stage=<name> elapsed=` as a
@@ -308,64 +266,6 @@ def _say(text: str, *, error: bool = False) -> None:
 # --- F227 requirement 3: something on the screen before anything is measured ---------
 
 
-class _Splash:
-    """The "Sorta is starting" window — a handle on the process that draws it."""
-
-    def __init__(self, process: subprocess.Popen) -> None:
-        self._process = process
-        self._closed = False
-
-    def close(self) -> None:
-        """Take the window away. Idempotent, and never raises at the caller.
-
-        EOF on its stdin first, because that asks the window to destroy ITSELF, which is
-        the only way tkinter likes to be shut down; `terminate` is the second line, for a
-        child that cannot read its stdin (a launcher that left it closed) or is wedged.
-        """
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            if self._process.stdin is not None:
-                self._process.stdin.close()
-        except OSError:
-            pass
-        try:
-            self._process.wait(timeout=_SPLASH_CLOSE_TIMEOUT_S)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        except OSError:  # the child is already gone
-            return
-        try:
-            self._process.terminate()
-        except OSError:
-            pass
-
-
-def open_splash(lang: i18n.Lang) -> _Splash | None:
-    """Put a window on the screen now, and return the handle that closes it.
-
-    None means there is no window and the launch carries on exactly as it did before: a
-    machine without tkinter, without a display or without a window manager is a machine
-    where nobody can be shown anything, and that is never a reason not to start. tkinter
-    is in the installer payload, so on the machine this feature is for there is one.
-
-    `hide_window=True` and not the plain helper: F228 hides a child's console only when
-    THIS process has none, which is right for `uv` in a terminal somebody is reading and
-    wrong here — both streams of the splash go to DEVNULL, so its console could only ever
-    be an empty rectangle beside the window it belongs to.
-    """
-    try:
-        process = launch.popen(
-            [sys.executable, "-c", _SPLASH_SCRIPT, _SPLASH_NAME,
-             i18n.cli_text("cli.tray.starting", lang)],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, hide_window=True)
-    except Exception as exc:  # no interpreter to spawn, no permission, no tkinter
-        _LOG.warning("tray: could not show the starting window (%s)", exc)
-        return None
-    return _Splash(process)
 
 
 # --- F227 requirements 1 and 5: the steps, in order, with their durations -------------
@@ -731,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, splash: "_Splash | None" = None) -> int:
     """The `sorta-tray` entry point. Everything `sorta ui` does at start-up, plus a
     picture in the tray.
 
@@ -761,8 +661,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         holder = port_holder(args.port)
     if holder != PORT_FREE:
         state.ready()  # this process is not launching anything; the other one already did
+        if splash is not None:
+            splash.close()
         return _busy_port(args.port, lang, holder, open_browser=not args.no_browser)
-    splash = None if args.no_splash else open_splash(lang)
     try:
         with _startup_step(ui.STARTUP_DATABASE):
             conn = connect(cfg.database)
