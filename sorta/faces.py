@@ -13,16 +13,13 @@ cluster_state (F212 — the one row saying what the current clusters are an answ
 Thresholds come from the config.yaml `faces:` section (typed, cfg.faces);
 the defaults are the tuned Immich values.
 
-F165: and it does not look for faces where the classifier has already said there is
-nothing to look at. The `classify` stage runs before this one now (see junk.classify's
-`verdicts_only`), so a screenshot, a document, a meme or a product carries its verdict
-before the detector is asked about it — 4 300 frames of 24 195 on the reference
-collection, at 77 ms each. The rule is `media_class.verdict = 'photo'` OR no row at all:
-NULL means nobody has classified this frame, not "not a photograph", so a collection whose
-owner runs `sorta faces` alone is detected in full exactly as before. A frame that becomes
-a photograph later (the deep tier reclassifies 2 592 of 24 196 on the reference run) has no
-`faces` row, so the ordinary incrementality of this stage picks it up on the next run — the
-economy must not be able to turn into lost faces.
+F165: the detector is not asked about frames the classifier has already ruled out — the
+`classify` stage runs before this one, and skipping them saves 4 300 frames of 24 195 on
+the reference collection at 77 ms each. The rule is `media_class.verdict = 'photo'` OR no
+row at all: NULL means nobody has classified this frame, so a collection whose owner runs
+`sorta faces` alone is detected in full as before. A frame that becomes a photograph later
+(the deep tier reclassifies 2 592 of 24 196) has no `faces` row, so the ordinary
+incrementality of this stage picks it up — the economy must not turn into lost faces.
 """
 from __future__ import annotations
 
@@ -66,10 +63,9 @@ OnResult = Callable[["sqlite3.Row", "list[FaceHit] | None"], None]
 Pipeline = Callable[["list[sqlite3.Row]", Decode, OnResult], None]
 
 
-# F88: the detector's input side, in px. buffalo_l's det_10g is trained at 640, and
-# that is the only value worth running: it is the native size and it costs 16.5 ms/frame
-# against 13.4 at 512 — 3 ms that buy back the small faces 512 loses (−9% on the
-# measurement). Lowering it is a "trade recall for weak hardware" knob, not a speed knob.
+# F88: the detector's input side, in px — buffalo_l's det_10g is trained at 640, and it
+# costs 16.5 ms/frame against 13.4 at 512, for the small faces 512 loses (−9%). Lowering
+# it trades recall for weak hardware; it is not a speed knob.
 DET_SIZE_DEFAULT = 640
 
 
@@ -86,9 +82,8 @@ class FacesSettings:
 def _det_size(cfg: Config) -> int:
     """`faces.det_size` — the detector input side; DET_SIZE_DEFAULT when unset or bad.
 
-    A garbage value must not take down a run that has already spent an hour on the
-    collection, so anything that is not a positive number falls back to the default
-    with a warning instead of raising inside a worker thread.
+    A garbage value falls back with a warning rather than raising inside a worker thread:
+    it must not take down a run that has already spent an hour on the collection.
     """
     raw = (cfg.raw.get("faces") or {}).get("det_size")
     if raw is None:
@@ -133,9 +128,8 @@ class ClusterStats:
     noise: int = 0
     labels_kept: int = 0      # clusters that inherited a label on recomputation
     malformed: int = 0        # embeddings of the wrong length — excluded, cluster_id=NULL
-    # F212: the clusters were left as they were, because nothing that decides them had
-    # moved. The numbers above then describe the clusters ALREADY in the base rather than
-    # ones this run produced — see _stored_cluster_stats.
+    # F212: nothing that decides the clusters had moved, so they were left alone and the
+    # numbers above describe what is ALREADY in the base — see _stored_cluster_stats.
     skipped: bool = False
 
 
@@ -156,12 +150,11 @@ def _apply_orientation(img: np.ndarray, orientation: int | None) -> np.ndarray:
 
 
 def _enable_cuda_dll_dirs() -> None:  # pragma: no cover — Windows-specific
-    """CUDA/cuDNN are installed as pip wheels (the nvidia-* packages), not a system Toolkit.
+    """CUDA/cuDNN come as pip wheels (the nvidia-* packages), not a system Toolkit.
 
-    onnxruntime resolves provider-DLL dependencies via the classic PATH search, and
-    its preload_dlls() (1.27) does not know the new nvidia/cu13 layout — so we add
-    the DLL directories to the process PATH ourselves. Without them ORT silently
-    falls back to CPUExecutionProvider.
+    onnxruntime resolves provider-DLL dependencies through the classic PATH search, and
+    its preload_dlls() (1.27) does not know the nvidia/cu13 layout — without these
+    directories on PATH, ORT silently falls back to CPUExecutionProvider.
     """
     if sys.platform != "win32":
         return
@@ -176,12 +169,11 @@ def _enable_cuda_dll_dirs() -> None:  # pragma: no cover — Windows-specific
 
 
 def _read_image_bgr(path: str) -> np.ndarray:
-    """Decode an image into a BGR array for insightface.
+    """Decode an image into a BGR array for insightface. ValueError if nothing can.
 
-    cv2.imdecode cannot handle HEIC/HEIF (the typical iPhone format) — on such files
-    it returns None; then a fallback to Pillow + pillow-heif (the plugin is
-    registered globally). cv2.imread does not take non-ASCII paths on Windows, so we
-    read the bytes ourselves. ValueError if nothing could decode it.
+    cv2.imdecode returns None on HEIC/HEIF (the typical iPhone format), hence the Pillow +
+    pillow-heif fallback. The bytes are read here rather than by cv2.imread, which does
+    not take non-ASCII paths on Windows.
     """
     import cv2
 
@@ -210,49 +202,39 @@ def _decode_for_faces(path: str, orientation: int | None) -> np.ndarray:
     return _apply_orientation(_read_image_bgr(path), orientation)
 
 
-# F91: the two passes, and why the second one detects AGAIN instead of reusing the
-# boxes of the first.
+# F91: the two passes, and why the second one detects AGAIN instead of reusing the boxes
+# of the first.
 #
 # The step was decode-bound (16.6 frames/s with the GPU at 3-10%): every frame was
-# decompressed at full resolution, and 69% of them had no face at all. Detection does
-# not need those pixels — insightface downscales its input to det_size=640 whatever it
-# is given, so a 4000 px original and a 1536 px preview reach the network as the very
-# same 640 px frame. The crop DOES need them: ArcFace embeds the face out of the
-# original, and that is what must not change.
+# decompressed at full resolution and 69% of them had no face at all. Detection does not
+# need those pixels — insightface downscales its input to det_size=640 whatever it is
+# given, so a 4000 px original and a 1536 px preview reach the network as the same 640 px
+# frame. The crop DOES need them: ArcFace embeds the face out of the original.
 #
-# The brief proposed scaling the preview's boxes into original coordinates and feeding
-# them to recognition directly. That saves one detection pass (16.5 ms on the 31% of
-# frames that have a face, on a card sitting at 3-10%) at the price of splitting
-# `app.get` into `det_model.detect` + a hand-built alignment — and if that alignment
-# ever takes coordinates from the wrong space, the embeddings drift silently and the
-# clusters rot weeks later. The brief's own acceptance criterion is equivalence, not
-# speed, and there is no insightface/GPU in this environment to prove it on. So the
-# preview is used strictly as a GATE: "is there anything here to crop?". A frame that
-# passes it goes through the unchanged `app.get(original)`, which makes the written
-# embeddings identical to the previous behaviour by construction rather than by
-# measurement. The saved decode — the whole point — is untouched: the 69% still never
-# reach a full decode.
+# REJECTED: scaling the preview's boxes into original coordinates and handing them to
+# recognition. It saves one detection pass (16.5 ms on the 31% of frames that have a face)
+# at the price of splitting `app.get` into `det_model.detect` plus a hand-built alignment —
+# and an alignment that ever takes coordinates from the wrong space makes the embeddings
+# drift silently and the clusters rot weeks later. There is no insightface/GPU in this
+# environment to prove equivalence on. So the preview is strictly a GATE ("is there
+# anything here to crop?"), a frame that passes it goes through the unchanged
+# `app.get(original)`, and the saved decode is untouched: the 69% never reach a full one.
 #
-# What is left to verify on real data is the gate's recall (the brief's "no more than
-# 2% difference in the number of faces found"): only frames where the preview sees
-# nothing and the original would have seen something are lost. `sorta faces --rescan`
-# before and after answers it.
+# Unverified on real data: the gate's recall. Only frames where the preview sees nothing
+# and the original would have seen something are lost; `sorta faces --rescan` before and
+# after answers it.
 
 def _decode_preview_for_faces(path: str, orientation: int | None) -> np.ndarray | None:
     """F91: a ~1536 px BGR frame for the detection GATE, or None if there is no cheap one.
 
-    The frame comes from the shared preview cache (F67): warm it is a read of a small
-    JPEG, cold it is a draft decode of the original (a DCT downscale, ~46 ms against
-    ~1000 ms for the full frame on a 13 MP camera JPEG) that also fills the cache for
-    the other stages. With the cache switched off `decode_rgb_preview` still decodes
-    to the requested size and merely writes nothing — the win is in decoding SMALL,
-    the cache only saves repeated touches.
+    The frame comes from the shared preview cache (F67): warm a read of a small JPEG, cold
+    a draft decode of the original (a DCT downscale, ~46 ms against ~1000 ms for the full
+    frame on a 13 MP camera JPEG) that also fills the cache for other stages. With the
+    cache off this still decodes SMALL and merely writes nothing — that is where the win is.
 
-    None means "no cheap frame here" and the caller must go the old way, silently:
-    an unreadable/undecodable source, or a frame that came back no smaller than the
-    preview size (a picture below 1536 px — a downscale that saves nothing). mtime and
-    size for the cache key come from a local stat, microseconds against the decode, so
-    that this keeps the (path, orientation) signature the decode pool works with.
+    None means "no cheap frame here" (an unreadable source, or a frame no smaller than the
+    preview) and the caller goes the old way silently. mtime and size come from a local
+    stat, which keeps the (path, orientation) signature the decode pool works with.
     """
     edge = imaging.preview_max_edge()
     try:
@@ -262,22 +244,19 @@ def _decode_preview_for_faces(path: str, orientation: int | None) -> np.ndarray 
     img = imaging.decode_rgb_preview(path, st.st_mtime, st.st_size, max_edge=edge)
     if img is None or max(img.size) < edge:
         return None
-    # PIL gives RGB, insightface wants BGR and a contiguous buffer (the reversed
-    # view is neither). Orientation is applied from the INDEX, exactly as on the full
-    # path — the preview is stored unrotated, as the source is.
+    # PIL gives RGB, insightface wants BGR and a contiguous buffer (the reversed view is
+    # neither). The preview is stored unrotated, as the source is, so orientation is
+    # applied from the INDEX exactly as on the full path.
     return _apply_orientation(np.ascontiguousarray(np.asarray(img)[:, :, ::-1]), orientation)
 
 
 class _GateDecoder:
     """The decode of the gate pass: a preview when there is one, the original otherwise.
 
-    Which of the two a frame got decides how its hits are read — a preview only
-    answers "is there anything to crop here", an original answers with the faces
-    themselves — and that answer is needed on the main thread while the decode runs in
-    the pool. Hence the set of paths rather than a second return value: the decode
-    callable of `_prefetch_decode` is (path, orientation) -> frame, one signature
-    shared with the plain full-resolution path, and files.path is UNIQUE, so it
-    identifies the row.
+    Which of the two a frame got decides how its hits are read, and that answer is needed
+    on the main thread while the decode runs in the pool. Hence a set of paths rather than
+    a second return value: the decode callable is (path, orientation) -> frame, one
+    signature shared with the full-resolution path, and files.path is UNIQUE.
     """
 
     def __init__(self) -> None:
@@ -304,9 +283,8 @@ class _GateDecoder:
 def _decode_workers(cfg: Config) -> int:
     """Threads that decode frames — the same knob on both paths since F87.
 
-    Until F87 the parallel path decoded inside its inference workers and never read
-    this setting, so tuning it did nothing on a GPU machine; now it sizes the decode
-    pool that feeds the sessions as well.
+    Before F87 the parallel path decoded inside its inference workers and never read this
+    setting, so tuning it did nothing on a GPU machine.
     """
     n = (cfg.raw.get("faces") or {}).get("decode_workers")
     if n:
@@ -317,15 +295,11 @@ def _decode_workers(cfg: Config) -> int:
 def _infer_workers(cfg: Config) -> int:
     """How many independent inference sessions run in parallel (F12.1).
 
-    faces is inference-bound, not decode-bound: `app.get` takes ~256 ms/frame at ~6%
-    GPU load, while the decode pool feeds it ~9× faster. The lever is several
-    independent FaceAnalysis sessions — measured ×3.17 on 4 sessions, ~0.6 GB VRAM
-    each. On a CPU-only profile parallel sessions merely oversubscribe the cores,
-    so the auto default there is 1 (and the pipeline keeps the prefetch-decode pool).
-
-    F214 moved the "is CUDA there" question into `accel` with the rest of the device
-    choice. A CoreML machine keeps the single-session default: how many Metal sessions
-    a Mac wants is a measurement nobody has made, and this feature does not guess.
+    faces is inference-bound, not decode-bound: `app.get` takes ~256 ms/frame at ~6% GPU
+    load while the decode pool feeds it ~9× faster. Measured ×3.17 on 4 sessions, ~0.6 GB
+    VRAM each. CPU-only and CoreML machines keep the single-session default — there the
+    sessions merely oversubscribe the cores, and how many Metal ones a Mac wants is a
+    measurement nobody has made.
     """
     n = (cfg.raw.get("faces") or {}).get("infer_workers")
     if n:
@@ -343,27 +317,19 @@ def _detect_parallel(
 ) -> None:
     """Decode pool feeding `workers` inference sessions; results on the caller's thread.
 
-    F87: decode and inference used to be one unit of work per thread — while a worker
-    read a 40 MB RAW its own GPU session sat idle, and on a real run the card stayed
-    at 2-5% load. They are decoupled here into the shape F64 gave CLIP:
-    `decode_workers` threads decode (the ready `_prefetch_decode` pool, so there is
-    one such pool in the file, not two) and `workers` sessions do nothing but infer.
-    Measured ×1.57 on 4 sessions (8.14 → 12.78 img/s, 500 real frames, RTX 5090
-    Laptop) with the same 300 faces found and no extra VRAM.
+    F87: decode and inference used to be one unit of work per thread — while a worker read
+    a 40 MB RAW its own GPU session sat idle, and the card stayed at 2-5% on a real run.
+    Decoupled here into the shape F64 gave CLIP, measured ×1.57 on 4 sessions (8.14 ->
+    12.78 img/s, 500 real frames, RTX 5090 Laptop), same 300 faces, no extra VRAM.
 
-    Every inference worker builds its OWN session on first use (thread-local): the
-    onnxruntime session is not thread-safe, independent sessions share no state and
-    run in parallel safely.
+    Every worker builds its OWN session on first use: an onnxruntime session is not
+    thread-safe. The in-flight window is bounded on BOTH sides (~2×decode_workers decoded,
+    ~2×workers waiting here), because an unbounded decode pool of full-res frames would
+    read the whole collection into memory.
 
-    The in-flight window is bounded on BOTH sides — full-res frames are heavy, and an
-    unbounded decode pool would simply read the whole collection into memory:
-    `_prefetch_decode` keeps at most ~2×decode_workers frames decoded, and at most
-    ~2×workers of them wait for a session here.
-
-    `on_result(row, hits)` is called strictly from this (the main) thread as frames
-    complete — hence writes to SQLite stay single-writer. hits=None means the frame
-    failed to decode or infer; it does not stop the rest. Input order is not
-    preserved (faces rows are independent).
+    `on_result(row, hits)` is called strictly from this thread, which keeps SQLite
+    single-writer. hits=None means the frame failed and does not stop the rest; input order
+    is not preserved.
     """
     from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
@@ -413,10 +379,9 @@ def _prefetch_decode(
 ) -> Iterator[tuple[sqlite3.Row, np.ndarray | None, Exception | None]]:
     """Decode frames in a thread pool with a bounded window (~2×max_workers in flight).
 
-    Yields (row, image, error) as decoding completes — input order is not preserved
-    (faces rows are independent, which is fine). No inference happens here: the
-    caller decides where the frame is inferred — on its own thread (the 1-session
-    path) or in the session pool of `_detect_parallel` (F87).
+    Yields (row, image, error) as decoding completes; input order is not preserved. No
+    inference happens here — the caller decides where the frame is inferred, on its own
+    thread or in the session pool of `_detect_parallel` (F87).
     """
     from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
@@ -472,16 +437,11 @@ def _detect_serial(
 def _pipeline(factory: InferFactory, workers: int, decode_workers: int) -> Pipeline:
     """The runner both passes of a run share: rows + a decode -> results on this thread.
 
-    `workers > 1` — the F87/F12.1 scheme (a decode pool feeding N independent
-    sessions); `workers == 1` (the CPU profile) — the same decode pool feeding a
-    single session on the calling thread, built here once so that the second pass of
-    the F91 gate does not load the model again.
-
-    On the parallel path every pass builds its own sessions: they are thread-local and
-    the pool's threads end with the pass. That is a few seconds of model load per run,
-    against the minutes the gate saves — sharing them would mean keeping one executor
-    alive across the passes, i.e. more machinery in `_detect_parallel` than the win
-    justifies.
+    `workers == 1` (the CPU profile) builds its single session HERE, once, so the second
+    pass of the F91 gate does not load the model again. On the parallel path every pass
+    builds its own thread-local sessions instead — a few seconds of model load per run
+    against the minutes the gate saves, where sharing would mean keeping one executor alive
+    across both passes.
     """
     if workers > 1:
         def parallel(rows: list[sqlite3.Row], decode: Decode, on_result: OnResult) -> None:
@@ -502,13 +462,10 @@ def _split_for_gate(
 ) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
     """(frames worth gating, frames that take the old path straight away) — F91.
 
-    The gate only pays off when the original is bigger than the preview: for a picture
-    that is already smaller the "preview" IS the frame, and the pass would be pure
-    overhead. The indexer's width/height answer that without touching the file; when
-    they are missing (an exotic format, a file indexed before those columns were
-    filled) the answer is unknown and the frame keeps the old path — the brief's third
-    fallback. A frame that slips through anyway (dimensions in the index disagreeing
-    with the file) is caught by _decode_preview_for_faces, which then returns None.
+    The gate only pays off when the original is bigger than the preview, which the indexer's
+    width/height answer without touching the file; a frame whose dimensions are missing
+    keeps the old path. One that slips through anyway is caught by
+    _decode_preview_for_faces returning None.
     """
     edge = imaging.preview_max_edge()
     gated: list[sqlite3.Row] = []
@@ -520,27 +477,22 @@ def _split_for_gate(
     return gated, direct
 
 
-# The pipeline uses only (bbox, det_score, embedding) — FaceHit — from a face.
-# buffalo_l loads 5 sub-models by default; landmark_2d_106/landmark_3d_68/
-# genderage would be computed on every face and immediately discarded. Recognition
-# aligns the input by the 5 kps from detection (det_10g), not by these models —
-# disabling them does not change the embeddings (see the smoke comparison, F47).
+# buffalo_l loads 5 sub-models by default, and the pipeline uses only FaceHit —
+# landmark_2d_106/landmark_3d_68/genderage would be computed per face and discarded.
+# Recognition aligns by the 5 kps of det_10g, not by these, so disabling them does not
+# change the embeddings (verified by the F47 smoke comparison).
 _ALLOWED_MODULES = ["detection", "recognition"]
 
 
 def _insightface_infer(s: FacesSettings) -> Infer:  # pragma: no cover — ML, smoke test
-    """insightface buffalo_l: GPU (CUDA) with a CPU fallback.
+    """insightface buffalo_l: GPU (CUDA) with a CPU fallback. One session per worker.
 
-    An onnxruntime session is not thread-safe, so this is called once per inference
-    worker (F12.1): every thread gets its own FaceAnalysis, and nothing is shared
-    between them. The contract of the returned infer (bbox/score/embedding) is fixed.
-
-    F88: `det_size` is passed explicitly. Without it insightface 1.0.1 leaves the
-    detector in its two-pass mode (`set det-size: [(128, 128), (640, 640)]`) and runs
-    the network TWICE per frame; both passes cost the same ~78 ms even though the first
-    has 25× less to compute, because the price is in switching the input shape, not in
-    the arithmetic. Pinning one shape: 165.1 -> 16.5 ms/frame on 100 real frames, 57
-    faces against 56. The first call stays expensive (plans/kernels warm up) — expected.
+    F88: without an explicit `det_size` insightface 1.0.1 leaves the detector in its
+    two-pass mode (`set det-size: [(128, 128), (640, 640)]`) and runs the network TWICE per
+    frame; both passes cost the same ~78 ms even though the first has 25× less to compute,
+    because the price is in switching the input shape. Pinning one shape: 165.1 -> 16.5
+    ms/frame on 100 real frames, 57 faces against 56. The first call stays expensive
+    (plans/kernels warm up).
     """
     from insightface.app import FaceAnalysis
 
@@ -579,10 +531,9 @@ def _write_hits(
 ) -> None:
     """Write the faces of one file; `replace` drops its previous rows first (F89).
 
-    The delete lives INSIDE the per-file transaction on purpose: at every moment a
-    file either has its old faces or its new ones, never neither. Wiping the whole
-    table up front would be simpler, but a Ctrl+C halfway through a rescan of 24k
-    frames would then leave a collection with no faces at all.
+    The delete lives INSIDE the per-file transaction so that a file always has either its
+    old faces or its new ones. Wiping the whole table up front would be simpler, but a
+    Ctrl+C halfway through a rescan of 24k frames would leave a collection with no faces.
     """
     kept = [
         (bbox, score, emb) for bbox, score, emb in hits
@@ -616,15 +567,14 @@ def _write_hits(
 # and stills — a video has no faces row of its own.
 _CANONICAL = "dup_of IS NULL AND error IS NULL AND media_type = 'photo'"
 
-# F165: the verdict a personal photograph carries in `media_class` — the same string
-# `junk.QUALITY_VERDICT` holds, spelled here so that this module keeps its three imports
-# and does not pull the whole classification stage in for one stored value. The two are
-# pinned to each other by a test rather than by an import.
+# F165: the same string `junk.QUALITY_VERDICT` holds, spelled out rather than imported so
+# this module does not pull the whole classification stage in for one value. A test pins
+# the two to each other.
 _PHOTO_VERDICT = "photo"
 
-# F165: ...and the frames it lets through. NOT EXISTS rather than a join or `verdict = ?`,
-# because the frames with NO row have to pass: NULL means "nobody has classified this",
-# which is the state of every collection whose owner runs `sorta faces` on its own.
+# NOT EXISTS rather than a join or `verdict = ?`, because the frames with NO row have to
+# pass: NULL means "nobody has classified this", the state of every collection whose owner
+# runs `sorta faces` on its own.
 _CLASSIFIED_AS_PHOTO = (
     "NOT EXISTS (SELECT 1 FROM media_class mc"
     f" WHERE mc.file_id = files.id AND mc.verdict != '{_PHOTO_VERDICT}')"
@@ -637,19 +587,13 @@ _DETECT_COLUMNS = "id, path, orientation, width, height"
 def _files_to_detect(
     conn: sqlite3.Connection, rescan: bool, limit: int | None,
 ) -> list[sqlite3.Row]:
-    """The files this run detects on.
+    """The files this run detects on — all three narrowed by the F165 classification.
 
-    Default (F68): only files with no faces row at all — the "no faces" marker counts
-    as processed. `rescan` (F89) takes every canonical photo again, and with `limit`
-    only N of them, picked at random: a measurement run recomputes 500 frames and
-    leaves the other 24 thousand alone. Random rather than the first N by id, because
-    the head of the collection is one folder from one camera and would answer a
-    different question than "what does this step cost on my photos".
-
-    F165: every one of the three is narrowed by the classification (see the module
-    docstring), the rescan included — "re-detect everything" means the population of this
-    stage, and a screenshot has not been part of it since the `classify` stage started
-    running first.
+    Default (F68): only files with no faces row at all, the "no faces" marker counting as
+    processed. `rescan` (F89) takes every canonical photo again, and with `limit` only N of
+    them, picked at RANDOM rather than the first N by id: the head of a collection is one
+    folder from one camera and answers a different question than "what does this cost on my
+    photos".
     """
     if not rescan:
         return conn.execute(
@@ -681,36 +625,21 @@ def detect_faces(
     """Find faces in new canonical photos and write embeddings into faces.
 
     Incrementality: files that already have rows in faces (including the "no faces"
-    marker) are skipped. Files with a row-read error do not get one and will be
-    retried on the next run.
+    marker) are skipped. A file with a read error gets no row and is retried next run.
 
-    `rescan` (F89) turns that off: the selected files are detected again and their
-    old faces rows are replaced, one file per transaction. `limit` narrows a rescan
-    to N random files. A rescan gives every face a new id, so the cluster labels can
-    no longer be matched back by face — take `snapshot_clusters(conn)` BEFORE calling
-    this and hand it to `cluster_faces(inherit_from=...)`, which is exactly what
-    `detect_and_cluster(rescan=True)` does. Otherwise every name the user typed is
-    lost.
+    `rescan` (F89) detects the selected files again and replaces their old rows, one file
+    per transaction; `limit` narrows it to N random files. A rescan gives every face a NEW
+    id, so cluster labels can no longer be matched back by face — take
+    `snapshot_clusters(conn)` BEFORE calling this and hand it to
+    `cluster_faces(inherit_from=...)`, as `detect_and_cluster(rescan=True)` does, or every
+    name the user typed is lost.
 
-    The mock path (an `analyzer` passed, as in tests) is strictly serial, decode and
-    inference in one call, behaviour unchanged. The real path (analyzer=None) runs
-    `_infer_workers(cfg)` inference sessions in parallel, one per thread (F12.1), fed
-    by a pool of `_decode_workers(cfg)` decoding threads (F87); with a single worker
-    (the CPU profile) it keeps the previous pipeline — the same decode pool feeding
-    one session on this thread. `infer_factory` builds a session; in production it is
-    `_insightface_infer`, tests inject a fake one.
+    The mock path (an `analyzer` passed, as in tests) is strictly serial. The real path
+    runs `_infer_workers(cfg)` sessions in parallel (F12.1) fed by `_decode_workers(cfg)`
+    decoding threads (F87), and in TWO passes — a preview gate, then the originals it
+    promoted (see the F91 block comment above `_decode_preview_for_faces`).
 
-    F91: that real path runs in TWO passes. The first one looks for faces on a ~1536 px
-    preview (`_decode_preview_for_faces`) — the detector downscales its input to
-    det_size=640 anyway, so a full decode buys detection nothing — and 69% of a real
-    collection ends there, with the "no faces" marker written and the original never
-    read. Only the frames a face was found on are decoded in full, in the second pass,
-    and it is that ORIGINAL the faces written come from. Frames not worth gating
-    (`_split_for_gate`) and frames with no cheap preview join the second pass directly,
-    on exactly the old code path.
-
-    SQLite is written only from this thread in every case (single-writer), one
-    transaction per file; the order of faces rows does not matter.
+    SQLite is written only from this thread in every case, one transaction per file.
     """
     if limit is not None and not rescan:
         raise ValueError("limit имеет смысл только вместе с rescan")
@@ -758,8 +687,8 @@ def detect_faces(
             if hits and decoder.previewed(r["path"]):
                 promoted.append(r)  # a face is there — now the original is worth it
             else:
-                # nothing found (69% of a real collection), an undecodable frame, or
-                # a frame that fell back to a full decode — those hits ARE the answer
+                # Nothing found (69% of a real collection), an undecodable frame, or one
+                # that fell back to a full decode — there those hits ARE the answer.
                 on_result(r, hits)
 
         run(gated, decoder, on_gate)
@@ -771,30 +700,26 @@ def detect_faces(
 
 # --- Clustering ------------------------------------------------------------
 
-# F84: the phases `cluster_faces` reports. Stable identifiers, not captions — the
-# served UI localizes them (ui._UI_STRINGS), the CLI labels them for the rich bar
-# (cli._CLUSTER_PHASE_LABELS). CLUSTER is the only unmeasurable one: HDBSCAN is a
-# single blocking call, and a percent guessed from elapsed time would be a lie on any
-# collection that is not the one it was calibrated on.
+# F84: the phases `cluster_faces` reports. Stable identifiers, not captions — the served
+# UI localizes them (ui._UI_STRINGS), the CLI labels them (cli._CLUSTER_PHASE_LABELS).
+# CLUSTER is the only unmeasurable one: HDBSCAN is a single blocking call, and a percent
+# guessed from elapsed time would be a lie on any collection but the calibrated one.
 CLUSTER_PHASE_READ = "cluster_read"
 CLUSTER_PHASE_CLUSTER = "cluster_hdbscan"
 CLUSTER_PHASE_INHERIT = "cluster_inherit"
 CLUSTER_PHASE_WRITE = "cluster_write"
 
-# Rows between progress ticks on the measurable phases: on the reference run
-# (13 237 faces) that is ~66 updates — enough for a moving bar, not enough to spam
-# the lock behind the callback.
+# Rows between progress ticks on the measurable phases: on the reference run (13 237
+# faces) ~66 updates — enough for a moving bar, not enough to spam the callback's lock.
 _PROGRESS_EVERY = 200
 
 
 class _PhaseProgress:
     """Phase + `(done, total)` reporting for `cluster_faces` (F84).
 
-    `progress` is the ordinary stage callback; the phase channel is optional and
-    duck-typed — a callback that can show a caption exposes `phase(name)`
-    (progress.TaskProgress, ui._StageProgress), a bare `(done, total)` function simply
-    gets no phases. Without a callback at all every method is a no-op, so
-    `cluster_faces(cfg, conn)` behaves exactly as it did before.
+    The phase channel is optional and duck-typed: a callback that can show a caption
+    exposes `phase(name)`, a bare `(done, total)` function gets no phases, and without a
+    callback every method is a no-op.
     """
 
     def __init__(self, progress: ProgressCB | None) -> None:
@@ -818,9 +743,8 @@ class _PhaseProgress:
 def _read_face_rows(conn: sqlite3.Connection, report: _PhaseProgress) -> list[sqlite3.Row]:
     """The faces to cluster (embeddings + their current cluster), as a measurable phase.
 
-    The count is asked for separately so the bar has a total from the first tick;
-    rows are then pulled off the cursor instead of `fetchall()` — otherwise the whole
-    read is one silent call again.
+    The count is asked for separately so the bar has a total from the first tick; rows are
+    then pulled off the cursor instead of `fetchall()`, which would be one silent call.
     """
     total = conn.execute(
         "SELECT COUNT(*) FROM faces WHERE bbox != ?", (_NO_FACES_BBOX,)
@@ -840,17 +764,13 @@ def _read_face_rows(conn: sqlite3.Connection, report: _PhaseProgress) -> list[sq
 
 
 def _hdbscan_labels(x: np.ndarray, s: FacesSettings) -> np.ndarray:
-    """HDBSCAN over normalized vectors: euclidean on the unit sphere is monotonic
-    with cosine distance (d_e = sqrt(2*d_cos)) — hdbscan cannot do cosine directly.
-    The max_distance threshold is converted to epsilon on the same scale.
+    """HDBSCAN over normalized vectors, with max_distance converted to epsilon.
 
-    Small collections: hdbscan defaults min_samples to min_cluster_size and its
-    kd-tree then asks for k = min_samples + 1 neighbours; with fewer points than k
-    it raises ValueError and takes the whole faces phase down. Hence the guard
-    below — a single face cannot form a cluster anyway (min_cluster_size >= 2),
-    and for n >= 2 min_samples is capped at n - 1 so that k <= n. For a normal
-    collection (n > min_cluster_size) the cap is inactive and min_samples stays
-    equal to min_cluster_size, i.e. exactly the previous implicit default.
+    Euclidean and not cosine, which hdbscan cannot do directly: on the unit sphere the two
+    are monotonic (d_e = sqrt(2*d_cos)). On a SMALL collection hdbscan defaults min_samples
+    to min_cluster_size and its kd-tree asks for k = min_samples + 1 neighbours — with
+    fewer points than k it raises ValueError and takes the whole faces phase down, hence
+    the cap at n - 1 below (inactive for n > min_cluster_size).
     """
     import hdbscan
 
@@ -866,11 +786,10 @@ def _hdbscan_labels(x: np.ndarray, s: FacesSettings) -> np.ndarray:
         cluster_selection_epsilon=math.sqrt(2.0 * s.max_distance),
     ).fit_predict(x)
     if not (labels >= 0).any():
-        # Degenerate case: HDBSCAN does not return a single root cluster
-        # (e.g. all faces are one person), so we try again with
-        # allow_single_cluster. It cannot be combined with cluster_selection_epsilon
-        # (gives an empty result on any data), and in the general case it is
-        # dangerous — it glues different people together, so only as a fallback.
+        # HDBSCAN does not return a single root cluster (e.g. all faces are one person),
+        # so retry with allow_single_cluster. Only as a fallback: it glues different
+        # people together, and it cannot be combined with cluster_selection_epsilon
+        # (that pair returns an empty result on any data).
         labels = hdbscan.HDBSCAN(
             min_cluster_size=s.min_cluster_size,
             min_samples=min_samples,
@@ -893,16 +812,11 @@ def _root_of(merged_into: dict[int, int | None], cid: int) -> int:
 class ClusterSnapshot:
     """Which FILES each effective cluster held, and under what name (F89).
 
-    Labels normally survive a recomputation because a new cluster and its old
-    counterpart share face ids. A rescan deletes those rows and detects again, so
-    every id is new, every intersection is empty, and the names the user typed by
-    hand would disappear without a word. Files are the one identity that survives:
-    the snapshot is taken BEFORE the delete and inheritance is then computed in file
-    terms (`cluster_faces(inherit_from=...)`).
-
-    Chains are already resolved: `files` is keyed by the ROOT of the merged_into
-    chain, so a manually merged pair (F3) is one entry and inherits under the name
-    the user gave the pair.
+    Labels normally survive a recomputation because a new cluster and its old counterpart
+    share face ids; a rescan makes every id new, so the names the user typed would
+    disappear without a word. Files are the identity that survives. Chains are already
+    resolved — `files` is keyed by the ROOT of the merged_into chain, so a manually merged
+    pair (F3) is one entry under the name the user gave the pair.
     """
     labels: dict[int, str | None]   # cluster id -> its label (looked up by root)
     files: dict[int, set[int]]      # root cluster id -> the files its faces sat on
@@ -934,10 +848,9 @@ def _inherit_labels(
 ) -> dict[int, str | None]:
     """New cluster -> the label it inherits: biggest overlap with an old one, share > 50%.
 
-    The overlap is counted over identities that both sides can name: face ids on an
-    ordinary recomputation, file ids after a rescan (F89), where the face ids are all
-    new. A key can belong to several old clusters (one photo, two people), so a key
-    votes for each of them — at most once per cluster, which keeps the share below 1.
+    The overlap is counted over identities both sides can name: face ids normally, file ids
+    after a rescan (F89). A key can belong to several old clusters (one photo, two people),
+    so it votes for each — at most once per cluster, which keeps the share below 1.
     """
     inherited: dict[int, str | None] = {}
     for done, (lab, face_ids) in enumerate(groups.items(), 1):
@@ -956,52 +869,39 @@ def _inherit_labels(
 
 # --- F212: not clustering when there is nothing to cluster -----------------
 #
-# `detect_and_cluster` always called `cluster_faces`, and `cluster_faces` always ran
-# HDBSCAN over every embedding in the base. On the reference collection that is 24 477
-# faces and 171.9 s — 67% of a repeat run in which detection had exactly four new frames to
-# look at. Two thirds of the run went on recomputing an answer that could not have changed.
+# `cluster_faces` used to run HDBSCAN over every embedding in the base on every call: 24 477
+# faces and 171.9 s on the reference collection, 67% of a repeat run in which detection had
+# four new frames to look at.
 #
-# The device is the project's own and already carries three features: an answer stored next
-# to a digest of the QUESTION (`frame_quality.source`, `landmark_checks.model`,
-# `group_keeper.source`). A changed question no longer matches the stored digest, so it
-# invalidates the answer by itself — there is no "clear the cache" step anybody can forget,
-# and no stored state that can look fresh while what produced it has moved.
-#
-# This is not a speed-up of the first run: there the clustering is needed and honestly
-# costs its seconds. It is the second run that stops paying for the first one's work.
+# The device is the project's own (`frame_quality.source`, `landmark_checks.model`,
+# `group_keeper.source`): the answer is stored next to a digest of the QUESTION, so a
+# changed question invalidates it by itself and there is no cache-clearing step anybody can
+# forget. This does not speed up a FIRST run, where the clustering is needed.
 
-# Raised BY HAND when the code that decides the partition changes meaning — the same rule
-# the prompt fingerprints follow, and the one part of the question no digest can read off
-# the database. Bumping it re-clusters every collection once, which is the point: whoever
-# changes how faces are split must not have to explain why nobody's clusters moved.
+# Raised BY HAND when the code that decides the partition changes meaning — the one part of
+# the question no digest can read off the database. Bumping it re-clusters every collection
+# once, which is the point.
 CLUSTER_ALGO_VERSION = 1
 
-# The prefix of the stored marker, `<algorithm>#<digest>` — which splitting the clusters
-# came out of, kept spelled out so a stored row can be read by eye.
+# The prefix of the stored marker, `<algorithm>#<digest>`, spelled out so a stored row can
+# be read by eye.
 _CLUSTER_ALGO = "hdbscan"
 
 
 def _face_set_digest(conn: sqlite3.Connection) -> str:
     """A digest of the SET OF FACES the clustering would read — a hash of their sorted ids.
 
-    `COUNT(*)` alone would not do: deleting one face and adding another leaves the counter
-    where it was, and the clusters would silently keep describing a collection that no
-    longer exists. The brief's other candidate — `COUNT(*)`, `MAX(id)` and `SUM(id)`
-    together — survives that swap as well and costs the same, because either way SQLite
-    scans the table (`bbox` is not indexed and `id` is the rowid). The hash is taken
-    because it needs no argument about which combinations of three aggregates can be made
-    to agree by accident: it changes if and only if the set of ids changes.
+    REJECTED: `COUNT(*)` alone, which deleting one face and adding another leaves where it
+    was; and the (`COUNT(*)`, `MAX(id)`, `SUM(id)`) triple, which survives that swap and
+    costs the same (either way SQLite scans the table) but needs an argument about which
+    combinations can agree by accident.
 
-    WHAT IT DOES NOT CATCH is the CONTENT of an embedding. A row that keeps its id and gets
-    a different vector is invisible here, and that is a reachable state rather than a
-    theoretical one: `_write_hits` deletes a file's rows and inserts new ones, and SQLite
-    hands a deleted rowid straight back when it sat at the end of the table (the effect
-    `tests/test_faces_rescan.py` already documents). A `--rescan` can therefore rebuild the
-    very same id set over different vectors — which is why a rescan FORCES the
-    recomputation instead of asking this question at all.
+    WHAT IT DOES NOT CATCH is the CONTENT of an embedding, and that state is reachable:
+    `_write_hits` deletes a file's rows and inserts new ones, and SQLite hands a deleted
+    rowid straight back when it sat at the end of the table (`tests/test_faces_rescan.py`
+    documents the effect). Hence a `--rescan` FORCES the recomputation.
 
-    The population is the one `_read_face_rows` reads: real faces, without the
-    "processed, no faces" markers, which take no part in clustering.
+    The population is `_read_face_rows`': real faces, without the "no faces" markers.
     """
     digest = hashlib.sha1()
     for row in conn.execute(
@@ -1014,22 +914,14 @@ def _face_set_digest(conn: sqlite3.Connection) -> str:
 def _cluster_fingerprint(conn: sqlite3.Connection, s: FacesSettings) -> str:
     """Everything that decides the clusters, in one string compared for equality.
 
-    Three things decide them and all three are in here:
+    Three things do: the set of faces; the thresholds the splitting reads
+    (`min_cluster_size`, `max_distance` — somebody who changes one and sees the same
+    clusters would conclude the setting does nothing, which is worse than a slow run); and
+    `CLUSTER_ALGO_VERSION`, for the splitting code, which no digest can see.
 
-    * the set of faces (`_face_set_digest`);
-    * the thresholds the splitting reads — `min_cluster_size` and `max_distance`, which
-      `_hdbscan_labels` turns into min_samples and the selection epsilon. Someone who
-      changes a threshold in the config and sees the same clusters would conclude the
-      setting does nothing, and that is a worse outcome than a slow run;
-    * `CLUSTER_ALGO_VERSION`, for what no digest can see — the splitting code itself.
-
-    `det_threshold` and `min_face_px` are deliberately OUT. They decide which faces get
-    WRITTEN, not how the written ones are split, and their effect reaches clustering as a
-    changed set of faces — after the rescan that is the only thing which applies them.
-
-    One string and one comparison, because the question is "is everything that decides
-    these clusters still what it was": a marker that matches in part is not a match at all
-    (the F120 rule — a mismatch means RECOMPUTE, never use).
+    `det_threshold` and `min_face_px` are deliberately OUT: they decide which faces get
+    WRITTEN, and reach clustering as a changed set of faces. One string and one comparison,
+    by the F120 rule — a partial match is not a match, and a mismatch means RECOMPUTE.
     """
     payload = "\n".join([
         f"algo={CLUSTER_ALGO_VERSION}",
@@ -1053,9 +945,8 @@ def _stored_fingerprint(conn: sqlite3.Connection) -> str | None:
 def _remember_clustering(conn: sqlite3.Connection, fingerprint: str) -> None:
     """Record what the clusters just written answer. Called INSIDE the write transaction.
 
-    Inside it on purpose: the marker and the clusters it describes must become visible
-    together, or a Ctrl+C between them would leave a base whose fingerprint promises
-    clusters that were never written.
+    Inside it so the marker and the clusters become visible together: a Ctrl+C between them
+    would leave a base whose fingerprint promises clusters that were never written.
     """
     conn.execute(
         "INSERT INTO cluster_state (id, fingerprint, updated_at) VALUES (1, ?, ?)"
@@ -1068,13 +959,10 @@ def _remember_clustering(conn: sqlite3.Connection, fingerprint: str) -> None:
 def _stored_cluster_stats(conn: sqlite3.Connection) -> ClusterStats:
     """The numbers of a skipped run — read off the clusters that are already in the base.
 
-    A skipped run still has to report something, and the honest report is the state of the
-    clusters it left alone. Every field is the same quantity the recomputing path would
-    have produced for this base: `clusters` counts the groups faces actually sit in (a
-    manual merge sets `merged_into` and moves no face, so it does not change the count a
-    recomputation would report), `labels_kept` counts named clusters that are nobody's
-    merge source, and `noise` excludes the malformed rows, which the recomputing path
-    counts separately rather than as noise.
+    Every field is the quantity the recomputing path would have produced for this base:
+    `clusters` counts the groups faces actually sit in (a manual merge sets `merged_into`
+    and moves no face), `labels_kept` counts named clusters that are nobody's merge source,
+    and `noise` excludes the malformed rows, which are counted separately.
     """
     row = conn.execute(
         "SELECT COUNT(*) AS faces,"
@@ -1106,29 +994,16 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection,
                   force: bool = False) -> ClusterStats:
     """Full recomputation of clusters over all embeddings, preserving labels.
 
-    F84: `progress` is the same `(done, total|None)` callback the other stages take —
-    the step used to go silent here for as long as clustering ran, which from the
-    outside is indistinguishable from a hang. The phases are read → HDBSCAN →
-    inheritance of labels → write; HDBSCAN reports `total=None` (indeterminate), the
-    rest are measurable. Called without a callback the function works exactly as
-    before.
+    F84: the phases are read -> HDBSCAN -> inheritance -> write, HDBSCAN reporting
+    `total=None` because it is one blocking call.
 
-    F89: `inherit_from` is a `ClusterSnapshot` taken before a rescan. Without it
-    labels are inherited by face id, as always; with it — by file id, because a
-    rescan gave every face a new id and the face-wise intersection would be empty.
+    F89: `inherit_from` is a `ClusterSnapshot` taken before a rescan. Without it labels are
+    inherited by face id; with it by FILE id, because a rescan gave every face a new id.
 
-    F212: and it does not recompute at all when nothing that decides the clusters has
-    moved. `_cluster_fingerprint` is the question the clusters in the base are an answer
-    to — the set of faces, the thresholds, the version of the splitting code — and when it
-    still matches the stored one the clusters are left exactly where they are and
-    `ClusterStats.skipped` says so. Recomputation is unconditional in all three cases where
-    it has to be: `force` (`sorta faces --rescan`), a fingerprint that does not match, and
-    no fingerprint at all (a first clustering, or a database from before this existed).
-
-    `inherit_from` forces it too, and for a reason of its own: a snapshot is taken only
-    before a rescan, and a rescan deletes and re-inserts the faces rows — SQLite can hand
-    back the same ids over DIFFERENT vectors, which the fingerprint cannot see. The one
-    thing a caller must not do is take a snapshot and then expect this to skip.
+    F212: nothing is recomputed when `_cluster_fingerprint` still matches the stored one,
+    and `ClusterStats.skipped` says so. `force`, a mismatch and a missing fingerprint all
+    recompute — and so does `inherit_from`, for a reason of its own: a rescan deletes and
+    re-inserts faces rows, and SQLite can hand back the same ids over DIFFERENT vectors.
     """
     s = _settings(cfg)
     fingerprint = _cluster_fingerprint(conn, s)
@@ -1234,20 +1109,15 @@ def detect_and_cluster(
 ) -> tuple[FaceStats, ClusterStats]:
     """Full phase-3 pass: detection of new files + cluster recomputation.
 
-    The same callback drives both halves — detection counts frames, clustering
-    reports its phases (F84), so the bar keeps moving across the boundary instead of
-    freezing on `24196/24196` for the rest of the step.
+    The same callback drives both halves, so the bar keeps moving across the boundary
+    instead of freezing on `24196/24196` for the rest of the step.
 
-    F89: `rescan` recomputes files that already have faces (all of them, or `limit`
-    random ones). This is the only place that pairs the rescan with the snapshot the
-    labels are carried across on, so it is the entry point to use — the halves called
-    separately with rescan=True would drop every name.
+    F89: `rescan` recomputes files that already have faces (all of them, or `limit` random
+    ones). This is the ONLY place that pairs a rescan with the snapshot the labels are
+    carried across on — the halves called separately with rescan=True would drop every name.
 
-    F212: the clustering half is now allowed to do nothing. It recomputes when the set of
-    faces or the clustering settings have moved, and on a repeat run over a collection with
-    no new frames it leaves the clusters — and the names on them — exactly where they are.
-    `rescan` still recomputes unconditionally: the vectors under the faces are new even
-    when their ids are not.
+    F212: the clustering half may do nothing on a repeat run. `rescan` still recomputes
+    unconditionally: the vectors under the faces are new even when their ids are not.
     """
     snapshot = snapshot_clusters(conn) if rescan else None
     face_stats = detect_faces(cfg, conn, progress=progress, analyzer=analyzer,
@@ -1378,12 +1248,9 @@ class SmokeReport:
 def compare_allowed_modules_embeddings(paths: list[str]) -> SmokeReport:  # pragma: no cover — manual GPU smoke
     """F47: buffalo_l embeddings (all modules) vs allowed_modules=[detection, recognition].
 
-    Confirms the brief's requirement: recognition aligns the input by the 5 kps from
-    detection, not by landmark_2d_106/landmark_3d_68/genderage — so disabling them
-    should not change the embeddings (cosine ≈ 1.0) and therefore the clusters.
-    Real frames with faces are needed — synthetic/mocks do not verify this.
+    Checks that disabling the unused sub-models leaves the embeddings (cosine ≈ 1.0) and
+    therefore the clusters alone. Needs REAL frames with faces — mocks verify nothing here.
 
-    Manual run (a smoke over a sample of the real collection):
         uv run python -m sorta.faces <img1> <img2> ...
     """
     import time
