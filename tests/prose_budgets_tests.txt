@@ -15,7 +15,7 @@ tests/test_a_stage_waiting_on_a_download_says_so.py  67
 tests/test_accelerator_choice.py                     235
 tests/test_blurred_is_a_ranking.py                   78
 tests/test_build_installer.py                        98
-tests/test_catalog_names_what_a_tier_does.py         128
+tests/test_catalog_names_what_a_tier_does.py         131
 tests/test_classify_before_faces.py                  68
 tests/test_cli.py                                    53
 tests/test_cli_help.py                               84
