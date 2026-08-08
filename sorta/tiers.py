@@ -20,12 +20,11 @@ missing, and there is a sentence for exactly that state.
 from __future__ import annotations
 
 import dataclasses
-import os
 import threading
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import i18n, wizard
+from . import i18n, install, wizard
 from .offline import hf_cache_dir
 
 _INSIGHTFACE_MODELS = Path.home() / ".insightface" / "models"
@@ -64,8 +63,8 @@ _WEIGHT_MB: dict[str, int] = {
 }
 
 
-def _tier_hint_key(os_name: str = os.name) -> str:
-    """How to add a tier, named the way it exists on this machine.
+def _tier_hint_key(kind: str | None = None) -> str:
+    """How to add a tier, named the way it works on THIS INSTALL.
 
     The Start menu belongs to the Windows installer and to nothing else: a machine that
     got Sorta from `uv tool install` has no such entry, and sending its owner to look for
@@ -74,8 +73,16 @@ def _tier_hint_key(os_name: str = os.name) -> str:
     F217: the web app names the same way out, so the choice lives next to the probe
     rather than in `doctor` — a page that offered the Start menu on Linux would be the
     F213 defect again, one screen further out.
+
+    F230: and the signal was the wrong one. This asked `os.name`, so a developer working
+    from a checkout ON WINDOWS was sent to that same Start menu item — which their machine
+    does not have — while a checkout on Linux was told to run `sorta-setup`, a command that
+    would `uv pip install` into an environment the next `uv sync` rewrites. The question
+    is which INSTALL this is, `sorta.install` answers it once, and the OS only gets to
+    refine that answer (there is no Start menu outside Windows, and no install of the
+    Windows kind outside it either).
     """
-    return "cli.doctor.tier_hint" if os_name == "nt" else "cli.doctor.tier_hint_posix"
+    return install.advice_key("cli.doctor.tier_hint", kind)
 
 
 @dataclasses.dataclass(frozen=True)

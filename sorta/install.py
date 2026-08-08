@@ -99,3 +99,98 @@ def tool_path(manifest: dict, key: str) -> str | None:
     if Path(text).is_absolute() or not root:
         return text
     return str(Path(str(root)) / text)
+
+
+# --- F230: which install is reading this, and therefore which command is true for it ---
+#
+# Every piece of advice this product gives about ITS OWN installation is only true on one
+# of the paths below, and until this feature each such line was written for whichever path
+# its author happened to be on. Three were found by the owner in a virtual machine over
+# two days — `uv sync --extra gpu --extra dev` printed by `doctor` to a copy that has no
+# project directory, `uv sync --extra vlm` in the help of `--deep`, and a tier hint that
+# offered the Start menu to a developer because it was keyed BY OPERATING SYSTEM.
+#
+# That last one is the whole diagnosis: the question is not "which OS is this" but "which
+# INSTALL is this", and the answer already existed here (F226 reads the manifest the
+# Windows build leaves next to the program). So it is answered ONCE, here, and everything
+# that names a command asks this instead of guessing.
+#
+# The OS stays a separate question and is not folded in: `winget`/`brew`/`apt` is about
+# which package manager a machine has, which is true of a checkout and an installed copy
+# alike (`cli._exiftool_hint_key`). What the OS may NOT decide is which install this is.
+
+# A copy the Windows installer put on the disk: a manifest sits next to the program, the
+# interpreter and `uv` came with it, and `sorta-setup` (the Start menu item) is how tiers
+# are added. There is no project directory and no `dev` extra here.
+KIND_INSTALLED = "installed"
+# A checkout of the sources: `pyproject.toml` above the package, a developer, `uv sync`.
+# The owner's preferred path, and the one that must not be broken to fix the others.
+KIND_CHECKOUT = "checkout"
+# A wheel installed into an environment of its own — `uv tool install`, `pip install`.
+# No sources to sync and no Start menu to look in, which is what F213 found on Linux.
+KIND_TOOL = "tool"
+
+KINDS: tuple[str, ...] = (KIND_CHECKOUT, KIND_INSTALLED, KIND_TOOL)
+
+# What tells a checkout from a wheel: the project file the developer's commands need.
+# `uv sync --extra gpu` is a statement about a directory that has this in it, so the
+# presence of that file IS the precondition of the advice — not a proxy for it.
+PYPROJECT_NAME = "pyproject.toml"
+
+# The advice that has to be chosen by install kind, by the base of its key. Each name
+# here stands for three keys of the catalog — `<base>.checkout`, `<base>.installed`,
+# `<base>.tool` — and `advice_key` is the only way any of them is reached.
+#
+# This tuple is the registry the watchdog reads (tests/test_each_install_is_told_the_
+# truth.py): a string that names a command and is NOT part of one of these families has
+# to be justified there by hand. That is the point of the feature — the three cases above
+# were caught one at a time by a person, and the fourth is caught by the suite.
+INSTALL_ADVICE: tuple[str, ...] = (
+    # `sorta doctor`: how to add a tier this machine is missing.
+    "cli.doctor.tier_hint",
+    # `sorta doctor`: how to run the command when it is not on PATH.
+    "cli.doctor.command_hint",
+    # `sorta-setup`: how to come back for a tier that was refused.
+    "cli.setup.rerun",
+    # `sorta-setup`: how to undo the acceleration tier and get the CPU profile back.
+    "cli.setup.cpu_back",
+    # `sorta run --help`: how to get the deep tier the `--deep` flag needs.
+    "cli.help.run.deep_how",
+)
+
+
+def install_kind(manifest: dict | None = None, *,
+                 package: str | Path | None = None) -> str:
+    """Which of the three paths this copy is on — the one answer, asked by everybody.
+
+    `manifest` is what `load_manifest()` returned when the caller already has it (the
+    doctor does), so the file is not read twice in one command; passing an empty dict
+    means "this machine has no install manifest" and is how a test states a checkout.
+    `package` is the directory of the package itself, injectable for the same reason.
+
+    A manifest wins over everything else: it is written by the build and it names the
+    interpreter the copy runs on, so there is nothing to weigh it against. Below it, the
+    presence of `pyproject.toml` above the package is what makes `uv sync` a real command
+    rather than a sentence about somebody else's machine.
+    """
+    shipped = bool(manifest) if manifest is not None else manifest_path() is not None
+    if shipped:
+        return KIND_INSTALLED
+    here = Path(__file__).resolve().parent if package is None else Path(package)
+    return KIND_CHECKOUT if (here.parent / PYPROJECT_NAME).is_file() else KIND_TOOL
+
+
+def advice_key(base: str, kind: str | None = None) -> str:
+    """The key of the one variant of `base` that is true for this install.
+
+    `kind` is passed by a caller that already knows (the doctor probes once for a whole
+    command); None asks this machine. The key is composed rather than looked up in a table
+    so that a family cannot be half-registered: `advice_key` returns a name, and the
+    catalog either has all three or fails the parity test in tests/test_i18n.py.
+    """
+    return f"{base}.{install_kind() if kind is None else kind}"
+
+
+def advice_keys(base: str) -> tuple[str, ...]:
+    """All three variants of `base`, in the order `KINDS` states them — for the tests."""
+    return tuple(f"{base}.{kind}" for kind in KINDS)

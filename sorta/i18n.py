@@ -549,10 +549,23 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Command sorta: not on PATH (this install keeps its commands in {path})",
         "ja": "コマンド sorta: PATH にありません（このインストールのコマンドは {path}）",
     },
-    "cli.doctor.command_hint": {
+    # F230: ...and the fix for it is a different command on each of the three install
+    # paths, so there are three keys and `install.advice_key` picks one. `uv tool
+    # update-shell` repairs an install made by `uv tool install` and nothing else: in a
+    # checkout the commands were never meant to be on PATH (that is what `uv run` is for),
+    # and an installed copy puts nothing there by design.
+    "cli.doctor.command_hint.tool": {
         "ru": "  Добавить этот каталог в PATH: uv tool update-shell, затем новый терминал.",
         "en": "  Add that directory to PATH: uv tool update-shell, then a new terminal.",
         "ja": "  その場所を PATH に追加: uv tool update-shell を実行し、端末を開き直します。",
+    },
+    "cli.doctor.command_hint.checkout": {
+        "ru": "  В чекауте команды запускаются так: uv run sorta <команда> "
+              "(или активируйте .venv).",
+        "en": "  In a checkout the commands are run as: uv run sorta <command> "
+              "(or activate .venv).",
+        "ja": "  チェックアウトでは次のように実行します: uv run sorta <コマンド>"
+              "（または .venv を有効化）。",
     },
     # The second one, and the quietest failure in the product: without exiftool the
     # reader falls back to Pillow, so HEIC/RAW/video dates, GPS and orientation are not
@@ -606,7 +619,7 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Command sorta: not on PATH — an installed copy puts nothing there",
         "ja": "コマンド sorta: PATH にありません — インストール版は PATH に何も置きません",
     },
-    "cli.doctor.command_hint_installed": {
+    "cli.doctor.command_hint.installed": {
         "ru": "  Запускать так: \"{path}\" -m sorta.cli <команда>, "
               "или ярлыки в меню «Пуск».",
         "en": "  Run it as: \"{path}\" -m sorta.cli <command>, "
@@ -644,7 +657,7 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  {name}: not installed (missing: {missing})",
         "ja": "  {name}: 未インストール（不足: {missing}）",
     },
-    "cli.doctor.tier_hint": {
+    "cli.doctor.tier_hint.installed": {
         "ru": "  Доустановить ярус: sorta-setup (пункт «Sorta setup» в меню «Пуск»).",
         "en": "  To add a tier: sorta-setup (the Sorta setup item of the Start menu).",
         "ja": "  ティアの追加: sorta-setup（スタートメニューの「Sorta setup」）。",
@@ -652,10 +665,24 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # F213: the same way out for an install that came from `uv tool install`. The Start
     # menu belongs to the Windows installer and nothing else; naming it on a machine
     # that has no such entry sends a person looking for a menu item that is not there.
-    "cli.doctor.tier_hint_posix": {
+    "cli.doctor.tier_hint.tool": {
         "ru": "  Доустановить ярус: sorta-setup.",
         "en": "  To add a tier: run sorta-setup.",
         "ja": "  ティアの追加: sorta-setup を実行します。",
+    },
+    # F230: and the third one, which was missing and was the defect — a checkout was
+    # handed whichever of the two lines above its OPERATING SYSTEM matched, so a developer
+    # on Windows was sent to a Start menu item that does not exist on their machine. In a
+    # checkout a tier is an extra of `pyproject.toml`, and `uv sync` is what installs it;
+    # `sorta-setup` there would `uv pip install` into a synced environment, which the next
+    # `uv sync` would silently undo.
+    "cli.doctor.tier_hint.checkout": {
+        "ru": "  Доустановить ярус в чекауте: uv sync --extra <ярус> "
+              "(например uv sync --extra gpu --extra dev).",
+        "en": "  To add a tier in a checkout: uv sync --extra <tier> "
+              "(for example uv sync --extra gpu --extra dev).",
+        "ja": "  チェックアウトでティアを追加: uv sync --extra <ティア>"
+              "（例: uv sync --extra gpu --extra dev）。",
     },
     # F222: a stage that goes to the network says so, and a stage that could not says
     # what it was fetching. Both sentences are built in `sorta/tiers.py`, from the one
@@ -995,19 +1022,25 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "exiftool がこのマシンで見つかりました — HEIC・RAW・動画を完全に"
               "読み取れます。",
     },
+    # F230 took the `winget` command out of this line. The wizard runs on Windows, on Linux
+    # and in a checkout, and this one sentence named the Windows package manager to all
+    # three — while `sorta doctor`, whose output is printed a few lines ABOVE this in the
+    # same window, already names the command for the machine it is running on
+    # (`cli.doctor.exiftool_windows` / `_macos` / `_linux`). Two answers, one of them
+    # wrong two thirds of the time, is exactly the shape of defect this feature is against.
     "cli.setup.exiftool_absent": {
         "ru": "exiftool не найден: метаданные читает Pillow, а это только "
               "JPEG/PNG/TIFF/WEBP. У HEIC, RAW и видео не будет ни даты, ни GPS. "
-              "Поставьте exiftool (winget install OliverBetz.ExifTool) и запустите "
+              "Поставьте exiftool (команда для этой машины — в строке выше) и запустите "
               "настройку снова.",
         "en": "exiftool was not found: metadata is read by Pillow, which means "
               "JPEG/PNG/TIFF/WEBP only. HEIC, RAW and video will have neither a date nor "
-              "GPS. Install exiftool (winget install OliverBetz.ExifTool) and run the "
-              "setup again.",
+              "GPS. Install exiftool (the command for this machine is in the line above) "
+              "and run the setup again.",
         "ja": "exiftool が見つかりません: メタデータは Pillow が読み取るため、"
               "JPEG/PNG/TIFF/WEBP のみになります。HEIC・RAW・動画は日付も GPS も"
-              "得られません。exiftool（winget install OliverBetz.ExifTool）を入れてから"
-              "セットアップをやり直してください。",
+              "得られません。exiftool を入れてから（このマシン向けのコマンドは上の行に"
+              "あります）セットアップをやり直してください。",
     },
     "cli.setup.base_ready": {
         "ru": "Базовый ярус уже установлен и работает без сети: индекс, EXIF, гео, "
@@ -1164,7 +1197,10 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "何も選んでいませんが、それで問題ありません: 基本ティアだけで都市別の"
               "振り分け、重複の検出、日付の読み取りができます。",
     },
-    "cli.setup.rerun": {
+    # F230: three keys, because the wizard is run from all three installs and only one of
+    # them has a Start menu. The line used to name it to everybody, including the developer
+    # who started `uv run sorta-setup` in a checkout.
+    "cli.setup.rerun.installed": {
         "ru": "Любой ярус можно доустановить позже: пункт «Sorta setup» в меню «Пуск» "
               "(или команда sorta-setup).",
         "en": "Any tier can be added later: the Sorta setup item of the Start menu (or "
@@ -1172,10 +1208,141 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "どのティアも後から追加できます: スタートメニューの「Sorta setup」"
               "（またはコマンド sorta-setup）。",
     },
+    "cli.setup.rerun.tool": {
+        "ru": "Любой ярус можно доустановить позже: запустите sorta-setup ещё раз.",
+        "en": "Any tier can be added later: run sorta-setup again.",
+        "ja": "どのティアも後から追加できます: sorta-setup をもう一度実行してください。",
+    },
+    "cli.setup.rerun.checkout": {
+        "ru": "Это чекаут исходников: ярусы с пакетами ставятся через "
+              "uv sync --extra <ярус>, а модели можно догрузить этим мастером.",
+        "en": "This is a checkout of the sources: tiers that install packages come from "
+              "uv sync --extra <tier>, and the model weights can be fetched by this "
+              "wizard.",
+        "ja": "これはソースのチェックアウトです: パッケージを含むティアは "
+              "uv sync --extra <ティア> で入れ、モデルはこのウィザードで取得できます。",
+    },
     "cli.setup.doctor_hint": {
         "ru": "`sorta doctor` показывает, чем установка оказалась на самом деле.",
         "en": "`sorta doctor` prints what the install actually became.",
         "ja": "`sorta doctor` は実際のインストール内容を表示します。",
+    },
+    # --- F230: the wizard asks about the acceleration tier KNOWING what card is in the
+    # machine. Until this it did not look: a person with an RTX 4080 was shown the same
+    # "2.5 GB to download … needs an NVIDIA card with a CUDA 13 driver. Skipped." as a
+    # machine with no card at all, pressed Enter like on every other question, and stayed
+    # on the CPU profile where the model stages take hours. The knowledge was already in
+    # the product — `diagnostics` runs `nvidia-smi` and `doctor` prints "NVIDIA GPU in the
+    # machine: yes" — it simply never reached the question.
+    "cli.setup.card_found": {
+        "ru": "Видеокарта: {name} (драйвер {driver}) — ускорение на ней заработает.",
+        "en": "Graphics card: {name} (driver {driver}) — acceleration will work on it.",
+        "ja": "グラフィックカード: {name}（ドライバ {driver}）— "
+              "アクセラレーションが利用できます。",
+    },
+    # The driver, said as part of the question rather than as a footnote. CUDA 13 wheels
+    # do not import on an older driver at all, so 2.5 GB downloaded here would buy a
+    # traceback; what is needed is a driver update, and that is what the line asks for.
+    "cli.setup.card_driver_old": {
+        "ru": "Видеокарта {name} есть, но драйвер {driver} старее нужного: для CUDA "
+              "{cuda} нужен драйвер {needed} или новее. Ярус ускорения не предлагается — "
+              "обновите драйвер NVIDIA и запустите настройку снова.",
+        "en": "The card {name} is here, but driver {driver} is older than required: CUDA "
+              "{cuda} needs driver {needed} or newer. The acceleration tier is not "
+              "offered — update the NVIDIA driver and run the setup again.",
+        "ja": "カード {name} はありますが、ドライバ {driver} は要件より古いです: CUDA "
+              "{cuda} にはドライバ {needed} 以降が必要です。アクセラレーションティアは"
+              "提供しません — NVIDIA ドライバを更新してからセットアップをやり直して"
+              "ください。",
+    },
+    "cli.setup.card_absent": {
+        "ru": "Видеокарта NVIDIA не найдена (nvidia-smi не ответил), поэтому ярус "
+              "ускорения не предлагается: эти {size} на этой машине работать не будут. "
+              "Всё считается на процессоре, и это рабочий вариант.",
+        "en": "No NVIDIA card was found (nvidia-smi did not answer), so the acceleration "
+              "tier is not offered: those {size} would not work on this machine. "
+              "Everything is computed on the processor, which is a working setup.",
+        "ja": "NVIDIA カードが見つかりませんでした（nvidia-smi が応答しません）。"
+              "そのため、アクセラレーションティアは提供しません: この {size} は"
+              "このマシンでは動作しません。すべて CPU で計算され、それでも動作します。",
+    },
+    # The price of a no, in the unit a person plans in. Megabytes are what the tier costs;
+    # hours are what refusing it costs, and only one of the two was ever said.
+    "cli.setup.card_refusal_cost": {
+        "ru": "Цена отказа — время: без этого яруса модельные стадии считает процессор, "
+              "и на коллекции в десятки тысяч кадров это часы вместо минут.",
+        "en": "Refusing costs time: without this tier the model stages run on the "
+              "processor, and on a collection of tens of thousands of frames that is "
+              "hours instead of minutes.",
+        "ja": "断ると時間がかかります: このティアがないとモデルのステージは CPU で"
+              "実行され、数万枚のコレクションでは数分ではなく数時間になります。",
+    },
+    # F230: the profile was REPLACED, not added to (the only tier with `reinstall`), and
+    # `onnxruntime` and `onnxruntime-gpu` unpack into the same directory (F76) — so which
+    # profile actually won is a question only `sorta doctor` can answer, and the wizard
+    # has to send the person there rather than declare success itself.
+    "cli.setup.profile_changed": {
+        "ru": "Профиль установки заменён на CUDA-сборки. Что получилось на самом деле, "
+              "печатает `sorta doctor` — строка «install profile».",
+        "en": "The install profile was replaced with the CUDA builds. What it actually "
+              "became is printed by `sorta doctor` — the “install profile” line.",
+        "ja": "インストールプロファイルを CUDA ビルドに置き換えました。実際の結果は "
+              "`sorta doctor` の「install profile」の行に表示されます。",
+    },
+    # The way back, named. The acceleration tier is installed with `--reinstall` and takes
+    # the working CPU profile with it; until F230 there was nothing in the catalog to
+    # return to it, so a machine where the CUDA stack misbehaved had no way out but a
+    # reinstall of the whole program.
+    "cli.setup.cpu_back.installed": {
+        "ru": "Вернуться на процессорный профиль можно в любой момент: "
+              "sorta-setup --restore-cpu.",
+        "en": "Going back to the CPU profile is possible at any time: "
+              "sorta-setup --restore-cpu.",
+        "ja": "いつでも CPU プロファイルに戻せます: sorta-setup --restore-cpu。",
+    },
+    # Word for word the same on a tool install: it is one command and it works there.
+    "cli.setup.cpu_back.tool": {
+        "ru": "Вернуться на процессорный профиль можно в любой момент: "
+              "sorta-setup --restore-cpu.",
+        "en": "Going back to the CPU profile is possible at any time: "
+              "sorta-setup --restore-cpu.",
+        "ja": "いつでも CPU プロファイルに戻せます: sorta-setup --restore-cpu。",
+    },
+    # ...and NOT the same in a checkout: there the profile is an extra of the project, and
+    # `uv pip install` into a synced environment is undone by the next `uv sync`.
+    "cli.setup.cpu_back.checkout": {
+        "ru": "Вернуться на процессорный профиль в чекауте: "
+              "uv sync --extra cpu --extra dev.",
+        "en": "Going back to the CPU profile in a checkout: "
+              "uv sync --extra cpu --extra dev.",
+        "ja": "チェックアウトで CPU プロファイルに戻す: "
+              "uv sync --extra cpu --extra dev。",
+    },
+    "cli.setup.restoring_cpu": {
+        "ru": "Возвращаю процессорный профиль: {packages}",
+        "en": "Restoring the CPU profile: {packages}",
+        "ja": "CPU プロファイルを復元しています: {packages}",
+    },
+    "cli.setup.restored_cpu": {
+        "ru": "Процессорный профиль вернулся. Проверьте `sorta doctor` — строка "
+              "«install profile» скажет, какой профиль победил.",
+        "en": "The CPU profile is back. Check `sorta doctor` — the “install profile” line "
+              "says which profile won.",
+        "ja": "CPU プロファイルに戻りました。`sorta doctor` の「install profile」の行で"
+              "どちらのプロファイルになったか確認してください。",
+    },
+    "cli.setup.restore_cpu_failed": {
+        "ru": "Не удалось вернуть процессорный профиль (код {status}). Установка осталась "
+              "как была; попробуйте ещё раз или переустановите программу.",
+        "en": "Could not restore the CPU profile (exit code {status}). The install is as "
+              "it was; try again or reinstall the program.",
+        "ja": "CPU プロファイルを復元できませんでした（終了コード {status}）。"
+              "インストールはそのままです。もう一度試すか、再インストールしてください。",
+    },
+    "cli.setup.tier.cpu_profile.name": {
+        "ru": "Процессорный профиль",
+        "en": "CPU profile",
+        "ja": "CPU プロファイル",
     },
     "cli.setup.size_mb": {
         "ru": "{mb} МБ",
@@ -2114,16 +2281,36 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "Destination directory for the --by plan; without it — in place",
         "ja": "--by のプランの出力先ディレクトリ。指定しない場合は in-place",
     },
+    # F230: the requirement stays, the COMMAND moves out. This help text used to end in
+    # `uv sync --extra vlm` for everybody — the same defect F217 had already fixed on the
+    # web app's checkbox and nobody had fixed in the command line, because the two were
+    # written a release apart. `{how}` is filled from `cli.help.run.deep_how.*` by the
+    # install this help is printed on.
     "cli.help.run.deep": {
-        "ru": "Глубокий анализ VLM на этот прогон: медленнее, нужен "
-              "`uv sync --extra vlm` (иначе откат на быстрый ярус); "
+        "ru": "Глубокий анализ VLM на этот прогон: медленнее, нужен глубокий ярус "
+              "(VLM) — {how} (иначе откат на быстрый ярус); "
               "без флага — как в config.yaml (naming.vlm_enabled)",
-        "en": "Deep VLM analysis for this run: slower, needs `uv sync --extra vlm` "
+        "en": "Deep VLM analysis for this run: slower, needs the deep tier (VLM) — {how} "
               "(otherwise it falls back to the fast tier); without the flag — as in "
               "config.yaml (naming.vlm_enabled)",
-        "ja": "この実行で VLM による詳細分析を行います: 低速で、`uv sync --extra vlm` が"
-              "必要です（ない場合は高速な階層にフォールバックします）。"
+        "ja": "この実行で VLM による詳細分析を行います: 低速で、ディープティア（VLM）が"
+              "必要です — {how}（ない場合は高速な階層にフォールバックします）。"
               "フラグなしの場合は config.yaml のとおり (naming.vlm_enabled)",
+    },
+    "cli.help.run.deep_how.checkout": {
+        "ru": "поставьте его через uv sync --extra vlm",
+        "en": "add it with uv sync --extra vlm",
+        "ja": "uv sync --extra vlm で追加します",
+    },
+    "cli.help.run.deep_how.installed": {
+        "ru": "добавьте его в мастере: пункт «Sorta setup» в меню «Пуск»",
+        "en": "add it in the wizard: the Sorta setup item of the Start menu",
+        "ja": "ウィザードで追加します: スタートメニューの「Sorta setup」",
+    },
+    "cli.help.run.deep_how.tool": {
+        "ru": "добавьте его через sorta-setup",
+        "en": "add it with sorta-setup",
+        "ja": "sorta-setup で追加します",
     },
     "cli.help.run.geo": {
         "ru": "offline|online — online точнее для мест за границей, но "

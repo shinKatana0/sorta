@@ -17,6 +17,14 @@ Two things this module is careful about.
   found and what is missing, so the wizard CALLS it (`show_doctor` below) instead of
   growing a second one that will disagree with it by the next release.
 
+F230 adds a third thing, and it belongs next to the first two: **a question is asked
+knowing the answer where the answer is knowable.** The acceleration tier was offered to a
+machine with an RTX 4080 in exactly the words a machine with no card at all got, defaulting
+to no — so its owner pressed Enter and stayed on the CPU profile for hours per run. The
+card is probed once now (`accelerator`), and what the card says decides whether the tier is
+offered at all, which way Enter goes, and whether the sentence on screen is about
+gigabytes or about a driver that has to be updated first.
+
 The tier catalog is here rather than in `packaging/` because it is read at RUN time: the
 wizard ships inside the wheel and the packaging directory does not. `scripts/build_installer.py`
 reads the same tuple, so the installer and the wizard can never describe different tiers,
@@ -37,6 +45,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 from . import i18n, launch
 
 if TYPE_CHECKING:  # `sorta.tiers` imports THIS module, so the probe is imported lazily
+    from .diagnostics import NvidiaCard
     from .tiers import TierState
 
 # --- what the installer left behind -------------------------------------------------
@@ -149,6 +158,22 @@ TIERS: tuple[Tier, ...] = (
 BASE_TIER = TIERS[0]
 OPTIONAL_TIERS: tuple[Tier, ...] = tuple(tier for tier in TIERS if tier.optional)
 TIERS_BY_KEY: dict[str, Tier] = {tier.key: tier for tier in TIERS}
+
+# The one tier the wizard treats as a question about the HARDWARE, named here so nothing
+# below has to match on a string (F230).
+GPU_TIER_KEY = "gpu"
+
+# F230: the way back, and the reason it is not in `TIERS`. The acceleration tier is the
+# only one installed with `--reinstall`, so saying yes to it REPLACES the working CPU
+# profile — and until this feature there was nothing in the catalog to return to: a
+# machine where the CUDA stack turned out to be wrong had no way out but reinstalling the
+# whole program. This is that way out, and it is deliberately NOT an entry of `TIERS`:
+# the catalog is the list of things a person is OFFERED, and a rollback offered to
+# everybody, on every run of the setup, in front of somebody who has no CUDA profile to
+# roll back from, is noise in the one screen that must not have any. It is reached by
+# name instead — `sorta-setup --restore-cpu` — which is a command the wizard prints the
+# moment it changes the profile, and which `doctor` can send a person to as well.
+CPU_PROFILE = Tier("cpu_profile", extras=("cpu",), optional=False, reinstall=True)
 
 # The extras that are deliberately NOT part of any tier, and why. The watchdog test reads
 # this together with the tiers above: every extra of `pyproject.toml` has to be in one
@@ -672,6 +697,112 @@ def hold_console(lang: i18n.Lang, *, say: Callable[[str], None] = say_console,
         pass
 
 
+# --- F230: the acceleration tier, asked of a machine whose card is known ---------------
+#
+# The wizard knew nothing about the graphics card. A person with an RTX 4080 was shown
+# exactly what a machine with no card at all was shown — "2.5 GB to download … needs an
+# NVIDIA card with a CUDA 13 driver", answer defaulting to no — pressed Enter as on every
+# other question, and silently stayed on the CPU profile, where the model stages take
+# hours. The knowledge existed one module away (`diagnostics` runs `nvidia-smi`, `doctor`
+# prints "NVIDIA GPU in the machine: yes"); it just never reached the question.
+#
+# Three answers, three different sentences, and the difference between them is the point:
+# a card whose driver fits is offered with YES as the default and the cost of a refusal
+# said in hours; a driver too old is named as such, with "update it" as the action, and
+# the tier is not offered — CUDA 13 wheels do not import on an older driver, so those
+# 2.5 GB would buy a traceback; and no card at all is said out loud rather than answered
+# with a question nobody can act on.
+
+
+def accelerator(probe: Callable[[], NvidiaCard] | None = None
+                ) -> NvidiaCard:
+    """What card this machine has — one `nvidia-smi` call, injectable, never raising.
+
+    The import is inside the call for the reason every import in this module is: the
+    wizard is started by an installer on a machine where torch may not be there yet, and
+    `diagnostics` is a module whose whole job is to survive that. `probe` is what the
+    tests hand in.
+    """
+    from . import diagnostics
+
+    return (probe or diagnostics.nvidia_card)()
+
+
+def card_line(card: NvidiaCard, lang: i18n.Lang,
+              tier: Tier | None = None) -> str:
+    """What this machine's card means for the acceleration tier, in one sentence."""
+    from . import diagnostics
+
+    if not card.present:
+        gpu = TIERS_BY_KEY[GPU_TIER_KEY] if tier is None else tier
+        return i18n.cli_text(f"{_SETUP_PREFIX}card_absent", lang,
+                             size=human_size(gpu.download_mb, lang))
+    if card.driver_state == diagnostics.DRIVER_OLD:
+        return i18n.cli_text(f"{_SETUP_PREFIX}card_driver_old", lang,
+                             name=card.name or "NVIDIA", driver=card.driver or "?",
+                             cuda=diagnostics.CUDA_MAJOR,
+                             needed=diagnostics.MIN_DRIVER_MAJOR)
+    return i18n.cli_text(f"{_SETUP_PREFIX}card_found", lang,
+                         name=card.name or "NVIDIA",
+                         driver=card.driver or "?")
+
+
+def rerun_key() -> str:
+    """Which "you can add a tier later" sentence is true for this install (F230).
+
+    The module is imported inside the call, and only because half the functions here take
+    a parameter called `install` (the command runner): a module of that name at the top
+    would be shadowed in exactly the places somebody would expect to be able to use it.
+    """
+    from . import install
+
+    return install.advice_key(f"{_SETUP_PREFIX}rerun")
+
+
+def cpu_back_key() -> str:
+    """Which way back to the CPU profile is true here — `--restore-cpu` or `uv sync`.
+
+    In a checkout the profile is an extra of the project and `uv sync --extra cpu` is what
+    sets it; `restore_cpu` below would `uv pip install` into a synced environment, which
+    the next `uv sync` rewrites. So the command a developer is given is theirs, and the
+    flag is what the other two installs are told about.
+    """
+    from . import install
+
+    return install.advice_key(f"{_SETUP_PREFIX}cpu_back")
+
+
+def restore_cpu(lang: i18n.Lang, manifest: dict | None = None, *,
+                say: Callable[[str], None] = say_console,
+                install: Callable[[Sequence[str]], int] = run_install) -> int:
+    """Put the CPU profile back — `sorta-setup --restore-cpu`. 0 when it is back.
+
+    The mirror image of the acceleration tier and installed the same way: the `cpu` extra
+    of `pyproject.toml`, with `--reinstall` (without it `uv` sees `torch>=2.10.0` already
+    satisfied by the CUDA wheel and does nothing) and with no CUDA index, so the plain
+    wheels take the place of the cu130 ones.
+    """
+    manifest = load_manifest() if manifest is None else manifest
+    name = i18n.cli_text(f"{_SETUP_PREFIX}tier.{CPU_PROFILE.key}.name", lang)
+    requirements = tier_requirements(CPU_PROFILE)
+    if not requirements:
+        # No package metadata to read — the same answer a tier gets in that state, for the
+        # same reason: nothing was verified, so nothing is claimed.
+        say(i18n.cli_text(f"{_SETUP_PREFIX}no_metadata", lang, name=name))
+        return 1
+    say(i18n.cli_text(f"{_SETUP_PREFIX}restoring_cpu", lang,
+                      packages=" ".join(requirements)))
+    code = install(install_command(CPU_PROFILE, requirements,
+                                   uv=uv_binary(manifest),
+                                   python=python_binary(manifest),
+                                   target=lib_directory(manifest)))
+    if code != 0:
+        say(i18n.cli_text(f"{_SETUP_PREFIX}restore_cpu_failed", lang, status=code))
+        return 1
+    say(i18n.cli_text(f"{_SETUP_PREFIX}restored_cpu", lang))
+    return 0
+
+
 @dataclass
 class Outcome:
     """What the wizard did, for the summary and for the exit code."""
@@ -704,6 +835,7 @@ def run_setup(lang: i18n.Lang, *,
               chosen: Sequence[str] | None = None,
               tiers: Sequence[Tier] = OPTIONAL_TIERS,
               states: Sequence[TierState] | None = None,
+              card: NvidiaCard | None = None,
               say: Callable[[str], None] = say_console,
               ask: Callable[[str, bool], bool] = ask_console,
               doctor: Callable[..., None] = show_doctor,
@@ -714,6 +846,12 @@ def run_setup(lang: i18n.Lang, *,
     `chosen` is the non-interactive form — the tier keys to add, `()` for none at all.
     With it None every optional tier is offered one by one, and the answer defaults to
     what the tier itself states (no, except for the one the layout needs).
+
+    `card` is what `nvidia-smi` said about this machine (F230), probed once by `main` and
+    handed in. None means nobody asked — and then the acceleration tier is offered exactly
+    as it was before F230, because a wizard that announced "no NVIDIA card was found"
+    without having looked would be the same defect as the one this feature closes, with the
+    sign flipped.
     """
     manifest = load_manifest() if manifest is None else manifest
     say(i18n.cli_text(f"{_SETUP_PREFIX}title", lang))
@@ -741,13 +879,30 @@ def run_setup(lang: i18n.Lang, *,
             outcome.present.append(tier.name(lang))
             say(i18n.cli_text(f"{_SETUP_PREFIX}in_place", lang, name=tier.name(lang)))
             continue
+        # F230: the hardware question, asked before the offer rather than after it. A card
+        # that cannot run these wheels means the tier is not offered at all — 2.5 GB that
+        # will not import is not a choice, it is a download with a traceback at the end of
+        # it — and the reason is said out loud in place of the question. This holds for
+        # `--tiers gpu` too, on purpose: an install command must not put wheels on a
+        # machine that cannot load them, whoever asked for it.
+        if tier.key == GPU_TIER_KEY and card is not None:
+            say(card_line(card, lang, tier))
+            if not card.usable:
+                outcome.skipped.append(tier.name(lang))
+                continue
         say(i18n.cli_text(f"{_SETUP_PREFIX}offer", lang, name=tier.name(lang),
                           size=human_size(tier.download_mb, lang),
                           benefit=tier.benefit(lang)))
+        # A card that WILL work turns the answer round: Enter means yes here, because the
+        # cost of a stray Enter falls the other way — hours of every run on the processor
+        # of a machine that has an idle GPU in it. And the price of a no is stated in the
+        # unit a person plans in, which megabytes are not.
+        default_yes = tier.default_yes or (tier.key == GPU_TIER_KEY and card is not None)
+        if tier.key == GPU_TIER_KEY and card is not None:
+            say(i18n.cli_text(f"{_SETUP_PREFIX}card_refusal_cost", lang))
         if chosen is None:
-            question = "question_yes" if tier.default_yes else "question"
-            wanted = ask(i18n.cli_text(f"{_SETUP_PREFIX}{question}", lang),
-                         tier.default_yes)
+            question = "question_yes" if default_yes else "question"
+            wanted = ask(i18n.cli_text(f"{_SETUP_PREFIX}{question}", lang), default_yes)
         else:
             wanted = tier.key in chosen
         if wanted:
@@ -809,6 +964,15 @@ def _add_tiers(accepted: Sequence[Tier], lang: i18n.Lang, manifest: dict,
                 say(i18n.cli_text(f"{_SETUP_PREFIX}install_failed", lang,
                                   name=tier.name(lang), status=code))
                 continue
+        if tier.reinstall:
+            # F230: this tier REPLACED the profile instead of adding to it, and which of
+            # the two won is a question only `sorta doctor` can answer — `onnxruntime` and
+            # `onnxruntime-gpu` unpack into one directory (F76), so "the install command
+            # succeeded" is not the same statement as "the CUDA build is what got used".
+            # The way back is named in the same breath, because this is the one moment a
+            # person knows they might need it.
+            say(i18n.cli_text(f"{_SETUP_PREFIX}profile_changed", lang))
+            say(i18n.cli_text(cpu_back_key(), lang))
         if tier.weights:
             # The download happens HERE, at the screen, with progress — and a refusal by
             # the network leaves the install as it was rather than failing it.
@@ -832,7 +996,7 @@ def _summary(outcome: Outcome, lang: i18n.Lang, *, say: Callable[[str], None]) -
         # The whole point of the tiers, said out loud to the person who took none of
         # them: what is on this machine is a working product and not a stub.
         say(i18n.cli_text(f"{_SETUP_PREFIX}works_anyway", lang))
-    say(i18n.cli_text(f"{_SETUP_PREFIX}rerun", lang))
+    say(i18n.cli_text(rerun_key(), lang))
     say(i18n.cli_text(f"{_SETUP_PREFIX}doctor_hint", lang))
 
 
@@ -856,6 +1020,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", default=None,
                         help="path to " + MANIFEST_NAME + " (default: the one the "
                              "installer left next to the program)")
+    # F230: the way back from the acceleration tier. It is a flag and not a tier of the
+    # catalog for the reason written at `CPU_PROFILE`: nothing is OFFERED here, it is asked
+    # for by name — and the wizard prints this command the moment it replaces the profile.
+    parser.add_argument("--restore-cpu", action="store_true",
+                        help="put the CPU profile back (undo the NVIDIA acceleration "
+                             "tier) and ask nothing else")
     return parser
 
 
@@ -904,13 +1074,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     lang = language(args.config, args.lang)
     try:
+        if args.restore_cpu:
+            return restore_cpu(lang, load_manifest(args.manifest))
         try:
             chosen = selected_tiers(args.tiers)
         except ValueError as exc:
             say_console(str(exc))
             return 2
+        # F230: the card is probed HERE, once, and handed to the wizard. Not inside
+        # `run_setup`, so that the one call to `nvidia-smi` belongs to the entry point and
+        # a caller which knows the hardware (or has no business asking) can say so.
         return run_setup(lang, manifest=load_manifest(args.manifest),
-                         config_path=args.config, chosen=chosen)
+                         config_path=args.config, chosen=chosen, card=accelerator())
     finally:
         hold_console(lang)
 
