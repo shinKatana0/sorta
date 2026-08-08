@@ -349,8 +349,24 @@ class TestTheWizardFetchesTheWeightsItself(unittest.TestCase):
         """F225 moved the measurement to `sorta/tiers.py`, where the run screen can see
         it too — what it does is unchanged."""
         with mock.patch.object(tiers, "hf_cache_dir",
-                               return_value=Path("nowhere-at-all")):
+                               return_value=Path("nowhere-at-all")), \
+             mock.patch.object(tiers, "_INSIGHTFACE_MODELS", Path("nowhere-either")):
             self.assertEqual(tiers.downloaded_bytes(), 0)
+
+    def test_the_measurement_sees_the_cache_insightface_fills(self):
+        """`0 MB of 400 MB` for a whole download, met in a virtual machine 2026-08-08:
+        buffalo_l never goes near the hub — insightface unpacks it into its own folder,
+        and a progress line watching one cache reported nothing for the other."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models" / "buffalo_l"
+            models.mkdir(parents=True)
+            (models / "det_10g.onnx").write_bytes(b"x" * 2048)
+            with mock.patch.object(tiers, "hf_cache_dir",
+                                   return_value=Path("nowhere-at-all")), \
+                 mock.patch.object(tiers, "_INSIGHTFACE_MODELS", Path(tmp) / "models"):
+                self.assertEqual(tiers.downloaded_bytes(), 2048)
 
     def test_the_measurement_adds_up_the_files_of_the_cache(self):
         import tempfile

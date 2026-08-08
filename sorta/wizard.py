@@ -569,11 +569,18 @@ def _fetch_faces(config_path: str) -> None:  # pragma: no cover — 400 MB over 
     `allowed_modules` is the detection/recognition pair the stage itself asks for
     (`faces._ALLOWED_MODULES`); the pack arrives whole either way — it is one zip — and
     limiting the modules keeps this from loading five networks to fetch a file.
+
+    Its own tqdm is swallowed: drawn in KB over a redrawn line, it interleaved with the
+    megabyte line this wizard prints every five seconds. One download, one progress line.
     """
+    import contextlib
+    import io
+
     from insightface.app import FaceAnalysis
 
-    FaceAnalysis(name="buffalo_l", allowed_modules=["detection"],
-                 providers=["CPUExecutionProvider"])
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        FaceAnalysis(name="buffalo_l", allowed_modules=["detection"],
+                     providers=["CPUExecutionProvider"])
 
 
 def _fetch_vlm(config_path: str) -> None:  # pragma: no cover — 7 GB over the network

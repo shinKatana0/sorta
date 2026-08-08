@@ -400,12 +400,32 @@ class TestLogEnvironment:
         assert "gpu:" in message
         assert "not installed" in message
 
+    def test_the_header_does_not_import_torch_to_write_one_line(self, caplog):
+        """Measured 2026-08-08: asking the diagnostics layer costs 13.96 s on a fast
+        machine with a warm cache, because the answer means importing torch. On a cold
+        disk it held the launch for minutes, and the base tier needs torch for nothing."""
+        loaded = {name: mod for name, mod in sys.modules.items()
+                  if name in ("torch", "onnxruntime")}
+        for name in loaded:
+            del sys.modules[name]
+        try:
+            with mock.patch("sorta.diagnostics.gpu_health",
+                            side_effect=AssertionError("the header probed for real")):
+                with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+                    runlog.log_environment()
+        finally:
+            sys.modules.update(loaded)
+
+        assert "not loaded" in caplog.records[0].getMessage()
+
     def test_survives_a_broken_diagnostics_layer(self, caplog):
-        with mock.patch("sorta.diagnostics.gpu_health", side_effect=RuntimeError("нет CUDA")):
+        """With torch already loaded the header does ask — and a broken answer is a line,
+        not a crash."""
+        with mock.patch.dict(sys.modules, {"torch": mock.Mock()}),              mock.patch("sorta.diagnostics.gpu_health", side_effect=RuntimeError("no CUDA")):
             with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
                 runlog.log_environment()
 
-        assert "недоступны" in caplog.records[0].getMessage()
+        assert "unavailable" in caplog.records[0].getMessage()
 
     def test_reports_the_geo_data_directory(self, caplog):
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):

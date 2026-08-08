@@ -815,13 +815,20 @@ def _package_origin() -> str:
 
 
 def _gpu_line() -> str:
-    """torch/onnxruntime CUDA availability via the existing diagnostics layer."""
+    """torch/onnxruntime CUDA availability — but only if somebody has already loaded them.
+
+    Asking the diagnostics layer costs 13.96 s (measured 2026-08-08, warm cache, fast
+    machine) because the answer means importing torch, and the base tier needs torch for
+    nothing. `sorta doctor` probes for real, on request.
+    """
+    if "torch" not in sys.modules and "onnxruntime" not in sys.modules:
+        return "not loaded (ask `sorta doctor` for the real answer)"
     try:
         from . import diagnostics
 
         return diagnostics.gpu_health().summary
     except Exception as exc:  # diagnostics/torch/onnxruntime unavailable — not fatal
-        return f"недоступны ({exc})"
+        return f"unavailable ({exc})"
 
 
 def _geo_data_dir() -> Path:
@@ -879,4 +886,4 @@ def log_environment() -> None:
         ]
         _LOG.info("\n".join(lines))
     except Exception as exc:  # the header must never take a run down
-        _LOG.warning("runlog: не удалось собрать заголовок окружения (%s)", exc)
+        _LOG.warning("runlog: could not assemble the environment header (%s)", exc)

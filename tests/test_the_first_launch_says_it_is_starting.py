@@ -158,8 +158,12 @@ tray._serve_until_closed = quit_instead_of_serving
 seen["exit"] = tray.main(sys.argv[2:])
 
 state = ui.startup_state()
+# Waits for the STEPS and not for `ready`: since 2026-08-08 ready is declared as soon as
+# the server can serve, so the diagnostics behind it are still running at that moment —
+# which is the whole point of the change, and would make this report arrive half empty.
 deadline = time.monotonic() + 240
-while not state.snapshot()["ready"] and time.monotonic() < deadline:
+while (len(state.snapshot()["done"]) < len(ui.STARTUP_STEPS)
+       and time.monotonic() < deadline):
     time.sleep(0.05)
 seen["after"] = watched()
 seen["startup"] = state.snapshot()
@@ -726,7 +730,15 @@ class TestTheLaunchWritesDownWhatItSpent(unittest.TestCase):
         self.assertIn("startup step=gpu elapsed=3.760", line)
         self.assertIsNone(runlog._MEASUREMENT_RE.match(line))
 
-    def test_the_checks_behind_the_bind_write_a_line_each_and_then_ready(self):
+    def test_ready_is_declared_before_the_checks_not_after_them(self):
+        """The correction of 2026-08-08: ready means the server can serve.
+
+        F227 moved the diagnostics behind the bind and then waited for them anyway, so
+        the tab held a page reading "the program already answers" without showing it —
+        for several minutes on a cold machine, stopped at the step where
+        `log_environment` imports torch. The line that says ready must come FIRST, and
+        the three probes report into the log behind it.
+        """
         self.state.expect()
         with mock.patch.object(tray, "log_environment"), \
              mock.patch.object(tray, "warn_if_gpu_mismatch"), \
@@ -735,12 +747,28 @@ class TestTheLaunchWritesDownWhatItSpent(unittest.TestCase):
             tray._finish_startup()
         lines = [record.getMessage() for record in logs.records]
         self.assertEqual(len(lines), 4, lines)
-        for line, step in zip(lines, (ui.STARTUP_ENVIRONMENT, ui.STARTUP_GPU,
-                                      ui.STARTUP_GEO)):
+        self.assertRegex(lines[0], r"^startup ready elapsed=\d+\.\d{3}$")
+        for line, step in zip(lines[1:], (ui.STARTUP_ENVIRONMENT, ui.STARTUP_GPU,
+                                          ui.STARTUP_GEO)):
             with self.subTest(step=step):
                 self.assertRegex(line, rf"^startup step={step} elapsed=\d+\.\d{{3}}$")
-        self.assertRegex(lines[3], r"^startup ready elapsed=\d+\.\d{3}$")
         self.assertTrue(self.state.snapshot()["ready"])
+
+    def test_ready_does_not_wait_for_a_slow_check(self):
+        """The failure as the owner met it: a probe that takes minutes may not hold the
+        page. Ready is already true while the first check is still running."""
+        self.state.expect()
+        seen: dict = {}
+
+        def slow_environment():
+            seen["ready_while_running"] = self.state.snapshot()["ready"]
+
+        with mock.patch.object(tray, "log_environment", side_effect=slow_environment), \
+             mock.patch.object(tray, "warn_if_gpu_mismatch"), \
+             mock.patch.object(tray, "warn_if_geo_data_missing"), \
+             self.assertLogs("sorta.tray", level="INFO"):
+            tray._finish_startup()
+        self.assertTrue(seen["ready_while_running"])
 
     def test_a_check_that_fails_does_not_stop_the_launch(self):
         """The program is already serving by the time these run. A failed probe is a

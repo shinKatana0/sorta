@@ -391,14 +391,21 @@ def _startup_step(step: str) -> Iterator[None]:
 
 
 def _finish_startup() -> None:
-    """The diagnostics, with the port already answering (requirement 1).
+    """The diagnostics, with the port already answering.
 
     `log_environment`, `warn_if_gpu_mismatch` and `warn_if_geo_data_missing` are
     diagnostics and not service: not one of them is needed to answer an HTTP request, and
     together they were most of the silence. They run here, on a thread of a program that is
     already serving — which is also why nothing they do may escape: a probe that fails is
     a failed probe, not a failed launch.
+
+    Ready is declared FIRST and means "the server can serve". Waiting for the probes
+    instead held the page for minutes behind `log_environment`, which imports torch —
+    13.96 s measured on a warm fast machine, and far worse on a cold disk.
     """
+    state = ui.startup_state()
+    state.ready()
+    _LOG.info(_STARTUP_READY_LINE, state.elapsed())
     for step, probe in ((ui.STARTUP_ENVIRONMENT, log_environment),
                         (ui.STARTUP_GPU, warn_if_gpu_mismatch),
                         (ui.STARTUP_GEO, warn_if_geo_data_missing)):
@@ -407,9 +414,6 @@ def _finish_startup() -> None:
                 probe()
         except Exception:
             _LOG.exception("tray: the %s check of the launch failed", step)
-    state = ui.startup_state()
-    state.ready()
-    _LOG.info(_STARTUP_READY_LINE, state.elapsed())
 
 
 def sorta_is_serving(port: int, *, timeout: float = PROBE_TIMEOUT) -> bool:

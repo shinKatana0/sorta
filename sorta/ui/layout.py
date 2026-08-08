@@ -920,9 +920,13 @@ def _suggested_sort_dest(cfg: Config, db_path: Path) -> str:
     The source — the first `cfg.sources` (config.yaml); if empty — the common root of
     the indexed files from the DB. Nothing found → an empty string (the field stays
     for manual entry). A POSIX path (like sources in config).
+
+    A source that is not on THIS disk suggests nothing: the installer writes config.yaml
+    from the shipped example, whose `sources` is the sample `D:/Photos`, and a default
+    built from a folder that does not exist is wrong on every machine.
     """
     root: Path | None = None
-    if cfg.sources:
+    if cfg.sources and Path(cfg.sources[0]).is_dir():
         root = Path(cfg.sources[0])
     else:
         try:

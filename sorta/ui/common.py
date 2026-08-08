@@ -420,10 +420,15 @@ class _StartupState:
             self._total = None
 
     def enter(self, step: str) -> None:
-        """The launch has started `step`."""
+        """The launch has started `step`.
+
+        A step entered after `ready` does not take readiness back: the diagnostics behind
+        the bind are still steps, and a page already showing the program must keep it.
+        """
         with self._lock:
             self._step = step
-            self._ready = False
+            if self._started is not None and self._total is None:
+                self._ready = False
 
     def leave(self, step: str, seconds: float) -> None:
         """`step` is over, and it took `seconds`."""

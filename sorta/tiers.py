@@ -427,14 +427,23 @@ def megabytes(size: int) -> int:
 
 
 def downloaded_bytes(cache: Path | None = None) -> int:
-    """How much the model cache holds right now — progress measured on the disk.
+    """How much the model caches hold right now — progress measured on the disk.
 
-    Deliberately the whole cache rather than one model's directory: what a library names
+    Deliberately whole caches rather than one model's directory: what a library names
     the folder it is filling (and whether it fills a `blobs/` file under a temporary
     name first) is its own business, and a measurement that depends on those names would
     quietly report zero the day one of them changes.
+
+    BOTH caches: insightface never touches the hub — it unpacks `buffalo_l.zip` into
+    `~/.insightface/models/` — so watching one of them reported `0 MB of 400 MB` for a
+    whole download. An explicit `cache` still means that one directory, for the tests.
     """
-    directory = hf_cache_dir() if cache is None else cache
+    if cache is not None:
+        return _bytes_under(cache)
+    return _bytes_under(hf_cache_dir()) + _bytes_under(_INSIGHTFACE_MODELS)
+
+
+def _bytes_under(directory: Path) -> int:
     total = 0
     try:
         for item in directory.rglob("*"):
