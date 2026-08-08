@@ -1,14 +1,8 @@
 """F182: what more than one tab of the web app needs.
 
-The package is split by TAB, not by layer, because a feature lives in one tab and
-would otherwise touch every layer. This module is the remainder of that cut: the
-sqlite connection, the paging window, the thumbnail and preview caches, the
-destination of a frame, the payload validators shared by several tabs. Everything
-here is imported by two or more tab modules; anything used by exactly one belongs
-with that tab instead.
-
-`sorta.ui` re-exports all of it, so `ui._connect`, `ui._page_payload`,
-`ui._thumb_cache_clear` and the rest keep the names they were imported by.
+The package is split by TAB, not by layer. Everything here is imported by two or more
+tab modules; anything used by exactly one belongs with that tab instead. `sorta.ui`
+re-exports all of it under the old names.
 """
 from __future__ import annotations
 
@@ -29,8 +23,8 @@ from ..config import Config
 from ..sorter import Destination, destinations
 
 
-# Named, not `__name__`: the web app logs under one name however many modules it is cut
-# into, and that name is the one every log line carried before F182 split the file.
+# Named, not `__name__`: the web app logs under one name however many modules F182 cut
+# it into, and that name is the one every log line carried before the split.
 _log = logging.getLogger("sorta.ui")
 
 DEFAULT_PORT = 8756
@@ -39,13 +33,13 @@ _CLUSTER_SAMPLE_LIMIT = 6
 _EVENT_SAMPLE_LIMIT = 8
 _SUPPORTED_MODES = ("city", "person", "event")
 _DEFAULT_ALBUM_DIRNAME = "_Альбомы"
-# F70: `/api/plan` never serves a whole mode again — a category page is bounded by a
-# default and a hard maximum, so no query can ask the server for 26k items at once.
+# F70: bounded by a default and a hard maximum, so no query can ask the server for the
+# whole mode — 26k items at once, before this.
 _PLAN_PAGE_DEFAULT_LIMIT = 200
 _PLAN_PAGE_MAX_LIMIT = 1000
 
-# F39: UI switcher languages — the same three as i18n.Lang; self-names for the
-# selector options (not translated — this is a language's name in that language).
+# F39: the same three as i18n.Lang. Self-names are not translated — this is a
+# language's name in that language.
 _UI_LANGS: tuple[str, ...] = ("ru", "en", "ja")
 _LANG_SELF_NAMES: dict[str, str] = {"ru": "Русский", "en": "English", "ja": "日本語"}
 
@@ -57,15 +51,8 @@ def _parse_page_window(query: dict[str, list[str]],
                        ) -> tuple[int, int] | None:
     """(offset, limit) for any paged route, or None -> 400.
 
-    A missing parameter falls back to the default; a non-integer or negative one is
-    rejected rather than coerced — the one outcome that must never happen is quietly
-    serving the whole category. A limit above the maximum is clamped, not rejected:
-    an over-eager client gets less data, not an error.
-
-    F173: `default_limit` is an argument because one route's page size is a setting rather
-    than a constant — search opens to `features.search_page`. Everything else about the
-    window is the same rule for every list, which is the point: a slice added tomorrow
-    gets a validated window by calling this, not by writing a fourth copy of it.
+    A bad parameter is rejected rather than coerced; a limit over the maximum is
+    clamped instead, so an over-eager client gets less data, not an error.
     """
     raw_offset = (query.get("offset") or ["0"])[0]
     raw_limit = (query.get("limit") or [str(default_limit)])[0].strip()
@@ -79,17 +66,10 @@ def _parse_page_window(query: dict[str, list[str]],
 
 
 def _page_payload(items: list[dict], *, total: int, offset: int, limit: int) -> dict:
-    """The five keys every paged slice answers with — F173's shared half on the server.
+    """The five keys every paged slice answers with (F173).
 
-    Two of them are the feature. `total` is the length of the LIST, never the length of
-    this page: "showing 200" and "there are 200" read identically, and for a ranking the
-    second is almost never true. `has_more` is computed here, from the window the server
-    actually served, so the button on the screen cannot disagree with the data behind it —
-    a client deciding for itself would have to keep a running count and would be wrong the
-    first time a page came back short.
-
-    A slice merges its own keys into the result (`animals`, `counts`, the state of the
-    search index): what is shared is the paging, not the payload.
+    `total` is the length of the LIST, never of this page; `has_more` is computed from
+    the window the server actually served, so the button cannot disagree with the data.
     """
     return {
         "items": items,
@@ -103,9 +83,8 @@ def _page_payload(items: list[dict], *, total: int, offset: int, limit: int) -> 
 def _resolve_path(db_path: Path, file_id: int) -> Path | None:
     """The only legitimate way to reach a file on disk — by id from files.
 
-    Opens a short-lived connection per call: ThreadingHTTPServer request handlers
-    each run on their own thread, and an sqlite3 connection from another (calling)
-    thread must not be passed here (see PlanCache).
+    Opens its own connection: a ThreadingHTTPServer handler runs on its own thread and
+    an sqlite3 connection may not cross threads (see PlanCache).
     """
     conn = sqlite3.connect(str(db_path))
     try:
@@ -123,42 +102,33 @@ def _parse_file_id(raw: str) -> int | None:
         return None
 
 
-# F42: the People tab renders ~48 cluster cards at once (with
-# _CLUSTER_SAMPLE_LIMIT previews each) -> ~288 concurrent GET /thumb/<id>.
-# ThreadingHTTPServer spawns a thread per request — without a cache each request
-# re-runs decode_rgb + JPEG-encode, hundreds of parallel decodes saturate the CPU,
-# the server stops responding. Two independent measures:
-# (1) _thumb_cache — an LRU of ready JPEG bytes by (file_id, mtime): a repeated/
-#     concurrent request for the same frame never reaches imaging at all;
-# (2) _thumb_decode_semaphore — limits the number of decode+encode running
-#     CONCURRENTLY (not the total number of requests) — while the cache warms up,
-#     a request spike does not spawn hundreds of CPU-heavy decodes at once.
+# F42: the People tab renders ~48 cluster cards with _CLUSTER_SAMPLE_LIMIT previews
+# each -> ~288 concurrent GET /thumb/<id>, one thread per request. Without a cache each
+# one re-runs decode_rgb + JPEG-encode and the parallel decodes saturate the CPU until
+# the server stops responding. Hence two independent measures: the LRU below, and a
+# semaphore that bounds how many decodes run AT ONCE while the cache is still cold.
 _THUMB_CACHE_MAX_ITEMS = 512
 _THUMB_DECODE_CONCURRENCY = max(2, min(8, os.cpu_count() or 4))
-# Lightbox (F42/follow-up): a large DECODED JPEG instead of the raw original
-# (`/photo`) — the browser cannot do HEIC/RAW, but decode_rgb can. Frames are viewed
-# one at a time, so the cache is smaller than the thumbnail one; the edge is larger.
+# The lightbox serves a large DECODED JPEG rather than the raw original (`/photo`):
+# the browser cannot do HEIC/RAW, decode_rgb can. Frames are viewed one at a time, so
+# fewer entries at a bigger edge than the thumbnails.
 _PREVIEW_MAX_EDGE = 1600
 _PREVIEW_CACHE_MAX_ITEMS = 64
 
-# F80: the key carries the frame index too — a clip has one tile but a whole
-# filmstrip behind the lightbox, and every frame of it is a separate JPEG. Photos and
-# tiles are simply always frame 0.
+# F80: the key carries the frame index — a clip has one tile but a whole filmstrip
+# behind the lightbox, each frame a separate JPEG. Photos and tiles are always frame 0.
 _ImgCacheKey = tuple[int, float, int]
 _ThumbCacheKey = _ImgCacheKey  # name backward-compatibility
 _thumb_cache: OrderedDict[_ImgCacheKey, bytes] = OrderedDict()
 _thumb_cache_lock = threading.Lock()
 _preview_cache: OrderedDict[_ImgCacheKey, bytes] = OrderedDict()
 _preview_cache_lock = threading.Lock()
-# a shared semaphore: limits the TOTAL number of concurrent decode+encode (thumb and
-# preview together), so a request spike does not spawn hundreds of CPU-heavy decodes.
+# Shared: the bound is on thumb and preview decodes TOGETHER.
 _thumb_decode_semaphore = threading.Semaphore(_THUMB_DECODE_CONCURRENCY)
 
 
 def _thumb_cache_clear() -> None:
-    """Clear the in-process caches of decoded images (thumbnails + previews).
-    Tests — isolation between cases; a DB reset — so a frame of a wiped id is not
-    served (the mtime key almost rules out a collision anyway, but we clear for rigor)."""
+    """Clear the in-process caches of decoded images (thumbnails + previews)."""
     with _thumb_cache_lock:
         _thumb_cache.clear()
     with _preview_cache_lock:
@@ -172,10 +142,9 @@ def _encode_jpeg_cached(
 ) -> bytes | None:
     """Ready JPEG bytes of a frame (decoded to max_edge), from cache or by decoding.
 
-    The key (file_id, mtime, frame) — a change of mtime naturally invalidates the
-    entry. A cache miss is rechecked AFTER acquiring the semaphore (another thread may
-    have decoded and cached the same key while the current one waited in the queue) —
-    avoids a needless re-decode under a request spike for one frame.
+    Keyed by (file_id, mtime, frame), so a changed mtime invalidates the entry. The
+    miss is rechecked AFTER the semaphore: another thread may have decoded the same key
+    while this one queued, and a spike on one frame must not decode it twice.
     """
     try:
         stat = path.stat()
@@ -195,11 +164,9 @@ def _encode_jpeg_cached(
             if cached is not None:
                 cache.move_to_end(key)
                 return cached
-        # F67: a gallery of thousands of tiles used to pay a full decode of the
-        # ORIGINAL per tile (180-470 ms) — the preview cache turns that into a few ms
-        # once the frame has been touched by any stage.
-        # F80: video_frame with frame=0 IS decode_rgb_preview (photos included), so
-        # every tile and the whole photo path stay on exactly the previous code.
+        # F67: a full decode of the ORIGINAL per tile cost 180-470 ms; the preview
+        # cache turns that into a few ms once any stage has touched the frame.
+        # F80: video_frame with frame=0 IS decode_rgb_preview, photos included.
         img = imaging.video_frame(
             path, mtime, stat.st_size, frame, max_edge=max_edge)
         if img is None:
@@ -228,7 +195,7 @@ def _preview_bytes(file_id: int, path: Path, frame: int = 0) -> bytes | None:
     """A large decoded JPEG for the lightbox (HEIC/RAW are rendered too).
 
     F80: `frame` > 0 asks for that frame of a clip's filmstrip — the same cache, one
-    entry per frame (a strip is at most SORTA_VIDEO_FRAMES of them).
+    entry per frame (at most SORTA_VIDEO_FRAMES of them).
     """
     return _encode_jpeg_cached(
         file_id, path, max_edge=_PREVIEW_MAX_EDGE, quality=88,
@@ -237,8 +204,7 @@ def _preview_bytes(file_id: int, path: Path, frame: int = 0) -> bytes | None:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    """A short-lived per-call connection (see _resolve_path — the same reason:
-    sqlite3 connections are not transferable between ThreadingHTTPServer threads)."""
+    """A short-lived per-call connection (see _resolve_path for why per call)."""
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
@@ -247,17 +213,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 def _trash_files(db_path: Path, ids: list[int]) -> list[dict]:
     """The single trash path: ids -> OS trash + DELETE of their files/dedup_choice rows.
 
-    Reused by group deletion of duplicates (`_trash_group`, U3) and by deletion of a
-    single frame (`/api/photo/trash`, U4). An id outside the current files (already
-    deleted/unknown) is silently skipped — idempotent on a repeated call.
-
-    F210: the frame's PREVIEW goes with it. The preview key is a hash of
-    (path, mtime, size), and after `send2trash` not one of the three can be read off the
-    disk any more — so the row, which still holds all three, is what the key is computed
-    from, and the removal itself happens once the original is in the bin (nothing can
-    regenerate a preview of a file that is no longer there). A preview that will not go —
-    missing, locked, unwritable — is not an error: `imaging.preview_delete` never raises,
-    because the tidying of a derivative may not stop the deletion of the original.
+    An id outside the current files is silently skipped — idempotent on a repeat.
+    F210: the frame's preview goes with it, keyed off the ROW (path, mtime, size),
+    because after `send2trash` none of the three can be read off the disk any more.
     """
     if not ids:
         return []
@@ -277,11 +235,9 @@ def _trash_files(db_path: Path, ids: list[int]) -> list[dict]:
             ph2 = ",".join("?" * len(found_ids))
             with conn:
                 conn.execute(f"DELETE FROM dedup_choice WHERE file_id IN ({ph2})", found_ids)
-                # F149: both directions. Trashing a processed copy has to forget that it
-                # existed (otherwise the button keeps answering "you already have one" for
-                # a file that is gone), and trashing an ORIGINAL leaves its copy an
-                # ordinary photograph — the derivation is a fact about a pair, and one half
-                # of it is no longer there.
+                # F149: both directions. The derivation is a fact about a PAIR, so
+                # either half going to the bin ends it — otherwise the button keeps
+                # answering "you already have one" about a file that is gone.
                 conn.execute(
                     f"DELETE FROM restored_files "
                     f"WHERE file_id IN ({ph2}) OR source_file_id IN ({ph2})",
@@ -306,7 +262,7 @@ def _validate_file_ids_payload(payload: object) -> list[int] | None:
     """Parse the body `{"file_ids": [int, ...]}` (bulk deletion of the selected).
 
     None -> invalid (not dict / not a non-empty list of int without bool). Duplicates
-    are collapsed, order is preserved — `_trash_files` itself ignores ids outside the DB.
+    are collapsed, order is preserved.
     """
     if not isinstance(payload, dict):
         return None
@@ -324,32 +280,21 @@ def _validate_file_ids_payload(payload: object) -> list[int] | None:
     return ids
 
 
-# --- F174: an action says WHERE the frame goes --------------------------------------
-# Two of the marks the slices offer read as one movement to the person making it ("this
-# frame does not belong in this slice"), and neither of them said where the frame ends
-# up. Worse, they are not the same movement at all: taking an animal mark off changes
-# a MEMBERSHIP and moves no file, while returning a product to the photos is a real
-# transfer out of «_Товары» into a city on the next `sort --apply`. The fix is language,
-# not storage — `manual_pet` and `manual_overrides` stay two tables.
-#
-# The folder name comes from `sorter.destinations`, i.e. from the code that builds the
-# plan, never from a rule spelled a second time here. `city` is the mode because it is
-# the mode the web app applies (see `_run_sort`), so the caption is about the layout the
-# button will actually produce.
+# F174: `city` is the mode the web app applies (see `_run_sort`), so the caption is
+# about the layout the button will actually produce. The folder name itself comes from
+# `sorter.destinations` — never from a rule spelled a second time here.
 _DEST_MODE = "city"
 
-# The plan's reason codes, grouped into the handful of answers a BULK caption can state:
-# "12 frames will return: 7 into cities, 5 into no_place" is what the person needs before
-# selecting dozens at once, and one folder name out of twelve would simply mislead them.
-# A reason nobody grouped lands in `other` rather than being dropped — a group that
-# silently loses frames would make the counts stop adding up to the selection.
+# The plan's reason codes, grouped into the few answers a BULK caption can state
+# ("12 frames will return: 7 into cities, 5 into no_place"). A reason nobody grouped
+# lands in `other` rather than being dropped: a group that silently loses frames would
+# make the counts stop adding up to the selection.
 _DEST_GROUPS: dict[str, str] = {
     "city": "city",
     "manual_reassign": "city",
     "country_only": "country",
-    # F202: the third level of the place layout is a group of its own — folding it into
-    # `country` would make the caption say "to the country level" about frames that land
-    # a folder deeper, in a region the user named themselves.
+    # F202: its own group — folded into `country` the caption would say "to the country
+    # level" about frames that land a folder deeper, in a region the user named.
     "region_only": "region",
     "no_place": "no_place",
     "low_date": "undated",
@@ -360,10 +305,8 @@ _DEST_GROUPS: dict[str, str] = {
 def _destination_json(dest: Destination | None) -> dict:
     """The three fields a card needs to name its destination, or empty for an unknown id.
 
-    `folder` is what the caption prints, `reason` is what the explanation under it is
-    looked up by (`dest_why_<reason>`, the `junk_bucket_<verdict>` pattern), and `group`
-    is what the bulk breakdown counts. All three are decided HERE: a client that derived
-    the group from the folder name would be a second copy of the layout rules, in JS.
+    All three are decided here: a client deriving `dest_group` from the folder name
+    would be a second copy of the layout rules, in JS.
     """
     if dest is None:
         return {}
@@ -378,11 +321,9 @@ def _destinations_for(cfg: Config, conn: sqlite3.Connection, rows: list[sqlite3.
                       assume_action: str | None = None) -> dict[int, Destination]:
     """`sorter.destinations` over the ids of one PAGE of cards, on the open connection.
 
-    Bounded by the page the client asked for, so the cost does not grow with the archive.
-    A failure to compute it is not a failure to show the page: geo data may be missing
-    (`GeoResolver`) or the layout may raise on a config the slice has no say over, and a
-    grid that 500s because a caption could not be phrased is worse than a grid without
-    the caption. The cards then simply carry no `dest` field.
+    Failing to compute it is not failing to show the page — the cards simply carry no
+    `dest` field. Geo data may be missing, or the layout may raise on a config the
+    slice has no say over.
     """
     if not rows:
         return {}
@@ -405,10 +346,9 @@ def _parse_file_id_query(query: dict[str, list[str]]) -> int | None:
 def _is_under(path: str, directory: str) -> bool:
     """Is `path` inside `directory`? A comparison of two strings, never of the disk.
 
-    `files.path` is written by the indexer with the separators of the machine that
-    indexed it, and the folder arrives from the client's own tree, so both are
-    normalized (case and separator) before the prefix test. The boundary character is
-    required — `/Photos/Greece2019` must not count as being inside `/Photos/Greece`.
+    Both sides are normalized (case and separator) first: `files.path` carries the
+    separators of the machine that indexed it. The boundary character is required —
+    `/Photos/Greece2019` is not inside `/Photos/Greece`.
     """
     root = os.path.normcase(directory.rstrip("\\/"))
     target = os.path.normcase(path)
@@ -418,33 +358,23 @@ def _is_under(path: str, directory: str) -> bool:
 
 
 # The population every per-file number is counted over — exactly the files the sorter
-# lays out (`plan_and_sort`), so a counter here matches what an apply will carry off.
+# lays out, so a counter here matches what an apply will carry off.
 _OVERVIEW_LIVE = "f.dup_of IS NULL AND f.error IS NULL"
 
 
 # --- F227: what the launch is doing, while it is still doing it ----------------------
 #
-# The tray entry point binds the port FIRST and does its diagnostics afterwards, because
-# none of them is needed to answer an HTTP request: `warn_if_gpu_mismatch` alone was
-# 3.76 s of a 5.65 s start-up, all of it the torch import. What that buys is a tab that
-# opens in the first second. What it costs is a tab that opens onto a program still
-# getting ready — and a page that silently shows a half-warmed program is how "it is
-# broken" gets reported for something that was merely not finished.
+# The tray entry point binds the port FIRST and runs its diagnostics after, because none
+# of them is needed to answer an HTTP request: `warn_if_gpu_mismatch` alone was 3.76 s of
+# a 5.65 s start-up, all of it the torch import. The cost is a tab that opens onto a
+# program still getting ready, so the launch says where it is: `sorta/tray.py` writes
+# this object, `GET /api/startup` reads it. It lives in `common` because a state the
+# route owned would have to be handed backwards to the code that runs before the route.
 #
-# So the launch says where it is, and this is the object it says it into: the entry point
-# writes it (`sorta/tray.py`), `GET /api/startup` reads it, and the page shows itself when
-# the answer says ready. It lives in `common` because that is the bottom of this package
-# and both halves need it — a state the route owned would have to be handed backwards to
-# the code that runs before the route exists.
-#
-# Deliberately NO percentage. The steps differ in length by two orders of magnitude, so a
-# number derived from "step 5 of 7" would sit at 71% for the four seconds of the torch
-# import and then jump to done. A step NAMED, over a bar that only says "working", is the
-# same news without the lie in it.
-#
-# Also deliberately not the download of a model (F222/F225). That has its own line on the
-# run screen, its own megabytes and its own failure — and a person who cannot tell "the
-# program is starting" from "1.6 GB is coming over the network" has been told nothing.
+# Deliberately NO percentage: the steps differ in length by two orders of magnitude, so
+# "step 5 of 7" would sit at 71% through the four-second torch import and then jump to
+# done. Deliberately not the model download either (F222/F225) — that has its own line,
+# its own megabytes and its own failure on the run screen.
 
 STARTUP_CONFIG = "config"
 STARTUP_PORT = "port"
@@ -454,10 +384,9 @@ STARTUP_ENVIRONMENT = "environment"
 STARTUP_GPU = "gpu"
 STARTUP_GEO = "geo"
 
-# The steps of a launch, in the order it walks them: the first four have to happen before
-# the port answers, the last three are the diagnostics that used to happen before it. The
-# page numbers the current step against this list, and the string catalog owes each name a
-# caption (both are pinned by the suite).
+# In the order the launch walks them: the first four before the port answers, the last
+# three the diagnostics that used to precede it. The page numbers the current step
+# against this list, and the string catalog owes each name a caption.
 STARTUP_STEPS: tuple[str, ...] = (
     STARTUP_CONFIG, STARTUP_PORT, STARTUP_DATABASE, STARTUP_SERVER,
     STARTUP_ENVIRONMENT, STARTUP_GPU, STARTUP_GEO,
@@ -467,12 +396,8 @@ STARTUP_STEPS: tuple[str, ...] = (
 class _StartupState:
     """Which step of the launch is running now, and what each finished one cost.
 
-    Thread-safe because it is written by the launch and by the background thread that
-    finishes it, and read by request handlers on their own threads.
-
-    The default is READY, and that is the important half: `sorta ui` never declares a
-    launch, so a server started any other way answers "nothing is starting" and the page
-    never shows a waiting screen it would have no way out of.
+    The default is READY — `sorta ui` never declares a launch, so a server started any
+    other way never shows a waiting screen it would have no way out of.
     """
 
     def __init__(self) -> None:
@@ -512,8 +437,8 @@ class _StartupState:
         with self._lock:
             self._step = None
             self._ready = True
-            # Frozen here: from now on "how long did the launch take" is a fact about a
-            # launch that is over, not a clock that keeps running while the program serves.
+            # Frozen here: "how long did the launch take" must stop being a clock that
+            # keeps running while the program serves.
             self._total = self._seconds()
 
     def reset(self) -> None:
@@ -552,9 +477,8 @@ class _StartupState:
             }
 
 
-# One process, one launch — so one object, reached through the accessor rather than
-# imported by value: a module that held its own reference would keep answering about a
-# state the tests have since replaced.
+# Reached through the accessor, never imported by value: a module holding its own
+# reference would keep answering about a state the tests have since replaced.
 _startup_state = _StartupState()
 
 

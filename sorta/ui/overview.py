@@ -1,7 +1,6 @@
 """F182: the "Overview" tab — the state of the collection in one screen.
 
-Read-only by construction: it counts what the other tabs produced. That is why it
-imports from `review` and `slices` and nothing imports from it — a number on this
+Imports from `review` and `slices` and is imported by nothing: a number on this
 screen must be the number that tab would show, so it asks that tab's own SQL.
 """
 from __future__ import annotations
@@ -17,18 +16,14 @@ from .slices import _animals_count_sql, _face_slice_count
 from .review import _review_flat_counts
 
 
-# --- F108: the "Overview" tab — the state of the collection in one screen -----------
-# Every number below is a plain aggregate over the index, and the plan is deliberately
-# NOT built: a layout of 24k frames costs minutes, while this is the screen a user opens
-# right AFTER a run to see what changed. Nothing is cached either — a number that is one
-# run out of date answers the question wrongly, which is worse than not answering it.
+# F108: plain aggregates, no plan and no cache. Building a layout costs minutes on 24k
+# frames, and a cached number one run out of date answers the question wrongly.
 #
-# Privacy: aggregates only. No file path and no file id leaves this endpoint; the single
-# path in the payload is the destination FOLDER of the last layout, because "where did it
-# go" is one of the four questions the layout group exists to answer.
+# Privacy: aggregates only. No file path and no file id leaves this endpoint; the one
+# path in the payload is the destination FOLDER of the last layout.
 
-# The order the place groups are shown in: from the place we know exactly, through the
-# ones inherited from a neighbour, down to no place at all.
+# Shown in this order: from the place we know exactly, through the ones inherited from
+# a neighbour, down to no place at all.
 _PLACE_CONFIDENCE_ORDER = ("manual", "exact_gps", "session_inferred", "trip_inferred",
                            "path_inferred", "visual", "unknown")
 
@@ -36,13 +31,10 @@ _PLACE_CONFIDENCE_ORDER = ("manual", "exact_gps", "session_inferred", "trip_infe
 def _media_class_breakdown(conn: sqlite3.Connection, column: str) -> list[dict]:
     """`verdict`/`source`/`tier` -> [{"key": …, "count": n}], the biggest group first.
 
-    The three breakdowns are counted over the same population, so each of them sums to
-    the same `classes.total` — a `tier` split that does not add up to the number of
-    classified files is exactly the confusion this tab exists to remove. `tier` is NULL
-    for rows written before v11; that group travels as `key: null` and the view labels it.
-
-    The column name is interpolated into the SQL — it never comes from a request, the
-    three call sites below pass literals.
+    All three are counted over the same population, so each sums to `classes.total`.
+    `tier` is NULL for rows written before schema v11; that group travels as
+    `key: null`. The column name is interpolated into the SQL — it never comes from a
+    request, the three call sites pass literals.
     """
     rows = conn.execute(
         f"""SELECT mc.{column} AS key, COUNT(*) AS n
@@ -57,11 +49,11 @@ def _media_class_breakdown(conn: sqlite3.Connection, column: str) -> list[dict]:
 def _overview_place(conn: sqlite3.Connection) -> dict:
     """The place group: how each frame got its place, and how many have none at all.
 
-    A manual place (F85c) wins over `places` as a whole, exactly as the sorter reads it —
-    otherwise a frame the user placed by hand would be counted here as placeless. The
-    `no_place` rule is `sorter._target_parts` verbatim: an unknown confidence, or neither
-    a city nor a country. Every one of those frames ends up in `_Unsorted/no_place`, which
-    is why this is the one number of the group that is shown even when it is zero.
+    A manual place (F85c) wins over `places` as a whole, as the sorter reads it —
+    otherwise a frame the user placed by hand would count as placeless. The `no_place`
+    rule is `sorter._target_parts` verbatim: an unknown confidence, or neither a city
+    nor a country. Those frames land in `_Unsorted/no_place`, which is why this number
+    is shown even when it is zero.
     """
     total = conn.execute(
         f"SELECT COUNT(*) FROM files f WHERE {_OVERVIEW_LIVE}").fetchone()[0]
@@ -88,8 +80,8 @@ def _overview_place(conn: sqlite3.Connection) -> dict:
         count = counts.pop(key, 0)
         if count:
             confidence.append({"key": key, "count": count})
-    # A confidence value this list does not know about is still shown, under its raw name:
-    # a place the index carries must never be invisible here.
+    # A confidence this list does not know is still shown, under its raw name: a place
+    # the index carries must never be invisible here.
     confidence += [{"key": key, "count": count}
                    for key, count in sorted(counts.items()) if count]
     return {
@@ -103,8 +95,8 @@ def _overview_place(conn: sqlite3.Connection) -> dict:
 def _overview_layout(conn: sqlite3.Connection) -> dict:
     """The layout group: was anything moved, when, where, how, and was it finished.
 
-    Only the LAST batch is described. `finished_at IS NULL` is the trace of an interrupted
-    run — the tab says so explicitly instead of showing a batch that merely looks normal.
+    Only the LAST batch is described. `finished_at IS NULL` is the trace of an
+    interrupted run, and the tab says so rather than showing a batch that looks normal.
     """
     batches = conn.execute("SELECT COUNT(*) FROM move_batches").fetchone()[0]
     unfinished = conn.execute(
@@ -134,25 +126,13 @@ def _overview_layout(conn: sqlite3.Connection) -> dict:
 def _overview_payload(db_path: Path, cfg: Config) -> dict:
     """`GET /api/overview` — the four groups of numbers the tab draws.
 
-    `empty` is the whole answer for a fresh index: the view then invites the user to pick
-    a folder instead of drawing a table of zeros.
-
-    F152: the three face slices are counted here by the same `sorter.face_slice_ids_sql`
-    the panel and the albums use, and they are the one group of rows that can answer
-    `null` — without a faces run they are unmeasured, not empty, and `faces_reason` says
-    so. `cfg` (rather than the single `blur_max` this used to take) is what carries the
-    thresholds those three rules read.
-
-    F126: the flat review slices are counted here too, by the SAME queries the
-    workspace itself uses (`_review_flat_counts`) — a counter that disagrees with the
-    list it links to is worse than no counter. The blur window comes from the same
-    `features` (`blur_review_max`), so this row and that list say one number. The
-    duplicates row above stays what it always was: exact copies found by hash, not the
-    phash groups of the workspace, which cost seconds to build and have no place on a
-    tab made of plain aggregates.
+    Every counted row runs the query its own tab runs — face slices through
+    `sorter.face_slice_ids_sql` (F152), the flat review slices through
+    `_review_flat_counts` (F126). The face slices are the one group that can answer
+    `null`: without a faces run they are unmeasured, not empty. `duplicates` is exact
+    copies found by hash, not the phash groups of the workspace, which cost seconds to
+    build and have no place on a tab made of plain aggregates.
     """
-    # F137 needs the thresholds and F152 needs them too, so the whole config comes in and
-    # the features are unpacked once here rather than threaded as a second argument.
     features = cfg.features
     conn = _connect(db_path)
     try:
@@ -164,11 +144,9 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
                       COALESCE(SUM(error IS NOT NULL), 0) AS errors
                FROM files""").fetchone()
         events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        # F123: counted over the same population as the "Animals" tab and the animal
-        # album, so the three cannot disagree. F124: which now means the one shared rule
-        # (`_animals_count_sql` -> `sorter.animal_ids_sql`) — a frame the user unmarked
-        # leaves this number exactly as it leaves the album. F137: and a threshold the
-        # user edited moves it here, in the tab and in the album together.
+        # F123/F124/F137: one shared rule (`_animals_count_sql` ->
+        # `sorter.animal_ids_sql`), so an unmarked frame or an edited threshold moves
+        # this number, the "Animals" tab and the animal album together.
         animals = conn.execute(_animals_count_sql(cfg)).fetchone()[0]
         faces_ran = faces_stage_ran(conn)
         faces_counts: dict[str, int | None] = {
@@ -190,9 +168,8 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
             "verdicts": _media_class_breakdown(conn, "verdict"),
             "sources": _media_class_breakdown(conn, "source"),
             "tiers": tiers,
-            # "Did the deep tier run at all" — the question that used to be answered by a
-            # query into the database. A file the vlm tier deliberately skipped keeps
-            # source='clip' but tier='vlm', so the TIER is what answers it (schema v11).
+            # A file the vlm tier deliberately skipped keeps source='clip' but
+            # tier='vlm', so the TIER answers "did the deep tier run" (schema v11).
             "vlm_ran": any(t["key"] == "vlm" for t in tiers),
             "updated_at": updated_at,
         }
@@ -209,16 +186,14 @@ def _overview_payload(db_path: Path, cfg: Config) -> dict:
             "errors": int(files["errors"]),
             "events": int(events),
             "animals": int(animals),
-            # F152: `null` where the faces stage never ran — the F125 rule, and the same
-            # distinction `/api/face-slices` draws between "none" and "not asked".
+            # F152: `null` where the faces stage never ran — "none" and "not asked" are
+            # different answers, as in `/api/face-slices`.
             "with_people": faces_counts["people"],
             "group_photos": faces_counts["group"],
             "portraits": faces_counts["portrait"],
             "faces_reason": None if faces_ran else "no_faces_run",
             "blurred": review["blurred"],
             "eyes_closed": review["eyes"],
-            # F150: the same query the slice itself runs, so the row and the list it
-            # links to cannot say two different numbers.
             "low_resolution": review["low_resolution"],
         },
         "place": place,
