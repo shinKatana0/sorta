@@ -643,6 +643,14 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "「{stage}」ステージ用のモデルをダウンロードしています: {weights}"
               "（約 {size}）。これは初回のみで、以降はディスクから読み込まれます。",
     },
+    # F225: ...and how far it has got, while it is getting there. The sentence above is
+    # printed once; without this one the console then says nothing for the twenty minutes
+    # the gigabytes take, which is what the run screen was reported as hanging for.
+    "cli.download.progress": {
+        "ru": "  …скачано {done} из {size}",
+        "en": "  …{done} of {size} so far",
+        "ja": "  …{size} 中 {done} まで取得",
+    },
     # The one a person actually meets. What they used to get was
     # `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` — no stage, no model, no
     # size, nothing to do about it. The traceback stays in the log.

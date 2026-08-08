@@ -463,18 +463,25 @@ def _build_clip(cfg, stage: str) -> Classifier:
     attempt. A model that is already on disk and still will not load failed for some
     other reason, and dressing that up as a download problem would send a person to check
     a network connection that is fine.
+
+    F225: while the download lasts, how much of it has arrived — the same measurement the
+    run screen and the setup wizard show, so a run started from a terminal is not the one
+    place left where 1.6 GB arrives in silence.
     """
     lang = _lang(cfg)
     pending = tiers.stage_downloads(stage)
-    if pending:
-        print(tiers.download_notice(stage, pending, lang))
-    try:
+    if not pending:
         return clip_classifier(naming_settings(cfg))
-    except Exception as exc:
-        if not pending:
-            raise
-        _log.exception("не удалось скачать веса для стадии %r", stage)
-        raise SystemExit(tiers.download_failure(stage, pending, lang, exc)) from exc
+    print(tiers.download_notice(stage, pending, lang))
+    built: list[Classifier] = []
+    failure = tiers.watch_download(
+        lambda: built.append(clip_classifier(naming_settings(cfg))),
+        lambda done: print(tiers.download_progress(pending, done, lang)))
+    if failure is not None:
+        _log.error("не удалось скачать веса для стадии %r", stage, exc_info=failure)
+        raise SystemExit(
+            tiers.download_failure(stage, pending, lang, failure)) from failure
+    return built[0]
 
 
 class _LazySharedClassifier:

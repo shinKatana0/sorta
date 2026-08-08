@@ -300,6 +300,28 @@ class TestTheRunScreenShowsItMoving(ProcessTestBase):
         self.assertIn("ViT-L-14", message)
         self.assertIn("CERTIFICATE_VERIFY_FAILED", message)
 
+    def test_a_run_from_a_terminal_says_it_too(self):
+        """The third screen a download can happen on: `sorta run` in a console."""
+        printed: list[str] = []
+        arrived = iter([0, 800_000_000])
+        cfg = ui.process.Config()
+        with mock.patch.object(cli, "clip_classifier", lambda settings: None):
+            with mock.patch.object(cli.tiers, "stage_downloads",
+                                   return_value=("ViT-L-14",)):
+                with mock.patch.object(tiers.threading, "Thread", _StepThread):
+                    with mock.patch.object(tiers, "downloaded_bytes",
+                                           side_effect=list(arrived)):
+                        with mock.patch("builtins.print", side_effect=printed.append):
+                            cli._build_clip(cfg, "classify")
+        self.assertIn(tiers.download_progress(("ViT-L-14",), 800_000_000, "en"), printed)
+
+    def test_the_console_progress_exists_in_three_languages(self):
+        for lang in _LANGS:
+            with self.subTest(lang=lang):
+                text = i18n.cli_text("cli.download.progress", lang, done="1", size="2")
+                self.assertIn("1", text)
+                self.assertIn("2", text)
+
     def test_the_page_says_how_much_of_it_has_arrived(self):
         source = _APP_JS.read_text(encoding="utf-8")
         self.assertIn("I18N.download_progress", source)

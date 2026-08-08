@@ -476,6 +476,13 @@ def download_notice(stage: str, weights: Sequence[str], lang: i18n.Lang) -> str:
                          size=wizard.human_size(weights_size_mb(weights), lang))
 
 
+def download_progress(weights: Sequence[str], done: int, lang: i18n.Lang) -> str:
+    """«X of Y so far» — the same measurement the run screen draws, said in a console."""
+    return i18n.cli_text("cli.download.progress", lang,
+                         done=wizard.human_size(done // MB, lang),
+                         size=wizard.human_size(weights_size_mb(weights), lang))
+
+
 def download_failure(stage: str, weights: Sequence[str], lang: i18n.Lang,
                      error: object) -> str:
     """The refusal in words: the stage, the model, the size and the way out."""

@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A download is carried to the end, and it is on screen while it happens** (F225). Four
+  defects of one line, found in a clean virtual machine on 2026-08-08 — the third attempt
+  to check the installer.
+  **1. A run started from the shortcut died on the first line of progress a library
+  printed.** The shortcut runs `pythonw.exe`, a windowed interpreter starts with
+  `sys.stdout` and `sys.stderr` set to **None**, and the run happens on a thread of that
+  process — so huggingface_hub's progress bar ended a 1.6 GB download with
+  `'NoneType' object has no attribute 'write'`. The network, the certificates and the disk
+  were all fine: **there was nowhere to print the percentage to.** The fix is at the entry
+  point rather than at the call that raised, because the next library to print a line
+  arrives with the next version of `transformers`: `sorta-tray` now gives the process both
+  streams, and what they carry goes to the run log (`%LOCALAPPDATA%\sorta\logs\sorta.log`)
+  — a line nobody can be shown is still the line somebody reads afterwards.
+  **2. The 1.6 GB travelled with nothing moving on the run screen.** F222 announced the
+  download before it started and then the sentence never changed, which reads as a hang
+  for exactly as long as the download lasts. The run screen and the setup wizard now say
+  **"X of Y so far"**, refreshed at least every 5 seconds, from **one** measurement —
+  bytes counted on the disk (`tiers.downloaded_bytes`), because that works for insightface
+  too, which draws no progress bar at all, and does not break when somebody else's bar
+  changes shape. The line disappears when the download ends; a refusal by the network is
+  still a sentence naming the stage, the model and the size.
+  **3. The wizard asked which tiers to download and downloaded one of the four.**
+  "In `sorta setup` I choose what to download — and where is the download itself? why does
+  the window simply close on Enter?" Only `ViT-L-14` had a downloader behind it, so
+  `faces` (400 MB), `search` (1.4 GB) and `deep` (7.0 GB) printed *"the weights download
+  the first time the stage that needs them runs"* and closed. **Every tier of the catalog
+  now has a downloader** — buffalo_l through insightface, XLM-RoBERTa through open_clip,
+  Qwen2.5-VL through the hub, all named from the config rather than from a string in the
+  code — and a yes is a download, at the screen, with progress. The 7.0 GB one says before
+  it starts that it will take tens of minutes. The test that would have caught this is
+  widened from *"a tier that preloads has a downloader"* to **"every tier that carries
+  weights has one"**. A network that refuses still leaves the install whole: the tier is
+  reported as skipped, the exit code stays 0, and the stage fetches the model on its
+  first run.
+  **4. `doctor` and the wizard gave two answers in ONE output**, four lines apart — "the
+  models (ViT-L-14, 1.6 GB) download on the first run of the stage" and "already in place
+  — nothing to download". Two probes of the same disk, taken a moment apart, can answer
+  twice; **there is one probe now**, taken by the wizard and handed to the check screen.
+  Underneath it was a worse defect: the probe called a **directory** a downloaded model,
+  and an interrupted download leaves one behind — `models--timm--vit_large_...openai` with
+  an empty snapshot and a `.incomplete` blob inside. That machine would have been told
+  "everything is in place" for ever while the stage failed on every run. **A partial
+  download is now reported as no download**: the rule looks for a finished file where the
+  loader reads them from and for nothing still being written, and `sorta cache --models`
+  shares it, so the uninstaller and the doctor cannot describe one directory two ways.
+  Every test here fakes the state of the disk — an empty cache, a `.incomplete` blob,
+  `sys.stdout is None` — because none of it reproduces on a machine that already has the
+  weights and runs its programs from a console, and that is how the whole class survived
+  three releases.
 - **Uninstalling can leave nothing behind — and it asks first** (F224). The owner cleaned
   a virtual machine for a repeat test on 2026-08-07 and measured what `unins000.exe` had
   left on it: **10.7 GB of model weights** in caches named after nobody
