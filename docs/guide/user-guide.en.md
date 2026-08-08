@@ -3,7 +3,7 @@
 > Languages: **English** · [Русский](user-guide.ru.md) · [日本語](user-guide.ja.md)
 
 Sorta is a command‑line and local‑web tool that **indexes a large photo/video
-collection** (tested on 60+ GB, designed for 300+ GB) and **sorts the files into a
+collection** (tested on 380 GB — 38,485 files) and **sorts the files into a
 new folder structure** — by **city/country**, by **person**, or by **event** — with
 full safety guarantees (dry‑run by default, a move journal, and one‑command undo).
 
@@ -50,7 +50,7 @@ full safety guarantees (dry‑run by default, a move journal, and one‑command 
 
 | Component | Requirement |
 |---|---|
-| OS | Windows, Linux or macOS |
+| OS | Windows or Linux (see the note on macOS below) |
 | Python | 3.11 – 3.14 (`requires-python >=3.11,<3.15`) |
 | Package/env manager | [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip` |
 | `exiftool` | **Required** for HEIC/RAW/video metadata (dates, GPS, orientation) — essentially any modern phone photo. Without it Sorta falls back to Pillow, which only reads JPEG/PNG/TIFF/WEBP and no video. |
@@ -71,6 +71,12 @@ The timings and VRAM figures are observations from our hardware, not a guarantee
 your mileage will vary with collection composition (video previews, RAW files, and
 faces per photo are the main cost drivers).
 
+**macOS is not promised.** There is no Mac here to check on, so nothing about it has been
+verified: the accelerator module carries the Metal/CoreML rungs, and the `macos-latest`
+job in CI is marked **advisory** for exactly that reason — it reports, and its answer
+decides nothing. Read that as *untested*, not as *supported*; the paths, commands and
+numbers in this guide are Windows and Linux.
+
 ---
 
 ## 3. Installation
@@ -84,7 +90,7 @@ cd sorta
 # Install exiftool — REQUIRED for HEIC/RAW/video metadata:
 #   Windows: winget install OliverBetz.ExifTool
 #   Debian/Ubuntu: sudo apt install libimage-exiftool-perl
-#   macOS: brew install exiftool
+# (the Windows installer, §3.7, carries its own copy — this step is for a checkout)
 
 # Create your config from the template
 cp config.example.yaml config.yaml
@@ -94,6 +100,22 @@ Without `exiftool` Sorta falls back to Pillow, which reads JPEG/PNG/TIFF/WEBP on
 no video at all, and no dates, GPS or orientation from HEIC/RAW. On a phone
 collection that is most of the metadata Sorta sorts by, so treat it as required, not
 optional.
+
+**There are exactly three shapes of an install, and a command that works on one may not
+exist on another.** Every piece of advice below — and every hint the program itself
+prints — names the form it belongs to, so check which one you are on before copying a
+line out of here:
+
+| form | what it is | how tiers and profiles are changed |
+|---|---|---|
+| a checkout | the sources plus a project venv (§3.4) | `uv sync --extra gpu --extra dev` |
+| `uv tool install` | a wheel on your PATH, no project directory (§3.3) | `uv tool install --force "…[gpu]"` |
+| an installed copy | what `sorta-<version>-setup.exe` leaves behind (§3.7) | `sorta-setup --tiers gpu` |
+
+`sorta doctor` names which of the three it is running from — the `install:` half of its
+`install profile:` line (§3.5) — and every repair command it suggests is chosen by that
+answer. An installed copy has no project directory and no `dev` extra, so `uv sync` is
+not a thing it can be told to run.
 
 ### 3.2 Pick a hardware profile
 
@@ -168,7 +190,7 @@ uv sync --extra cpu --extra dev      # no NVIDIA GPU
 
 # Activate it once per shell session:
 .\.venv\Scripts\Activate.ps1         # Windows PowerShell
-source .venv/bin/activate            # Linux/macOS/bash
+source .venv/bin/activate            # Linux/bash
 ```
 
 `uv sync` is the one that takes `--extra` as a flag, and it needs the profile spelled
@@ -313,6 +335,7 @@ What it puts where:
 | the program (interpreter, packages, `uv`, exiftool) | `%LOCALAPPDATA%\Programs\Sorta` |
 | your settings | `%APPDATA%\sorta\config.yaml` — a copy of `config.example.yaml`, and **never** overwritten by a reinstall |
 | the shortcut | starts `sorta-tray` (§6) — the web app with a tray icon and no console |
+| the Start menu | **Sorta**, **Sorta setup** and **Uninstall Sorta** — the way out is an item beside the way in, not an executable in the install directory |
 | run log, preview cache | `%LOCALAPPDATA%\sorta\...`, exactly as for any other install |
 
 Right after installing, the wizard (`sorta-setup`) prints what `sorta doctor` found and
@@ -331,9 +354,14 @@ not a trimmed one. Any tier can be added later: run **Sorta setup** from the Sta
 (or `sorta-setup`) again. The weights are not inside the installer, which is why the tiers
 are priced in this table rather than in its size.
 
-**A tier you say yes to is downloaded there and then**, with the progress printed line by
-line — where somebody is at the screen and a refusal can be explained on the spot, instead
-of arriving in the middle of a run that looks, from outside, exactly like a hang. The 7 GB
+**Every tier you say yes to is downloaded there and then** — all of them, not just the
+first — where somebody is at the screen and a refusal can be explained on the spot,
+instead of arriving in the middle of a run that looks, from outside, exactly like a hang.
+Each download reports itself on **one line, redrawn in place** ("X of Y so far", at least
+every 5 seconds), counted off the bytes on disk across all three caches Sorta's models can
+land in; the libraries' own progress bars are silenced for the duration, so what you watch
+is one counter and not three. Anywhere the output is collected rather than displayed — the
+run log, another screen — the same line simply arrives as separate lines. The 7 GB
 one says before it starts that it will take tens of minutes. Answering no is still allowed
 and costs only the timing: the stage fetches the same file on its first run, and the run
 screen says so before it starts and shows how much of it has arrived (§6). If the download
@@ -492,6 +520,30 @@ The web UI is the easiest path and needs no terminal knowledge beyond starting i
 sorta ui                       # opens a local server on http://127.0.0.1:8756
 ```
 
+**What a launch does, in the order it does it** (F227). From the installer's shortcut
+there is no console to read and the first launch is the slow one — 5.65 s to a bound port
+on a fast machine with the payload interpreter, and tens of seconds on a virtual machine
+with a cold disk. So:
+
+- a small **"Sorta is starting"** window goes up *before* the program itself is imported.
+  It lives in a process of its own and closes as soon as the tab has been asked for;
+- **the port is the first question asked**, before the config, the index or anything
+  heavy. A **second click on the shortcut therefore costs a TCP connect** and opens a tab
+  of the copy that is already running — it does not start a second one, and it does not
+  meet a busy-port error;
+- **the program is handed over as soon as the server can answer.** The environment
+  header, the graphics-card check and the geo-data check are diagnostics, not service —
+  3.9 s of the 5.65, and the torch import inside them costs 13.96 s on its own — so they
+  now run on a thread of a program that is already serving, writing the same lines into
+  the same run log (§19). `sorta ui` does the same: the address is printed and the page
+  answers while the card is being probed. `sorta doctor` still probes for real, on
+  request;
+- while the launch is still finishing, the page names the step it is on in words, in all
+  three languages, and **shows the program by itself** when the last one is done —
+  nothing to reload. There is deliberately **no percentage**: the steps differ in length
+  by two orders of magnitude. Each step also writes `startup step=<name> elapsed=<sec>`
+  into the run log, so "why was it slow" is answered out of a file.
+
 Then in the browser there are five tabs: **Overview · Review · Layout · Slices ·
 Moves**. They are named after **what you do to the collection**, not after the pipeline
 stages, because there are exactly three things you can do to it and they differ in what
@@ -583,8 +635,9 @@ and `--geo online`/`--geo offline` (§8):
   checkbox computes nothing by itself and costs nothing: the time is on the lines below
   it, and each of them states its own. Anything at all only takes effect if the model is
   *both* permitted (this checkbox, `--deep`, or `vlm.enabled: true` in config) *and*
-  installed (the `vlm` extra, e.g. `uv tool install ".[gpu,vlm]"` or
-  `uv sync --extra gpu --extra vlm --extra dev`) — without that extra the run silently
+  installed (the `vlm` extra — `sorta-setup --tiers deep` on an installed copy,
+  `uv tool install ".[gpu,vlm]"` or `uv sync --extra gpu --extra vlm --extra dev`
+  on the other two forms, §3.1) — without that extra the run silently
   falls back to the fast CLIP tier, and the UI hint under the checkbox says so.
 - **"Product recognition"** — `vlm.products` (§21), the line under the master switch.
   This is the deep classification tier, named after what it gives you: the `_Products`
@@ -759,9 +812,10 @@ written to `config.yaml`):
                             (features.landmarks — off), so this flag moves it
                             in both directions.
 --deep / --no-deep         Use the deep VLM classification tier for junk this run
-                            (needs `uv sync --extra vlm`; gracefully falls back to
-                            the fast CLIP tier without it). Default: from config.yaml
-                            (vlm.enabled).
+                            (needs the `vlm` extra — `sorta-setup --tiers deep` on an
+                            installed copy, `uv sync --extra vlm` in a checkout;
+                            gracefully falls back to the fast CLIP tier without it).
+                            Default: from config.yaml (vlm.enabled).
 --geo offline|online       Reverse-geocoding provider for this run. `online` is more
                             accurate abroad but sends GPS coordinates (never images)
                             to Nominatim. Default: from config.yaml (geo.provider).
@@ -1443,7 +1497,7 @@ because the stages run one after another.
 | OS | Path |
 |---|---|
 | Windows | `%LOCALAPPDATA%\sorta\previews` |
-| Linux / macOS | `~/.cache/sorta/previews` |
+| Linux | `~/.cache/sorta/previews` |
 
 **How much space it takes: budget ≈150 KB per photo, and expect gigabytes.** That is
 the design figure for a 1536 px q88 JPEG; detailed frames run larger. A real cache
@@ -1530,7 +1584,7 @@ log file.
 | OS | Path |
 |---|---|
 | Windows | `%LOCALAPPDATA%\sorta\logs\sorta.log` |
-| Linux / macOS | `~/.cache/sorta/logs/sorta.log` |
+| Linux | `~/.cache/sorta/logs/sorta.log` |
 
 It rotates at **5 MB, keeping 5 files** (`sorta.log.1` … `sorta.log.5`), so it cannot
 grow without bound. A pipeline run (`sorta run`) and every `sorta ui` start also write
@@ -1615,7 +1669,9 @@ named after Sorta:
 | Model weights | `~/.cache/huggingface/hub` | 1.6 GB (CLIP), 1.4 GB (multilingual), 7 GB (VLM) |
 | Model weights | `~/.insightface/models` | 0.4 GB (`buffalo_l`) |
 
-**The Windows uninstaller asks.** It states what each of those two groups weighs on
+**The Windows uninstaller asks.** It is reached from the **Uninstall Sorta** item in the
+Start menu, beside **Sorta** and **Sorta setup** — Inno writes the uninstaller into the
+install directory, where nobody looks. It states what each of those two groups weighs on
 *this* machine and offers them as two separate ticks, **both empty by default** —
 uninstalling a program is not a request to delete somebody's data. A silent uninstall
 (`/VERYSILENT`) has nobody to ask and therefore deletes nothing. Your photographs are
@@ -2291,10 +2347,14 @@ a per-run flag: `--pets`/`--no-pets` on `sorta run` and `sorta junk` (§8).
 
 ## 25. Troubleshooting
 
+- **Before copying any command out of this list, check which of the three install forms
+  you are on** (§3.1). `sorta doctor`'s `install profile:` line ends with it —
+  `checkout`, `tool` or `installed` — and an installed copy has no `uv sync` to run.
 - **`sorta doctor` says `torch: 2.13.0+cpu` on a GPU machine** — the extra never
   reached the install command. `uv tool install` has no `--extra` flag; the extra
   belongs inside the quoted spec: `uv tool install --force "C:\path\to\sorta[gpu]"`
-  (§3.3).
+  (§3.3). On an installed copy the same move is `sorta-setup --tiers gpu`, and
+  `sorta-setup --restore-cpu` is the way back off it (§3.7).
 - **`sorta doctor` shows no `CUDAExecutionProvider`** while torch reports CUDA — the
   plain `onnxruntime` (pulled in by `insightface`) overwrote `onnxruntime-gpu`, so
   face detection is on the CPU. Fix and explanation in §3.6.
@@ -2310,8 +2370,9 @@ a per-run flag: `--pets`/`--no-pets` on `sorta run` and `sorta junk` (§8).
   (it's separate from the cpu/gpu profile, see above).
 - **HEIC/RAW dates, previews, or video metadata missing** — install `exiftool` (see
   §3); it's required for those formats, Pillow only covers JPEG/PNG/TIFF/WEBP.
-- **Faces/CLIP very slow on the GPU profile** — confirm `uv sync --extra gpu` actually
-  ran (not `cpu`) and that your driver supports CUDA 13; `sorta faces`/`sorta junk`
+- **Faces/CLIP very slow on the GPU profile** — confirm the `gpu` profile actually
+  landed (`uv sync --extra gpu` in a checkout, `sorta-setup --tiers gpu` on an installed
+  copy) and that your driver supports CUDA 13; `sorta faces`/`sorta junk`
   print which onnxruntime execution provider they picked (`CUDAExecutionProvider` vs
   `CPUExecutionProvider`) near the start of their output.
 - **Classification/faces slow even though you installed `--extra gpu`** — you're
@@ -2328,7 +2389,7 @@ a per-run flag: `--pets`/`--no-pets` on `sorta run` and `sorta junk` (§8).
   busy with something else) — set `CUDA_VISIBLE_DEVICES=` (empty) for the command;
   both torch and onnxruntime respect it and fall back to CPU:
   ```bash
-  CUDA_VISIBLE_DEVICES= sorta faces          # bash/macOS/Linux
+  CUDA_VISIBLE_DEVICES= sorta faces          # bash/Linux
   ```
   ```powershell
   $env:CUDA_VISIBLE_DEVICES=''; sorta faces  # PowerShell
