@@ -588,6 +588,32 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "en": "  Install it: brew install exiftool.",
         "ja": "  インストール: brew install exiftool。",
     },
+    # F226: and the fourth answer, the one an installed copy gets. The installer carries
+    # exiftool, so on that machine there is nothing to install and no `winget` line to
+    # print — the path is named instead, because the whole defect was a product that
+    # could not say which of its two exiftools it was using.
+    "cli.doctor.exiftool_bundled": {
+        "ru": "Чтение метаданных exiftool: {path} (поставляется с программой)",
+        "en": "Metadata reader exiftool: {path} (ships with the program)",
+        "ja": "メタデータ読み取り exiftool: {path}（本体に同梱）",
+    },
+    # F226: the same correction one line up. `uv tool update-shell` is the fix for an
+    # install made by `uv tool install`; an installed copy was never on PATH and is not
+    # meant to be, so it is told how it IS run instead of how to repair something that
+    # was never broken.
+    "cli.doctor.command_installed": {
+        "ru": "Команда sorta: не в PATH — установленная копия ничего в PATH и не кладёт",
+        "en": "Command sorta: not on PATH — an installed copy puts nothing there",
+        "ja": "コマンド sorta: PATH にありません — インストール版は PATH に何も置きません",
+    },
+    "cli.doctor.command_hint_installed": {
+        "ru": "  Запускать так: \"{path}\" -m sorta.cli <команда>, "
+              "или ярлыки в меню «Пуск».",
+        "en": "  Run it as: \"{path}\" -m sorta.cli <command>, "
+              "or from the Start menu shortcuts.",
+        "ja": "  実行方法: \"{path}\" -m sorta.cli <コマンド>、"
+              "またはスタートメニューのショートカット。",
+    },
     # F216: which tiers are actually on this machine. `doctor` is the check screen the
     # wizard calls and the one command a person is pointed at when something is missing,
     # and it described everything about the install except what the install is MADE of.
