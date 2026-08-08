@@ -12,9 +12,10 @@ same sample F122/F152 were scored on, detector confidence 0.5):
     the price of a pass: 83.8 ms/frame -> 30.8 minutes over 22 096 photographs
 
 **The detector earns its keep on exactly one slice of three.** Animals are what a
-detector is taken for: it sees the cat in the corner of the frame, while CLIP compares
-the picture to a text AS A WHOLE and a cat that is not the subject of the shot is not
-what the picture is "of". On people it finds a "person" where a person would not — backs
+detector is taken for — it marked 21 frames of the 200 and it sees the cat in the corner
+of the frame, while CLIP compares the picture to a text AS A WHOLE and a cat that is not
+the subject of the shot is not what the picture is "of". On people it finds a "person"
+where a person would not — backs
 in a crowd, figures in the distance, a hand — so that slice stays on the face boxes
 (F152) and this module has no person class. Food is a failure of the label set rather
 than of the model: COCO has a banana, a sandwich, a pizza, and "a meal on a table" is

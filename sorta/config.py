@@ -227,8 +227,9 @@ DEFAULT_VLM_MAX_EDGE = 896
 # F164 was sent to RAISE this cap and measured that it must not be raised. The case for
 # more threads was the F101 profile — ~0.6 s of CPU per frame against ~0.19 s of GPU — but
 # that premise expired with F105's fast image processor: the 0.6 s of one core became
-# ~0.12 s of about seven. Measured with scripts/measure_vlm_workers.py (120 frames, real
-# decode and processor, the model's turn stubbed by a sleep of the measured 0.19 s):
+# ~0.12 s of about seven, so four threads on a 24-core machine already ask for more cores
+# than exist. Measured with scripts/measure_vlm_workers.py (120 frames, real decode and
+# processor, the model's turn stubbed by a sleep of the measured 0.19 s):
 #
 #     threads   ms/frame   frames/s   vs 1 thread   model half busy   peak RSS
 #           1        290       3,45         x1,00               66%      551 MB
