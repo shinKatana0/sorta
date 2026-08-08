@@ -14,7 +14,7 @@ sorta/dedup.py        191
 sorta/detect.py       200
 sorta/diagnostics.py  200
 sorta/events.py       100
-sorta/exif.py         138
+sorta/exif.py         92
 sorta/faces.py        412
 sorta/geo.py          343
 sorta/geodata.py      224
