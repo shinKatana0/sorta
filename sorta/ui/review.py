@@ -1,15 +1,7 @@
 """F182: the "Review" workspace — duplicates, blur, closed eyes, restoring.
 
-The four things a person opens the tab to go through, plus the second entrance F168
-added: an expanded frame that can be improved by request. Marks here decide what
-leaves for `_delete` during the layout, so everything that writes `dedup_choice` or
-`review_mark` is in this one module.
-
-F194 rewrote what the duplicates half RECOMMENDS. Three tiers of sameness with three
-different defaults (`_dupes_payload`), several keepers per group instead of one
-(`_validate_keep_ids`), and no preselected frame at all where the measurement says
-nobody can choose. What it did not touch is the machinery underneath: the routes, the
-one table a decision lives in, and the rule that a file leaves only by a human hand.
+Marks here decide what leaves for `_delete` during the layout, so everything that
+writes `dedup_choice` is in this one module.
 """
 from __future__ import annotations
 
@@ -24,9 +16,8 @@ from ..config import FeaturesConfig
 from ..dedup import (KEEPER_SOURCE_SHARPNESS, TIER_SAME_IMAGE, TIER_SIMILAR,
                      GroupKeeper, exact_duplicate_summary, group_key, group_tier,
                      near_duplicate_groups, read_group_keepers)
-# `_has_column`: "does this database have that column yet". The indexer reads its own
-# optional columns through it, and the blur list (F157) reads F155's `face_sharpness`
-# through the same one — the two features were merged in either order on purpose.
+# The blur list (F157) reads F155's `face_sharpness` through the indexer's own
+# optional-column check — the two features could be merged in either order.
 from ..indexer import _has_column
 from ..junk import faces_stage_ran
 from ..sorter import quality_slice_from, quality_slice_where
@@ -34,9 +25,8 @@ from .common import _connect, _parse_page_window, _trash_files, _validate_file_i
 from .slices import _JUNK_NO_PREVIEW
 
 
-# F66: near_duplicate_groups over tens of thousands of pHashes costs seconds, and the
-# Duplicates tab re-requests it on every open. The payload is a few MB of JSON, so a
-# couple of entries is all we keep (one per max_distance in practice).
+# F66: near_duplicate_groups over tens of thousands of pHashes costs seconds and the
+# tab re-requests it on every open. The payload is a few MB of JSON, hence two entries.
 _DUPES_CACHE_MAX_ITEMS = 2
 _DupesFingerprint = tuple[tuple[int, int], ...]
 _DupesCacheKey = tuple[str, int, _DupesFingerprint]
@@ -53,9 +43,9 @@ def _dupes_cache_clear() -> None:
 def _db_fingerprint(db_path: Path) -> _DupesFingerprint:
     """(st_mtime_ns, st_size) of the DB file AND its `-wal` sidecar.
 
-    The schema runs in WAL mode, so a commit can land entirely in `<db>-wal` and
-    leave the main file untouched — keying on the `.db` stat alone would serve stale
-    groups after a pipeline run. A missing file contributes (-1, -1).
+    WAL mode: a commit can land entirely in `<db>-wal` and leave the main file
+    untouched, so the `.db` stat alone would serve stale groups after a run. A missing
+    file contributes (-1, -1).
     """
     fingerprint: list[tuple[int, int]] = []
     for p in (db_path, Path(f"{db_path}-wal")):
@@ -68,19 +58,9 @@ def _db_fingerprint(db_path: Path) -> _DupesFingerprint:
     return tuple(fingerprint)
 
 
-# --- F199: the group says which tier it is, and why it advises or does not -----------
-# The tier has travelled with the group since F194, and the screen has been turning it
-# into a sentence in JS — two branches and a silent fallback into the third tier's words.
-# What a person saw was two outwardly identical pairs, one carrying a suggestion and one
-# not, with the reason named nowhere: they are entitled to read that as randomness, and
-# then to stop trusting the suggestion in the tier where it is right.
-#
-# So the ANSWER names both captions. `tier_caption` is the line on the group, `tier_why`
-# is the reasoning behind it — string KEYS rather than text, because the catalog is
-# `strings.py` in three languages and the page carries all of it (`page._render_index_html`),
-# which is how `blur_order` and the restore refusals already travel. Naming them here also
-# makes "every group says which tier it is" a property of the payload, checkable by
-# walking the groups instead of by reading the markup.
+# F199: the answer names the captions, so "every group says which tier it is" is a
+# property of the payload rather than of the markup. String KEYS, not text — the catalog
+# is `strings.py` in three languages, as with `blur_order` and the restore refusals.
 _TIER_CAPTIONS = {
     TIER_SAME_IMAGE: ("dupe_tier_same_image", "dupe_same_image_note"),
     TIER_SIMILAR: ("dupe_tier_similar", "dupe_similar_note"),
@@ -90,10 +70,8 @@ _TIER_CAPTIONS = {
 def _tier_captions(tier: str) -> dict[str, str]:
     """The two caption keys one tier is said with: the line, and the reasoning.
 
-    A tier with no entry falls back to the SIMILAR captions rather than to no caption at
-    all. A group without a line is the exact defect this exists to remove, and of the two
-    tiers the one that promises nothing is the safe thing to say about a group whose tier
-    the table does not know.
+    An unknown tier falls back to SIMILAR — of the two, the one that promises nothing
+    is the safe thing to say about a group the table does not recognise.
     """
     caption, why = _TIER_CAPTIONS.get(tier, _TIER_CAPTIONS[TIER_SIMILAR])
     return {"tier_caption": caption, "tier_why": why}
@@ -102,36 +80,22 @@ def _tier_captions(tier: str) -> dict[str, str]:
 def _dupes_payload(db_path: Path, max_distance: int) -> dict:
     """The Duplicates screen: the three tiers of sameness, each with its own default.
 
-    F194. `{"exact": {...}, "groups": [...]}` — one answer holding all three, because
-    "duplicate" was one word over three populations whose cost of a mistake differs by
-    orders of magnitude (`dedup.TIER_*` states the measurement):
+    F194 — `{"exact": {...}, "groups": [...]}`, one answer holding all three
+    (`dedup.TIER_*` states the measurement):
 
-    * `exact` is the first tier as a pair of NUMBERS. Byte-identical copies are half of a
-      real archive, and a list of "choose which to keep" over them is a question about
-      nothing — the bytes are the same bytes. Collapsed here means shown as a number, not
-      deleted: no route on this path removes a file by itself;
-    * a group of `tier == "same_image"` is one picture stored more than once. The rule
-      "keep the largest" is checkable — resolution and weight are facts, not taste — so
-      the largest frame carries `recommended` and `recommended_by` says by what. A person
-      may pick another;
-    * a group of `tier == "similar"` carries NO recommendation at all: `recommended` is
-      false on every frame and `recommended_by` is None. Measured blind on 111 groups, no
-      signal we have beats picking at random, and a highlighted frame reads as an answer —
-      so a person trusting it would choose worse than by chance and never learn. What the
-      group does carry is an ORDER (`order`: `sharpness` or `size`), which is what
-      sharpness honestly is, and the caption says so in those words.
-
-    F199: every group also carries the two captions its tier is SAID with —
-    `tier_caption` (the line) and `tier_why` (the reasoning behind it). The tiers were
-    already distinguishable in the data; what was missing is that the screen never named
-    which one a group was in, so a suggestion on one pair and none on the next read as
-    chance rather than as the rule it is.
+    * `exact` is a pair of NUMBERS, not a list: over byte-identical copies "choose which
+      to keep" is a question about nothing. Collapsed means shown as a number, not
+      deleted — no route on this path removes a file by itself;
+    * `same_image` is one picture stored more than once, so the largest frame carries
+      `recommended`: resolution and weight are facts, not taste;
+    * `similar` carries NO recommendation — measured blind on 111 groups, no signal we
+      have beats picking at random, and a highlighted frame reads as an answer. What it
+      carries is an ORDER (`order`: `sharpness` or `size`), which is what sharpness
+      honestly is.
 
     `action` is the current decision from `dedup_choice` — the human's own table, which
-    nothing here writes, reads over, or reorders.
-
-    Cached (F66) under (db path, max_distance, _db_fingerprint): any write to the
-    index changes the fingerprint and the payload is recomputed.
+    nothing here writes or reorders. Cached (F66) under (db path, max_distance,
+    `_db_fingerprint`): any write to the index recomputes the payload.
     """
     key: _DupesCacheKey = (str(db_path), max_distance, _db_fingerprint(db_path))
     with _dupes_cache_lock:
@@ -171,11 +135,9 @@ def _dupes_payload(db_path: Path, max_distance: int) -> dict:
                 all_ids,
             ).fetchall()
         }
-        # F120: sharpness, where it is finally comparable. Across the collection it is
-        # not — a screenshot averages 2854 against a photograph's 1253, so a global
-        # ranking sorts by content type rather than by focus. Inside a near-duplicate
-        # group the frames ARE the same picture, which is the one place the number
-        # answers the question it was measured for: which of these five is in focus.
+        # F120: sharpness is only comparable INSIDE a group. Across the collection a
+        # screenshot averages 2854 against a photograph's 1253, so a global ranking
+        # sorts by content type rather than by focus.
         sharp = {
             r["file_id"]: r["sharpness"]
             for r in conn.execute(
@@ -185,10 +147,9 @@ def _dupes_payload(db_path: Path, max_distance: int) -> dict:
             ).fetchall()
         }
         # F148: a group is addressed by a hash of its membership (dedup.group_key), so a
-        # key that is missing here means the group has never been asked about (a pair
-        # under `keeper_min_group_size`) or has gained/lost a frame since it was. Both
-        # readings lead to the same behaviour: the group is ordered by its own sharpness,
-        # which is always available.
+        # missing key means it was never asked about (a pair under
+        # `keeper_min_group_size`) or has gained/lost a frame since. Either way it falls
+        # back to its own sharpness, which is always available.
         keepers = read_group_keepers(
             conn, [group_key([r["id"] for r in g]) for g in groups])
     finally:
@@ -202,10 +163,8 @@ def _dupes_payload(db_path: Path, max_distance: int) -> dict:
             frames.append({
                 "file_id": r["id"],
                 "name": Path(r["path"]).name,
-                # Where the frame lies in the source, as the Cities tab shows it:
-                # `src_dir` in the line, the full `src_path` in the tooltip. Deciding
-                # which of two identical frames to keep is mostly a question of WHERE
-                # they lie — the copy in "Sorted" beats the one in "Downloads".
+                # Deciding which of two identical frames to keep is mostly a question of
+                # WHERE they lie — the copy in "Sorted" beats the one in "Downloads".
                 "src_dir": Path(r["path"]).parent.name,
                 "src_path": str(Path(r["path"]).parent),
                 "thumb_url": f"/thumb/{r['id']}",
@@ -220,25 +179,19 @@ def _dupes_payload(db_path: Path, max_distance: int) -> dict:
         keeper = keepers.get(group_key([f["file_id"] for f in frames]))
         if tier == TIER_SAME_IMAGE:
             frames, order = _order_by_size(frames), "size"
-            # The one place in this payload where something is proposed. It costs nothing
-            # and it is checkable: the frames are the same picture, so the larger file is
-            # the better copy of it by definition rather than by opinion.
+            # The one place in this payload where anything is proposed, and it is
+            # checkable: same picture, so the larger file is the better copy of it.
             frames[0]["recommended"] = True
             recommended_by: str | None = "size"
         else:
             frames, order = _order_similar(frames, keeper)
             recommended_by = None
         result.append({"group": idx, "tier": tier, "frames": frames,
-                       # F199: the tier in words, on the group that is in it. Both are
-                       # keys of `strings.py`; `_tier_captions` says why the answer names
-                       # them instead of leaving the client to derive a sentence.
                        **_tier_captions(tier),
-                       # What the frames are SORTED by — never who is best. A caption
-                       # reading "sorted by sharpness" is a fact about the list; the same
-                       # number presented as an answer is the harmful advice F194 removes.
+                       # What the frames are SORTED by — never who is best.
                        "order": order,
-                       # Set only where a rule holds (`same_image`); None everywhere else,
-                       # and None is the honest value: no signal we have beats a coin.
+                       # Set only where a rule holds (`same_image`); None is the honest
+                       # value elsewhere, since no signal we have beats a coin.
                        "recommended_by": recommended_by})
     return remember({"exact": exact_json, "groups": result})
 
@@ -246,9 +199,7 @@ def _dupes_payload(db_path: Path, max_distance: int) -> dict:
 def _order_by_size(frames: list[dict]) -> list[dict]:
     """The same picture, biggest copy first — resolution, then weight, then id.
 
-    Both numbers are facts about the file rather than judgements about the photograph,
-    which is what makes this tier's default safe to apply. `file_id` closes the order so
-    two runs over an unchanged group answer the same way.
+    `file_id` closes the order so two runs over an unchanged group answer the same way.
     """
     return sorted(frames, key=lambda f: (-((f["width"] or 0) * (f["height"] or 0)),
                                          -(f["size"] or 0), f["file_id"]))
@@ -258,22 +209,15 @@ def _order_similar(frames: list[dict],
                    keeper: GroupKeeper | None) -> tuple[list[dict], str]:
     """Similar frames in an ORDER, and the name of what ordered them. Nothing is chosen.
 
-    Sharpness is a fine order and a measured non-answer: inside a group it compares focus
-    honestly (one scene, one scale), and blind labelling of 111 groups put it at 27%
-    against 30.4% for random. So it decides which frame a person looks at FIRST and
-    nothing else — no star, no preselected control, no caption calling it best.
+    Sharpness is a fine order and a measured non-answer: blind labelling of 111 groups
+    put it at 27% against 30.4% for random, so it decides what a person looks at FIRST
+    and nothing else. It leads only when EVERY frame has it — a partial comparison would
+    prefer whichever frames happened to be measured, and since F120 only personal
+    photographs are measured at all. Otherwise the group falls back to size.
 
-    It leads only when EVERY frame has it, for the reason F120 gave: a partial comparison
-    would prefer whichever frames happened to be measured, and since F120 only personal
-    photographs are measured at all, a mixed group is ordinary. Where it is missing the
-    group falls back to size, and `order` says which of the two it was.
-
-    F194 keeps `group_keeper` in exactly this role and no other. The row is filled by
-    sharpness for free and is worth having as an order — a group whose stored answer
-    disagrees with the ranking recomputed here (sharpness measured after the row was
-    written) leads with the stored frame. A row from the retired model question (F186) is
-    ignored rather than honoured: that answer was measured to be a coin toss, and turning
-    it into a position would smuggle it back as advice by other means.
+    A `group_keeper` row is honoured only when its source is sharpness. A row from the
+    retired model question (F186) is ignored: that answer was measured to be a coin
+    toss, and turning it into a position would smuggle it back as advice.
     """
     by_sharpness = all(f["sharpness"] is not None for f in frames)
     order = "sharpness" if by_sharpness else "size"
@@ -288,10 +232,9 @@ def _order_similar(frames: list[dict],
 
 
 def _validate_group_payload(payload: object) -> tuple[list[int], int | None] | None:
-    """Parse the body `{"group": [file_id,...], "keep_file_id": int?}`.
+    """Parse the body `{"group": [file_id,...], "keep_file_id": int?}`, None -> 400.
 
-    None -> the body is invalid (not a JSON object / group is not a non-empty list of
-    int / keep_file_id, if present, is not int). keep_file_id may be absent (skip).
+    keep_file_id may be absent (skip).
     """
     if not isinstance(payload, dict):
         return None
@@ -308,8 +251,7 @@ def _validate_group_payload(payload: object) -> tuple[list[int], int | None] | N
 def _apply_choice(db_path: Path, group: list[int], keep_file_id: int) -> None:
     """keeper -> action='keep', the other frames of the group -> 'to_delete'.
 
-    Idempotent: ON CONFLICT overwrites the old decision (e.g. when moving the keeper
-    to another frame of the same group).
+    Idempotent: ON CONFLICT overwrites the old decision, e.g. on moving the keeper.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
@@ -345,18 +287,11 @@ def _validate_keep_ids(entry: dict, group: list[int],
                        legacy: int | None) -> list[int] | None:
     """The frames of one group a person chose to KEEP — several of them, since F194.
 
-    `keep_file_ids: [int,...]` is the new shape; `keep_file_id: int` is the one this
-    route has taken since F32 and still takes, because it is also the shape of the three
-    single-keeper routes beside it. None -> the entry is invalid (400).
-
-    An EMPTY list is invalid too, and deliberately so: "keep none of them" is the one
-    sentence this route must not be able to say. A group nobody chose in is simply not
-    sent — that IS the third tier's default (everything stays), and it writes nothing.
-
-    Why several at all: a burst of five good frames can hold three worth keeping — a
-    portrait with the eyes open, another expression, a wide shot — and "the best one"
-    throws away two a person would have kept. Duplicates are removed from the list of
-    keepers rather than refused: the same frame named twice is one keeper, not an error.
+    `keep_file_ids: [int,...]` is the new shape; the F32 `keep_file_id: int` still
+    works, since it is also the shape of the three single-keeper routes beside it.
+    None -> invalid (400), and an EMPTY list counts as invalid: "keep none of them" is
+    the one sentence this route must not be able to say — a group nobody chose in is
+    simply not sent. A frame named twice is one keeper, not an error.
     """
     raw = entry.get("keep_file_ids")
     if raw is None:
@@ -374,10 +309,8 @@ def _validate_batch_choices_payload(
     """Parse the body `{"groups": [{"group": [...], "keep_file_ids": [int,...]}, ...],
     "skip": [[file_id,...], ...]}`. `skip` is optional (default []).
 
-    None -> the body is invalid: `groups` is not a non-empty list / any entry does not
-    pass `_validate_group_payload` or `_validate_keep_ids` / `skip` is not a list of
-    lists of int. The whole body is validated, before any DB write (F32: atomicity — 400
-    without a partial write).
+    None -> invalid. The whole body is validated BEFORE any DB write (F32: a 400 never
+    leaves a partial write behind).
     """
     if not isinstance(payload, dict):
         return None
@@ -413,15 +346,8 @@ def _apply_batch_choices(
 ) -> int:
     """Apply the kept frames over all groups + clear the skipped ones, atomically.
 
-    One transaction for the whole batch: either all groups are applied and all skips
-    are cleared, or (on an exception before the call — validation already passed in
-    _validate_batch_choices_payload) nothing changes. Returns the number of saved
-    (not skipped) groups.
-
-    F194: a group keeps as MANY frames as the person named, and exactly those — the rest
-    of the group becomes `to_delete`. `dedup_choice` is keyed by file and holds one of two
-    values, so it carried this from the start; what changed is that the interface stopped
-    insisting the answer be a single frame.
+    One transaction for the whole batch. Returns the number of saved (not skipped)
+    groups. F194: a group keeps as MANY frames as the person named, and exactly those.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
@@ -463,77 +389,47 @@ def _trash_group(db_path: Path, group: list[int], keep_file_id: int) -> list[dic
 
 
 # --- F126: the "Review" workspace — duplicates, blur, closed eyes ------------------
-# Three signals, one job: look at a frame and decide whether it stays. Duplicates have had
-# a tab with the whole viewing-and-deleting machinery since U3; the other two have been
-# computed into `frame_quality` since F113 and were not visible anywhere. So this is one
-# place with SLICES rather than tabs — and the duplicates half is deliberately untouched:
-# `/api/dupes` and its four write routes answer exactly as before, because that
-# is the one path in the product that deletes files and it is the one path that has been
-# run against the live collection.
-#
-# F177 removed a fourth slice, "no subject". The model was asked about 6 111 frames and
-# called 212 of them subjectless; looked at by eye, those 212 are ordinary photographs, so
-# the slice was showing a list assembled by nothing. It is deleted rather than hidden: a
-# hidden slice comes back at the first edit of this file.
-#
 # Two rules the slices are built on:
 #
-# * a decision is a row in `dedup_choice` and nothing else. `to_delete` already means
-#   "move into `_delete` on the next `sort --apply`" (sorter.py), and a second deletion
-#   path in a program that moves 300 GB of somebody's photographs is a second way to lose
-#   them. `file_id` is the primary key there, so a frame that shows up in two slices
-#   carries ONE decision and shows it in both;
-# * nothing is ever marked automatically. There is no "delete everything below the
-#   threshold" route here, and the measurement is why: reviewed by eye in bands, blurred
-#   frames turn up in every band up to 400, and the blurred frame that gets kept is the
-#   only photograph of a person or a place. Sharpness ranks the list; a human decides.
+# * a decision is a row in `dedup_choice` and nothing else — a second deletion path in a
+#   program that moves 300 GB of somebody's photographs is a second way to lose them.
+#   `file_id` is its primary key, so a frame in two slices carries ONE decision;
+# * nothing is ever marked automatically, and the measurement is why: reviewed by eye in
+#   bands, blurred frames turn up in every band up to 400, and the blurred frame that
+#   gets kept is the only photograph of a person or a place.
 #
-# F150 adds a fifth, "low resolution", and it sits here rather than in a tab of its own
-# for the same reason the other four share this one: all of them are "look at this and
-# decide whether it stays". It is not folded INTO the blurred list either — measured on
-# 22 095 photographs, the two populations intersect by 3% (682 of the 706 frames under a
-# megapixel are formally sharp), so mixing them would hide each inside the other and leave
-# a person sorting blur wondering why sharp little pictures keep appearing.
+# F177 removed a fourth slice, "no subject": the model called 212 of 6 111 frames
+# subjectless and by eye those 212 are ordinary photographs. Deleted rather than hidden.
+#
+# F150's "low resolution" is not folded INTO the blurred list — measured on 22 095
+# photographs the two intersect by 3% (682 of the 706 frames under a megapixel are
+# formally sharp), so mixing them would hide each inside the other.
 _REVIEW_SLICES = ("dupes", "blurred", "eyes", "low_resolution")
 
-# F139: which album kind each flat slice gathers into — and, read the other way, the map
-# that keeps the list and the album on one rule. The names differ because the switcher's
-# are older than the album's (`eyes` is a chip label, `eyes_closed` is a folder), and
-# renaming either half would move an API parameter for nothing. Duplicates have no kind:
-# they are the grouped slice, the one where a keeper is chosen, and the one path in the
-# program that deletes files — collecting them into a folder is not what they are for.
+# F139: which album kind each flat slice gathers into — the map that keeps the list and
+# the album on one rule. The names differ because the switcher's are older than the
+# album's, and renaming either half would move an API parameter for nothing. Duplicates
+# have no kind: gathering them into a folder is not what they are for.
 _REVIEW_SLICE_KIND = {"blurred": "blurred", "eyes": "eyes_closed",
                       "low_resolution": "low_resolution"}
 
-# Every flat slice is ranked by the number it exists for, and for all three that means
-# ASCENDING, so the most damaged frame is the first one a person sees: a blurred frame has
-# little variance, a closed eye is a thin slit, a low-resolution frame has few pixels. None
-# of the three orderings is a verdict — each decides what to look at first, not what to
-# delete. F179 gave the eyes such a number; before it they went in index order, because the
-# VLM answer behind them was a yes/no with nothing to sort by. `f.id` closes every one of
-# them: frames of equal sharpness, equal openness or equal size must come back in the same
-# order on every page, or paging would drop and repeat them at the seam.
+# ASCENDING for all three, so the most damaged frame comes first. None of the orderings
+# is a verdict — each decides what to look at first, not what to delete. `f.id` closes
+# every one of them: without it, paging would drop and repeat frames of equal sharpness,
+# openness or size at the seam.
 _REVIEW_SLICE_ORDER = {
     "blurred": "fq.sharpness ASC, f.id",
     "eyes": "fq.eye_openness ASC, f.id",
     "low_resolution": "f.width * f.height ASC, f.id",
 }
 
-# F157 + F155: where a frame HAS a sharpness measured inside its face, that number orders
-# it — and it orders it BEFORE every frame that has none. Two reasons, and neither is a
-# preference:
-#
-# * the two numbers are not on one scale (a variance over a whole preview against one over
-#   a 100-200 px crop, `features.face_sharpness_max` says why no factor converts them), so
-#   they must never meet inside one comparison. `face_sharpness IS NULL` first, then each
-#   group by its own number, is the only ordering that keeps that promise;
-# * on frames that have a face the face number finds 62% of the blurred ones against 15%
-#   for the whole-frame number (F155, 68 labelled frames). Reading the better signal first
-#   is what a ranking is for.
-#
-# NULL keeps its schema meaning throughout — "not measured", never "sharp" — so a frame
-# with no face, or one from a run before the column existed, simply sorts by the frame
-# number in the second half of the list instead of dropping out of it.
+# F157 + F155: a frame with a sharpness measured inside its face is ordered by that
+# number, and BEFORE every frame that has none. The two numbers are not on one scale (a
+# variance over a whole preview against one over a 100-200 px crop), so they must never
+# meet inside one comparison — hence `face_sharpness IS NULL` first, then each group by
+# its own number. The face number is also the better signal: on frames that have a face
+# it finds 62% of the blurred ones against 15% (F155, 68 labelled frames). NULL keeps
+# its schema meaning — "not measured", never "sharp".
 _BLURRED_ORDER_WITH_FACE = ("(fq.face_sharpness IS NULL), fq.face_sharpness ASC, "
                             "fq.sharpness ASC, f.id")
 
@@ -541,11 +437,8 @@ _BLURRED_ORDER_WITH_FACE = ("(fq.face_sharpness IS NULL), fq.face_sharpness ASC,
 def _blurred_order_column(conn: sqlite3.Connection) -> str:
     """Which number orders the blur list on THIS database — the F155 column, or the frame.
 
-    The column is asked of the schema rather than assumed, because the order of F155 and
-    F157 was never fixed: a database from before v25 has no `face_sharpness` at all, and
-    the list has to open on it exactly as it does anywhere else. `_has_column` is the
-    indexer's, which reads its own optional columns the same way (`files.orientation`);
-    a second spelling of one PRAGMA would be a second thing to keep true.
+    Asked of the schema rather than assumed: a database from before v25 has no
+    `face_sharpness` at all, and the list has to open on it as it does anywhere else.
     """
     return ("face_sharpness" if _has_column(conn, "frame_quality", "face_sharpness")
             else "sharpness")
@@ -558,20 +451,17 @@ def _review_order(conn: sqlite3.Connection, slice_: str) -> str:
     return _REVIEW_SLICE_ORDER[slice_]
 
 
-# The two extra columns a card carries, by slice — a card shows the number its slice is
-# ABOUT and not every number the row happens to hold. The absent one is selected as NULL
-# rather than left out so that one row shape feeds one `_review_item_to_json`; and for
-# `low_resolution` there is no `fq` alias to read at all (`quality_slice_from`).
+# A card shows the number its slice is ABOUT. The absent one is selected as NULL rather
+# than left out, so one row shape feeds one `_review_item_to_json`; and `low_resolution`
+# has no `fq` alias to read at all (`quality_slice_from`).
 _REVIEW_SLICE_COLUMNS = {
     "blurred": "fq.sharpness AS sharpness, NULL AS width, NULL AS height",
     "eyes": "fq.sharpness AS sharpness, NULL AS width, NULL AS height",
     "low_resolution": "NULL AS sharpness, f.width AS width, f.height AS height",
 }
 
-# The membership rule itself lives in sorter.py (`quality_slice_where`,
-# `quality_slice_from`) and is read from there rather than restated here: the album of a
-# slice and the list of it must be the same set of frames, and two spellings of one
-# condition drift.
+# The membership rule lives in sorter.py (`quality_slice_where`, `quality_slice_from`)
+# and is read from there: the album of a slice and the list of it must be one set.
 
 
 def _review_from(slice_: str) -> str:
@@ -583,9 +473,9 @@ def _review_where(slice_: str, features: FeaturesConfig, *,
                   beyond: bool = False) -> tuple[str, list[object]]:
     """The WHERE of one flat slice + its parameters — the shared rule, by slice name.
 
-    `beyond` is "show more": the blurred list opens to `features.blur_review_max` and the
-    closed-eyes list to `features.eye_openness_max` (F179), and each runs on without a
-    ceiling once asked. Each window bounds its own slice alone.
+    `beyond` is "show more": the blurred list opens to `features.blur_review_max` and
+    the closed-eyes list to `features.eye_openness_max` (F179), and each runs on without
+    a ceiling once asked.
     """
     return quality_slice_where(_REVIEW_SLICE_KIND[slice_], features, beyond=beyond)
 
@@ -602,20 +492,17 @@ def _review_flat_counts(conn: sqlite3.Connection,
                         features: FeaturesConfig) -> dict[str, int]:
     """The flat slice counters — plain aggregates, cheap enough for "Overview".
 
-    EVERY slice is counted INSIDE its own window, so the chip, the "Overview" row and the
-    length of the list the tab opens with are one number per slice. F179 made that true of
-    the eyes too: the slice is a ranking now, and a counter that ignored the window would
-    advertise every frame a face was measured on — the whole face population, not the
-    closed eyes.
+    EVERY slice is counted INSIDE its own window, so the chip, the "Overview" row and
+    the length of the list the tab opens with are one number per slice. For the eyes
+    (F179) a counter ignoring the window would advertise every frame a face was measured
+    on — the whole face population, not the closed eyes.
     """
     return {name: _review_count(conn, name, features)
             for name in _REVIEW_SLICES if name != "dupes"}
 
 
-# F133: the same flat slices again, counting only the frames NOBODY has decided about.
-# "Decided" is a row in `dedup_choice` and nothing else — the rule the marks are written
-# by — so a slice empties as the person works through it, which is what makes the warning
-# on the "Layout" tab disappear on its own.
+# F133: "decided" is a row in `dedup_choice` and nothing else, so a slice empties as the
+# person works through it and the warning on the "Layout" tab disappears on its own.
 _PENDING_JOIN = " LEFT JOIN dedup_choice dc ON dc.file_id = f.id"
 
 
@@ -638,10 +525,8 @@ def _review_pending_counts(conn: sqlite3.Connection,
 def _pending_dupe_groups(groups: list[dict]) -> int:
     """Duplicate groups carrying no decision — no query, the payload already says so.
 
-    A group counts as decided as soon as ONE of its frames carries an action: choosing a
-    keeper writes `keep` on it and `to_delete` on the rest. "Do not delete this group"
-    CLEARS those rows (`_skip_group`), so such a group is undecided again — which is the
-    literal truth about it and the same thing the slice counters say.
+    Decided as soon as ONE frame carries an action. "Do not delete this group" CLEARS
+    those rows (`_skip_group`), so such a group counts as undecided again.
     """
     return sum(
         1 for g in groups
@@ -657,14 +542,13 @@ def _review_item_to_json(row: sqlite3.Row, action: str | None) -> dict:
         "file_id": int(row["id"]),
         "name": path.name,
         "date": row["taken_at"],
-        # Where it lies, as on the Cities and Duplicates lists: with a burst of similar
-        # frames the folder is often the only thing that tells them apart.
+        # With a burst of similar frames the folder is often the only thing that tells
+        # them apart.
         "src_dir": path.parent.name,
         "src_path": str(path.parent),
         "sharpness": None if row["sharpness"] is None else float(row["sharpness"]),
-        # F150: the size of the picture, on the card of the slice that is about it. A
-        # thumbnail is the same 200 px whatever it was made from, so the pixels are the
-        # one thing a person cannot see and the one thing they are deciding on.
+        # F150: a thumbnail is the same 200 px whatever it was made from, so the pixel
+        # count is the one thing a person cannot see and the one they are deciding on.
         "width": None if row["width"] is None else int(row["width"]),
         "height": None if row["height"] is None else int(row["height"]),
         "action": action,
@@ -678,33 +562,19 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
                     max_distance: int) -> dict:
     """`GET /api/review` — the slice counters + one bounded page of the current slice.
 
-    `counts` is always the full set (it is what the switcher draws, and a slice with
-    nothing in it stays in the list showing a zero: "you have no closed eyes" is an
-    answer, a vanished entry is a riddle). `dupes` counts GROUPS and comes from the
-    cached `_dupes_payload` — the same payload the duplicates half of the tab renders
-    from, so opening the workspace pays for it once.
+    `counts` is always the full set: a slice with nothing in it stays in the list showing
+    a zero, because "you have no closed eyes" is an answer and a vanished entry is a
+    riddle. `dupes` counts GROUPS and comes from the cached `_dupes_payload`, so opening
+    the workspace pays for it once; `slice='dupes'` carries no items, since forcing the
+    one grouped slice into the flat shape would cost the keeper choice.
 
-    `slice='dupes'` carries no items: duplicates are the one grouped slice, and forcing
-    them into the flat shape would cost the keeper choice that the whole view is for.
-    The client renders that slice from `/api/dupes`, exactly as it did when it was a tab
-    of its own.
+    `eyes_reason='no_faces_run'` (F125): the eye number is measured only where a face was
+    found, so without a faces run the honest answer is why there is no data, not a zero.
 
-    `eyes_reason='no_faces_run'` (F125) — the eye number is measured only where a face was
-    found, so without a faces run the honest answer is why there is no data, not a zero
-    that looks like "your subjects all had their eyes open".
-
-    F150: `low_resolution_mp` travels with the answer for the same reason `blur_max`
-    does — and `eye_max` with it since F179 — the hint above the grid states the rule the
-    list was built by instead of repeating a default in JS.
-
-    F179: `window_total` is the count of the CURRENT slice's window, because every flat
-    slice has one now — blurred down to `features.blur_review_max`, closed eyes down to
-    `features.eye_openness_max` — and "show more" walks either of them past its window
-    into the frames the ranking is less sure about.
-
-    F157: for the blurred slice that window is the depth of the FIRST PAGE, so
-    `window_total`, the chip's counter and the length of the list the tab opens with are
-    one number — a length, not a population. `blur_order` says which column ordered it.
+    The thresholds (`blur_max`, `eye_max`, `low_resolution_mp`) travel with the answer so
+    the hint above the grid states the rule the list was built by, instead of repeating a
+    default in JS. `window_total` is the count of the CURRENT slice's window, which
+    "show more" walks past into the frames the ranking is less sure about.
     """
     conn = _connect(db_path)
     try:
@@ -738,10 +608,8 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
             items = [_review_item_to_json(r, actions.get(int(r["id"]))) for r in rows]
     finally:
         conn.close()
-    # F194: the counter is the number of GROUPS on screen, i.e. the second and third
-    # tiers. The first one is a number and not a list by construction, so it cannot be
-    # part of a count of things to look at — it travels with `/api/dupes`, which is what
-    # the client renders this slice from.
+    # F194: the number of GROUPS on screen, i.e. the second and third tiers. The first
+    # is a number and not a list, so it cannot be part of a count of things to look at.
     groups = _dupes_payload(db_path, max_distance)["groups"]
     counts["dupes"] = len(groups)
     pending["dupes"] = _pending_dupe_groups(groups)
@@ -750,26 +618,22 @@ def _review_payload(db_path: Path, slice_: str, offset: int, limit: int, *,
     return {
         "slice": slice_,
         "grouped": slice_ == "dupes",
-        # F139: the album kind of the CURRENT slice, or None for the duplicates. The
-        # client draws its "gather into a folder" row from this and never from a table of
-        # its own — see `_REVIEW_SLICE_KIND`.
+        # F139: the client draws its "gather into a folder" row from this and never from
+        # a table of its own. None for the duplicates.
         "album_kind": _REVIEW_SLICE_KIND.get(slice_),
         "counts": [{"slice": name, "count": counts[name]} for name in _REVIEW_SLICES],
-        # F133: what the "Layout" tab warns about — the part of the workspace nobody has
-        # answered yet. `pending_total` is the one number the warning shows; the per-slice
-        # breakdown rides along because it costs nothing and says WHERE the work is left.
+        # F133: what the "Layout" tab warns about. The per-slice breakdown rides along
+        # because it costs nothing and says WHERE the work is left.
         "pending": [{"slice": name, "count": pending[name]} for name in _REVIEW_SLICES],
         "pending_total": sum(pending.values()),
         "eyes_reason": eyes_reason,
         "blur_max": float(features.blur_review_max),
-        # F157: which number ordered the blur list — `face_sharpness` where F155's column
-        # exists, `sharpness` where it does not. The caption says so out loud, because
-        # "frames with a face are ordered by the sharpness of the face" is the one thing
-        # that explains why a visibly sharp street can sit above a soft portrait.
+        # F157: the caption says which number ordered the list out loud — "frames with a
+        # face are ordered by the sharpness of the face" is the one thing that explains
+        # why a visibly sharp street can sit above a soft portrait.
         "blur_order": blur_order,
-        # F179: the number the closed-eyes caption is shown with — and that caption states
-        # the PRECISION measured at it, not a count, because 62% right is the fact a person
-        # needs before looking at the list.
+        # F179: the caption shown with this states the PRECISION measured at it, not a
+        # count — 62% right is the fact a person needs before looking at the list.
         "eye_max": float(features.eye_openness_max),
         "low_resolution_mp": float(features.low_resolution_mp),
         "window_total": window_total,
@@ -787,9 +651,7 @@ def _parse_review_query(
     """(slice, offset, limit, beyond) for `GET /api/review`, or None -> 400.
 
     An unknown slice is refused rather than answered with an empty page: the switcher
-    offers exactly `_REVIEW_SLICES`, so anything else is a client that has lost track of
-    what it is asking for. The window is parsed by the plan-page rules
-    (`_parse_page_window`).
+    offers exactly `_REVIEW_SLICES`, so anything else is a client that has lost track.
     """
     window = _parse_page_window(query)
     if window is None:
@@ -826,15 +688,12 @@ def _validate_review_mark_payload(payload: object) -> tuple[list[int], str] | No
 def _apply_review_mark(db_path: Path, ids: list[int], action: str) -> int:
     """Write the decision of a flat slice into `dedup_choice`; returns how many landed.
 
-    The same table and the same two values the duplicates half writes, on purpose: one
-    decision per file, understood by one consumer (`sorter`, which moves `to_delete`
-    into `_delete` on `--apply`). `clear` removes the row, i.e. "I have not decided",
-    which is not the same as `keep` — and `keep` is what survives the next run, so the
-    two or three blurred frames a person keeps for the memory are not asked about again.
+    The same table and the same two values the duplicates half writes: one decision per
+    file, understood by one consumer (`sorter`). `clear` removes the row — "I have not
+    decided", which is not `keep`; `keep` is what survives the next run, so the two or
+    three blurred frames a person keeps for the memory are not asked about again.
 
-    Nothing here touches a file on disk. An id outside the current index is skipped
-    rather than written (`_trash_files` resolves ids the same way): a decision about a
-    file the program does not know is not a decision about anything.
+    Nothing here touches a file on disk. An id outside the current index is skipped.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
@@ -863,30 +722,22 @@ def _apply_review_mark(db_path: Path, ids: list[int], action: str) -> int:
 
 
 # --- F149: "try to improve" — one frame, by request, a copy beside it -----------------
-# The third action of the Review tab, next to the two it has had ("mark for deletion",
-# "keep"). What it does NOT do is most of the design (see `restore` for the measurement
-# and the reasoning):
+# What this path deliberately does NOT do (see `restore` for the measurement):
 #
-# * ONE frame per press. `{"file_id": int}` and no list shape at all — a body carrying
-#   `file_ids` is refused by the validator like any other malformed one. There is no CLI
-#   command either. A model that draws plausible detail, applied in bulk, turns an archive
-#   into a collection of convincing forgeries;
-# * the original is never opened for writing, and the copy carries `_restored` in its name;
-# * a repeat press returns the copy that already exists (`restore.existing_copy`) instead
-#   of making a second one;
-# * keeping the copy does NOT mark the original for deletion. Two decisions, and the
-#   second one is the person's — the same line between advice and action as F148. Nothing
-#   on this path writes `dedup_choice`; the copy simply becomes a frame the existing
-#   marking route can be used on, exactly like its source.
+# * more than ONE frame per press. `{"file_id": int}` and no list shape at all, and no
+#   CLI command either — a model that draws plausible detail, applied in bulk, turns an
+#   archive into a collection of convincing forgeries;
+# * open the original for writing. The copy carries `_restored` in its name;
+# * make a second copy on a repeat press (`restore.existing_copy` returns the first);
+# * mark the original for deletion. Nothing on this path writes `dedup_choice` — the
+#   copy simply becomes a frame the existing marking route can be used on.
 
 
 def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
     """One card for the processed copy — the shape of a review card, plus what it is.
 
-    `restored` and `source_file_id` are what the client draws the badge from and where it
-    inserts the card: beside the original, not at the end of the list and not in a dialog
-    of its own. `action` is always None: the copy has just been created, so nobody has
-    decided anything about it yet, and it must not arrive with a decision attached.
+    `action` is always None: the copy has just been created, so it must not arrive with
+    a decision attached.
     """
     item = _review_item_to_json(row, None)
     item["restored"] = True
@@ -895,35 +746,22 @@ def _restored_item_to_json(row: sqlite3.Row, source_file_id: int) -> dict:
 
 
 # --- F168: the second entrance — the expanded frame, in every slice ------------------
-# F149 drew the button in ONE place, the "blurred" slice, and the measurement of
-# 2026-08-03 says that place is almost empty: the Laplacian filter at its threshold finds
-# 8% of the frames a person calls soft (it answers "how much detail is in the frame", not
-# "is it in focus"). So the action sat behind a detector we had measured to be nearly
-# blind, and the only way to reach it was to be lucky enough to be in that list.
-#
-# The second measurement (F169, 80 blind pairs) says where the action really belongs. The
-# gain is not about blur at all — it is about SIZE:
+# F149 drew the button in the "blurred" slice alone, and the measurement of 2026-08-03
+# says that place is almost empty: the Laplacian filter at its threshold finds 8% of the
+# frames a person calls soft. F169 (80 blind pairs) says the gain is not about blur at
+# all — it is about SIZE:
 #
 #     < 640 px    66% |  640-1024  58%  |  1024-1280  52%
 #
-# — a clean win on small frames, a coin toss by 1280. Hence the shape of this entrance:
-# ONE input, on the frame a person has already expanded (the lightbox, which every slice
-# opens), and offered only while the frame is below `features.restore_max_edge`. Above the
-# ceiling the offer is withdrawn AND the reason is said out loud (`_restore_offer`): a
-# button there would promise what the measurement did not find, and a frame silently
-# rebuilt from a quarter of itself is exactly the trade F169 exists to disclose.
+# — a clean win on small frames, a coin toss by 1280. Hence ONE input, on the frame a
+# person has already expanded, offered only below `features.restore_max_edge`.
 #
-# The bans below are enforced HERE, in the route, and not by not drawing a button —
-# the F133 rule: a hidden control is not a rule, and a request made past the interface
-# collects the same thing.
-#
-# F198: the ceiling is one of them now. F169 left the question open on purpose — it was
-# written BEFORE the measurement and refused nothing above the ceiling, did the work and
-# said afterwards that the copy had been rebuilt from a reduced frame. The measurement
-# answered on 2026-08-04 (35/35/30 on blind pairs above the ceiling, i.e. nothing), and
-# until this feature the code was still waiting for it: a press on a 4320 px frame spent
-# the model and left a useless file beside the original, with the honest warning arriving
-# after the copy existed. A verdict has to come back to the code, not only to a document.
+# The bans are enforced HERE, in the route, not by not drawing a button (the F133 rule:
+# a hidden control is not a rule, and a request made past the interface collects the
+# same thing). F198 made the ceiling one of them: F169 refused nothing above it and
+# warned after the fact, and the measurement of 2026-08-04 came back at 35/35/30 on
+# blind pairs above the ceiling — i.e. nothing, for a run of the model and a useless
+# file beside the original.
 RESTORE_ERROR_SENSITIVE = "sensitive_class"
 RESTORE_ERROR_VIDEO = "video"
 RESTORE_ERROR_TOO_LARGE = "too_large"
@@ -935,8 +773,7 @@ def _restore_refusal(path: Path, verdict: str | None, media_type: str | None,
 
     A private class (`vlm.exclude_classes`, `document` by default) is refused because
     processing one means decoding a passport or a medical form and drawing it four times
-    larger — the one thing the product deliberately never renders. Video is refused
-    because the engine is about images: a clip has no single frame to be the answer.
+    larger. Video is refused because a clip has no single frame to be the answer.
     """
     if verdict is not None and verdict in sensitive:
         return RESTORE_ERROR_SENSITIVE
@@ -960,9 +797,8 @@ def _restore_source_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row |
 def _restore_notice(src: Path, max_edge: int) -> dict:
     """F169: what the answer owes about the ceiling — `rebuilt` and the two numbers.
 
-    Recomputed from the source rather than remembered, because the same sentence is owed
-    on the press that REUSES a copy: the frame and the ceiling are what they are, so the
-    second press must not quietly drop the warning the first one carried.
+    Recomputed from the source rather than remembered: the press that REUSES a copy owes
+    the same sentence, and must not quietly drop the warning the first one carried.
     """
     edge = restore.source_edge(src)
     return {"rebuilt": edge > int(max_edge) > 0, "source_edge": edge,
@@ -973,22 +809,17 @@ def _restore_decision(path: Path, verdict: str | None, media_type: str | None,
                       sensitive: frozenset[str], max_edge: int) -> dict:
     """F198: may this frame be processed — the ONE answer both entrances read.
 
-    `_restore_offer` shows it and `_restore_frame` enforces it, and neither works it out
-    for itself: a second place deciding "is this allowed" is a second source of truth, and
-    the last one drifted apart within a day (the offer withdrew itself above the ceiling
-    while the route did the work anyway).
+    `_restore_offer` shows it and `_restore_frame` enforces it; a second place deciding
+    "is this allowed" drifted apart within a day last time.
 
-    Above `features.restore_max_edge` the answer is NO. The model is x4 and cannot be shown
-    a 12-megapixel frame, so a big one would be reduced first and blown back up to about
-    its own size — and the measurement of 2026-08-04 found nothing there (35/35/30 on blind
-    pairs). Doing it anyway costs a run of the model and leaves a near-duplicate file in the
-    archive, so the refusal carries both numbers and the answer is a sentence rather than a
-    file. Below the ceiling nothing is narrowed: that is where the gain was measured (62%
-    against 10% for bicubic on small frames).
+    Above `features.restore_max_edge` the answer is NO: the model is x4, so a big frame
+    would be reduced first and blown back up to about its own size, and the measurement
+    of 2026-08-04 found nothing there (35/35/30 on blind pairs). Below the ceiling
+    nothing is narrowed — that is where the gain was measured (62% against 10% for
+    bicubic on small frames).
 
-    The order matters. A frame refused as a personal document is never measured — the size
-    comes off the file's header, and that is a file this program opens for no purpose,
-    including for a sentence it will not print.
+    The ORDER matters: a frame refused as a personal document is never measured, because
+    the size comes off the file's header and that is a file this program does not open.
     """
     refusal = _restore_refusal(path, verdict, media_type, sensitive)
     if refusal is not None:
@@ -1004,38 +835,25 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int,
                    sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict:
     """`POST /api/review/restore` for ONE id -> the card of the copy, or the reason.
 
-    Reads the source's path from the index (never from the request — the same rule every
-    other route follows), hands it to `restore.restore_frame`, then indexes the result. A
-    reason travels as a CODE (`restore.ERROR_*`), which the client translates: the weights
-    come from the network and offline is an ordinary state for this product, so "the model
-    is not here" has to be an answer a person can read rather than an empty result.
+    Reads the source's path from the index, never from the request. A reason travels as
+    a CODE (`restore.ERROR_*`) the client translates: the weights come from the network
+    and offline is an ordinary state, so "the model is not here" has to be readable.
 
-    F169: the ceiling comes from `features.restore_max_edge` and is PASSED — it used to be
-    a constant the engine defaulted to, i.e. one number for every frame with nobody told.
-    F198: a frame above that ceiling is now REFUSED here instead of processed with a
-    warning attached to the result. The measurement F169 was waiting for came back empty
-    for such frames, so the work spent the model and left a useless near-duplicate in the
-    archive; the warning was honest but arrived after the file existed. The answer says no
-    and names both numbers. `rebuilt` still travels with a successful answer: the size is
-    read before the work and the engine measures what it actually processed, so a file
-    replaced in between is still reported rather than passed off as untouched.
+    `rebuilt` travels with a successful answer too — the engine measures what it
+    actually processed, so a file replaced between the check and the work is reported
+    rather than passed off as untouched.
 
-    F168: `sensitive` is `vlm.exclude_classes`, and the bans it and `media_type` carry are
-    refused HERE rather than by not drawing a button — this route is now reachable from
-    every slice, and a rule that lives in the markup is a rule a request made past the
-    interface never meets. The default is the fallback list for the same reason
-    `_junk_payload` has one: a privacy guard must not switch itself off through an
-    omission. Every refusal is an ordinary reason (200 + a code the client translates),
-    not an error: the person pointed at a frame this action does not apply to, which is
-    something the interface has to be able to say.
+    F168: the default `sensitive` is the fallback list for the same reason
+    `_junk_payload` has one — a privacy guard must not switch itself off through an
+    omission. Every refusal is an ordinary reason (200 + a code), not an error.
     """
     conn = _connect(db_path)
     try:
         row = _restore_source_row(conn, file_id)
         if row is None:
             return {"ok": False, "error": "file not found"}
-        # The same answer the offer showed, from the same function: what is drawn and what
-        # is enforced cannot be two decisions (F198).
+        # The same function the offer called: what is drawn and what is enforced cannot
+        # be two decisions (F198).
         decision = _restore_decision(Path(row["path"]), row["verdict"], row["media_type"],
                                      sensitive, features.restore_max_edge)
         if not decision["available"]:
@@ -1051,8 +869,8 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int,
             if Path(copy_path).exists():
                 return {"ok": True, "reused": True, **notice,
                         "item": _restored_item_to_json(_restored_row(conn, copy_id), file_id)}
-            # The person deleted it in their file manager. Answering "you already have one"
-            # and drawing a card for a file that is gone is worse than doing the work again.
+            # The person deleted it in their file manager: drawing a card for a file
+            # that is gone is worse than doing the work again.
             restore.forget_copy(conn, copy_id)
         result = restore.restore_frame(Path(row["path"]), model,
                                        max_edge=features.restore_max_edge)
@@ -1064,9 +882,8 @@ def _restore_frame(db_path: Path, features: FeaturesConfig, file_id: int,
         item = _restored_item_to_json(_restored_row(conn, copy_id), file_id)
     finally:
         conn.close()
-    # The copy is a new canonical file, so the cached duplicate payload and the cached
-    # layout no longer describe the collection. It is never a duplicate of its source
-    # (`dedup`), which is a statement about the GROUPS and not about the cache.
+    # The copy is a new canonical file, so the cached duplicate payload no longer
+    # describes the collection.
     _dupes_cache_clear()
     return {"ok": True, "reused": False, "item": item, **notice}
 
@@ -1075,14 +892,10 @@ def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     """The copy's row in the shape `_review_item_to_json` reads.
 
     `sharpness` is selected as NULL rather than joined: the copy has no `frame_quality`
-    row and will not have one until the next run measures it, and a card that printed a
-    zero would be claiming a measurement nobody made.
-
-    F150: the size, on the other hand, is REAL and is selected as such. `record_restored`
-    measures the copy it just wrote, and on the low-resolution slice — the model's proper
-    addressee, where ×4 turns 640×480 into 2560×1920 — the change in size is the whole
-    result of the operation. A card that hid it would leave the person comparing two
-    thumbnails of identical width on screen.
+    row until the next run measures it, and a printed zero would claim a measurement
+    nobody made. F150: the size IS real (`record_restored` measures the copy it wrote),
+    and on the low-resolution slice — where ×4 turns 640×480 into 2560×1920 — the change
+    in size is the whole result of the operation.
     """
     return conn.execute(
         "SELECT id, path, taken_at, NULL AS sharpness, width, height "
@@ -1092,11 +905,9 @@ def _restored_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
 def _restored_source_json(conn: sqlite3.Connection, file_id: int) -> dict | None:
     """Where this frame was processed FROM, or None if it is not a copy at all.
 
-    The badge on the expanded frame is drawn from this, and the link comes out of
-    `restored_files` rather than out of the name: the copy is an ordinary member of the
-    collection now — it lies in the city folder beside its source, it can be gathered
-    into an album — so wherever it turns up it has to say what it is, or it reads as a
-    second similar photograph that came from nowhere.
+    The link comes out of `restored_files`, never out of the name: the copy is an
+    ordinary member of the collection — it lies in the city folder beside its source and
+    can be gathered into an album — so wherever it turns up it has to say what it is.
     """
     row = conn.execute(
         """SELECT r.source_file_id AS file_id, f.path AS path
@@ -1111,24 +922,11 @@ def _restore_offer(db_path: Path, features: FeaturesConfig, file_id: int,
                    sensitive: frozenset[str] = frozenset(_JUNK_NO_PREVIEW)) -> dict | None:
     """`GET /api/restore/offer` — what the expanded frame affords; None -> 404.
 
-    Read-only, and it is NOT a second implementation of the action: pressing still goes
-    to the one route, and a reason still travels as the same code. This answers the two
-    questions the expanded frame has to answer before anything is offered —
-
-    * `available`: may this frame be processed at all — the bans the route enforces, and
-      the ceiling among them (F198). A client that worked any of that out for itself would
-      be a second copy of the rule, which is the mistake F133 named;
-    * `rebuilt`: is the frame ABOVE `features.restore_max_edge`, i.e. would the copy be
-      rebuilt from a reduced version of itself. The measurement found the gain on small
-      frames and nothing above the ceiling, so there the answer is `available: False` with
-      `reason` `too_large` and the two numbers the sentence is built from. Silence there
-      would be a promise the measurement does not support.
-
-    `restored_from` is the other direction: this frame IS a copy, and here is the frame it
-    was made from.
-
-    Both facts come from `_restore_decision`, which is also what the route enforces: this
-    is a VIEW of the answer, never a second one.
+    A VIEW of `_restore_decision`, which is also what the route enforces — never a
+    second implementation. `available` is the bans, the ceiling among them (F198);
+    `rebuilt` says the frame is above `features.restore_max_edge`, where the answer is
+    `available: False` with `reason` `too_large` and the two numbers the sentence is
+    built from. `restored_from` is the other direction: this frame IS a copy.
     """
     conn = _connect(db_path)
     try:

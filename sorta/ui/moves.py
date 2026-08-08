@@ -1,9 +1,4 @@
-"""F182: the "Moves" tab — what the last batch did, and rolling it back.
-
-The manifest of a batch and the undo that reads it. `_UndoState` extends the sort
-state of `layout` because a rollback is the same kind of long job as the layout it
-undoes, watched through the same progress protocol.
-"""
+"""F182: the "Moves" tab — what the last batch did, and rolling it back."""
 from __future__ import annotations
 
 import sqlite3
@@ -20,7 +15,7 @@ def _target_rel(dst: str, dest_root: str) -> str:
     """dst relative to dest_root, as in PlanItem.target_rel (see sorter.py).
 
     ValueError (a path-case divergence on Windows, etc.) -> the full dst, the same
-    fallback as in sorter._target_parts/plan_and_sort.
+    fallback as sorter._target_parts.
     """
     try:
         return Path(dst).relative_to(Path(dest_root)).as_posix()
@@ -31,10 +26,9 @@ def _target_rel(dst: str, dest_root: str) -> str:
 def _moves_payload(db_path: Path, batch_id: int | None) -> dict:
     """The sort --apply batch manifest: batch metadata + the list of moves.
 
-    batch_id=None -> the last batch (MAX(id) in move_batches). No batches ->
-    {"batch": None, "moves": []}, without crashing. name/target_rel are computed from
-    dst — independent of the current files row (a trashed file after a move still
-    shows its path in the manifest, just without a preview).
+    batch_id=None -> the last batch. No batches -> {"batch": None, "moves": []}.
+    name/target_rel come from dst, not from the current files row: a file trashed
+    after a move still shows its path in the manifest, just without a preview.
     """
     conn = _connect(db_path)
     try:
@@ -78,26 +72,15 @@ def _moves_payload(db_path: Path, batch_id: int | None) -> dict:
 class _UndoState(_SortState):
     """Thread-safe state of the background `/api/undo` rollback (F97).
 
-    Deliberately the same shape as `_SortState` (running/done/total/error/finished/
-    result + a cancel flag): the client polls it with the same code, and a rollback is
-    the same kind of thing as a layout — one long operation over a file list that has
-    to be stoppable. A separate class rather than a second `_SortState` instance so
-    the cross-lock in the handlers reads as what it is: sort, process and undo are
-    three named things that may not run at the same time.
+    A distinct class rather than a second `_SortState` instance so the cross-lock in
+    the handlers reads as what it is: sort, process and undo may not run at once.
     """
 
 
-# --- F97: roll the last batch back from the UI (`POST /api/undo`) -------------
-# The engine is `sorter.undo`, exactly the one behind the CLI `sorta undo` — the
-# blake3 verification before deleting a copy, the interrupted tail and the closing of
-# a batch left with finished_at=NULL all live there. Here, as with `/api/sort`, only
-# the background thread, the progress snapshot and the cancel flag.
-#
-# The batch is resolved the same way `_moves_payload` resolves it — the LAST batch in
-# move_batches, i.e. the very one the "Moves" tab is showing. `sorter.undo(None)` picks
-# the last batch that has a 'done' move instead, which is a different batch in exactly
-# the case this button exists for: a run interrupted before its first file finished.
-# The button and the manifest next to it must talk about the same thing.
+# F97: the batch is resolved as `_moves_payload` resolves it — the LAST batch in
+# move_batches, the one the "Moves" tab is showing. `sorter.undo(None)` picks the last
+# batch with a 'done' move instead, a different batch in exactly the case this button
+# exists for: a run interrupted before its first file finished.
 
 
 def _last_batch_id(conn: sqlite3.Connection) -> int | None:
@@ -106,17 +89,15 @@ def _last_batch_id(conn: sqlite3.Connection) -> int | None:
 
 
 def _run_undo(db_path: Path, cfg: Config, state: _UndoState, cache: PlanCache) -> None:
-    """The body of the `POST /api/undo` background thread: its own sqlite connection
-    (not transferable between threads, like `_run_sort`).
+    """The body of the `POST /api/undo` background thread.
 
-    No batches at all -> an error in the state, not an exception: the button is only
-    reachable when the manifest shows a batch, so this is a race, not a user mistake.
-    A cancelled rollback is a normal result with `cancelled` set — what was undone
-    stays undone and pressing the button again finishes the rest.
-
-    `stray` (copies of an interrupted transfer whose hash does not match) travels to
-    the client as a list of paths: those files are still lying in the result and only
-    a human can decide what they are.
+    Opens its own sqlite connection (a connection is not transferable between
+    threads). No batches at all -> an error in the state, not an exception: the button
+    is only reachable when the manifest shows a batch, so this is a race. A cancelled
+    rollback is a normal result — what was undone stays undone and pressing the button
+    again finishes the rest. `stray` (copies of an interrupted transfer whose hash
+    does not match) travels to the client as paths: only a human can decide what they
+    are.
     """
     conn = _connect(db_path)
     error: str | None = None
@@ -140,8 +121,8 @@ def _run_undo(db_path: Path, cfg: Config, state: _UndoState, cache: PlanCache) -
                     "cancelled": stats.cancelled,
                     "stray": stats.stray,
                 }
-                # As in _run_sort: the rollback already happened, so a preview cache
-                # that would not rebuild is a soft signal, never a rollback error.
+                # The rollback already happened: a preview cache that would not
+                # rebuild is a soft signal, never a rollback error.
                 try:
                     cache.rebuild(cfg, conn)
                 except Exception:  # noqa: BLE001
