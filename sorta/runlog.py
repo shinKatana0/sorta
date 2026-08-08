@@ -814,14 +814,15 @@ def _package_origin() -> str:
     return f"{package_dir} ({origin})"
 
 
-def _gpu_line() -> str:
-    """torch/onnxruntime CUDA availability — but only if somebody has already loaded them.
+def _gpu_line(probe: bool = False) -> str:
+    """torch/onnxruntime CUDA availability — probed, or read off what is already loaded.
 
     Asking the diagnostics layer costs 13.96 s (measured 2026-08-08, warm cache, fast
-    machine) because the answer means importing torch, and the base tier needs torch for
-    nothing. `sorta doctor` probes for real, on request.
+    machine) because the answer means importing torch. A run pays that anyway one line
+    later and passes `probe=True`; a launch does not need torch at all and gets what is
+    in `sys.modules`. `sorta doctor` always probes, on request.
     """
-    if "torch" not in sys.modules and "onnxruntime" not in sys.modules:
+    if not probe and "torch" not in sys.modules and "onnxruntime" not in sys.modules:
         return "not loaded (ask `sorta doctor` for the real answer)"
     try:
         from . import diagnostics
@@ -858,12 +859,15 @@ def _safe(getter: Callable[[], object]) -> str:
         return f"недоступно ({exc})"
 
 
-def log_environment() -> None:
+def log_environment(probe_gpu: bool = False) -> None:
     """Write the environment header once at the start of a run.
 
-    Exactly what was missing to catch F65 and the VLM fallback right away. Never
-    raises and never loads ML models: an unavailable library becomes a "недоступно"
-    line. Emitted as ONE record so it is not interleaved with the pipeline thread.
+    Exactly what was missing to catch F65 and the VLM fallback right away. Never raises:
+    an unavailable library becomes a line rather than an exception. Emitted as ONE record
+    so it is not interleaved with the pipeline thread.
+
+    `probe_gpu` is for a caller that is about to load torch anyway — a run. A launch
+    leaves it off and gets whatever is already imported; see `_gpu_line`.
     """
     try:
         from . import __version__
@@ -873,7 +877,7 @@ def log_environment() -> None:
         version = "unknown"
 
     try:
-        gpu = _gpu_line().replace("\n", "; ")  # the diagnostics summary is multi-line
+        gpu = _gpu_line(probe_gpu).replace("\n", "; ")  # the summary is multi-line
         lines = [
             "environment:",
             f"  sorta: {version}",

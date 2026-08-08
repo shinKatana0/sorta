@@ -682,7 +682,9 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
     lang = _lang(cfg)
-    log_environment()  # F69: versions, package origin, GPU, geo data — once per run
+    # `probe_gpu=True`: this run loads torch one line down anyway, so the header may
+    # as well carry the real answer instead of "not loaded".
+    log_environment(probe_gpu=True)  # F69: versions, package origin, GPU, geo data
     warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
     warn_if_geo_data_missing()  # F65: an unreadable geo base empties every place
     if src:  # an explicit source overrides config sources for this run
@@ -1155,11 +1157,22 @@ def _cmd_cache(config_path: str, *, clear: bool = False, clear_geo: bool = False
 
 
 def _cmd_ui(config_path: str, port: int) -> None:
+    """Serve the web app — and check the machine BEHIND that, not in front of it.
+
+    `warn_if_gpu_mismatch` imports torch: 3.76 s on a fast machine, far more on a cold
+    disk, and none of it is needed to answer a request. F227 moved it behind the bind for
+    the tray; this is the same move for the command, so the address is printed and the
+    page answers while the probe is still running. The warning still arrives, on the
+    console it was always written to.
+    """
+    import threading
+
     from .ui import serve as ui_serve
     cfg = load_config(config_path)
     configure_logging(cfg.log_level)
-    warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
     conn = connect(cfg.database)
+    threading.Thread(target=warn_if_gpu_mismatch, daemon=True,
+                     name="gpu-check").start()
     ui_serve(cfg, conn, port=port, config_path=config_path)
 
 
