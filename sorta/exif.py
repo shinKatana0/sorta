@@ -1,6 +1,7 @@
 """Metadata reading: exiftool (preferred) or Pillow (fallback).
 
-exiftool covers HEIC/RAW/video; Pillow — only jpeg/png/tiff/webp.
+exiftool covers HEIC/RAW/video; Pillow — only jpeg/png/tiff/webp. Which exiftool that
+is — the one on PATH or the one the installer shipped — is `resolve_exiftool` below.
 exiftool runs through a pool of long-lived processes (-stay_open) — the
 process-startup cost is not paid per batch; on a session failure that session's
 slice falls back to a one-shot subprocess call.
@@ -19,6 +20,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
+
+from . import install
 
 _EXIFTOOL_TAGS = [
     "-DateTimeOriginal", "-CreateDate", "-GPSLatitude", "-GPSLongitude",
@@ -38,8 +42,87 @@ class ExifData:
     orientation: int | None = None  # EXIF 274: 1..8, numeric value (-n)
 
 
+# --- which exiftool this copy uses (F226) --------------------------------------------
+# The Windows installer carries a 25 MB exiftool and the manifest names it — and until
+# F226 this module looked for the binary by ONE name on PATH, which nothing in the
+# install ever puts there (neither `sorta.iss` nor `sitecustomize.py` mentions exiftool).
+# So an installed copy fell straight through to Pillow and read no HEIC/RAW/video dates,
+# no GPS and no orientation at all, while the wizard's screen said in as many words that
+# "exiftool ships with the program". The resolution below is one half of making that
+# sentence true; the other half is in `scripts/build_installer.py`, which shipped the
+# .exe without the `exiftool_files\` directory it cannot start without.
+#
+# The order is PATH first, the shipped binary second:
+#
+#   * a machine where somebody installed exiftool on purpose (this project's own, via
+#     winget) has to keep behaving exactly as it did — that copy is also the one a person
+#     can update, and it is the one they will expect to be used;
+#   * the shipped binary is the answer for the machine that has nothing, which is every
+#     machine the installer is FOR.
+#
+# There is deliberately no config key in front of those two: `config.py` has none today,
+# and a setting invented here would be one nobody asked for and nobody maintains.
+#
+# The machine's PATH is left alone in either case — what goes into the command is the
+# absolute path, so nothing this program does changes what `exiftool` means in a shell.
+
+# `exiftool -ver` on a healthy binary answers immediately; this bound exists so a wedged
+# one costs a diagnostic pause rather than a hung index.
+_PROBE_TIMEOUT = 15
+
+
+def _starts(binary: str) -> bool:
+    """Does this file actually run as exiftool? — `Path.exists()` is not that question.
+
+    The Windows build is `exiftool.exe` PLUS an `exiftool_files\\` directory beside it,
+    and without that directory the .exe is still there, still named right, and does not
+    start. A manifest that names a binary whose payload half went missing would otherwise
+    win over the working copy on PATH, which is the opposite of the point. Asking for the
+    version is the cheap way to tell the two apart, and it is asked once per process.
+    """
+    try:
+        proc = subprocess.run([binary, "-ver"], capture_output=True, text=True,
+                              timeout=_PROBE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def resolve_exiftool(*, which: Callable[[str], str | None] | None = None,
+                     runs: Callable[[str], bool] | None = None,
+                     manifest: dict | None = None) -> str | None:
+    """The exiftool to run, by the order above — or None when there is none.
+
+    Every dependency is injectable and resolved at CALL time rather than bound as a
+    default, so a caller (and the suite) can ask the question for a machine other than
+    this one; `sorta doctor` does exactly that.
+    """
+    finder = shutil.which if which is None else which
+    on_path = finder("exiftool")
+    if on_path:
+        return on_path
+    shipped = install.tool_path(
+        install.load_manifest() if manifest is None else manifest, "exiftool")
+    probe = _starts if runs is None else runs
+    return shipped if shipped and probe(shipped) else None
+
+
+# Resolved once per process and remembered: `read_batch` asks per batch, and the shipped
+# branch of the answer costs a subprocess. A one-element tuple rather than a bare string
+# so that "resolved to nothing" and "not resolved yet" stay different states.
+_resolved: tuple[str | None] | None = None
+
+
+def exiftool_binary(*, refresh: bool = False) -> str | None:
+    """The path of the exiftool this process uses, or None if it has none."""
+    global _resolved
+    if refresh or _resolved is None:
+        _resolved = (resolve_exiftool(),)
+    return _resolved[0]
+
+
 def exiftool_available() -> bool:
-    return shutil.which("exiftool") is not None
+    return exiftool_binary() is not None
 
 
 def _parse_records(records: list[dict]) -> dict[str, ExifData]:
@@ -59,7 +142,19 @@ def _parse_records(records: list[dict]) -> dict[str, ExifData]:
 
 
 # exiftool command; in tests it is replaced with a fake script to check the protocol.
-_EXIFTOOL_CMD = ["exiftool"]
+# None means "nobody has overridden it", and then the command is whatever
+# `exiftool_binary()` resolved — the shipped binary's absolute path on an installed copy.
+_EXIFTOOL_CMD: list[str] | None = None
+
+
+def _exiftool_cmd() -> list[str]:
+    if _EXIFTOOL_CMD is not None:
+        return _EXIFTOOL_CMD
+    # The bare name is the last resort and not a fallback anyone should reach: a caller
+    # that got here past `exiftool_available()` is a one-shot read on a machine where
+    # nothing was found, and letting the OS answer is closer to the old behaviour than
+    # raising would be.
+    return [exiftool_binary() or "exiftool"]
 
 # Arguments for each query; in a -stay_open session we additionally declare the
 # stdin-argfile encoding (a Windows-only exiftool option) since we write it in UTF-8.
@@ -138,7 +233,7 @@ class ExifToolSession:
             if self._proc is not None:
                 _close_pipes(self._proc)
             self._proc = subprocess.Popen(
-                [*_EXIFTOOL_CMD, "-stay_open", "True", "-@", "-"],
+                [*_exiftool_cmd(), "-stay_open", "True", "-@", "-"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
@@ -285,7 +380,7 @@ def read_batch_exiftool(paths: list[Path], chunk: int = 200) -> dict[str, ExifDa
     for i in range(0, len(paths), chunk):
         batch = [str(p) for p in paths[i:i + chunk]]
         proc = subprocess.run(
-            [*_EXIFTOOL_CMD, *_QUERY_ARGS, *_EXIFTOOL_TAGS, *batch],
+            [*_exiftool_cmd(), *_QUERY_ARGS, *_EXIFTOOL_TAGS, *batch],
             capture_output=True, text=True,
         )
         if not proc.stdout.strip():

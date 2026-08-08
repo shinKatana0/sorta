@@ -482,6 +482,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **The installed copy now uses the exiftool it brought with it** (F226). The installer
+  carried 25 MB of exiftool, the manifest named it — `"exiftool": "exiftool\\exiftool.exe"`,
+  `"exiftool_version": "13.59"` — and `sorta/exif.py` looked for the binary exactly one
+  way: `shutil.which("exiftool")`. Neither `sorta.iss` nor `sitecustomize.py` puts it on
+  PATH, and neither ever claimed to. So **every installed copy ran on Pillow**: HEIC, RAW
+  and video arrived with no dates, no GPS and no orientation — the silent failure the
+  tiers exist to prevent, shipped by default. The product said both things at once on one
+  screen: the wizard promised "exiftool ships with the program" while `doctor` reported
+  *"not on PATH"* as the normal state and advised `winget install` — a second copy of what
+  was already on the disk. **Nobody saw it because the developer's machine and the CI
+  runner both have exiftool on PATH from winget**, so "does it work here" kept answering
+  about somebody else's machine; the check that catches it is about FILES — the manifest
+  against what the reader looks up — and that pairing is now a test.
+  **The binary is resolved in an order, first found wins**: PATH, then the manifest. PATH
+  stays first so a machine where somebody installed exiftool on purpose behaves exactly as
+  before, and because that copy is the one they can update. The machine's PATH is not
+  touched either way — what goes into the command is an absolute path. There is no config
+  key in front of those two: none existed, and this was not the place to invent a setting.
+  **The candidate is RUN, not looked up**: the Windows build of exiftool is `exiftool.exe`
+  plus an `exiftool_files\` directory beside it, and the .exe alone prints
+  `Could not find ...\exiftool_files\perl5*.dll` and exits 1 — so a manifest whose binary
+  cannot start loses to nothing at all, and the fallback to Pillow stays honest and is
+  said out loud. **That directory had never been in the payload**, which is the other half
+  of the same defect: the 25 MB that travelled could not have started even once it was
+  found. The build now carries it, unconditionally, so a build machine without it stops
+  rather than shipping the broken pair a second time.
+  **The manifest is read and not copied.** `wizard.load_manifest` already did this, but
+  reaching it from the metadata reader would drag the whole tier catalog — six tiers,
+  their sizes, their translated names — into a module that resolves one path. So the
+  lookup lives in a new `sorta/install.py`, three functions and no state, pinned to the
+  wizard's constants by a test until `wizard.py` is moved onto it as a separate cleanup.
+  **`doctor` says which of the two it found**: with the shipped binary it names the path
+  and adds "ships with the program", and the `winget`/`brew`/`apt` line is not printed at
+  all. Next to it, the same correction one line up — an installed copy was being told to
+  run `uv tool update-shell`, which fixes an install made by `uv tool install`; it is now
+  told how it is actually run, `"{app}\python\python.exe" -m sorta.cli`. A checkout keeps
+  every line it had.
 - **Three stages out of seven still chose their own device, and on a Mac they would have
   run on the processor beside four that did not** (F220). F214 replaced four copies of
   `"cuda" if torch.cuda.is_available() else "cpu"` with one function and said in its own

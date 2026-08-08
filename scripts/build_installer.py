@@ -95,6 +95,14 @@ PAYLOAD_PYTHON_EXE = PAYLOAD_PYTHON / "python.exe"
 PAYLOAD_LIB = Path("lib")
 PAYLOAD_UV = Path("uv.exe")
 PAYLOAD_EXIFTOOL = Path("exiftool") / "exiftool.exe"
+# F226: the other half of that binary. The Windows build of exiftool is the .exe PLUS a
+# directory beside it holding `perl5xx.dll` and the whole Image::ExifTool tree; on its own
+# the .exe prints `Could not find ...\exiftool_files\perl5*.dll` and exits 1. Only the
+# .exe was ever copied, so the 25 MB the installer carried could not start even once it
+# was found — which is why this travels, and why the reader's probe (`sorta.exif._starts`)
+# asks a candidate for its version instead of asking whether the file is there.
+EXIFTOOL_FILES_DIR = "exiftool_files"
+PAYLOAD_EXIFTOOL_FILES = PAYLOAD_EXIFTOOL.with_name(EXIFTOOL_FILES_DIR)
 
 # The directory of the shipped interpreter that CPython reads at startup: both the `.pth`
 # below and the `sitecustomize.py` further down are found there, and both climb out of it
@@ -736,6 +744,11 @@ def payload_plan(exiftool: Path | None, runtime: Path | None = None,
     plan = [(root / source, Path(destination)) for source, destination in STATIC_PAYLOAD]
     if exiftool is not None:
         plan.append((exiftool, PAYLOAD_EXIFTOOL))
+        # Unconditionally, and not "if it happens to be there": a build machine whose
+        # exiftool has no `exiftool_files\` beside it would otherwise ship the same
+        # non-starting binary again, silently. `Builder.copy` refuses a source that is
+        # missing, so that build stops instead.
+        plan.append((exiftool.parent / EXIFTOOL_FILES_DIR, PAYLOAD_EXIFTOOL_FILES))
     if runtime is not None:
         # Beside `vcruntime140.dll`, which standalone CPython put there and which IS
         # found from there — the directory of the executable is on the loader's path.
