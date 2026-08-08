@@ -463,7 +463,7 @@ def _as_repo_id(key: str, value: Any, default: str) -> str:
 
 
 def _as_fusion(value: Any, default: str) -> str:
-    """F153: one of SEARCH_FUSION_MODES; the default, announced, for anything else.
+    """F153: one of SEARCH_FUSION_MODES; anything else -> the default, with a warning.
 
     Announced rather than silent: which of the three runs decides what the ranking IS.
     """
