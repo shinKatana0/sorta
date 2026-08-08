@@ -951,13 +951,10 @@ def _cmd_doctor(config_path: str) -> None:
     manifest = install.load_manifest()
     exiftool = exif.resolve_exiftool(which=shutil.which, manifest=manifest)
     shipped = install.tool_path(manifest, "exiftool")
-    for line in _doctor_install_lines(lang, command=shutil.which("sorta"),
-                                      scripts=_scripts_dir(),
-                                      exiftool=exiftool,
-                                      bundled=exiftool is not None
-                                      and exiftool == shipped,
-                                      installed_python=install.tool_path(manifest,
-                                                                         "python")):
+    for line in _doctor_install_lines(
+            lang, command=shutil.which("sorta"), scripts=_scripts_dir(),
+            exiftool=exiftool, bundled=exiftool is not None and exiftool == shipped,
+            installed_python=install.tool_path(manifest, "python")):
         print(line)
     # F216: ...and what the install is made of. The installer ships one tier and offers
     # four, so both the person who installed it by hand and the workflow that installs

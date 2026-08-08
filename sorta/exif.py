@@ -48,8 +48,9 @@ class ExifData:
 # install ever puts there (neither `sorta.iss` nor `sitecustomize.py` mentions exiftool).
 # So an installed copy fell straight through to Pillow and read no HEIC/RAW/video dates,
 # no GPS and no orientation at all, while the wizard's screen said in as many words that
-# "exiftool ships with the program". The resolution below is what makes that sentence
-# true; nothing about the payload had to change, only the finding of it.
+# "exiftool ships with the program". The resolution below is one half of making that
+# sentence true; the other half is in `scripts/build_installer.py`, which shipped the
+# .exe without the `exiftool_files\` directory it cannot start without.
 #
 # The order is PATH first, the shipped binary second:
 #
