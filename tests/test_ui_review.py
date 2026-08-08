@@ -593,18 +593,35 @@ class TestNoBulkDeleteRoute(ReviewTestBase):
     classify them, so nothing here may mark or delete a whole slice at once."""
 
     def post_status(self, path: str, data: object) -> int:
-        """The status alone — an absent route answers with an HTML 404, not JSON."""
+        """The status alone — an absent route answers with an HTML 404, not JSON.
+
+        Retried once when the SOCKET fails rather than the server, the same way and for
+        the same reason as `test_ui_master_switch.post`: on Windows the threaded server
+        and the client race on connection teardown, and the loop below opens a fresh
+        connection per route, which is enough tries for `ConnectionAbortedError:
+        [WinError 10053]` to land on one of them. Caught once on 2026-08-08, on
+        `/api/review/mark_all`, in a gate run that had nothing to do with this file.
+
+        The retry does not soften the claim: the assertion still demands 404, and any
+        other status is returned as it came. What is retried is a connection that never
+        carried an answer at all.
+        """
         body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status
-        except urllib.error.HTTPError as exc:
-            exc.read()
-            return exc.code
+        for attempt in (1, 2):
+            req = urllib.request.Request(
+                f"{self.base_url}{path}", data=body, method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status
+            except urllib.error.HTTPError as exc:
+                exc.read()
+                return exc.code
+            except (ConnectionError, TimeoutError):
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")
 
     def test_no_route_deletes_below_a_threshold(self):
         self.add_reviewable("a.jpg", sharpness=1.0)
