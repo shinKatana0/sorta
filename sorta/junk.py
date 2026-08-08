@@ -2606,49 +2606,36 @@ class _SearchIndexPass:
 class JunkStats:
     total: int = 0        # canonical photos in total
     processed: int = 0    # processed in this run (rows whose tier != the active one)
-    # F68: rows skipped as already handled by the active tier (total - processed).
-    # On a repeated run without input changes it equals `total` and processed is 0 —
-    # the observable sign that incrementality works.
+    # F68: rows the active tier had already handled. On a repeated run without input
+    # changes it equals `total` and processed is 0 — the observable sign of incrementality,
+    # which every "stored" counter below repeats for its own half.
     skipped_incremental: int = 0
     clip_used: bool = False
     by_verdict: dict[str, int] = field(default_factory=dict)
     vlm_candidates: int = 0  # #14/V1: files selected for the VLM (doc/product zone)
     vlm_applied: int = 0     # of those, actually reclassified by the VLM (without errors)
-    # F113, the frame-quality cascade. quality_rows counts the rows the cheap tiers wrote
-    # (sharpness always, pets when the toggle is on). F186 removed the pair next to it —
-    # the uncertain band and how much of it the model answered — with the question they
-    # priced.
-    quality_rows: int = 0
-    # The animals this run ended up marking — AFTER the F130 check, if it ran: the number
-    # a user compares against the folder they get, not an intermediate the cascade
-    # discarded on its way there.
+    quality_rows: int = 0    # F113: rows the cheap tiers wrote
+    # The animals this run ended up marking — AFTER the F130 check and the F154 detector,
+    # if they ran: the number a user compares against the folder they get, not an
+    # intermediate the cascade discarded on its way there.
     pets_found: int = 0
-    # F130: frames shown to the pet check (`pet_score >= pet_candidate_threshold`) and how
-    # many of them came back with an answer that parsed. The pair is what prices the check.
+    # F130: frames shown to the pet check and how many came back with an answer that
+    # parsed. The pair is what prices the check.
     pet_candidates: int = 0
     pet_verified: int = 0
-    # F128: vectors written into `clip_embeddings` in this run. On a repeated run it is 0
-    # and the table is unchanged — the observable sign that this half is incremental too.
     embeddings_stored: int = 0
-    # F141: and the same number for the SEARCH index, counted apart from it because the
-    # two are not the same cost. This one is a second CLIP pass — ~10.5 minutes per 20 000
-    # frames — so "how many frames did that pass actually encode" is what prices the
-    # toggle, and on a repeated run it is 0 like the counter above it.
+    # F141: counted apart from the line above because a second CLIP pass is not the same
+    # cost — "how many frames did that pass encode" is what prices the toggle.
     search_vectors_stored: int = 0
-    # F140: photographs the rescue score was computed for, how many of them cleared
-    # `features.junk_rescue_threshold` (the frames the deep tier is asked about), and how
-    # many verdicts the model actually moved off `photo`. The first two price the gate the
-    # way pet_candidates/pet_verified price the animal check; the third is the whole point
-    # of the feature, and it is deliberately not the same number as the second — a
-    # candidate the model calls a photograph stays one.
+    # F140: photographs scored, how many cleared `features.junk_rescue_threshold`, and how
+    # many verdicts the model actually moved off `photo`. The third is deliberately not the
+    # second: a candidate the model calls a photograph stays one.
     junk_scored: int = 0
     junk_candidates: int = 0
     junk_rescued: int = 0
-    # F154: the animal detector — frames the query selected, how many of them the model
-    # actually looked at (the rest already had an answer from an earlier run, which is what
-    # makes a repeated run cost nothing), and on how many an animal was found. The first
-    # two price the cascade the way pet_candidates/pet_verified price the F130 check; the
-    # last is the population of the animal slice this feature exists to widen.
+    # F154: frames the query selected, how many the detector actually looked at (the rest
+    # had an answer from an earlier run — what makes a repeated run cost nothing), and on
+    # how many an animal was found.
     detector_candidates: int = 0
     detector_examined: int = 0
     detector_found: int = 0
@@ -2657,12 +2644,10 @@ class JunkStats:
 def _non_photo_ids(conn: sqlite3.Connection, file_ids: Sequence[int]) -> set[int]:
     """Which of these frames `media_class` says are NOT personal photographs.
 
-    One query over an indexed column, and it is asked AFTER the deep tier rather than
-    trusted from the fast pass: the deep tier (and, since F140, the rescue) is the one
-    thing that can move a verdict while a candidate list is standing, and `document` is
-    precisely the class `vlm.exclude_classes` protects by default. A frame with no verdict
-    at all is not in the answer — a first run has classified nothing yet, and that is not a
-    reason to withhold it.
+    Asked AFTER the deep tier rather than trusted from the fast pass: that tier (and, since
+    F140, the rescue) is what can move a verdict while a candidate list is standing, and
+    `document` is precisely the class `vlm.exclude_classes` protects by default. A frame
+    with no verdict at all is not in the answer — a first run has classified nothing.
     """
     out: set[int] = set()
     for part in batched(list(file_ids), 500):
@@ -2675,15 +2660,9 @@ def _non_photo_ids(conn: sqlite3.Connection, file_ids: Sequence[int]) -> set[int
 class _QualityPass:
     """The frame-quality half of `classify`, kept out of its loop (F113).
 
-    Owns three things and nothing else: which frames need quality work this run (its own
-    incrementality, on `frame_quality.source`, mirroring how junk uses `media_class.tier`),
-    what the cheap tiers say about a frame, and which frames that leaves for the pet check.
-    It writes on the caller's thread, inside the caller's transaction — SQLite stays
-    single-writer, as everywhere in this stage.
-
-    F186 left it with ONE model question. The frame-quality prompt, its candidate band and
-    the scope that narrowed it are gone (the eyes are geometry now, F179), so the pet check
-    is the only thing here that can raise a model at all.
+    Owns three things: which frames need quality work this run (its own incrementality, on
+    `frame_quality.source`), what the cheap tiers say about a frame, and which frames that
+    leaves for the pet check — the only model question here since F186.
     """
 
     def __init__(self, conn: sqlite3.Connection, q: QualitySettings,
@@ -2697,23 +2676,18 @@ class _QualityPass:
         self._ids = ids
         self._now = now
         self._stats = stats
-        # F130: the pet check and its candidate list — a CLIP score above
-        # `pet_candidate_threshold`, which is the one population this pass still selects.
         self._pet_ask = pet_ask
-        # F206: the preparation threads of that check — `vlm.workers`, the same knob and
-        # the same pool the deep tier uses. Defaulted to 1 (the serial path) so a caller
-        # that builds this pass by hand keeps the behaviour it had.
+        # F206: the preparation threads of that check — `vlm.workers`, the deep tier's own
+        # knob. Defaulted to 1 (the serial path) for a caller that builds this by hand.
         self._workers = workers
         # (file_id, path, label the cheap tier wrote) — the third field is what keeps
         # `stats.pets_found` the FINAL count when an answer moves the label.
         self._pet_candidates: list[tuple[int, str, str | None]] = []
-        # F140: (file_id, path) of every frame this run actually wrote a row for — the
-        # population of the rescue score, which is the same one by construction: a score
-        # belongs to a `frame_quality` row, and a row exists for personal photographs only.
+        # F140: every frame this run wrote a row for — the population of the rescue score,
+        # which is the same one by construction: a score belongs to a `frame_quality` row.
         self._measured: list[tuple[int, str]] = []
-        # F155: where the faces of the frames this run measures are. Read in one query
-        # rather than one per frame, and only when the first frame actually asks — a
-        # collection whose quality half is up to date must not pay for the query at all.
+        # F155: one query rather than one per frame, and only when the first frame asks —
+        # a collection whose quality half is up to date must not pay for it at all.
         self._faces: dict[int, FaceBoxes] | None = None
 
     @property
@@ -2734,9 +2708,9 @@ class _QualityPass:
     def needs_clip(self) -> bool:
         """Does the quality half need the CLIP row of a frame at all?
 
-        One thing wants it: the pet group, which writes `pet`/`pet_score`. F130 adds no
-        second reason (the check reads the score of that same group), and F186 removed the
-        one there used to be — the subject score that decided half of the uncertainty band.
+        Only the pet group does, and only to write `pet`/`pet_score` — the F130 check reads
+        the score of that same group, and F186 took the second reason away with the
+        subject score.
         """
         return self._q.pets
 
@@ -2744,23 +2718,17 @@ class _QualityPass:
                 verdict: str | None = None) -> None:
         """The cheap tiers for one frame: measure, write the row, note the candidates.
 
-        F120: a frame this run decided is NOT a personal photograph is dropped here
-        instead of measured, and any row a previous run left for it is removed — the
-        first live run wrote 24 196 rows over the whole collection, and the answers on
-        screenshots, products and documents were the noise that made the signal unusable.
+        F120: a frame this run decided is NOT a personal photograph is dropped here instead
+        of measured, and a row a previous run left for it is removed — the first live run
+        wrote 24 196 rows over the whole collection, and the answers on screenshots,
+        products and documents were the noise that made the signal unusable.
 
-        That same guard is what keeps `vlm.exclude_classes` out of the candidate list
-        below: this population is personal photographs, and the excludable classes
-        (document, product, screenshot, meme — `photo` is not one of them, see
-        config.VLM_EXCLUDABLE_CLASSES) have already left by the time a candidate is noted.
+        That same guard keeps `vlm.exclude_classes` out of the candidate list below: the
+        excludable classes have already left by the time a candidate is noted.
         """
         if verdict is not None and verdict != QUALITY_VERDICT:
             self._conn.execute("DELETE FROM frame_quality WHERE file_id = ?", (file_id,))
             return
-        # F155/F179: everything one decode yields — the whole frame, the sharpest face in
-        # it where the faces stage found one, and how open the eyes of the largest face
-        # are. The face crop is what actually separates a blurred frame from a detailed one
-        # (see the module docstring); the whole-frame number is unchanged.
         measured = self._sharpness(path, self._faces_of(file_id))
         sharpness = measured.frame
         pet: str | None = None
@@ -2774,11 +2742,10 @@ class _QualityPass:
         self._measured.append((file_id, path))
         if pet is not None:
             self._stats.pets_found += 1
-        # F130: the label written above is the UNVERIFIED one — `pet_score >=
-        # pet_threshold` — and that is deliberate. It is what the frame keeps if the model
-        # never answers about it, so the fallback is already in the table before anything
-        # expensive is attempted, and a run that dies mid-check leaves today's answer
-        # rather than half of tomorrow's.
+        # F130: the label written above is deliberately the UNVERIFIED one. It is what the
+        # frame keeps if the model never answers, so the fallback is in the table before
+        # anything expensive is attempted and a run that dies mid-check leaves today's
+        # answer rather than half of tomorrow's.
         if (self._pet_ask is not None and pet_score is not None
                 and pet_score >= self._q.pet_candidate_threshold):
             self._pet_candidates.append((file_id, path, pet))
@@ -2786,12 +2753,10 @@ class _QualityPass:
     def _reclassified(self) -> set[int]:
         """Candidates that stopped being personal photographs while the list was standing.
 
-        The list is built during the fast pass and asked after the deep tier, which is the
-        one thing that can move a verdict in between — a frame the fast tier called a
-        photograph can come back a `product` or a `document`. Its row is purged at the end
-        of the stage either way, but the question would already have been asked by then,
-        and `document` is precisely the class `vlm.exclude_classes` protects by default.
-        One query over an indexed column is a cheap way not to show the model a passport.
+        The list is built during the fast pass and asked after the deep tier, which can
+        move a verdict in between. The row is purged at the end of the stage either way,
+        but the question would already have been asked by then — and one query over an
+        indexed column is a cheap way not to show the model a passport.
         """
         return _non_photo_ids(
             self._conn, [fid for fid, _path, _before in self._pet_candidates])
@@ -2799,32 +2764,17 @@ class _QualityPass:
     def ask_pets(self, report: _PhaseProgress) -> None:
         """The pet check over its candidates — one frame per call, one word back (F130).
 
-        Three things can leave a frame unanswered, and all three mean the SAME thing: the
-        row keeps the label the CLIP threshold gave it and `pet_vlm` stays NULL. The model
-        raised on this frame; the model answered something nobody could read; the model was
-        never built at all (the caller's graceful fallback). None of them is a "no" — a
-        cheap tier that survives the failure of an expensive one is the rule this whole
-        stage is built on, and guessing here would delete a label CLIP was right about.
+        Three things leave a frame unanswered and all three mean the SAME thing — the row
+        keeps the label the CLIP threshold gave it and `pet_vlm` stays NULL: the model
+        raised, the model answered something nobody could read, or the model was never
+        built (the caller's graceful fallback). None of them is a "no": guessing here would
+        delete a label CLIP was right about.
 
-        The phase is CLASSIFY_PHASE_PETS_VLM — its own name since F205, with its own
-        caption in all three languages. It shared CLASSIFY_PHASE_VLM with the deep tier
-        while the two cost the same per frame, and a shared name means the estimate can
-        only charge one of them at the other's rate. The candidate list is known before
-        the loop starts, so the bar reports a real (done, total) over it. The count
-        reported is the list AFTER `_reclassified` has trimmed it, so the bar counts
-        questions that will actually be asked.
-
-        F206: THE ANSWERS COME THROUGH `_vlm_labels`, i.e. through the machinery the deep
-        tier has used since F101 — `vlm.workers` threads decode and preprocess frames
-        while this thread runs the model and writes. That is the whole change here: the
-        0.42 frames/s the phase name above was measured at was this loop asking one frame
-        at a time while the card idled through every decode, 116 minutes a run over the
-        4 281 frames the two back-half questions see. Nothing about the question moves —
-        the same prompt, the same token budget, the same input size, one frame per call —
-        so no verdict may move either, and the order guarantee is the tier's own: answers
-        arrive in the CANDIDATE order (a FIFO of futures), not in the order the
-        preparations happen to finish, because an answer written against its neighbour's
-        file is worse than a slow pass.
+        The count reported is the list AFTER `_reclassified` has trimmed it, so the bar
+        counts questions that will actually be asked. The answers come through
+        `_vlm_labels` (F206), so they arrive in the CANDIDATE order rather than in the
+        order the preparations finish — an answer written against its neighbour's file is
+        worse than a slow pass.
         """
         if self._pet_ask is None or not self._pet_candidates:
             return
@@ -2843,9 +2793,6 @@ class _QualityPass:
             for i, ((file_id, _path, before), item) in enumerate(
                     zip(candidates, answers)):
                 if isinstance(item, BaseException):
-                    # A frame the model raised on keeps the label the CLIP threshold gave
-                    # it — the same contract this loop has always had, only the raising
-                    # moved into the generator.
                     _log.warning(
                         "junk: VLM-проверка животных не ответила по file_id=%s (%s) — "
                         "оставляю метку по порогу CLIP", file_id, item)
@@ -2854,9 +2801,8 @@ class _QualityPass:
                     answer = item
                 seen = parse_pet_answer(answer)
                 if seen is not None:
-                    # The same rule the fast half used, now with the model's word in hand.
-                    # The score is passed as None because it cannot change the outcome —
-                    # an answer outranks it — and routing both cases through one function
+                    # The score is passed as None because it cannot change the outcome — an
+                    # answer outranks it — and routing both cases through the one function
                     # is what keeps the column and the label from disagreeing.
                     after = pet_label(seen, None, self._q.pet_threshold)
                     self._conn.execute(
@@ -2869,18 +2815,19 @@ class _QualityPass:
 class _JunkRescuePass:
     """F140: the zero-shot score over the stored vectors, and the check it selects for.
 
-    Owns the three things the other halves own and nothing else: which frames are scored
-    (the ones this run wrote a `frame_quality` row for — the score belongs to that row, and
-    that row exists for personal photographs only), where the numbers come from (the
-    `clip_embeddings` table F128 filled, never a new pass over any image), and who is shown
-    to the model. It writes on the caller's thread, inside the caller's transaction.
+    Owns the three things every pass here owns: which frames are scored (the ones this run
+    wrote a `frame_quality` row for — the score belongs to that row), where the numbers
+    come from (the `clip_embeddings` table F128 filled, never a new pass over any image),
+    and who is shown to the model. It writes on the caller's thread, in its transaction.
 
-    Two failures leave a frame alone rather than junked, and they are the reason this is a
-    gate and not a classifier: no stored vector (the score stays NULL and the frame is no
-    candidate — a heuristics-only collection or `store_embeddings: false` simply does not
-    have this feature), and no answer from the model (the fast verdict stands). Neither is
-    ever read as "this is junk": the score alone is right ~85% of the time, and the F130
-    lesson is that such a signal applied directly makes a better baseline worse.
+    WHY THIS IS A GATE AND NOT A CLASSIFIER: reviewed by eye on the live collection, above
+    +0.05 the 93 frames are junk outright, but the band +0.02..+0.05 still holds ~17% real
+    photographs — applied as a verdict at 85% precision it would take ~150 living pictures
+    out of the layout, exactly the mistake F130 measured for animals. So two failures leave
+    a frame alone rather than junked, and neither is ever read as "this is junk": no stored
+    vector (the score stays NULL, the frame is no candidate — a heuristics-only collection
+    or `store_embeddings: false` simply does not have this feature) and no answer from the
+    model (the fast verdict stands).
 
     The text encoder is built LAZILY, inside `run`, and only when there are frames to
     score: it loads a model, and a run with nothing to ask must not pay for one.
@@ -2897,18 +2844,15 @@ class _JunkRescuePass:
         self._now = now
         self._tier = tier
         self._stats = stats
-        # F206: the preparation threads of the question below — `vlm.workers`, the same
-        # knob the deep tier and the animal check use. Defaulted to 1 (the serial path)
-        # for a caller that builds this pass by hand.
+        # F206: `vlm.workers`, the deep tier's own knob; 1 is the serial path.
         self._workers = workers
 
     def _text_features(self) -> np.ndarray | None:
         """The prompts as a matrix of unit rows; None — the encoder could not be had.
 
-        The same graceful fallback the model halves of this stage have, and for the same
-        reason: an optional signal that cannot be computed must cost the run nothing. The
-        rows are not cached between runs — five short strings through a text tower is
-        nothing next to the pass that has just finished.
+        The graceful fallback every model half of this stage has: an optional signal that
+        cannot be computed must cost the run nothing. Not cached between runs — five short
+        strings through a text tower is nothing next to the pass that just finished.
         """
         try:
             rows = np.asarray(self._encoder()(junk_rescue_prompts()), dtype=np.float32)
@@ -2962,25 +2906,14 @@ class _JunkRescuePass:
                     report: _PhaseProgress) -> None:
         """One question per candidate; only the model's answer moves a verdict.
 
-        With the deep tier off there is no asker at all and this returns immediately: the
-        scores are stored, the candidates are counted, and not one verdict of the run has
-        changed — which is the promise the feature is switched on under.
+        With the deep tier off there is no asker and this returns immediately: the scores
+        are stored, the candidates counted, and not one verdict of the run has changed —
+        the promise the feature is switched on under.
 
-        `photo` back from the model is an answer, not a refusal: the frame was a candidate
-        because it LOOKS like a screenshot, and the model saying otherwise is exactly what
-        the ~15% of candidates that are real photographs need. It is written as a verdict
-        anyway (the source becomes `vlm`) so that a later reader can tell a frame the model
-        confirmed from one it was never shown.
-
-        F205: the phase is CLASSIFY_PHASE_RESCUE_VLM, not the deep tier's name — a price
-        of its own, which the estimate can only quote if the log files it separately.
-
-        F206: and the price is now the tier's, because the questions go through the tier's
-        own pipeline (`_vlm_labels`, see `_QualityPass.ask_pets` for the measurement that
-        ended the serial version of this loop). One question per candidate still, one
-        frame per call still, the answers still consumed in the candidate order and still
-        written from this thread inside this transaction — what changed is that the next
-        candidate is being decoded while the model answers about this one.
+        `photo` back from the model is an ANSWER, not a refusal: the frame was a candidate
+        because it LOOKS like a screenshot, and ~15% of candidates are real photographs. It
+        is written as a verdict anyway (source `vlm`) so that a later reader can tell a
+        frame the model confirmed from one it was never shown.
         """
         if self._ask is None:
             return
