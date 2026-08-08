@@ -45,5 +45,5 @@ sorta/ui/process.py   703
 sorta/ui/review.py    325
 sorta/ui/slices.py    506
 sorta/ui/strings.py   467
-sorta/weights.py      134
+sorta/weights.py      76
 sorta/wizard.py       455
