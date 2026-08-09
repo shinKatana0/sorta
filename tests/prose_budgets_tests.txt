@@ -238,7 +238,7 @@ tests/test_ui_tabs_visibility.py                     32
 tests/test_ui_three_layers.py                        91
 tests/test_ui_tri_state.py                           31
 tests/test_ui_undo.py                                27
-tests/test_undo_takes_back_the_folders.py            10
+tests/test_undo_takes_back_the_folders.py            12
 tests/test_uninstalling_leaves_nothing.py            86
 tests/test_utility_frames.py                         64
 tests/test_vlm_master_switch.py                      88

@@ -7,12 +7,13 @@ the temporary root of SorterTestBase.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
 from tests.test_sorter import SorterTestBase
 
-from sorta.sorter import _levels_to_create, plan_and_sort, undo
+from sorta.sorter import _dirs_journal, _levels_to_create, plan_and_sort, undo
 
 
 class DirJournalCase(SorterTestBase):
@@ -158,6 +159,25 @@ class TestAJournalWithoutTheNewRecords(DirJournalCase):
         with open(self.journal, "a", encoding="utf-8") as fh:
             fh.write('{"batch_id": ' + str(batch_id))
         self.assertEqual(undo(self.conn).dirs_removed, 4)
+
+
+class TestAJournalThatCannotBeUsed(DirJournalCase):
+    """Neither the sort nor the rollback of the FILES depends on the folder journal."""
+
+    def test_a_journal_that_cannot_be_opened_costs_no_photograph(self):
+        self.journal.mkdir()  # a directory in the file's place: every open of it fails
+        file_id, _batch = self.sort_one(content=b"the photo")
+        self.assertEqual(Path(self.path_of(file_id)).read_bytes(), b"the photo")
+        stats = undo(self.conn)
+        self.assertEqual((stats.undone, stats.dirs_removed), (1, 0))
+        self.assertEqual(Path(self.path_of(file_id)).read_bytes(), b"the photo")
+
+    def test_a_database_with_no_file_of_its_own_has_no_journal(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            self.assertIsNone(_dirs_journal(conn))
+        finally:
+            conn.close()
 
 
 class TestTheLevelsToCreate(DirJournalCase):
