@@ -61,6 +61,7 @@ import mmap
 import os
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -529,13 +530,27 @@ def _is_alias(path: Path) -> bool:
     """Is this another NAME for a directory rather than the directory itself?
 
     A junction is what uv leaves beside the interpreter it installed, and Windows
-    junctions are not symlinks: `is_symlink()` says no to them, and `Path.is_junction`
-    is what says yes (3.12+, hence the probe — the payload is built on 3.13).
+    junctions are not symlinks: `is_symlink()` says no to them. `Path.is_junction` says
+    yes and arrived in 3.12, so under 3.11 the reparse tag is read directly — the
+    earlier `getattr` probe answered "not an alias" there, which made the build refuse a
+    perfectly good download with "expected exactly one python installation" (caught by
+    the py3.11 runner, 2026-08-09; this project supports 3.11).
     """
     if path.is_symlink():
         return True
     probe = getattr(path, "is_junction", None)
-    return bool(probe and probe())
+    if probe is not None:
+        return bool(probe())
+    return _has_mount_point_tag(path)
+
+
+def _has_mount_point_tag(path: Path) -> bool:
+    """The junction test `Path.is_junction` performs, for interpreters without it."""
+    try:
+        tag = getattr(os.lstat(path), "st_reparse_tag", 0)
+    except OSError:
+        return False
+    return tag == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
 
 
 def flatten_python_install(install_dir: Path) -> Path:

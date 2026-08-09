@@ -24,6 +24,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sorta import wizard
 from sorta.config import load_config
@@ -148,6 +149,26 @@ class TestTheCommands(unittest.TestCase):
             # directory that has just been emptied would ship inside the payload.
             self.assertFalse(staged.exists())
             self.assertFalse(alias.exists() or alias.is_symlink())
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows thing")
+    def test_the_alias_is_recognised_by_an_interpreter_without_is_junction(self):
+        """`Path.is_junction` arrived in 3.12, and this project supports 3.11 — where the
+        old probe answered "not an alias" and the build refused a good download. Run on
+        every version by hiding the method, so 3.13 covers the 3.11 branch too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "python"
+            staged = root / "cpython-3.13.14-windows-x86_64-none"
+            (staged / "Lib").mkdir(parents=True)
+            (staged / "python.exe").write_bytes(b"")
+            alias = root / "cpython-3.13-windows-x86_64-none"
+            if not _link_directory(staged, alias):  # pragma: no cover — platform
+                self.skipTest("this machine will not let the test create a link")
+            self.assertTrue(builder._has_mount_point_tag(alias))
+            self.assertFalse(builder._has_mount_point_tag(staged))
+            with patch.object(Path, "is_junction", None, create=True):
+                self.assertTrue(builder._is_alias(alias))
+                self.assertEqual(builder.flatten_python_install(root),
+                                 root / "python.exe")
 
     def test_two_real_interpreters_are_still_an_error(self):
         """The alias case must not turn into "take whichever comes first": two genuine
