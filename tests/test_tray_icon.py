@@ -152,6 +152,8 @@ class TrayProgramTestBase(unittest.TestCase):
         self.thread.start()
         self.assertTrue(opened.wait(30), "поток программы не стартовал")
         self._wait_until_answering()
+        if icon_factory is None:
+            self._wait_for_the_icon()
 
     def _wait_until_answering(self) -> None:
         # Generous on purpose: `start` opens with `log_environment`, which probes the
@@ -166,6 +168,17 @@ class TrayProgramTestBase(unittest.TestCase):
             except (OSError, urllib.error.URLError):
                 time.sleep(0.05)
         self.fail(f"сервер не отвечает на порту {self.port}")
+
+    def _wait_for_the_icon(self) -> None:
+        """Wait for the thing the cases press, not for a stand-in: the server answers
+        at 0.075 s and the icon is built at 2.4 s (Linux runner, 2026-08-09), so waiting
+        on the port loses the race on a loaded machine."""
+        deadline = time.monotonic() + 30
+        while self.icon is None and time.monotonic() < deadline:
+            if self.start_error is not None:
+                raise self.start_error
+            time.sleep(0.02)
+        self.assertIsNotNone(self.icon, "значок не построен")
 
     def _stop_if_still_serving(self) -> None:
         thread = self.thread

@@ -178,7 +178,7 @@ tests/test_sorter_overrides.py                       25
 tests/test_sorter_undated.py                         26
 tests/test_the_first_launch_says_it_is_starting.py   160
 tests/test_three_tiers_of_sameness.py                83
-tests/test_tray_icon.py                              104
+tests/test_tray_icon.py                              107
 tests/test_two_vlm_options_reach_the_screen.py       130
 tests/test_ui.py                                     21
 tests/test_ui_album_dest.py                          7
