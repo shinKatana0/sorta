@@ -3550,7 +3550,12 @@
     if (btn.disabled) { return; }
     btn.disabled = true;
     postJson("/api/browse", {})
-      .then(function (resp) { if (resp && resp.path) { apply(resp.path); } })
+      .then(function (resp) {
+        if (resp && resp.path) { apply(resp.path); return; }
+        // A machine with no picker answers `problem`, and saying nothing there is what
+        // made the button look broken on Ubuntu. A cancel still answers nothing at all.
+        if (resp && resp.problem) { window.alert(I18N.browse_unavailable); }
+      })
       .catch(function () {})
       .then(function () { btn.disabled = false; });
   }

@@ -46,6 +46,17 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "写真フォルダを指定して「処理する」を押すと、インデックスが作成されます"
               "（位置情報、顔、イベント、不要写真、類似写真）。ファイルは移動されません。",
     },
+    # F51 said a failed picker is "just a convenience, manual entry always works" — true,
+    # and the button still has to say why it did nothing. `python3-tk` is the Ubuntu case:
+    # the system interpreter carries no tkinter until it is installed.
+    "browse_unavailable": {
+        "ru": "Диалог выбора папки недоступен на этой машине — введите путь в поле. "
+              "На Ubuntu/Debian его даёт: sudo apt install python3-tk",
+        "en": "The folder picker is unavailable on this machine — type the path in the "
+              "field instead. On Ubuntu/Debian it comes from: sudo apt install python3-tk",
+        "ja": "このマシンではフォルダ選択ダイアログを利用できません。パスを入力欄に直接"
+              "入力してください。Ubuntu/Debian では sudo apt install python3-tk で導入できます",
+    },
     "process_path_placeholder": {
         "ru": "Путь к папке с фото", "en": "Path to photo folder",
         "ja": "写真フォルダのパス",

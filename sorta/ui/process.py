@@ -543,7 +543,7 @@ _BROWSE_DIALOG_SCRIPT = (
 )
 
 
-def _browse_for_folder() -> str:
+def _browse_for_folder() -> tuple[str, str]:
     """F51: a native folder-picker dialog for the "Browse…" button.
 
     tkinter is not thread-safe and requires the process's main thread — the
@@ -561,14 +561,23 @@ def _browse_for_folder() -> str:
     the user is talking to.
     """
     if not _browse_lock.acquire(blocking=False):
-        return ""
+        return "", BROWSE_CANCELLED
     try:
         return _run_browse_dialog()
     finally:
         _browse_lock.release()
 
 
-def _run_browse_dialog() -> str:
+# What the picker answered. "Cancelled" and "this machine has no picker" used to be one
+# empty string, so on Ubuntu — where the system python has no tkinter until somebody
+# installs python3-tk — the button did nothing at all and wrote nothing anywhere: the
+# failing branch below did not even log. Met on 2026-08-09.
+BROWSE_CANCELLED = ""
+BROWSE_UNAVAILABLE = "unavailable"
+
+
+def _run_browse_dialog() -> tuple[str, str]:
+    """-> (path, problem). An empty problem means the answer is the path, cancel included."""
     try:
         result = subprocess.run(
             [sys.executable, "-c", _BROWSE_DIALOG_SCRIPT],
@@ -576,11 +585,13 @@ def _run_browse_dialog() -> str:
             check=False,
         )
     except Exception:
-        _log.exception("не удалось открыть диалог выбора папки")
-        return ""
+        _log.exception("browse: could not start the folder dialog")
+        return "", BROWSE_UNAVAILABLE
     if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+        _log.warning("browse: the folder dialog exited %s: %s",
+                     result.returncode, (result.stderr or "").strip()[:400])
+        return "", BROWSE_UNAVAILABLE
+    return result.stdout.strip(), BROWSE_CANCELLED
 
 
 # --- F81: the source folder tree ("do not scan") --------------------------------
@@ -1398,7 +1409,13 @@ def _validate_process_payload(payload: object) -> tuple[str, _RunOptions] | None
         if value is not None and not isinstance(value, bool):
             return None
         flags[key] = value
-    return source_dir.strip(), _RunOptions(**flags)  # type: ignore[arg-type]
+    # `~` expanded here, at the boundary: it is a convention of the shell, and Python
+    # leaves it alone. A person on Linux types `~/Downloads/photos` because that is what
+    # every other program takes, and the run then refused a folder that exists (met
+    # 2026-08-09). `indexer` expands too — this is the same answer one layer earlier, so
+    # the path stored on the screen is the path the run will use.
+    return (str(Path(source_dir.strip()).expanduser()),
+            _RunOptions(**flags))  # type: ignore[arg-type]
 
 
 def _validate_rerun_optional_payload(

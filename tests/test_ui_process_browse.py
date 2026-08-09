@@ -99,7 +99,7 @@ class TestBrowseEndpoint(UiServerTestBase):
 
     def test_returns_selected_path(self):
         with mock.patch.object(ui, "_browse_for_folder",
-                               return_value="C:\\Users\\me\\Photos"):
+                               return_value=("C:\\Users\\me\\Photos", "")):
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
@@ -114,13 +114,16 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(status, 200)
         self.assertEqual(resp, {"path": ""})
 
-    def test_subprocess_exception_returns_empty_path_not_500(self):
+    def test_subprocess_exception_says_the_picker_is_unavailable(self):
+        """Not a 500 — and not a silent empty answer either. A machine that cannot draw
+        the dialog said exactly what a cancel says until 2026-08-09, so on Ubuntu without
+        python3-tk the button did nothing and wrote nothing anywhere."""
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.run.side_effect = RuntimeError("no display")
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
-        self.assertEqual(resp, {"path": ""})
+        self.assertEqual(resp, {"path": "", "problem": "unavailable"})
 
     def test_subprocess_timeout_returns_empty_path_not_500(self):
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
@@ -130,16 +133,16 @@ class TestBrowseEndpoint(UiServerTestBase):
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
-        self.assertEqual(resp, {"path": ""})
+        self.assertEqual(resp, {"path": "", "problem": "unavailable"})
 
     def test_nonzero_returncode_returns_empty_path_not_500(self):
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.run.return_value = mock.Mock(
-                returncode=1, stdout="", stderr="traceback")
+                returncode=1, stdout="", stderr="ModuleNotFoundError: tkinter")
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
-        self.assertEqual(resp, {"path": ""})
+        self.assertEqual(resp, {"path": "", "problem": "unavailable"})
 
     def test_strips_whitespace_from_selected_path(self):
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:

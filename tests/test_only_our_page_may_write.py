@@ -128,7 +128,7 @@ class PostingTestBase(UiServerTestBase):
         super().setUp()
         # the folder picker is one of the routes walked below and it opens a native
         # dialog — refused or not, no test may make one appear.
-        patcher = mock.patch.object(ui, "_browse_for_folder", return_value="")
+        patcher = mock.patch.object(ui, "_browse_for_folder", return_value=("", ""))
         patcher.start()
         self.addCleanup(patcher.stop)
 

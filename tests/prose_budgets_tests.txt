@@ -86,7 +86,7 @@ tests/test_indexer_excludes.py                       18
 tests/test_indexer_parallel_exif.py                  10
 tests/test_indexer_refresh.py                        16
 tests/test_installed_copy_finds_its_exiftool.py      111
-tests/test_installer_tiers.py                        31
+tests/test_installer_tiers.py                        32
 tests/test_interface_names_the_missing_tier.py       103
 tests/test_junk.py                                   194
 tests/test_junk_asker_pipeline.py                    133
@@ -212,7 +212,7 @@ tests/test_ui_package.py                             44
 tests/test_ui_photo_trash.py                         6
 tests/test_ui_place_prefix_search.py                 49
 tests/test_ui_process.py                             127
-tests/test_ui_process_browse.py                      23
+tests/test_ui_process_browse.py                      26
 tests/test_ui_progress_delete_ux.py                  11
 tests/test_ui_region_place.py                        93
 tests/test_ui_rerun_optional.py                      17

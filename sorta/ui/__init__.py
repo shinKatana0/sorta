@@ -1754,7 +1754,14 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json(self._pins_json())
 
         def _handle_browse(self) -> None:
-            self._send_json({"path": _browse_for_folder()})
+            path, problem = _browse_for_folder()
+            payload = {"path": path}
+            if problem:
+                # A picker this machine cannot draw is not a cancel, and the button may
+                # not answer both the same way: on Ubuntu without python3-tk it looked
+                # like nothing happened at all.
+                payload["problem"] = problem
+            self._send_json(payload)
 
         # --- F81/F82: "do not scan" / "do not lay out" (the source block) --------
 
