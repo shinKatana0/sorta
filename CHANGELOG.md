@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-09
+
 ### Changed
 - **The public documents say what was actually run** (F235). The README opened with
   *"60 GB+ tested, 300 GB+ by design"* — the only full run there has ever been was
