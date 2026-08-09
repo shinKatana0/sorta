@@ -319,6 +319,56 @@ PyPI не публикуется, и решение об этом здесь н�
 В сборке место для подписи предусмотрено отдельным выключенным шагом: когда сертификат
 появится, он подключается, а не переписывает упаковку.
 
+### The two heaviest tiers are off by default
+
+**Decided 2026-08-07/08.** `vlm.enabled` and `features.landmarks` both default to false,
+and every run screen prices them before it starts.
+
+The reason is not caution, it is what each buys. The deep VLM tier produces exactly one
+thing the fast tier cannot produce at all — the `product` class — for the largest single
+block of time in a run, and it wants a 24 GB card (20.5 GB measured peak). Landmarks
+recognise places by sight for a collection whose places are mostly already known from
+GPS. A default that costs hours has to be worth hours to everybody, and neither of these
+is; both are incremental, so switching one on later costs the same as switching it on now.
+
+**What this does not claim:** not that they are unimportant. It claims that the price is
+visible before it is paid and that a person who never opens the settings still gets a
+finished layout.
+
+### macOS is postponed, and not promised in the meantime
+
+**Decided 2026-08-08.** There is no Mac here. `accel.py` carries the Metal and CoreML
+rungs because writing them was the cheap part of removing a duplicated CUDA branch, but
+nothing on that platform has been run against a real collection, and the `macos-latest`
+job in CI is marked advisory (`continue-on-error`) for exactly that reason.
+
+The rule that follows is about documentation: **an untested platform is not listed as a
+supported one.** A runner that imports the package answers a narrower question than a
+reader takes "macOS" in a requirements table to mean — F105 moved 7–11 verdicts out of 300
+by changing an attention kernel, and a different compute device is the same class of
+change, so even a green run there would not say the verdicts match.
+
+**Reopen when there is a Mac to run a collection on**, not when the advisory job goes
+green.
+
+### A comment carries a measurement, a decision or a trap — and a ratchet holds it there
+
+**Decided 2026-08-08.** A comment or a docstring stays only if it states a MEASUREMENT (a
+number with a date), a DECISION that reads against what the code seems to say, or a TRAP
+the next edit would spring. Retelling the code, rhetoric around a decision already made,
+and the second account of a defect in a neighbouring module all go.
+
+The rule was written down and broken an hour later, by its author, on six comments in a
+row — which is the finding, not an anecdote. So the check is mechanical:
+`tests/prose_budgets.txt` and `tests/prose_budgets_tests.txt` hold one number per file,
+and the gate goes red on a file that grew. Under the number is free; **raising** one is an
+edit of that file, so growth arrives in a diff with a reason beside it.
+
+**What this does not claim:** not that less prose is better prose. The budgets were fixed
+as the fact stood, as a ceiling and never as a target, and there is deliberately no limit
+on a single block — a trap sometimes needs six lines, and a per-block limit would get it
+split in two rather than deleted.
+
 ## 7. Questions closed by measurement — do not re-open without new data
 
 | question | verdict |

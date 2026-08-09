@@ -23,7 +23,7 @@ Switching the sort mode does not require re-running the pipelines.
 
 | Module | Files | Reads | Writes |
 |---|---|---|---|
-| core | `config.py`, `db/`, `hashing.py`, `dates.py`, `exif.py`, `imaging.py` | FS (decode) | — |
+| core | `config.py`, `db/`, `hashing.py`, `dates.py`, `exif.py`, `imaging.py`, `accel.py` (F214: the ONE place that asks the machine what it can compute on — `torch` CUDA→MPS→CPU, `onnxruntime` CUDA→CoreML→CPU; four copies of that decision used to live in `naming`, `landmarks`, `faces` and `junk`), `launch.py` (F228: the ONE place that starts a subprocess, so a windowed parent opens no console nobody asked for; an `ast` walk over the package fails the suite on any other launch), `install.py` (F226/F230: what the Windows build left beside the program, and which of the three install kinds this is — `checkout`, `installed`, `tool`. It is what every hint naming a command is chosen by, so `sorta.exif` can resolve the bundled `exiftool` without importing the tier catalog) | FS (decode), the install manifest | — |
 | indexer | `indexer.py`, `dedup.py` | FS | `files` |
 | geo | `geo.py` | `files`, `geo_cache` | `places`, `geo_cache` (online provider only) |
 | faces | `faces.py` | `files`, `media_class` (F165: it detects only where the classifier has not said "not a photograph"; no row = detect) | `faces`, `face_clusters` |
@@ -32,6 +32,7 @@ Switching the sort mode does not require re-running the pipelines.
 | restore | `restore.py` | `files` | `restored_files`, the copy's own `files` row, FS |
 | sorter | `sorter.py` | all | `move_batches`, `moves`, FS |
 | ui/cli | `cli.py`, `ui/` (F182: a package cut by TAB — `common`, `layout`, `slices`, `review`, `overview`, `moves`, `process`, `page`, `strings`, and the server in `__init__.py`; the markup/styles/script live in `web/`), `tray.py` (F207: the second entry point — an icon in the tray for the installed application; it starts `ui.build_server` and quits through `POST /api/quit`, so it adds no behaviour of its own), `wizard.py` (F211: the third entry point — the install tiers and the first-run wizard that offers them; it CALLS `sorta doctor` for the check screen and shells out to the bundled `uv` for a tier, so it adds no behaviour of its own either. The tier catalog lives here rather than in `packaging/windows/` because it is read at run time, and `scripts/build_installer.py` reads the same tuple) | everything (read) | `manual_overrides`, `manual_places`, `manual_pet`, `dedup_choice` — the user's OWN decisions; otherwise orchestrate module calls |
+| launch | `launcher.py` (F227: what the shortcut and the `sorta-tray` gui-script actually run. It imports **stdlib only**, puts the window up and imports the program after — from `tray.py` the window could not appear until `sorta.ui` had been imported, 3.59 s on the payload interpreter with a warm cache), `splash.py` (the "Sorta is starting" window, drawn by a `tkinter` subprocess with no sorta module in it, so it draws while this process is still importing; it closes on EOF of its own stdin, which is how it goes away if the program that opened it dies), `tiers.py` (F216/F217: which tiers this machine has, as PACKAGES and as WEIGHTS reported apart. One probe, because `sorta doctor` and the web app cannot share an implementation through `cli.py` — the ui↔cli cycle — and two implementations of one question disagree within a release) | the install manifest, the model caches on disk | — |
 | packaging | `packaging/windows/` (the Inno script, the notes, and `verify_install.ps1` — the checks that make an INSTALLED program do work, kept as a file rather than workflow steps because it runs twice, once against the real installation and once against an empty directory where it has to go red, and because somebody installing by hand runs the same thing), `scripts/build_installer.py`, `.github/workflows/installer*.yml` | `pyproject.toml` extras, `wizard.TIERS` | `dist/windows/` only — never the source tree |
 
 **Architectural boundary invariants:**
@@ -217,6 +218,24 @@ Switching the sort mode does not require re-running the pipelines.
   after verify — `done`. `undo` walks the journal in reverse order.
 
 ## 4. Key scenarios
+
+### launch from a shortcut (F227, changed 2026-08-08)
+
+`launcher.main` (stdlib only) → `splash.open_splash` puts the window up → import
+`sorta.tray` → **the port is asked about first**, before the config, the index or any
+heavy import: ours on it → close the splash, open a tab, exit; a stranger on it → the
+busy-port message → `tray.start` reads the config, connects the index, `ui.build_server`,
+**bind** → `ready` is declared HERE → the tab is opened and the splash closed → the
+diagnostics (`log_environment`, `warn_if_gpu_mismatch`, `warn_if_geo_data_missing`) run on
+a thread of the already-serving program, reporting through `ui.startup_state()`.
+
+The order is the whole feature. It used to be the reverse — the diagnostics ran in front
+of the bind, 3.9 s of the 5.65 s to a bound port (the torch import inside
+`log_environment` alone costs 13.96 s on a fast machine with a warm cache), and the "are
+we already running" question stood after them, so a surplus click imported torch in full
+before finding out it was surplus. Nothing below the bind is needed to answer a request;
+`sorta doctor` is where those probes are run on purpose. `sorta ui` makes the same move
+for its GPU check.
 
 ### index (Phase 1, implemented)
 walk → filter by extension/size → incremental check path+size+mtime →

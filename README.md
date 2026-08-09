@@ -9,7 +9,7 @@
 
 > Languages: **English** · [Русский](README.ru.md) · [日本語](README.ja.md)
 
-**Index and sort a large photo/video collection** (60 GB+ tested, 300 GB+ by design)
+**Index and sort a large photo/video collection** (tested on 380 GB — 38 485 files)
 into a clean folder structure — by **city/country**, **person**, or **event** — with
 safety first: dry‑run by default, a move journal, and one‑command undo.
 
@@ -128,7 +128,7 @@ reproducible is scriptable; nothing that needs an opinion pretends to be.
 | Hardware | Any x86‑64 machine | NVIDIA GPU + driver supporting **CUDA 13** |
 | VRAM | n/a | **~3 GB** for everything except the deep tier (measured on RTX 5090: CLIP ViT‑L 2.0 GB + buffalo_l 0.6 GB) — **6 GB** comfortable. The **deep VLM tier peaks at 20.5 GB**, measured, so it wants a **24 GB** card |
 | Speed | Works; **never measured end to end** on a large collection | Measured 2026‑08‑05, 38 485 files from cold: index 5.3 min · geo 3 s offline · landmarks 4.9 · classify 32.4 · faces 14.2 · events 2 s · junk 19.3 · phash 45 s — **77.5 min** in all, and ~10 minutes less with the preview cache warm |
-| Best for | City sorting + duplicates on any machine; smaller collections with faces/events on | Large collections (300 GB+) with faces/events routinely on |
+| Best for | City sorting + duplicates on any machine; smaller collections with faces/events on | Large collections with faces/events routinely on — the run above was **380 GB / 38 485 files** |
 
 ### Running on a smaller card
 
@@ -165,13 +165,21 @@ RAM/VRAM notes, in the [user guide](docs/guide/user-guide.en.md#2-requirements).
 
 `sorta-<version>-setup.exe` on the [releases page](https://github.com/shinKatana0/sorta/releases/latest)
 carries the **base tier** whole and works with no network afterwards: index, EXIF, geo,
-duplicates and sorting by city. Its shortcut opens the web app with an icon in the tray
+duplicates and sorting by city — `exiftool` travels inside it, so HEIC/RAW/video dates and
+GPS are read from the first run. Its shortcut opens the web app with an icon in the tray
 and no console window. The heavier tiers — recognising what is in a frame (~1.6 GB), faces
 (~400 MB), search by words (~1.4 GB), NVIDIA/CUDA 13 (~2.5 GB), the deep VLM tier (~7 GB) —
 are offered once by the first‑run wizard (`sorta-setup`, re‑runnable at any time), and
-**saying no to all of them leaves a working product**, not a stub. The first of those is
-what the layout runs on, so the wizard downloads it while you watch instead of leaving it
-to the middle of the first run; refusing is still allowed and only changes when it arrives.
+**saying no to all of them leaves a working product**, not a stub. **Every tier you say yes
+to is downloaded there and then**, on one progress line that redraws in place, instead of
+arriving in the middle of the first run; refusing is still allowed and only changes when
+it arrives. The first of them is what the layout runs on, so it is the one offered with
+**yes** as the default answer. The NVIDIA row is offered **only when the machine has a
+card and a driver new enough for CUDA 13** — it is the one tier that replaces the working
+CPU profile rather than adding to it, and `sorta-setup --restore-cpu` puts that profile
+back. Removing the program is an **Uninstall Sorta** item in the Start menu; its page asks
+about your settings and about the downloaded models separately, and both answers default
+to no.
 
 > ⚠️ **The installer is not signed**, so Windows SmartScreen greets it with "Windows
 > protected your PC". Click **More info** → **Run anyway**. The release page publishes a
@@ -215,6 +223,14 @@ Sorta started from a shortcut rather than from a terminal. Double-click the icon
 **Open** to open the window, **Quit** to close the program (it asks first if a run is
 going). Add the `tray` extra for it (`…sorta[gpu,tray]`); without the extra, or on a
 desktop that has no tray, it still serves — just with no icon.
+
+**What a launch looks like** (F227): a small **"Sorta is starting"** window appears
+*before* the program itself is imported, so the first seconds are never an empty screen;
+the interface is handed over **as soon as the server can answer**, with the environment
+and graphics‑card checks running behind the bind rather than in front of it; and a
+**second click on the shortcut opens a tab in the copy that is already running** instead
+of starting a second one — the port is the first question the launch asks, before anything
+heavy is loaded.
 
 > **`uv tool install` has no `--extra` flag** — the extra belongs in the quoted
 > package spec, as above. Installed without it, you silently get the **CPU** profile
