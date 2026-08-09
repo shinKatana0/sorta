@@ -426,15 +426,13 @@ class TestTheBuildCarriesWhatMakesItStart(unittest.TestCase):
         self.assertEqual(builder.PAYLOAD_EXIFTOOL_FILES.name, "exiftool_files")
 
     def test_a_shim_on_path_resolves_to_the_real_install(self):
-        """The CI runner's layout: `which` finds a Chocolatey wrapper in `bin\\`, and
-        everything that makes exiftool work is under `lib\\exiftool\\tools`. Bundling the
-        wrapper is the defect this file exists for, arriving by a second road."""
+        """`which` finds a Chocolatey wrapper in `bin\\`; everything that makes exiftool
+        work is under `lib\\exiftool\\tools`, in the layout the runner printed on
+        2026-08-09. Bundling the wrapper is this file's defect by a second road."""
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "bin").mkdir()
             (root / "bin" / "exiftool.exe").write_bytes(b"shim")
-            # The layout the runner actually printed on 2026-08-09, version directory and
-            # all — a hand-invented one guessed the depth wrong and cost a red CI.
             tools = root / "lib" / "exiftool" / "tools" / "exiftool-13.59_64"
             (tools / "exiftool_files").mkdir(parents=True)
             (tools / "exiftool.exe").write_bytes(b"the real one")
