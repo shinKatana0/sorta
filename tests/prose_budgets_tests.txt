@@ -37,7 +37,7 @@ tests/test_derivative_does_not_outlive_original.py   54
 tests/test_detector_cascade.py                       100
 tests/test_detector_reaches_the_screen.py            135
 tests/test_diagnostics.py                            30
-tests/test_docs_guides.py                            169
+tests/test_docs_guides.py                            181
 tests/test_docs_say_what_was_run.py                  57
 tests/test_doctor_tiers.py                           46
 tests/test_drop_subject_question.py                  75
@@ -86,7 +86,7 @@ tests/test_indexer.py                                42
 tests/test_indexer_excludes.py                       18
 tests/test_indexer_parallel_exif.py                  10
 tests/test_indexer_refresh.py                        16
-tests/test_installed_copy_finds_its_exiftool.py      111
+tests/test_installed_copy_finds_its_exiftool.py      114
 tests/test_installer_tiers.py                        32
 tests/test_interface_names_the_missing_tier.py       103
 tests/test_junk.py                                   194
@@ -137,7 +137,7 @@ tests/test_offline.py                                22
 tests/test_only_our_page_may_write.py                89
 tests/test_orchestrator_wiring.py                    16
 tests/test_payload_carries_its_trust.py              103
-tests/test_payload_carries_what_it_imports.py        73
+tests/test_payload_carries_what_it_imports.py        75
 tests/test_pet_derived_at_read.py                    73
 tests/test_pets_cascade.py                           117
 tests/test_pin_a_query.py                            110

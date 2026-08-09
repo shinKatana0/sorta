@@ -56,6 +56,11 @@ jobs:
         run: |
           choco install innosetup --no-progress --yes
           choco install exiftool --no-progress --yes
+          # What lands on PATH is a shim, and `exiftool_files\` is not beside it — the
+          # build follows the shim to the real install. Printed because when that
+          # resolution fails, the layout is the only thing worth knowing.
+          Get-ChildItem "$env:ChocolateyInstall\lib\exiftool" -Depth 1 |
+            Select-Object -ExpandProperty FullName
           # Chocolatey does not put the compiler on PATH, and shutil.which is how the
           # build script looks for it.
           Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files (x86)\Inno Setup 6'

@@ -1,13 +1,14 @@
-# Curated-список известных мест для CLIP zero-shot (F6, FR-2b).
-# Расширяется пользователем: добавьте свои места по образцу.
+# Curated landmarks for the CLIP zero-shot pass (F6). Extend it by copying an entry.
 #
-# Формат записи:
-#   prompt  — англоязычное описание для CLIP (матчится лучше русского);
-#   name    — как место называется в отчётах и папках;
-#   country — ISO-код страны (как отдаёт reverse_geocoder, поле cc);
-#   city    — город для places.city.
+#   prompt     what CLIP is asked. English on purpose: the text tower was trained on
+#              English captions and matches them measurably better.
+#   name       what the place is called in reports and folders.
+#   country    ISO code, spelled as reverse_geocoder returns it (field `cc`).
+#   city       the city written into places.city.
+#   geonameid  the GeoNames id, which is how the entry joins the geo database.
 #
-# Порог уверенности — naming.landmark_threshold в config.yaml.
+# The confidence threshold is naming.landmark_threshold; below it the frame keeps
+# whatever the coordinates said, because a wrong city is worse than no city (F75).
 
 landmarks:
   - prompt: "a photo of the Eiffel Tower in Paris"

@@ -565,7 +565,10 @@ def flatten_python_install(install_dir: Path) -> Path:
                          f"found {[child.name for child in staged]} "
                          f"(aliases: {[child.name for child in aliases]})")
     for alias in aliases:
-        alias.rmdir()
+        # A junction comes off with rmdir; a POSIX symlink to a directory does not, and
+        # answers NotADirectoryError. The payload is Windows-only, but the tests are not
+        # — this ran green here and red on the Linux runner (2026-08-09).
+        alias.unlink() if alias.is_symlink() else alias.rmdir()
     for item in list(staged[0].iterdir()):
         shutil.move(str(item), str(install_dir / item.name))
     staged[0].rmdir()
@@ -880,15 +883,39 @@ class Builder:
         path.write_text(text, encoding="utf-8")
 
 
+def exiftool_home(candidate: Path) -> Path | None:
+    """The directory holding both the binary and `exiftool_files\\`, or None.
+
+    Not always the directory the binary is in. Chocolatey puts a shim on PATH and the
+    real thing under `lib\\exiftool\\tools`, so `shutil.which` answers with a wrapper
+    that has no `exiftool_files\\` beside it — bundling that ships a binary which cannot
+    start. Caught 2026-08-09 by the installer workflow, the first machine to build here
+    that was not the developer's.
+    """
+    if (candidate.parent / EXIFTOOL_FILES_DIR).is_dir():
+        return candidate.parent
+    for tools in sorted(candidate.parent.parent.glob("lib/exiftool*/tools")):
+        if (tools / EXIFTOOL_FILES_DIR).is_dir() and any(tools.glob("exiftool*.exe")):
+            return tools
+    return None
+
+
 def find_exiftool(explicit: str | None) -> Path | None:
     """The exiftool binary to bundle: what was named, or what is on PATH."""
     if explicit:
         candidate = Path(explicit)
         if candidate.is_dir():
             candidate = candidate / "exiftool.exe"
+    else:
+        found = shutil.which("exiftool")
+        if not found:
+            return None
+        candidate = Path(found)
+    home = exiftool_home(candidate)
+    if home is None or home == candidate.parent:
         return candidate
-    found = shutil.which("exiftool")
-    return Path(found) if found else None
+    named = home / candidate.name
+    return named if named.exists() else next(iter(sorted(home.glob("exiftool*.exe"))))
 
 
 def build(args: argparse.Namespace) -> int:
@@ -909,6 +936,12 @@ def build(args: argparse.Namespace) -> int:
         print("exiftool was not found. Bundle it (--exiftool <dir>) or build the "
               "Pillow-fallback variant on purpose (--no-exiftool) — the wizard says "
               "which of the two this build is, so the choice has to be made here.")
+        return 1
+    if exiftool is not None and exiftool_home(exiftool) is None:
+        print(f"{exiftool} has no {EXIFTOOL_FILES_DIR}\\ beside it, and that directory is "
+              "most of exiftool: the executable alone starts and immediately says it "
+              "cannot find its Perl library. Point --exiftool at the directory holding "
+              "both (a Chocolatey shim on PATH is not it).")
         return 1
 
     if not args.skip_payload:

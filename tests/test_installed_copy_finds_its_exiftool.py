@@ -425,6 +425,37 @@ class TestTheBuildCarriesWhatMakesItStart(unittest.TestCase):
                          builder.PAYLOAD_EXIFTOOL.parent)
         self.assertEqual(builder.PAYLOAD_EXIFTOOL_FILES.name, "exiftool_files")
 
+    def test_a_shim_on_path_resolves_to_the_real_install(self):
+        """The CI runner's layout: `which` finds a Chocolatey wrapper in `bin\\`, and
+        everything that makes exiftool work is under `lib\\exiftool\\tools`. Bundling the
+        wrapper is the defect this file exists for, arriving by a second road."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "bin").mkdir()
+            (root / "bin" / "exiftool.exe").write_bytes(b"shim")
+            tools = root / "lib" / "exiftool" / "tools"
+            (tools / "exiftool_files").mkdir(parents=True)
+            (tools / "exiftool.exe").write_bytes(b"the real one")
+            with patch.object(builder.shutil, "which", lambda _n: str(root / "bin" /
+                                                                     "exiftool.exe")):
+                found = builder.find_exiftool(None)
+            self.assertEqual(found, tools / "exiftool.exe")
+            self.assertEqual(builder.exiftool_home(found), tools)
+
+    def test_a_binary_with_its_directory_beside_it_is_taken_as_it_is(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            (home / "exiftool_files").mkdir()
+            (home / "exiftool.exe").write_bytes(b"the real one")
+            self.assertEqual(builder.find_exiftool(str(home)), home / "exiftool.exe")
+            self.assertEqual(builder.exiftool_home(home / "exiftool.exe"), home)
+
+    def test_a_lone_binary_has_no_home_and_the_build_can_say_so(self):
+        with tempfile.TemporaryDirectory() as raw:
+            lonely = Path(raw) / "exiftool.exe"
+            lonely.write_bytes(b"shim")
+            self.assertIsNone(builder.exiftool_home(lonely))
+
     def test_a_build_without_exiftool_carries_neither(self):
         destinations = {destination for _source, destination in builder.payload_plan(None)}
         self.assertNotIn(builder.PAYLOAD_EXIFTOOL, destinations)

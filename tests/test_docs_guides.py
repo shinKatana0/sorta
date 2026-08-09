@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import subprocess
 import unittest
 import unicodedata
 from pathlib import Path
@@ -78,6 +79,7 @@ _HEADING = re.compile(r"(?m)^(#{1,6})\s+(.*)$")
 _SECTION = re.compile(r"(?m)^##\s+(\d+)\.\s+(.*)$")
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 _CYRILLIC = re.compile(r"[\u0400-\u04FF]+")
+_QUOTED = re.compile(r"(?s)\u00AB.*?\u00BB|\"[^\"]*\"")
 
 
 def read(path: Path) -> str:
@@ -87,6 +89,15 @@ def read(path: Path) -> str:
 def without_code(text: str) -> str:
     """Drop fenced blocks and inline code — the parts allowed to hold anything."""
     return _INLINE_CODE.sub("", _FENCE.sub("", text))
+
+
+def without_quotes(text: str) -> str:
+    """Blank quoted spans, keeping newlines so line numbers still point home.
+
+    Whole-text, not line-by-line: a quotation wraps, and a per-line reading sees an
+    opening guillemet with no closing one and calls a citation a violation.
+    """
+    return _QUOTED.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), text)
 
 
 def slug(heading: str) -> str:
@@ -506,23 +517,42 @@ class TestContributingDescribesTheGate(unittest.TestCase):
                 self.assertIn(f"scripts/check.py {flag}", contributing)
 
 
+def english_documents() -> list[Path]:
+    """Every published English document, found rather than listed.
+
+    A hand-written list is what let this rule be true and useless at once: it named the
+    README and the guide, so two whole sections of `DECISIONS.md` were published in
+    Russian (2026-08-09, found by the owner reading the file).
+    """
+    tracked = subprocess.run(["git", "ls-files", "*.md", "*.yaml"], cwd=_ROOT,
+                             capture_output=True, text=True, check=True).stdout.split()
+    return [_ROOT / name for name in tracked
+            if not name.endswith((".ru.md", ".ja.md")) and "data/geo/" not in name]
+
+
 class TestEnglishFilesStayEnglish(unittest.TestCase):
     """No Russian prose in the English files.
 
-    Two deliberate exceptions, both already in the guide and both correct: the links
-    to the translations, and quoted samples of CLI output (which is fixed Russian).
-    Everything inside code fences and inline code is out of scope by construction.
+    Every deliberate exception is a form of QUOTATION: the links to the translations,
+    CLI output, folder names, search words a measurement used. Code fences and inline
+    code are out of scope by construction.
     """
 
+    def test_the_search_finds_the_documents_it_is_meant_to_judge(self):
+        """Guards the guard: a glob matching nothing would pass every case below."""
+        found = {path.name for path in english_documents()}
+        for expected in ("README.md", "DECISIONS.md", "ARCHITECTURE.md", "CHANGELOG.md",
+                         "CONTRIBUTING.md", "user-guide.en.md", "landmarks.yaml"):
+            self.assertIn(expected, found)
+
     def test_no_russian_prose_outside_code_and_quotes(self):
-        for path in (READMES["en"], GUIDES["en"]):
-            for number, line in enumerate(without_code(read(path)).splitlines(), 1):
-                if not _CYRILLIC.search(line):
+        for path in english_documents():
+            text = without_quotes(without_code(read(path)))
+            for number, line in enumerate(text.splitlines(), 1):
+                if not _CYRILLIC.search(line) or "Русский" in line:
                     continue
                 with self.subTest(file=path.name, line=number):
-                    quoted = line.count('"') >= 2
-                    translation_link = "Русский" in line
-                    self.assertTrue(quoted or translation_link, line.strip())
+                    self.fail(line.strip())
 
 
 if __name__ == "__main__":

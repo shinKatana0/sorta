@@ -690,6 +690,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **The three things that only a machine which is not this one could find.** The first
+  push ran the installer workflow and the POSIX runners over code they had never seen,
+  and each failure was a check answering a question about its host rather than about the
+  product — the class this project keeps meeting. (1) The build resolved `exiftool`
+  through `shutil.which` and found Chocolatey's **shim**, which has no `exiftool_files\`
+  beside it; the payload watchdog written for exactly this stopped the build instead of
+  shipping 25 MB that cannot start, and the build now follows a shim to the real install
+  and says which directory it needs when it cannot. (2) `flatten_python_install` removed
+  uv's alias directory with `rmdir`, which is right for a Windows junction and raises
+  `NotADirectoryError` for a POSIX symlink — a real defect in code that only ever runs on
+  Windows, found because its test does not. (3) A test pinned `expand.exe` by a
+  backslashed path and failed where `Path` joins with a forward slash. Windows was green
+  throughout all three.
+- **Two sections of `docs/DECISIONS.md` were published in Russian**, in a document whose
+  every other line is English, and the rule against exactly that had been true and
+  useless at once: the watchdog **listed** the files it judged — the README and the
+  guide — so a third document was never looked at. It now finds every published English
+  document instead of naming them, and reads whole quotations rather than single lines,
+  because a citation of what the owner said wraps. The same audit found the header of
+  `sorta/data/landmarks.yaml` and two error messages of `sorta/landmarks.py` still in
+  Russian in a product that defaults to English.
+- **`SECURITY.md` listed one outbound path and there are two.** The claim about
+  photographs never leaving the machine was and is exact; the file simply did not mention
+  that the program fetches its own model weights from `huggingface.co` and insightface,
+  which is the traffic anyone auditing this would actually see. It now says what is
+  fetched, that no photograph, path or metadata goes with the request, and how to forbid
+  it (`HF_HUB_OFFLINE=1`, which Sorta never overrides).
 - **`sorta undo` takes back the folders the sort created** (F236). Reported by the owner
   on 2026-08-09, after the first check of the moves on Linux: *"the new directories are
   not deleted on a rollback. And I do not know whether they should be — what if the user
@@ -1495,8 +1522,8 @@ meeting with the tool costs.
   1, and on the way «Мо» found a town in Norway, so for a whole word the only thing on
   screen was «такого места нет в базе — проверьте написание», sending the person to correct
   a word that was never misspelled. The search now matches the **beginning of a word** —
-  the start of the name or any word inside a composite one, so «Новг» finds Нижний
-  Новгород and a query may cross the space or hyphen it was split on («Нижний Новг»,
+  the start of the name or any word inside a composite one, so «Новг» finds «Нижний
+  Новгород» and a query may cross the space or hyphen it was split on («Нижний Новг»,
   «Ростов-на-До»). A start, not a substring: matching anywhere would answer «Рим» with
   every «Дурим» in a base of 150 000 settlements. The answer is **ordered** — the exact
   name first, then by population, then alphabetically — and **cut to twelve lines**, with

@@ -384,8 +384,11 @@ class TestTheBundleIsOpenedWithoutRunningIt(unittest.TestCase):
         """By name it would be found on PATH, and where the build runs from a POSIX shell
         that is a different program entirely — one that copies the cabinet and reports
         success."""
-        self.assertTrue(builder.expand_binary().lower().endswith(
-            "system32\\expand.exe"), builder.expand_binary())
+        # Separator-blind: what is being pinned is that the path is FULL, and on the
+        # Linux runner `Path` joins the Windows root with a forward slash.
+        path = builder.expand_binary().lower().replace("\\", "/")
+        self.assertTrue(path.endswith("system32/expand.exe"), builder.expand_binary())
+        self.assertNotEqual(path, "expand.exe")
 
 
 if __name__ == "__main__":

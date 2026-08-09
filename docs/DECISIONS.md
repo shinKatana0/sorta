@@ -283,41 +283,44 @@ removed.
 
 ---
 
-### Linux ставится одной строкой, и упаковки у него не будет
+### Linux installs with one line, and gets no packaging
 
-**Решено 2026-08-06.** `uv tool install` — единственный путь установки на Linux. Ни
-AppImage, ни deb/rpm, ни snap/flatpak.
+**Decided 2026-08-06.** `uv tool install` is the only supported way in. No AppImage, no
+deb/rpm, no snap or flatpak.
 
-Точная форма команды — из чекаута, а не из PyPI: `uv tool install ".[cpu]"`. Пакет на
-PyPI не публикуется, и решение об этом здесь не принимается — просто запись о том, как
-установка выглядит сегодня, чтобы фраза «одной строкой» не читалась как обещание
+The exact form is from a checkout, not from PyPI: `uv tool install ".[cpu]"`. The package
+is not published to PyPI, and that is not decided here — this only records what the
+install looks like today, so that "one line" is not read as a promise of
 `uv tool install sorta`.
 
-Установщик под Windows существует потому, что там у человека **нет** другого способа: ни
-пакетного менеджера по умолчанию, ни привычки к терминалу. На Linux всё это есть, и
-перенос решения по инерции создал бы обязанность на годы: каждая упаковка — это сборка,
-репозиторий, подпись и обещание их вести. Упаковка, которую некому вести, через полгода
-становится устаревшей версией под именем автора — это хуже, чем её отсутствие.
+The Windows installer exists because there a person has **no other way**: no package
+manager by default, and no habit of the terminal. Linux has both, and carrying the
+decision across out of symmetry would create an obligation lasting years — every package
+format is a build, a repository, a signature and a promise to keep them current.
+Packaging nobody maintains becomes, within six months, a stale version published under
+the author's name, which is worse than none.
 
-Целевой пользователь здесь известен: человек с сотнями гигабайт фотографий и видеокартой.
-Одна строка в терминале для него не барьер.
+The user here is known: someone with hundreds of gigabytes of photographs and a graphics
+card. One line in a terminal is not a barrier for them.
 
-**Переоткрывать только с новыми данными о том, КТО именно не может выполнить эту строку** —
-не из ощущения, что «у всех есть установщик».
+**Re-open only with new data about WHO specifically cannot run that line** — not from a
+feeling that everyone deserves an installer.
 
-### Установщик Windows выходит неподписанным, и об этом говорится вслух
+### The Windows installer ships unsigned, and says so out loud
 
-**Решено 2026-08-06.** Сертификат подписи кода — деньги и время, и на этом этапе они не
-тратятся. Установщик выпускается неподписанным.
+**Decided 2026-08-06.** A code-signing certificate costs money and time, and neither is
+being spent at this stage. The installer is released unsigned.
 
-Следствие принимается сознательно: SmartScreen покажет красный экран. Поэтому обязанность
-переносится на текст — страница загрузки и руководство предупреждают об этом ЗАРАНЕЕ,
-объясняют путь («Подробнее» → «Выполнить в любом случае») и дают контрольную сумму.
-Молчаливый красный экран читается как «программа опасная»; предупреждённый — как «автор
-без сертификата».
+The consequence is accepted deliberately: SmartScreen shows its red screen. So the duty
+moves to the text — the download page and the guide warn about it BEFOREHAND, explain the
+way through ("More info" → "Run anyway"), and publish a checksum. A silent red screen
+reads as "this program is dangerous"; a forewarned one reads as "this author has no
+certificate".
 
-В сборке место для подписи предусмотрено отдельным выключенным шагом: когда сертификат
-появится, он подключается, а не переписывает упаковку.
+The build keeps a place for a signature as a separate, switched-off step (`--sign`, or
+`SORTA_SIGN_INSTALLER=1`). When a certificate appears it plugs in, rather than rewriting
+the packaging. Nothing in the repository signs anything today, and no release has been
+signed.
 
 ### The two heaviest tiers are off by default
 

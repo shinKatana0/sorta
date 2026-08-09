@@ -17,6 +17,15 @@ Sorta processes personal photos and videos — including, potentially, images of
   place up through Nominatim/OSM: it sends **rounded GPS coordinates**, never an
   image, and the key says so in its name. Off by default — `offline` uses the
   GeoNames data bundled with the package and needs no network at all.
+- **The program does fetch its own model weights, and nothing of yours travels with
+  them.** The first run of a tier that needs a model downloads it — CLIP and the VLM
+  from `huggingface.co`, the face model from insightface's own storage — and every run
+  after that is offline, because the weights are cached on disk. A request for a file
+  carries no photograph, no path and no metadata. A run says what it is about to
+  fetch, and how large it is, before it starts. To keep even that from happening, let
+  the Windows installer's wizard fetch them once during the install, or set
+  `HF_HUB_OFFLINE=1` — a setting Sorta never overrides, and under which a missing
+  model is an error rather than a download.
 - **Originals are never modified.** Sorting moves/copies files and never rewrites
   EXIF. With `--copy`/`--link`, originals stay exactly where they are.
 - **Documents are collected locally.** Detected documents go to a local

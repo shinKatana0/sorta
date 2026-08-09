@@ -150,14 +150,14 @@ def load_landmarks(path: str | Path) -> list[Landmark]:
     for i, e in enumerate(entries):
         missing = [k for k in ("prompt", "name", "country", "city") if not e.get(k)]
         if missing:
-            raise ValueError(f"{path}: запись #{i + 1} без полей {missing}")
+            raise ValueError(f"{path}: entry #{i + 1} is missing {missing}")
         raw_id = e.get("geonameid")
         try:
             geonameid = int(raw_id) if raw_id is not None else None
         except (TypeError, ValueError):
             raise ValueError(
-                f"{path}: запись #{i + 1} ({e['name']}): geonameid должен быть числом, "
-                f"получено {raw_id!r}"
+                f"{path}: entry #{i + 1} ({e['name']}): geonameid has to be a number, "
+                f"got {raw_id!r}"
             ) from None
         result.append(Landmark(prompt=str(e["prompt"]), name=str(e["name"]),
                                country=str(e["country"]), city=str(e["city"]),
