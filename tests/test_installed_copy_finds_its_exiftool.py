@@ -433,9 +433,12 @@ class TestTheBuildCarriesWhatMakesItStart(unittest.TestCase):
             root = Path(raw)
             (root / "bin").mkdir()
             (root / "bin" / "exiftool.exe").write_bytes(b"shim")
-            tools = root / "lib" / "exiftool" / "tools"
+            # The layout the runner actually printed on 2026-08-09, version directory and
+            # all — a hand-invented one guessed the depth wrong and cost a red CI.
+            tools = root / "lib" / "exiftool" / "tools" / "exiftool-13.59_64"
             (tools / "exiftool_files").mkdir(parents=True)
             (tools / "exiftool.exe").write_bytes(b"the real one")
+            (root / "lib" / "exiftool" / "tools" / "chocolateyInstall.ps1").write_bytes(b"")
             with patch.object(builder.shutil, "which", lambda _n: str(root / "bin" /
                                                                      "exiftool.exe")):
                 found = builder.find_exiftool(None)

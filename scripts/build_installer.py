@@ -894,9 +894,13 @@ def exiftool_home(candidate: Path) -> Path | None:
     """
     if (candidate.parent / EXIFTOOL_FILES_DIR).is_dir():
         return candidate.parent
-    for tools in sorted(candidate.parent.parent.glob("lib/exiftool*/tools")):
-        if (tools / EXIFTOOL_FILES_DIR).is_dir() and any(tools.glob("exiftool*.exe")):
-            return tools
+    # Searched for by name rather than at a guessed depth: the runner keeps it at
+    # `lib\exiftool\tools\exiftool-13.59_64\`, and a version in a path is a thing that
+    # moves. Scoped to the package directory, so this is a handful of stat calls.
+    for package in sorted(candidate.parent.parent.glob("lib/exiftool*")):
+        for files in sorted(package.rglob(EXIFTOOL_FILES_DIR)):
+            if files.is_dir() and any(files.parent.glob("exiftool*.exe")):
+                return files.parent
     return None
 
 
