@@ -247,6 +247,19 @@ class TestTheMeasurementIsSharedByBothScreens(unittest.TestCase):
                                  measure=lambda: next(arrived), tick=0.0)
         self.assertEqual(seen, [0])
 
+    def test_a_replaced_model_is_measured_from_the_dip_and_not_from_the_start(self):
+        """insightface deletes the model it is replacing before fetching it, so a
+        re-download begins by making the cache smaller. Measured from the start, the
+        difference stays negative for most of it — a Windows VM read `0 MB of 400 MB`
+        for a whole working download on 2026-08-09. The floor is the smallest total
+        seen, so what is reported is what has arrived since the dip."""
+        arrived = iter([341_000_000, 41_000_000, 141_000_000, 341_000_000])
+        seen: list[int] = []
+        with mock.patch.object(tiers.threading, "Thread", _StepThread):
+            tiers.watch_download(lambda: None, seen.append,
+                                 measure=lambda: next(arrived), tick=0.0)
+        self.assertEqual(seen, [0])
+
     def test_the_wizards_console_says_how_much_of_how_many(self):
         said: list[str] = []
         arrived = iter([0, 400 * 1_000_000, 900 * 1_000_000])

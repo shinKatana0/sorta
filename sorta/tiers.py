@@ -364,14 +364,21 @@ def watch_download(work: Callable[[], None], report: Callable[[int], None], *,
         except BaseException as exc:  # noqa: BLE001 — handed back, not swallowed
             failure.append(exc)
 
-    start = measured()
+    # The floor is the SMALLEST total seen, not the one at the start: insightface deletes
+    # the model it is replacing before fetching it, so a re-download begins by making the
+    # cache 341 MB smaller and the difference from the start stays negative for most of
+    # it. On a Windows VM on 2026-08-09 that showed `0 MB of 400 MB` for a whole download
+    # that worked.
+    floor = measured()
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
     while True:
         worker.join(tick)
         if not worker.is_alive():
             break
-        report(max(0, measured() - start))
+        now = measured()
+        floor = min(floor, now)
+        report(max(0, now - floor))
     return failure[0] if failure else None
 
 

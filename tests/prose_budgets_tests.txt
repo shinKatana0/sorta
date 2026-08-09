@@ -9,7 +9,7 @@
 tests/__init__.py                                    0
 tests/conftest.py                                    46
 tests/schema_history.py                              44
-tests/test_a_download_that_stopped_halfway.py        99
+tests/test_a_download_that_stopped_halfway.py        104
 tests/test_a_run_says_what_it_will_download.py       151
 tests/test_a_stage_waiting_on_a_download_says_so.py  67
 tests/test_accelerator_choice.py                     235
