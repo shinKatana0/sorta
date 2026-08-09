@@ -722,11 +722,9 @@ def _resolve_dst(target_dir: Path, src: Path, claimed: set[str],
 
 # --- F236: the directories a sort created ------------------------------------
 #
-# `mkdir(parents=True)` was the one effect of a sort the journal never held, so undo left
-# an empty tree behind: it had no way to tell a folder it made from one that was already
-# there, and deleting on a guess is the worse mistake. The record goes into a sidecar
-# beside the database and not into `moves`, which is one row per FILE (file_id NOT NULL),
-# and it is a record of a FACT — no rule here ever asks whether a folder "looks like ours".
+# A sidecar beside the database and not `moves`, which is one row per FILE (file_id NOT
+# NULL). What it holds is a FACT and never a resemblance: nothing below asks whether a
+# folder "looks like ours", so a folder that was already there is safe by construction.
 
 _DIRS_JOURNAL_NAME = "moves_dirs.jsonl"
 
@@ -734,9 +732,8 @@ _DIRS_JOURNAL_NAME = "moves_dirs.jsonl"
 def _dirs_journal(conn: sqlite3.Connection) -> Path | None:
     """The created-directories journal beside this connection's database file.
 
-    None when the database has no file of its own (`:memory:`): there is nowhere to write,
-    so nothing is recorded and undo removes nothing — the same outcome as a journal
-    written before this feature.
+    None when the database has no file of its own (`:memory:`): nothing is recorded and
+    undo removes nothing, the outcome a journal written before F236 gets.
     """
     for _seq, name, filename in conn.execute("PRAGMA database_list"):
         if name == "main":
@@ -748,8 +745,8 @@ def _dirs_journal(conn: sqlite3.Connection) -> Path | None:
 def _levels_to_create(target: Path) -> list[Path]:
     """The levels of `target` that do not exist yet, outermost first.
 
-    `mkdir(parents=True)` makes a whole chain and all of it is ours; a journal holding
-    only the leaf would leave every intermediate level behind for good.
+    `mkdir(parents=True)` makes a whole chain: a journal holding only the leaf would
+    leave every intermediate level behind for good.
     """
     missing: list[Path] = []
     node = target
@@ -765,9 +762,9 @@ def _levels_to_create(target: Path) -> list[Path]:
 def _record_created_dirs(journal: Path | None, batch_id: int, dirs: list[Path]) -> None:
     """Append the levels about to be created — written BEFORE the mkdir.
 
-    The same order as a moves row and its move: a run killed in between leaves a record of
-    a folder that was never created, and undo then simply fails to remove it. A journal
-    that cannot be written is a warning and not a failure — the files are not at stake.
+    The order of a moves row and its move: a run killed in between records a folder that
+    was never created, and undo simply fails to remove it. A journal that cannot be
+    written is a warning and not a failure — the files are not at stake.
     """
     if journal is None or not dirs:
         return
@@ -781,11 +778,11 @@ def _record_created_dirs(journal: Path | None, batch_id: int, dirs: list[Path]) 
 
 
 def _remove_created_dirs(conn: sqlite3.Connection, batch_id: int) -> int:
-    """Remove what `batch_id` recorded creating — deepest first, empty ones only.
+    """Remove what `batch_id` recorded creating, deepest first; returns how many went.
 
-    Deepest first, or a parent is still holding its children when its turn comes. A
-    directory with anything in it is skipped without a word: `rmdir` refusing it IS the
-    rule that somebody else's content stays, not an error. Returns how many were removed.
+    Deepest first, or a parent still holds its children when its turn comes. A directory
+    with anything in it is skipped without a word: `rmdir` refusing it IS the rule that
+    somebody else's content stays, not an error.
     """
     journal = _dirs_journal(conn)
     if journal is None or not journal.exists():
