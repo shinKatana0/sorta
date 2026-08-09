@@ -185,7 +185,7 @@ tests/test_ui_album_dest.py                          7
 tests/test_ui_albums.py                              8
 tests/test_ui_animals.py                             38
 tests/test_ui_animals_override.py                    34
-tests/test_ui_browse_guard.py                        11
+tests/test_ui_browse_guard.py                        13
 tests/test_ui_bulk_place.py                          42
 tests/test_ui_cache.py                               48
 tests/test_ui_city_names.py                          12

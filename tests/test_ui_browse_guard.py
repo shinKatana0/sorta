@@ -22,7 +22,7 @@ class TestBrowseDialogGuard(unittest.TestCase):
             opened.append(1)
             started.set()
             time.sleep(0.3)  # the window is being built — this is the vulnerable gap
-            return "C:/chosen"
+            return "C:/chosen", ""
 
         with unittest.mock.patch.object(ui.process, "_run_browse_dialog", slow_dialog):
             results: list[str] = []
@@ -34,13 +34,17 @@ class TestBrowseDialogGuard(unittest.TestCase):
             first.join(5)
 
         self.assertEqual(len(opened), 1, "второй клик открыл ещё один диалог")
-        self.assertIn("C:/chosen", results)
-        self.assertIn("", results)  # the refused call answers like a cancel
+        self.assertIn(("C:/chosen", ""), results)
+        # The refused click still answers like a cancel — a second dialog would be
+        # the defect, and "unavailable" would tell the person to install tkinter they
+        # already have.
+        self.assertIn(("", ui.BROWSE_CANCELLED), results)
 
     def test_lock_is_released_for_the_next_click(self):
-        with unittest.mock.patch.object(ui.process, "_run_browse_dialog", lambda: "C:/a"):
-            self.assertEqual(ui._browse_for_folder(), "C:/a")
-            self.assertEqual(ui._browse_for_folder(), "C:/a")
+        with unittest.mock.patch.object(ui.process, "_run_browse_dialog",
+                                        lambda: ("C:/a", "")):
+            self.assertEqual(ui._browse_for_folder(), ("C:/a", ""))
+            self.assertEqual(ui._browse_for_folder(), ("C:/a", ""))
 
     def test_lock_is_released_when_the_dialog_raises(self):
         def boom():
