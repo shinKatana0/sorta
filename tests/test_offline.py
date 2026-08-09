@@ -24,7 +24,12 @@ class TestConfigureModelOffline(unittest.TestCase):
         self.cache.mkdir()
 
     def _populate(self):
-        (self.cache / "models--timm--vit_large_patch14_clip_224.openai").mkdir()
+        """A FINISHED download: since 2026-08-09 a bare directory is not one, because an
+        interrupted fetch leaves exactly that and used to switch the machine offline."""
+        snapshot = (self.cache / "models--timm--vit_large_patch14_clip_224.openai"
+                    / "snapshots" / "abc123")
+        snapshot.mkdir(parents=True)
+        (snapshot / "open_clip_model.safetensors").write_bytes(b"x" * 16)
 
     def test_offline_is_enabled_when_the_cache_holds_models(self):
         self._populate()
@@ -78,6 +83,42 @@ class TestCacheDirResolution(unittest.TestCase):
                 os.environ.pop(var, None)
             self.assertEqual(offline.hf_cache_dir(),
                              Path.home() / ".cache" / "huggingface" / "hub")
+
+
+class TestAHalfDownloadDoesNotMakeAMachineOffline(unittest.TestCase):
+    """The trap this module set for itself, met on Linux 2026-08-09.
+
+    One interrupted fetch leaves `models--…` in the cache. Counting that as "the machine
+    has models" switched the loaders offline, and the next attempt met "cannot find the
+    requested files in the local cache" — on a machine whose network was working. The
+    person then spends the evening on the network, because that is what the message says.
+    """
+
+    def cache_with(self, tmp: Path, name: str, *, complete: bool) -> Path:
+        entry = tmp / name / "snapshots" / "abc123"
+        entry.mkdir(parents=True)
+        (entry / ("model.safetensors" if complete
+                  else "model.safetensors.incomplete")).write_bytes(b"x" * 16)
+        return tmp
+
+    def test_a_finished_model_still_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self.cache_with(Path(tmp), "models--timm--vit", complete=True)
+            self.assertTrue(offline.models_are_cached(cache))
+
+    def test_an_interrupted_one_does_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self.cache_with(Path(tmp), "models--timm--vit", complete=False)
+            self.assertFalse(offline.models_are_cached(cache))
+
+    def test_and_so_offline_mode_is_not_switched_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self.cache_with(Path(tmp), "models--timm--vit", complete=False)
+            with unittest.mock.patch.dict(os.environ, {}, clear=False):
+                for var in (*offline._HF_VARS, offline.ENV_ALLOW_DOWNLOAD):
+                    os.environ.pop(var, None)
+                self.assertFalse(offline.configure_model_offline(cache))
+                self.assertNotIn("HF_HUB_OFFLINE", os.environ)
 
 
 if __name__ == "__main__":

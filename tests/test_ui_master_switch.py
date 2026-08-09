@@ -89,7 +89,8 @@ class TestSubordinateOptionsFollowTheMaster(MarkupCase):
         # F222 gave one of the four a second parent — the landmark check goes dead with
         # the stage it checks as well as with the master — so the condition is a function
         # of the control rather than the master alone. The run is still the other reason.
-        self.assertIn("el.disabled = subordinateOff(id) || processRunning", body)
+        self.assertIn("el.disabled = dead || processRunning", body)
+        self.assertIn("var dead = subordinateOff(id)", body)
         self.assertNotIn("style.display", body.split(".vlm-off-hint")[0])
 
     def test_the_reason_is_written_next_to_each_of_them(self):
@@ -158,9 +159,22 @@ class TestNoSmartSwitchingOn(MarkupCase):
             ['document.getElementById("process-deep-checkbox").checked = !!data.deep;'])
 
     def test_the_master_does_not_tick_anything_below_it(self):
-        """Switching deep analysis ON grants permission, it does not hand out orders —
-        so nothing in the disabling path touches `.checked`."""
-        self.assertNotIn("checked =", self.body("updateVlmSubordinatesDisabled"))
+        """Switching deep analysis ON grants permission, it does not hand out orders.
+
+        Until 2026-08-09 this read "nothing in the disabling path touches `.checked`",
+        which is the rule one letter too wide: a subordinate that cannot act was left
+        ticked and greyed, and the owner read that as switched on. Unticking it is not
+        the failure F145 was written against — that failure is the master turning
+        something ON that the person never chose. So what is pinned now is the direction:
+        the path may set `checked` to false, and may put back only the value it
+        remembered, and there is no literal `checked = true` anywhere in it.
+        """
+        body = self.body("updateVlmSubordinatesDisabled")
+        self.assertNotIn("checked = true", body)
+        for assignment in re.findall(r"\.checked\s*=\s*([^;]+);", body):
+            with self.subTest(assignment=assignment.strip()):
+                self.assertIn(assignment.strip(),
+                              ("false", 'el.dataset.wanted === "1"'))
 
 
 class TestSettingsAreFrozenDuringARun(MarkupCase):

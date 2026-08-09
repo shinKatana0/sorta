@@ -701,6 +701,17 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # The one a person actually meets. What they used to get was
     # `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` — no stage, no model, no
     # size, nothing to do about it. The traceback stays in the log.
+    # When the loaders were switched offline by US, the hub answers "check your
+    # connection" on a machine whose connection is fine. Said after the reason, because
+    # the reason is still the library's.
+    "cli.download.offline_by_us": {
+        "ru": "Загрузка моделей была отключена самой Sorta, потому что в кэше уже есть "
+              "другие модели. Чтобы разрешить эту докачку: {variable}=1",
+        "en": "Model downloads were switched off by Sorta itself, because the cache "
+              "already holds other models. To allow this one: {variable}=1",
+        "ja": "キャッシュに他のモデルがあるため、Sorta 自身がモデルのダウンロードを"
+              "無効にしていました。今回だけ許可するには: {variable}=1",
+    },
     "cli.download.failed": {
         "ru": "Стадия «{stage}» не смогла скачать модель {weights} (~{size}). "
               "Проверьте подключение к сети и запустите прогон снова; модель можно "

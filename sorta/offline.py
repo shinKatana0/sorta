@@ -51,18 +51,64 @@ def hf_xet_cache_dir() -> Path:
     return base / "xet"
 
 
+# F225: what an ABORTED download leaves behind, by the names the two libraries give it.
+# huggingface_hub writes a blob to `<sha>.incomplete` and renames it when the last byte
+# has arrived, so a directory carrying one of these is a download that stopped halfway.
+_UNFINISHED_SUFFIXES = (".incomplete", ".part", ".tmp")
+
+
+def download_complete(path: Path) -> bool:
+    """Is the model behind this cache entry whole, or is it half a download?
+
+    F225: the run of 2026-08-08 left `models--timm--vit_large_patch14_clip_224.openai`
+    with an empty snapshot and a `.incomplete` blob, and calling that "downloaded" makes
+    the stage fail on every run for as long as the machine lives. So BOTH have to hold:
+    nothing inside is still being written, and there is a finished file where the loader
+    reads them (`snapshots/<revision>/...` for the hub, the directory for insightface).
+    """
+    if path.is_file():
+        # insightface downloads `<model>.zip` next to the directory it unpacks it into;
+        # the archive is one file and is whole or is not there.
+        return not path.name.lower().endswith(_UNFINISHED_SUFFIXES)
+    root = path / "snapshots" if (path / "snapshots").is_dir() else path
+    finished = False
+    try:
+        for item in path.rglob("*"):
+            if item.name.lower().endswith(_UNFINISHED_SUFFIXES):
+                return False
+            if not finished and (root == path or root in item.parents):
+                finished = item.is_file()
+    except OSError:  # unreadable entry — nothing can be claimed about it
+        return False
+    return finished
+
+
 def models_are_cached(cache_dir: Path | None = None) -> bool:
     """True if the hub cache holds at least one downloaded model.
 
-    Deliberately coarse: it is a decision about whether the network is likely to be
-    needed, not a manifest check. A cache with the wrong models still degrades
-    gracefully — the loader raises, and the message names the opt-out.
+    Coarse on purpose — it decides whether the network is likely to be needed, not what
+    is in the cache — but a HALF download does not count. One interrupted fetch used to
+    leave `models--…` behind, and this function then declared the machine offline, so the
+    next attempt met "cannot find the requested files in the local cache" with the network
+    working perfectly. Met on Linux 2026-08-09; the same rule the tier probe uses.
     """
     directory = cache_dir if cache_dir is not None else hf_cache_dir()
     try:
-        return any(child.name.startswith("models--") for child in directory.iterdir())
+        children = list(directory.iterdir())
     except OSError:
         return False
+    return any(child.name.startswith("models--") and download_complete(child)
+               for child in children)
+
+
+# Set by `configure_model_offline` and read by whoever has to explain a failed download:
+# the difference between "no network" and "we told the library there is none".
+_OURS = False
+
+
+def offline_by_us() -> bool:
+    """Did THIS process switch the loaders offline?"""
+    return _OURS
 
 
 def configure_model_offline(cache_dir: Path | None = None) -> bool:
@@ -79,6 +125,8 @@ def configure_model_offline(cache_dir: Path | None = None) -> bool:
         return False  # explicitly configured — leave it alone
     if not models_are_cached(cache_dir):
         return False  # nothing cached yet: the first download must be able to happen
+    global _OURS
     for var in _HF_VARS:
         os.environ[var] = "1"
+    _OURS = True
     return True

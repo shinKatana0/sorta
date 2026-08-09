@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from . import i18n, install, wizard
-from .offline import hf_cache_dir, hf_xet_cache_dir
+from .offline import (ENV_ALLOW_DOWNLOAD, download_complete, hf_cache_dir,
+                      hf_xet_cache_dir, offline_by_us)
 
 _INSIGHTFACE_MODELS = Path.home() / ".insightface" / "models"
 
@@ -104,38 +105,6 @@ def entry_holds(weight: str, name: str) -> bool:
     entry = _normalized(name)
     return any(_normalized(marker) in entry
                for marker in _WEIGHT_MARKERS.get(weight, (weight,)))
-
-
-# F225: what an ABORTED download leaves behind, by the names the two libraries give it.
-# huggingface_hub writes a blob to `<sha>.incomplete` and renames it when the last byte
-# has arrived, so a directory carrying one of these is a download that stopped halfway.
-_UNFINISHED_SUFFIXES = (".incomplete", ".part", ".tmp")
-
-
-def download_complete(path: Path) -> bool:
-    """Is the model behind this cache entry whole, or is it half a download?
-
-    F225: the run of 2026-08-08 left `models--timm--vit_large_patch14_clip_224.openai`
-    with an empty snapshot and a `.incomplete` blob, and calling that "downloaded" makes
-    the stage fail on every run for as long as the machine lives. So BOTH have to hold:
-    nothing inside is still being written, and there is a finished file where the loader
-    reads them (`snapshots/<revision>/...` for the hub, the directory for insightface).
-    """
-    if path.is_file():
-        # insightface downloads `<model>.zip` next to the directory it unpacks it into;
-        # the archive is one file and is whole or is not there.
-        return not path.name.lower().endswith(_UNFINISHED_SUFFIXES)
-    root = path / "snapshots" if (path / "snapshots").is_dir() else path
-    finished = False
-    try:
-        for item in path.rglob("*"):
-            if item.name.lower().endswith(_UNFINISHED_SUFFIXES):
-                return False
-            if not finished and (root == path or root in item.parents):
-                finished = item.is_file()
-    except OSError:  # unreadable entry — nothing can be claimed about it
-        return False
-    return finished
 
 
 def _weights_cached(name: str, *, insightface: Path | None = None,
@@ -423,9 +392,19 @@ def download_progress(weights: Sequence[str], done: int, lang: i18n.Lang) -> str
 
 def download_failure(stage: str, weights: Sequence[str], lang: i18n.Lang,
                      error: object) -> str:
-    """The refusal in words: the stage, the model, the size and the way out."""
-    return i18n.cli_text(
+    """The refusal in words: the stage, the model, the size and the way out.
+
+    When SORTA switched the loaders offline itself, the sentence says so. Without that
+    line huggingface answers "check your connection and try again" on a machine whose
+    connection is fine, and the person spends the evening on the network (the owner, on
+    Linux, 2026-08-09).
+    """
+    text = i18n.cli_text(
         "cli.download.failed", lang, stage=i18n.stage_label(stage, lang),
         weights=", ".join(weights) or "-",
         size=wizard.human_size(weights_size_mb(weights), lang),
         error=str(error).strip() or error.__class__.__name__)
+    if offline_by_us():
+        text += " " + i18n.cli_text("cli.download.offline_by_us", lang,
+                                    variable=ENV_ALLOW_DOWNLOAD)
+    return text

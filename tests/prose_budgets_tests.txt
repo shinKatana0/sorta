@@ -133,7 +133,7 @@ tests/test_naming_providers.py                       36
 tests/test_naming_vlm.py                             76
 tests/test_naming_vlm_batching.py                    71
 tests/test_no_console_nobody_asked_for.py            83
-tests/test_offline.py                                13
+tests/test_offline.py                                22
 tests/test_only_our_page_may_write.py                89
 tests/test_orchestrator_wiring.py                    16
 tests/test_payload_carries_its_trust.py              103
@@ -204,7 +204,7 @@ tests/test_ui_junk_phase.py                          19
 tests/test_ui_large_collections.py                   36
 tests/test_ui_layout_workplace.py                    74
 tests/test_ui_lightbox_reset.py                      27
-tests/test_ui_master_switch.py                       136
+tests/test_ui_master_switch.py                       144
 tests/test_ui_moves.py                               6
 tests/test_ui_one_run_button.py                      43
 tests/test_ui_overrides.py                           24

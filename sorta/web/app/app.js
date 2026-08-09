@@ -2838,7 +2838,20 @@
     var off = !vlmMasterOn();
     VLM_SUBORDINATE_IDS.forEach(function (id) {
       var el = document.getElementById(id);
-      if (el) { el.disabled = subordinateOff(id) || processRunning; }
+      if (!el) { return; }
+      var dead = subordinateOff(id);
+      el.disabled = dead || processRunning;
+      // A tick that cannot act still reads as "on" — greying it was not enough (the
+      // owner, 2026-08-09). The answer is kept in `data-wanted` and put back the moment
+      // the master allows it again, so switching the deep tier off and on does not cost
+      // somebody the choices they made.
+      if (dead) {
+        if (el.dataset.wanted === undefined) { el.dataset.wanted = el.checked ? "1" : ""; }
+        el.checked = false;
+      } else if (el.dataset.wanted !== undefined) {
+        el.checked = el.dataset.wanted === "1";
+        delete el.dataset.wanted;
+      }
     });
     document.querySelectorAll(".vlm-off-hint").forEach(function (el) {
       el.style.display = off ? "" : "none";

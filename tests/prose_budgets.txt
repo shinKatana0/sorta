@@ -19,7 +19,7 @@ sorta/faces.py        412
 sorta/geo.py          343
 sorta/geodata.py      224
 sorta/hashing.py      12
-sorta/i18n.py         307
+sorta/i18n.py         310
 sorta/imaging.py      214
 sorta/indexer.py      171
 sorta/install.py      91
@@ -28,14 +28,14 @@ sorta/landmarks.py    355
 sorta/launch.py       86
 sorta/launcher.py     7
 sorta/naming.py       342
-sorta/offline.py      40
+sorta/offline.py      59
 sorta/progress.py     34
 sorta/restore.py      248
 sorta/runlog.py       272
 sorta/search.py       225
 sorta/sorter.py       772
 sorta/splash.py       39
-sorta/tiers.py        140
+sorta/tiers.py        132
 sorta/tray.py         219
 sorta/ui/__init__.py  859
 sorta/ui/common.py    140
