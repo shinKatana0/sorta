@@ -210,14 +210,22 @@ def project_version(pyproject_text: str) -> str:
     return match.group(1)
 
 
+# The extra the desktop shortcut needs (F207). Carried by the build, not by a tier.
+SHORTCUT_EXTRA = "tray"
+
+
 def unaccounted_extras(pyproject_text: str) -> tuple[set[str], set[str]]:
     """(extras the installer never heard of, extras it names that no longer exist).
 
     Both directions matter and they fail differently: the first is a tier somebody
     added to the project and forgot here — the wizard would never offer it — and the
     second is the installer promising something the project cannot install any more.
+
+    `SHORTCUT_EXTRA` is accounted for by this build rather than by a tier: the shortcut
+    starts an icon and the payload carries pystray for it, while a machine without it has
+    a whole base tier all the same.
     """
-    declared = wizard.declared_extras()
+    declared = wizard.declared_extras() | {SHORTCUT_EXTRA}
     actual = project_extras(pyproject_text)
     return actual - declared, declared - actual
 
@@ -568,11 +576,12 @@ def base_install_command(uv: str, python: Path, target: Path,
                          project: Path = ROOT) -> list[str]:
     """Install the base tier into the payload — the project with the base tier's extras.
 
-    The extras come from the tier catalog, so the installer carries exactly what the
-    wizard calls the base tier: the hardware profile (`cpu`) and the tray icon the
-    shortcut starts.
+    The hardware profile comes from the tier catalog; `tray` is added here because the
+    shortcut starts an icon and this build has to carry it. It is deliberately NOT part
+    of the base tier: a machine without pystray still has a working base tier, and saying
+    otherwise is what made a correct Linux install report the base tier as missing.
     """
-    extras = ",".join(wizard.BASE_TIER.extras)
+    extras = ",".join((*wizard.BASE_TIER.extras, SHORTCUT_EXTRA))
     return [uv, "pip", "install", "--python", str(python), "--target", str(target),
             f"{project}[{extras}]"]
 

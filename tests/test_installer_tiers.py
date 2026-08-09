@@ -86,14 +86,21 @@ class TestEveryExtraIsAccountedFor(unittest.TestCase):
 class TestTheTierCatalog(unittest.TestCase):
     """What the tiers claim, checked against the project rather than against a memory."""
 
-    def test_the_base_tier_is_not_optional_and_carries_what_the_shortcut_needs(self):
+    def test_the_base_tier_is_not_optional_and_is_the_hardware_profile(self):
         base = wizard.BASE_TIER
         self.assertFalse(base.optional)
         self.assertNotIn(base, wizard.OPTIONAL_TIERS)
-        # `cpu` is the hardware profile the installer can carry offline; `tray` is what
-        # the desktop shortcut starts (F207), so a base tier without it is a shortcut
-        # to an icon that never appears.
-        self.assertEqual(set(base.extras), {"cpu", "tray"})
+        self.assertEqual(set(base.extras), {"cpu"})
+
+    def test_the_shortcut_extra_is_carried_by_the_build_and_is_not_a_tier(self):
+        """`uv tool install ".[cpu]"` is the documented Linux install, and until
+        2026-08-09 it made `sorta doctor` say "Base tier: not installed" because pystray
+        was missing — over an icon a headless machine has nowhere to draw. The installer
+        still ships it: the shortcut starts one."""
+        build = _load_script()
+        self.assertNotIn("tray", wizard.BASE_TIER.extras)
+        command = build.base_install_command("uv", Path("py"), Path("target"))
+        self.assertTrue(any("[cpu,tray]" in part for part in command), command)
 
     def test_the_profiles_stay_mutually_exclusive(self):
         """`cpu` and `gpu` conflict in pyproject.toml, so they may never be one tier."""

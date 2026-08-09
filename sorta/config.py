@@ -1336,7 +1336,20 @@ def _known(cls, raw: dict) -> dict:
 
 
 def load_config(path: str | Path = "config.yaml") -> Config:
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    """The settings, or the defaults when there is no file to read.
+
+    A missing config is not an error. The Windows installer writes one and points the
+    shortcut at it; `uv tool install` writes nothing, so on Linux the first command met a
+    `FileNotFoundError` traceback out of `Path.read_text` — for a file the person had
+    never been asked to create. Every value here has a default, `sorta doctor` already
+    answered without one, and the run says out loud which file it would have read.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _log.info("config: %s not found — running on defaults", Path(path).resolve())
+        text = ""
+    data = yaml.safe_load(text) or {}
     idx = data.get("index", {})
     vlm = _vlm_from(data)
     cfg = Config(

@@ -128,7 +128,13 @@ PYTORCH_CU130_INDEX = "https://download.pytorch.org/whl/cu130"
 # is what the installer already put on the disk, and it is in the list so that the extras
 # it carries are accounted for.
 TIERS: tuple[Tier, ...] = (
-    Tier("base", extras=("cpu", "tray"), optional=False),
+    # `cpu` and NOT `cpu,tray`: the tray icon is what the Windows shortcut starts, and
+    # the installer carries it (`build_installer.base_install_command`) — but a machine
+    # without pystray has a whole base tier all the same, and the server says so by
+    # serving without an icon. Until 2026-08-09 the documented Linux install,
+    # `uv tool install ".[cpu]"`, made `sorta doctor` report "Base tier: not installed"
+    # over a missing icon.
+    Tier("base", extras=("cpu",), optional=False),
     # F223: ViT-L-14 used to sit inside the tier below, named after ONE thing it buys, so
     # a person who did not want to search by words switched off the classification without
     # being told. Split by what each DOES: 1 631 MB every run needs against 1 397 MB only
