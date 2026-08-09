@@ -89,8 +89,10 @@ class TestCliStrings:
             assert len(key.split(".")) >= 3, f"{key}: needs a command segment"
 
     def test_substitution_is_by_name(self) -> None:
-        assert cli_text("cli.undo.done", "ru", batch=4, undone=10, missing=1, failed=2) \
-            == "Откат батча 4: возвращено 10, отсутствовало 1, ошибок 2"
+        assert cli_text("cli.undo.done", "ru", batch=4, undone=10, missing=1, failed=2,
+                        dirs=3) \
+            == ("Откат батча 4: возвращено 10, отсутствовало 1, ошибок 2, "
+                "убрано пустых каталогов 3")
         assert cli_text("cli.stats.files", "en", total=7, errors=2) \
             == "Files in the index: 7 (+2 with errors)"
 

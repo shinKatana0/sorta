@@ -688,6 +688,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial recompute: half a set of rebuilt clusters is worse than all or none.
 
 ### Fixed
+- **`sorta undo` takes back the folders the sort created** (F236). Reported by the owner
+  on 2026-08-09, after the first check of the moves on Linux: *"the new directories are
+  not deleted on a rollback. And I do not know whether they should be — what if the user
+  has already written something of their own in there, or the other way round, it is
+  fresh."* Both halves of that doubt were right, and both were answered by the same
+  missing thing: the journal recorded **moves** and never the `mkdir`, so undo had no way
+  to tell a folder it had made from one that was already there, and the safe answer was to
+  leave the whole empty tree behind. **Now the sort writes down what it creates** — every
+  level of the `mkdir(parents=True)` chain, not only the leaf, into a sidecar
+  `moves_dirs.jsonl` beside the database, **before** the directory exists (the order the
+  moves row already had). The rollback removes exactly what is written there, deepest
+  first, and **only while it is still empty**: a folder somebody has put anything into is
+  skipped in silence, and a folder that existed before the sort was never recorded and is
+  never touched. No heuristic decides whether a directory "looks like ours". The summary
+  of `sorta undo` names the number removed — deleting a folder without saying so is not
+  allowed even when it is ours. A batch journaled before this feature names no directories
+  at all, so its rollback behaves exactly as it did.
 - **A stage waiting for a download says so, instead of showing a frozen counter** (F229).
   Reported off the same virtual machine on 2026-08-08: *"Stage verdicts (4/7): 0 of 8 —
   what is going on? there are only 8 photographs in the test, and as a user I do not

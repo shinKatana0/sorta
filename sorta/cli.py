@@ -1289,7 +1289,7 @@ def _cmd_undo(config_path: str, batch: int | None = None) -> None:
     with progress_task("undo") as cb:
         stats = undo_batch(connect(cfg.database), batch, progress=cb)
     print(_t("cli.undo.done", _lang(cfg), batch=stats.batch_id, undone=stats.undone,
-             missing=stats.missing, failed=stats.failed))
+             missing=stats.missing, failed=stats.failed, dirs=stats.dirs_removed))
 
 
 # --- Typer interface (primary) ----------------------------------------------
