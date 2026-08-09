@@ -15,6 +15,8 @@ Invariants (must not be broken):
     continues;
   - undo: reverse journal order, dst -> src, status='undone'; a missing dst is
     logged, the rollback continues.
+  - F236: every directory level the sort creates is journaled BEFORE the mkdir, and undo
+    removes the journaled ones that are empty — never a directory it did not make.
   - copy mode (C16, --copy): src is NOT deleted and files.path does NOT change;
     move_batches.operation='copy' lets undo distinguish it (deletes dst instead of dst -> src).
 
@@ -718,6 +720,102 @@ def _resolve_dst(target_dir: Path, src: Path, claimed: set[str],
         cand = dst.with_name(f"{dst.stem}_{n}{dst.suffix}")
 
 
+# --- F236: the directories a sort created ------------------------------------
+#
+# `mkdir(parents=True)` was the one effect of a sort the journal never held, so undo left
+# an empty tree behind: it had no way to tell a folder it made from one that was already
+# there, and deleting on a guess is the worse mistake. The record goes into a sidecar
+# beside the database and not into `moves`, which is one row per FILE (file_id NOT NULL),
+# and it is a record of a FACT — no rule here ever asks whether a folder "looks like ours".
+
+_DIRS_JOURNAL_NAME = "moves_dirs.jsonl"
+
+
+def _dirs_journal(conn: sqlite3.Connection) -> Path | None:
+    """The created-directories journal beside this connection's database file.
+
+    None when the database has no file of its own (`:memory:`): there is nowhere to write,
+    so nothing is recorded and undo removes nothing — the same outcome as a journal
+    written before this feature.
+    """
+    for _seq, name, filename in conn.execute("PRAGMA database_list"):
+        if name == "main":
+            return (Path(filename).resolve().parent / _DIRS_JOURNAL_NAME
+                    if filename else None)
+    return None
+
+
+def _levels_to_create(target: Path) -> list[Path]:
+    """The levels of `target` that do not exist yet, outermost first.
+
+    `mkdir(parents=True)` makes a whole chain and all of it is ours; a journal holding
+    only the leaf would leave every intermediate level behind for good.
+    """
+    missing: list[Path] = []
+    node = target
+    while not _fs(node).exists():
+        missing.append(node)
+        if node.parent == node:
+            break
+        node = node.parent
+    missing.reverse()
+    return missing
+
+
+def _record_created_dirs(journal: Path | None, batch_id: int, dirs: list[Path]) -> None:
+    """Append the levels about to be created — written BEFORE the mkdir.
+
+    The same order as a moves row and its move: a run killed in between leaves a record of
+    a folder that was never created, and undo then simply fails to remove it. A journal
+    that cannot be written is a warning and not a failure — the files are not at stake.
+    """
+    if journal is None or not dirs:
+        return
+    try:
+        with open(journal, "a", encoding="utf-8") as fh:
+            for path in dirs:
+                fh.write(json.dumps({"batch_id": batch_id, "dir": str(path)},
+                                    ensure_ascii=False) + "\n")
+    except OSError as exc:
+        _log.warning("sort: журнал созданных каталогов не записан: %s (%s)", journal, exc)
+
+
+def _remove_created_dirs(conn: sqlite3.Connection, batch_id: int) -> int:
+    """Remove what `batch_id` recorded creating — deepest first, empty ones only.
+
+    Deepest first, or a parent is still holding its children when its turn comes. A
+    directory with anything in it is skipped without a word: `rmdir` refusing it IS the
+    rule that somebody else's content stays, not an error. Returns how many were removed.
+    """
+    journal = _dirs_journal(conn)
+    if journal is None or not journal.exists():
+        return 0
+    dirs: dict[str, Path] = {}
+    try:
+        with open(journal, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue  # a blank or half-written line: the rest of the file stands
+                if record.get("batch_id") != batch_id:
+                    continue
+                name = record.get("dir")
+                if isinstance(name, str):
+                    dirs.setdefault(name, Path(name))
+    except OSError as exc:
+        _log.warning("undo: журнал созданных каталогов не прочитан: %s (%s)", journal, exc)
+        return 0
+    removed = 0
+    for path in sorted(dirs.values(), key=lambda p: len(p.parts), reverse=True):
+        try:
+            _fs(path).rmdir()
+        except OSError:
+            continue
+        removed += 1
+    return removed
+
+
 # --- Plan and apply ---------------------------------------------------------
 
 @dataclass
@@ -794,6 +892,9 @@ class UndoStats:
     # interrupted mid-write). Never deleted — the path is reported instead. Before this
     # they stayed in the result looking like ordinary photos with truncated insides.
     stray: list[str] = field(default_factory=list)
+    # F236: journaled directories that were empty and were taken back. Deleting a folder
+    # silently is not allowed even when it is ours, so this number reaches the summary.
+    dirs_removed: int = 0
 
 
 _CSV_DEDUPE_COLUMNS = ["near_dup_group", "near_dup_role"]
@@ -1499,6 +1600,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     conn.commit()
     assert batch_id is not None
     report.batch_id = batch_id
+    dirs_journal = _dirs_journal(conn)
 
     for i, item in enumerate(plan, 1):
         if should_cancel is not None and should_cancel():
@@ -1538,6 +1640,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
             conn.commit()
             report.deleted += 1
             continue
+        _record_created_dirs(dirs_journal, batch_id, _levels_to_create(item.dst.parent))
         try:
             _transfer(item.src, item.dst, src_hash, copy=copy)
         except TransferError as exc:
@@ -1589,6 +1692,10 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
 
     F97: a batch left with finished_at=NULL is closed here, or it goes on looking like
     "running right now" forever.
+
+    F236: the empty directories the batch created are taken back at the end, from the
+    sidecar journal (`_remove_created_dirs`). A batch journaled before that feature names
+    no directories, and its rollback removes none.
     """
     if batch_id is None:
         row = conn.execute(
@@ -1661,6 +1768,7 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
                      (str(restore), r["file_id"]))
         conn.commit()
         stats.undone += 1
+    stats.dirs_removed = _remove_created_dirs(conn, batch_id)
     conn.execute(
         "UPDATE move_batches SET finished_at = ? WHERE id = ? AND finished_at IS NULL",
         (datetime.now(timezone.utc).isoformat(timespec="seconds"), batch_id))

@@ -214,7 +214,8 @@ class _Env:
             out["reset_confirm"] = self._confirm_text(cfg, clear_geo=False)
             out["reset_confirm_geo"] = self._confirm_text(cfg, clear_geo=True)
 
-        undone = SimpleNamespace(batch_id=4, undone=10, missing=1, failed=2)
+        undone = SimpleNamespace(batch_id=4, undone=10, missing=1, failed=2,
+                                 dirs_removed=3)
         with patch.object(cli, "undo_batch", lambda n, b, progress=None: undone):
             out["undo"] = self._cap(lambda: cli._cmd_undo(cfg, None))
 
@@ -417,7 +418,8 @@ class TestRussianOutputIsUnchanged(_EnvCase):
             "кэш геоданных тоже будет очищен")
         self.assertEqual(
             got["undo"],
-            "Откат батча 4: возвращено 10, отсутствовало 1, ошибок 2\n")
+            "Откат батча 4: возвращено 10, отсутствовало 1, ошибок 2, "
+            "убрано пустых каталогов 3\n")
         self.assertEqual(
             got["cache_show"],
             f"Кэш превью: {self.env.previews}\n"

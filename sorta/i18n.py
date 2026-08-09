@@ -1662,10 +1662,11 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
     # undo
     "cli.undo.done": {
         "ru": "Откат батча {batch}: возвращено {undone}, отсутствовало {missing}, "
-              "ошибок {failed}",
+              "ошибок {failed}, убрано пустых каталогов {dirs}",
         "en": "Undo of batch {batch}: {undone} restored, {missing} missing, "
-              "{failed} errors",
-        "ja": "バッチ {batch} の取り消し: 復元 {undone}、欠落 {missing}、エラー {failed}",
+              "{failed} errors, {dirs} empty folders removed",
+        "ja": "バッチ {batch} の取り消し: 復元 {undone}、欠落 {missing}、エラー {failed}、"
+              "空フォルダー削除 {dirs}",
     },
     # not-yet-implemented placeholder
     "cli.stub.next_phase": {
