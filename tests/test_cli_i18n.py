@@ -158,7 +158,11 @@ class _Env:
             lambda: cli._cmd_dupes(str(self.empty_cfg)))
 
         steps = [("alpha", lambda c, n, cb: "one"), ("beta", lambda c, n, cb: "two")]
-        with patch.object(cli, "_pipeline_steps", lambda: steps):
+        # F237: pinned, or the golden output would depend on how much memory the machine
+        # running the suite happens to have free. The sentence itself has its own cases.
+        with patch.object(cli, "_pipeline_steps", lambda: steps), \
+                patch.object(cli, "memory_health",
+                             lambda *_a, **_kw: SimpleNamespace(low=False)):
             out["run"] = self._cap(lambda: cli._cmd_run(cfg))
         out["run_no_source"] = self._cap(
             lambda: cli._cmd_run(str(self.no_source_cfg)))
