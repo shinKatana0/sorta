@@ -149,7 +149,7 @@ class TestTheGuardGoesRed(unittest.TestCase):
         self.assertEqual(len(message_strings(source)), 1)
 
     def test_a_string_the_program_does_not_say_is_not_read(self):
-        source = 'PROMPT = "опиши кадр"\nreturn render("<h1>Отчёт</h1>")\n'
+        source = 'PROMPT = "опиши кадр"\nrender("<h1>Отчёт</h1>")\n'
         self.assertEqual(message_strings(source), [])
 
 
