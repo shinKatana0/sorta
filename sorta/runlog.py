@@ -170,13 +170,14 @@ def setup_file_logging(
             target,
             maxBytes=_MAX_BYTES,
             backupCount=_BACKUP_COUNT,
-            # utf-8 is mandatory: the messages are full of Cyrillic and the default file
-            # encoding on Windows (cp1251) breaks the write.
+            # utf-8 is mandatory: the messages carry file paths and folder names, and the
+            # default file encoding on Windows (cp1251) breaks the write on the first one
+            # that is not Russian either.
             encoding="utf-8",
         )
     except Exception as exc:
         _LOG.warning(
-            "runlog: не удалось открыть файл лога %s (%s) — работаем без файла", target, exc
+            "runlog: log file %s could not be opened (%s) — running without one", target, exc
         )
         return target
 

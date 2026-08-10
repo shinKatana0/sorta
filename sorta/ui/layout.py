@@ -662,7 +662,7 @@ def _places_search(query: str, lang: i18n.Lang) -> list[dict]:
     except GeoDataMissing:
         # The bundled base is the only source here; without it the picker offers
         # nothing rather than pretending an empty answer means "no such place".
-        _log.warning("ui: гео-данные недоступны — поиск места вернёт пустой список")
+        _log.warning("ui: geo data unavailable — the place search returns an empty list")
         return []
     return results
 
@@ -1437,7 +1437,7 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
             try:
                 cache.rebuild(cfg, conn)
             except Exception:  # noqa: BLE001
-                _log.exception("sorta ui: план не обновлён после apply раскладки")
+                _log.exception("sorta ui: the plan was not rebuilt after the layout apply")
                 result["preview_stale"] = True
     finally:
         conn.close()

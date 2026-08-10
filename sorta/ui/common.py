@@ -331,7 +331,7 @@ def _destinations_for(cfg: Config, conn: sqlite3.Connection, rows: list[sqlite3.
         return destinations(cfg, conn, _DEST_MODE, [int(r["id"]) for r in rows],
                             assume_action)
     except (ValueError, sqlite3.Error, OSError) as exc:
-        _log.warning("ui: не удалось вычислить назначение кадров: %s", exc)
+        _log.warning("ui: the destination of the frames could not be computed: %s", exc)
         return {}
 
 

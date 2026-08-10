@@ -94,7 +94,7 @@ def _det_size(cfg: Config) -> int:
         n = 0
     if n <= 0:
         logging.warning(
-            "faces.det_size: некорректное значение %r — используется %d",
+            "faces.det_size: invalid value %r — using %d",
             raw, DET_SIZE_DEFAULT,
         )
         return DET_SIZE_DEFAULT
@@ -189,7 +189,7 @@ def _read_image_bgr(path: str) -> np.ndarray:
             rgb = np.asarray(pil.convert("RGB"))
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     except Exception as exc:
-        raise ValueError(f"не удалось декодировать изображение: {path} ({exc})") from None
+        raise ValueError(f"could not decode image: {path} ({exc})") from None
 
 
 def _decode_for_faces(path: str, orientation: int | None) -> np.ndarray:
@@ -642,7 +642,7 @@ def detect_faces(
     SQLite is written only from this thread in every case, one transaction per file.
     """
     if limit is not None and not rescan:
-        raise ValueError("limit имеет смысл только вместе с rescan")
+        raise ValueError("limit only makes sense together with rescan")
     s = _settings(cfg)
     rows = _files_to_detect(conn, rescan, limit)
     stats = FaceStats(files_total=len(rows))
@@ -1023,7 +1023,7 @@ def cluster_faces(cfg: Config, conn: sqlite3.Connection,
     malformed_ids = [r["id"] for r in rows if len(r["embedding"]) != expected_len]
     if malformed_ids:
         logging.warning(
-            "cluster_faces: пропущено %d строк faces с эмбеддингом неверной длины "
+            "cluster_faces: skipped %d faces rows whose embedding has the wrong length "
             "(ids=%s)", len(malformed_ids), malformed_ids,
         )
         stats.malformed = len(malformed_ids)
@@ -1137,7 +1137,7 @@ def resolve_root(conn: sqlite3.Connection, cluster_id: int) -> int:
             "SELECT merged_into FROM face_clusters WHERE id = ?", (cid,)
         ).fetchone()
         if row is None:
-            raise ValueError(f"кластер {cid} не найден")
+            raise ValueError(f"cluster {cid} not found")
         if row["merged_into"] is None or cid in seen:
             return cid
         seen.add(cid)

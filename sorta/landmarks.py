@@ -725,8 +725,9 @@ def _verify_matches(matches: Sequence[_Match], landmarks: Sequence[Landmark],
                     answer = ask(m.path)
                 except Exception as exc:  # noqa: BLE001 — the cheap tier must survive it
                     _log.warning(
-                        "landmarks: VLM-проверка не ответила по file_id=%s (%s) — "
-                        "решает порог CLIP, как без проверки", m.file_id, exc)
+                        "landmarks: the VLM check did not answer for file_id=%s (%s) — "
+                        "the CLIP threshold decides, as it would without the check",
+                        m.file_id, exc)
                     stats.checks_failed += 1
                     if m.score >= threshold:
                         kept.append(m)
@@ -867,8 +868,8 @@ def _resolve_asker(cfg: Config, asker: LandmarkAskFn | None,
     try:
         return build(_vlm_model_name(cfg))
     except Exception as exc:  # noqa: BLE001 — the check is optional, must not crash
-        _log.warning("landmarks: VLM-проверка недоступна (%s) — "
-                     "остаётся порог CLIP, как без неё", exc)
+        _log.warning("landmarks: the VLM check is unavailable (%s) — "
+                     "the CLIP threshold stands, as it would without it", exc)
         return None
 
 
@@ -977,8 +978,8 @@ def detect_landmarks(
     if fresh:
         _remember_scans(conn, fresh)
     if stats.skipped:
-        _log.info("landmarks: %s из %s кадров не изменились с прошлого прогона — "
-                  "CLIP по ним не гонялся", stats.skipped, len(rows))
+        _log.info("landmarks: %s frames of %s have not changed since the last run — "
+                  "CLIP was not run over them", stats.skipped, len(rows))
 
     matches = [proposals[int(r["id"])] for r in rows if int(r["id"]) in proposals]
     if not matches:

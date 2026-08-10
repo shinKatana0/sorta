@@ -333,7 +333,7 @@ def _unlink_preview(dest: Path) -> bool:
         dest.unlink()
         return True
     except OSError as exc:
-        _log.debug("imaging: превью %s не удалено: %s", dest, exc)
+        _log.debug("imaging: preview %s not removed: %s", dest, exc)
         return False
 
 
@@ -527,7 +527,7 @@ def _import_av() -> ModuleType | None:
             if not _av_warned:
                 _av_warned = True
                 _log.warning(
-                    "imaging: пакет av не установлен — превью для видео недоступны")
+                    "imaging: the av package is not installed — no previews for video")
         return None
     return av
 
