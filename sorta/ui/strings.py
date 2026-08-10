@@ -3182,3 +3182,11 @@ def _tier_strings() -> dict[str, dict[str, str]]:
 
 
 _UI_STRINGS.update(_tier_strings())
+
+# F237: the memory line is the CLI's own sentence, taken as a template — the console and
+# the run screen may not word the same risk differently. Its two numbers are filled in by
+# the browser: they come with `/api/env` and change while the page is open.
+_UI_STRINGS["low_memory_warning"] = {
+    lang: _doctor_line("cli.run.low_memory", lang, "free", "needed")
+    for lang in _TIER_LANGS
+}

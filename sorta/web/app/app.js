@@ -3049,6 +3049,24 @@
     }).join(" · ");
   }
 
+  // F237: the kernel kills a run for memory without a word — no traceback, no last line
+  // in the log — so above the button is the only place this can be said at all. A
+  // warning and nothing more: the start button stays live, and the line goes away by
+  // itself on the next `/api/env` once the memory comes back.
+  function renderMemoryWarning(memory) {
+    var el = document.getElementById("env-memory-warning");
+    if (!el) return;
+    if (!memory || !memory.low) {
+      el.style.display = "none";
+      return;
+    }
+    el.textContent = "⚠ " + fmt(I18N.low_memory_warning, {
+      free: downloadSize(memory.free_mb),
+      needed: downloadSize(memory.needed_mb)
+    });
+    el.style.display = "";
+  }
+
   function loadCostEstimate() {
     fetch("/api/process/estimate")
       .then(function (r) { return r.json(); })
@@ -3090,6 +3108,7 @@
         tierStates = data.tiers || {};
         partStates = data.parts || {};
         weightSizes = data.weights || {};
+        renderMemoryWarning(data.memory);
         updateTierNotes();
       }).catch(function () {});
   }

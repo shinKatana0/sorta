@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -462,3 +463,103 @@ def warn_if_geo_data_missing(
         return False
     log.warning(_GEO_MISSING_WARNING, health.places_path, health.problem)
     return True
+
+
+# --- F237: has this machine got the memory for a run? ----------------------------------
+
+# What a run with the classification needs, in megabytes of FREE memory. Measured
+# 2026-08-09, cpu profile: killed by the OOM killer on a 4 GB machine (Linux), finished on
+# 6 GB (Windows) — the numbers the three guides state as the requirement. The floor is the
+# size that DIED and not the size that passed: what is read here is free memory, always
+# below the machine's total, so 6 GB would fire on the 6 GB machine a run is known to
+# finish on — and a warning seen on every run stops being read (F233).
+MEMORY_FLOOR_MB = 4000
+
+_MEMINFO = Path("/proc/meminfo")
+_MEM_AVAILABLE = "MemAvailable:"
+_BYTES_PER_MB = 1024 * 1024
+
+
+def _linux_available_mb() -> int | None:
+    """`MemAvailable` of /proc/meminfo, in MB. None — no such line (kernels before 3.14).
+
+    Not MemFree: on a machine that has been up for a day most of it is page cache, which
+    a run may have back for the asking, and MemFree reads as an emergency on every one.
+    """
+    try:
+        text = _MEMINFO.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith(_MEM_AVAILABLE):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                return int(parts[1]) * 1024 // _BYTES_PER_MB  # the file counts in kB
+            return None
+    return None
+
+
+def _windows_available_mb() -> int | None:
+    """`ullAvailPhys` of GlobalMemoryStatusEx, in MB. None if the call fails.
+
+    The structure is declared inside: `ctypes.windll` does not exist off Windows, and
+    this module is imported on every platform.
+    """
+    try:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return int(status.ullAvailPhys) // _BYTES_PER_MB
+    except Exception:
+        return None
+
+
+def available_memory_mb() -> int | None:
+    """Free memory in MB — or None on a platform this cannot ask without a new dependency.
+
+    None is an answer and not a failure: macOS has no reading here (`vm_stat` counts
+    pages of six kinds and the sum is not what MemAvailable means), and silence beats an
+    invented number. Never raises.
+    """
+    if sys.platform.startswith("linux"):
+        return _linux_available_mb()
+    if sys.platform == "win32":
+        return _windows_available_mb()
+    return None
+
+
+@dataclass(frozen=True)
+class MemoryHealth:
+    """Free memory against what a run with the classification needs. `available_mb` is
+    None where the platform cannot be asked, and `low` is then False: a machine nobody
+    could measure is left alone rather than warned at."""
+
+    available_mb: int | None
+    needed_mb: int = MEMORY_FLOOR_MB
+
+    @property
+    def low(self) -> bool:
+        return self.available_mb is not None and self.available_mb < self.needed_mb
+
+
+def memory_health(available_mb: int | None = None) -> MemoryHealth:
+    """What this machine has free right now. `available_mb` overrides the probe for a
+    caller that already asked. Never raises."""
+    return MemoryHealth(
+        available_memory_mb() if available_mb is None else available_mb)
