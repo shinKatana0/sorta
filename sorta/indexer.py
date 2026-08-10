@@ -176,20 +176,21 @@ def _read_excludes_file(path: Path) -> dict:
     except FileNotFoundError:
         return {}
     except OSError as exc:
-        _log.warning("index: файл исключений %s не прочитан (%s) — работаем без исключений",
+        _log.warning("index: exclusions file %s not read (%s) — running without exclusions",
                      path, exc)
         return {}
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        _log.warning("index: файл исключений %s испорчен (%s) — работаем без исключений",
+        _log.warning("index: exclusions file %s is corrupt (%s) — running without exclusions",
                      path, exc)
         return {}
     if data is None:
         return {}
     if not isinstance(data, dict):
-        _log.warning("index: файл исключений %s имеет неожиданную структуру (%s вместо "
-                     "словаря по корням) — работаем без исключений", path, type(data).__name__)
+        _log.warning("index: exclusions file %s has an unexpected structure (%s instead of "
+                     "a mapping by root) — running without exclusions",
+                     path, type(data).__name__)
         return {}
     return data
 
@@ -205,8 +206,8 @@ def _root_sections(value: object, root: str, path: Path) -> tuple[list, list]:
     if isinstance(value, list):
         return value, []
     if not isinstance(value, dict):
-        _log.warning("index: значение для корня %s в %s не список и не разделы "
-                     "%s/%s — пропущено", root, path, _SKIP_SCAN, _SKIP_LAYOUT)
+        _log.warning("index: the value of root %s in %s is neither a list nor the "
+                     "%s/%s sections — skipped", root, path, _SKIP_SCAN, _SKIP_LAYOUT)
         return [], []
     sections: list[list] = []
     for key in (_SKIP_SCAN, _SKIP_LAYOUT):
@@ -214,7 +215,7 @@ def _root_sections(value: object, root: str, path: Path) -> tuple[list, list]:
         if section is None:
             section = []
         if not isinstance(section, list):
-            _log.warning("index: раздел %s корня %s в %s не список — пропущен",
+            _log.warning("index: section %s of root %s in %s is not a list — skipped",
                          key, root, path)
             section = []
         sections.append(section)
@@ -227,8 +228,8 @@ def _accept_all(values: Iterable[object], root: str) -> list[str]:
     for value in values:
         rel = normalize_exclude(value)
         if rel is None:
-            _log.warning("index: исключение %r для корня %s отклонено — оно уводит "
-                         "обход за пределы корня", value, root)
+            _log.warning("index: exclusion %r for root %s rejected — it leads the walk "
+                         "outside the root", value, root)
             continue
         if rel not in accepted:
             accepted.append(rel)
@@ -242,7 +243,8 @@ def load_excludes(path: str | Path) -> Excludes:
     layout_by_root: dict[str, list[str]] = {}
     for root, value in _read_excludes_file(p).items():
         if not isinstance(root, str) or not root.strip():
-            _log.warning("index: ключ %r в %s не похож на корень источника — пропущен", root, p)
+            _log.warning("index: key %r in %s does not look like a source root — skipped",
+                         root, p)
             continue
         raw_scan, raw_layout = _root_sections(value, root, p)
         key = _norm_root(root)
@@ -351,7 +353,7 @@ def drop_excluded_rows(cfg: Config, conn: sqlite3.Connection, excludes: Excludes
                 conn.execute(f"DELETE FROM files WHERE id IN ({ph})", chunk)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
-    _log.info("index: удалено из индекса %d строк под исключёнными папками", len(doomed))
+    _log.info("index: %d rows under excluded folders removed from the index", len(doomed))
     return len(doomed)
 
 

@@ -629,8 +629,8 @@ class _OcrPool:
                 self._limit = max(1, self._built)
                 limit = self._limit
             _log.warning(
-                "junk: OCR-детектор не построился (%s) — пул уменьшен до %d воркер(ов)",
-                exc, limit)
+                "junk: the OCR detector did not build (%s) — the pool is cut to %d "
+                "worker(s)", exc, limit)
             return None
         self._local.det = det
         return det
@@ -640,7 +640,7 @@ class _OcrPool:
         try:
             return det(path, width, height)
         except Exception as exc:  # noqa: BLE001 — one bad frame must not break the stage
-            _log.warning("junk: OCR не удался для %s: %s", path, exc)
+            _log.warning("junk: OCR failed for %s: %s", path, exc)
             return None
 
     def _serial(self, jobs: list[OcrJob]) -> dict[int, float | None]:
@@ -783,7 +783,7 @@ def easyocr_text_frac_detector(
         try:
             horizontal, free = reader.detect(np.asarray(img))
         except Exception as exc:  # noqa: BLE001 — one bad frame must not break the stage
-            _log.warning("junk: детекция текста не удалась для %s: %s", path, exc)
+            _log.warning("junk: text detection failed for %s: %s", path, exc)
             return None
         area = 0.0
         for box in (horizontal[0] if horizontal else []):
@@ -1455,7 +1455,7 @@ def preview_sharpness_detector(max_edge: int,
                              face=face_crop_sharpness(img, faces),
                              eyes=face_eye_openness(img, faces, landmark))
         except Exception as exc:  # noqa: BLE001 — one bad frame must not break the stage
-            _log.warning("junk: резкость не посчиталась для %s: %s", path, exc)
+            _log.warning("junk: sharpness was not computed for %s: %s", path, exc)
             return Sharpness()
 
     return sharpness
@@ -1479,8 +1479,8 @@ def lazy_eye_landmarks(build: Callable[[], EyeLandmarkFn]) -> EyeLandmarkFn:
                 state["fn"] = build()
             except Exception as exc:  # noqa: BLE001 — an optional column, not the stage
                 _log.warning(
-                    "junk: модель 106 точек не поднялась (%s) — колонка eye_openness "
-                    "останется пустой, остальная часть стадии не затронута", exc)
+                    "junk: the 106-point model did not come up (%s) — the eye_openness "
+                    "column stays empty, the rest of the stage is untouched", exc)
                 state["fn"] = None
         built = state["fn"]
         return None if built is None else built(img, box)
@@ -2046,7 +2046,7 @@ def _unused_classifier(paths: list[str], prompts: list[str]) -> np.ndarray:
     that nothing downstream has to carry an optional classifier around.
     """
     raise AssertionError(  # pragma: no cover — unreachable by construction
-        "junk: CLIP вызван в прогоне, где он не нужен")
+        "junk: CLIP was called in a run that does not need it")
 
 
 def quality_prompt_fingerprint(pets: bool, *, verify_pets: bool = False,
@@ -2492,7 +2492,7 @@ def search_image_encoder(s: NamingSettings) -> FeatureSource:  # pragma: no cove
     """
     classifier = clip_classifier(s)
     if not isinstance(classifier, CachingFeatureClassifier):
-        raise TypeError(f"clip_classifier не отдаёт энкодер: {type(classifier).__name__}")
+        raise TypeError(f"clip_classifier hands out no encoder: {type(classifier).__name__}")
     return classifier.encode
 
 
@@ -2535,8 +2535,8 @@ class _SearchIndexPass:
             encode = self._encoder()
         except Exception as exc:  # noqa: BLE001 — the index is optional, must not crash
             _log.warning(
-                "junk: модель поискового индекса недоступна (%s) — таблица "
-                "search_embeddings остаётся как была, поиск скажет об этом сам", exc)
+                "junk: the search index model is unavailable (%s) — the "
+                "search_embeddings table stays as it was, search says so itself", exc)
             return
         report.start(CLASSIFY_PHASE_SEARCH, len(todo))
         done = 0
@@ -2556,8 +2556,8 @@ class _SearchIndexPass:
         try:
             return list(encode([path for _file_id, path in chunk]))
         except Exception as exc:  # noqa: BLE001 — one batch, not the stage
-            _log.warning("junk: поисковый индекс — не закодирована пачка из %d кадров "
-                         "(%s), они попадут в следующий прогон", len(chunk), exc)
+            _log.warning("junk: search index — a batch of %d frames was not encoded "
+                         "(%s), they fall into the next run", len(chunk), exc)
             return [None] * len(chunk)
 
     def _store(self, chunk: Sequence[tuple[int, str]],
@@ -2777,8 +2777,8 @@ class _QualityPass:
                     zip(candidates, answers)):
                 if isinstance(item, BaseException):
                     _log.warning(
-                        "junk: VLM-проверка животных не ответила по file_id=%s (%s) — "
-                        "оставляю метку по порогу CLIP", file_id, item)
+                        "junk: the VLM animal check did not answer for file_id=%s (%s) — "
+                        "keeping the label the CLIP threshold gave", file_id, item)
                     answer = ""
                 else:
                     answer = item
@@ -2841,8 +2841,8 @@ class _JunkRescuePass:
             rows = np.asarray(self._encoder()(junk_rescue_prompts()), dtype=np.float32)
         except Exception as exc:  # noqa: BLE001 — the stage must survive it
             _log.warning(
-                "junk: текстовый энкодер для отбора мусора недоступен (%s) — "
-                "оценка junk_score не считается, вердикты не меняются", exc)
+                "junk: the text encoder for the junk sift is unavailable (%s) — "
+                "junk_score is not computed, the verdicts do not change", exc)
             return None
         return unit_rows(rows)
 
@@ -2908,8 +2908,8 @@ class _JunkRescuePass:
             for i, ((file_id, _path), item) in enumerate(zip(candidates, answers)):
                 if isinstance(item, BaseException):
                     _log.warning(
-                        "junk: VLM не ответила по кандидату file_id=%s (%s) — "
-                        "остаётся вердикт быстрого яруса", file_id, item)
+                        "junk: the VLM did not answer for candidate file_id=%s (%s) — "
+                        "the fast-tier verdict stands", file_id, item)
                     answer = ""
                 else:
                     answer = item
@@ -3008,9 +3008,10 @@ class _DetectorPass:
         vectors = read_clip_embeddings(self._conn, self._model, list(paths))
         if not vectors:
             _log.warning(
-                "junk: детектор объектов не запускается — в clip_embeddings нет векторов "
-                "модели %s (нужен прогон junk с features.store_embeddings). Кандидатов "
-                "нет, сплошного прохода по коллекции у этой стадии не бывает", self._model)
+                "junk: the object detector does not start — clip_embeddings holds no "
+                "vectors of model %s (a junk run with features.store_embeddings is "
+                "needed). There are no candidates, and this stage never falls back to "
+                "a sweep over the whole collection", self._model)
             return []
         features = self._text_features()
         if features is None:
@@ -3028,8 +3029,9 @@ class _DetectorPass:
                               dtype=np.float32)
         except Exception as exc:  # noqa: BLE001 — the stage must survive it
             _log.warning(
-                "junk: текстовый энкодер для отбора кандидатов детектора недоступен "
-                "(%s) — детектор не запускается, метки животных остаются прежними", exc)
+                "junk: the text encoder that picks the detector candidates is "
+                "unavailable (%s) — the detector does not start, the animal labels "
+                "stay as they were", exc)
             return None
         return unit_rows(rows)
 
@@ -3063,8 +3065,8 @@ class _DetectorPass:
             examine = self._detector()
         except Exception as exc:  # noqa: BLE001 — the cascade is optional, must not crash
             _log.warning(
-                "junk: детектор объектов недоступен (%s) — метки животных остаются "
-                "за CLIP и F130-каскадом", exc)
+                "junk: the object detector is unavailable (%s) — the animal labels stay "
+                "with CLIP and the F130 cascade", exc)
             return {}
         report.start(CLASSIFY_PHASE_DETECT, len(todo))
         report.count(CLASSIFY_PHASE_DETECT, len(todo))
@@ -3075,8 +3077,9 @@ class _DetectorPass:
                     boxes = list(examine(path))
                 except Exception as exc:  # noqa: BLE001 — one frame, not the stage
                     _log.warning(
-                        "junk: детектор не ответил по file_id=%s (%s) — кадр остаётся "
-                        "с прежней меткой и попадёт в следующий прогон", file_id, exc)
+                        "junk: the detector did not answer for file_id=%s (%s) — the "
+                        "frame keeps its previous label and falls into the next run",
+                        file_id, exc)
                     # Outside the `else` for the F100 reason: a frame the model failed on is
                     # a frame this pass is done with, and a bar one short of its total for
                     # good is worse than an honest step.
@@ -3173,7 +3176,7 @@ def sweep_previews(conn: sqlite3.Connection, classes: frozenset[str]) -> int:
     for r in rows:
         removed += imaging.preview_delete(r["path"], r["mtime"], r["size"])
     if removed:
-        _log.info("junk: удалено превью чувствительных классов: %d (классы: %s)",
+        _log.info("junk: previews of sensitive classes removed: %d (classes: %s)",
                   removed, ", ".join(names))
     return removed
 
@@ -3288,7 +3291,8 @@ def classify(
                 vlm_fn = factory(cfg.vlm.model)
             except Exception as exc:  # noqa: BLE001 — deep is optional, must not crash
                 _log.warning(
-                    "junk: VLM недоступна (%s) — откат на fast-ярус (CLIP)", exc)
+                    "junk: the VLM is unavailable (%s) — falling back to the fast tier "
+                    "(CLIP)", exc)
                 vlm_fn = None
 
     # F165: every question below belongs to the half that runs AFTER faces, and the
@@ -3310,8 +3314,8 @@ def classify(
                 pet_ask = pet_factory(cfg.vlm.model)
             except Exception as exc:  # noqa: BLE001 — the check is optional, must not crash
                 _log.warning(
-                    "junk: VLM-проверка животных недоступна (%s) — метка остаётся "
-                    "по порогу CLIP", exc)
+                    "junk: the VLM animal check is unavailable (%s) — the label stays "
+                    "as the CLIP threshold gave it", exc)
                 pet_ask = None
 
     # F140: the rescue check. Its two conditions are different questions —
@@ -3329,8 +3333,8 @@ def classify(
                 rescue_ask = r_factory(cfg.vlm.model)
             except Exception as exc:  # noqa: BLE001 — the rescue is optional, must not crash
                 _log.warning(
-                    "junk: VLM-проверка кандидатов недоступна (%s) — вердикты остаются "
-                    "за быстрым ярусом, счёт всё равно пишется", exc)
+                    "junk: the VLM candidate check is unavailable (%s) — the verdicts "
+                    "stay with the fast tier, the score is written all the same", exc)
                 rescue_ask = None
 
     # F68: a row is redone only when its tier differs from the active one, so any switch —
@@ -3370,9 +3374,9 @@ def classify(
     # exception, no row and no hint of a reason.
     if use_clip and store_embeddings and not can_embed:
         _log.warning(
-            "junk: классификатор (%s) не отдаёт CLIP-векторы — features.store_embeddings "
-            "включён, но таблица clip_embeddings не наполняется",
-            type(classifier).__name__)
+            "junk: the classifier (%s) hands out no CLIP vectors — "
+            "features.store_embeddings is on, but the clip_embeddings table is not "
+            "being filled", type(classifier).__name__)
     embed_ids = ({r["id"] for r in rows
                   if r["ce_model"] != embed_model
                   and r["mc_verdict"] in (None, QUALITY_VERDICT)}
@@ -3494,8 +3498,9 @@ def classify(
         feature_source = features_of if callable(features_of) else None
         if feature_source is None:
             _log.warning(
-                "junk: классификатор не отдаёт CLIP-векторы — features.store_embeddings "
-                "включён, но таблица clip_embeddings не наполняется")
+                "junk: the classifier hands out no CLIP vectors — "
+                "features.store_embeddings is on, but the clip_embeddings table is not "
+                "being filled")
     embeddings = _EmbeddingPass(conn, embed_model, embed_ids, feature_source, now, stats,
                                 store_embeddings)
     # F73: the pool builds its detectors lazily, so a run where the gate opens for nothing
@@ -3636,7 +3641,7 @@ def classify(
         # without a profiler.
         ocr.close()
         if ocr.detectors_built:
-            _log.info("junk: OCR-детекторов создано %d (воркеров %d)",
+            _log.info("junk: OCR detectors built %d (workers %d)",
                       ocr.detectors_built, ocr_workers)
 
     # #14/V1: the deep tier, over the selected candidates alone. A runtime error on one
@@ -3657,8 +3662,8 @@ def classify(
             for j, ((fid, _path, fast_verdict), label) in enumerate(
                     zip(vlm_candidates, labels)):
                 if isinstance(label, BaseException):  # deep is optional, do not crash the run
-                    _log.warning("junk: VLM-ошибка на file_id=%s (%s) — оставляю fast-вердикт",
-                                 fid, label)
+                    _log.warning("junk: VLM error on file_id=%s (%s) — keeping the fast "
+                                 "verdict", fid, label)
                 else:
                     verdict = _VLM_LABEL_TO_VERDICT.get(label, fast_verdict)
                     # source='vlm' names what decided; the incrementality marker is `tier`,

@@ -341,7 +341,7 @@ class TestOcrPoolDegradation(unittest.TestCase):
         with self.assertLogs("sorta.junk", level="WARNING") as logs:
             stats = col.run(det)
         self.assertEqual(det.builds, WORKERS)  # all four tried, three ran out of VRAM
-        self.assertTrue(any("уменьшен" in m for m in logs.output),
+        self.assertTrue(any("the pool is cut" in m for m in logs.output),
                         f"the shrink must be logged, not silent: {logs.output}")
         self.assertEqual(stats.processed, 12)
         # every frame was processed, all of them by the single surviving worker

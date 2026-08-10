@@ -393,7 +393,7 @@ class TestOneBadFrame(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual((rows[name]["pet"], rows[name]["pet_vlm"]),
                                  (None, "depiction"))
-        self.assertTrue(any("животных" in m for m in logs.output))
+        self.assertTrue(any("animal check" in m for m in logs.output))
 
     def test_a_failed_generation_keeps_the_cheap_label(self):
         run = AskerRun(WORKERS)
@@ -419,7 +419,7 @@ class TestOneBadFrame(unittest.TestCase):
         rows = run.rows()
         self.assertEqual(rows["cat_1.jpg"]["verdict"], "photo")   # the fast tier's
         self.assertEqual(rows["cat_0.jpg"]["verdict"], "screenshot")  # the model's
-        self.assertTrue(any("кандидату" in m for m in logs.output))
+        self.assertTrue(any("candidate file_id" in m for m in logs.output))
 
     def test_a_failing_last_frame_still_completes_the_bar(self):
         run = AskerRun(WORKERS, frames=6)

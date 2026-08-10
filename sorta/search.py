@@ -391,8 +391,8 @@ def search_fusion(cfg: Config, conn: sqlite3.Connection, text: str, *,
     if not ranked:
         raise _nothing_to_rank(conn, model, _SEARCH_TABLE)
     for name, reason in missing.items():
-        _log.warning("поиск: индекс модели %r не участвует в слиянии (%s) — "
-                     "ранжирует только %s", name, reason, ", ".join(ranked))
+        _log.warning("search: the index of model %r is left out of the fusion (%s) — "
+                     "only %s ranks", name, reason, ", ".join(ranked))
     merged = fuse(list(ranked.values()), mode, start + size)
     return Fusion(
         mode,

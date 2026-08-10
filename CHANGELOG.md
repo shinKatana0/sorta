@@ -24,6 +24,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that passed, because free memory is always below the machine's total. The console and the
   screen take the same sentence from the same catalog entry, in all three languages.
 
+### Changed
+- **The log speaks the language the product does** (F238). The default interface language
+  is `en` (F112/F114), and the log was half Russian: an `ast` walk over the package on
+  2026-08-09 found **83 Russian log lines and 29 Russian exception texts** (sorter 63,
+  junk 27, faces 17, config 16, geo 16, naming 11, events 8, indexer 8, search 6,
+  landmarks 5, ui/layout 5). Three of the guides ask for that log to be attached to a
+  report — sent by someone whose product speaks English, half of it in a language they do
+  not read — and the text of a crash is the same thing on a screenshot. All of them are
+  English now, **with the measurement and the reason kept rather than shortened to
+  `failed`**: "keeping the label the CLIP threshold gave", "the search_embeddings table
+  stays as it was", "%d of %d files with coordinates did not resolve to a place".
+  None of it went into the `i18n` catalog: an entry there costs three translations and a
+  completeness guard, and diagnostics are a tool for taking a run apart, not text of the
+  product. The strings the program says in Russian on purpose are untouched — the folder
+  names of the layout, the prompt the model is sent, the static report, the regex over
+  Russian screenshot file names.
+  **Why every audit walked past it**: the project rule that keeps a prose task out of the
+  interface ("CLI messages, i18n dictionaries, folder names are the product, not
+  documentation about it") did its job — but these strings were never in a dictionary,
+  they were written where they are printed, and the rule protecting what is translatable
+  covered what is not. A hole between two rules, not a lapse.
+  `tests/test_the_log_speaks_english.py` is the guard: it walks the package — never a list
+  of files, the mistake the English-documents guard was first got past with — and fails on
+  Cyrillic in a logging call or under a `raise`. Russian in quotes still passes, by the
+  `CONTRIBUTING.md` rule that a cited folder name is data. `sorta/cli.py` (one line) and
+  `sorta/ui/process.py` (two) are named in the test as waiting for F237, which owned those
+  files at the time; a second assertion fails once one of them is clean, so the list cannot
+  outlive its reason. `scripts/measure_*.py` are out of scope: they have an owner and no
+  audience.
+
 ## [0.5.0] - 2026-08-09
 
 ### Changed

@@ -126,7 +126,7 @@ def _run_undo(db_path: Path, cfg: Config, state: _UndoState, cache: PlanCache) -
                 try:
                     cache.rebuild(cfg, conn)
                 except Exception:  # noqa: BLE001
-                    _log.exception("sorta ui: план не обновлён после отката")
+                    _log.exception("sorta ui: the plan was not rebuilt after the rollback")
                     result["preview_stale"] = True
     finally:
         conn.close()

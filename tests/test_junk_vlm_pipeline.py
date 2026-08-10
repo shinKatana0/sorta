@@ -321,13 +321,13 @@ class TestFrameErrors(unittest.TestCase):
         self.assertEqual(rows["cand_1.jpg"][:2], ("product", "vlm"))
         self.assertEqual(rows["cand_3.jpg"][:2], ("document", "vlm"))
         self.assertEqual(stats.vlm_candidates, 6)
-        self.assertTrue(any("VLM-ошибка" in m for m in logs))
+        self.assertTrue(any("VLM error" in m for m in logs))
 
     def test_generation_failure_keeps_the_fast_verdict(self):
         rows, _stats, logs = self.rows_with(fail_generate=frozenset({"cand_1.jpg"}))
         self.assertEqual(rows["cand_1.jpg"][:2], ("photo", "clip"))
         self.assertEqual(rows["cand_0.jpg"][:2], ("document", "vlm"))
-        self.assertTrue(any("VLM-ошибка" in m for m in logs))
+        self.assertTrue(any("VLM error" in m for m in logs))
 
     def test_a_failing_last_frame_still_completes_the_progress_bar(self):
         # F100: the counter must reach its total even when the model failed on the
@@ -382,7 +382,7 @@ class TestSerialFallback(unittest.TestCase):
         self.assertEqual(rows["cand_1.jpg"][:2], ("photo", "clip"))
         self.assertEqual(rows["cand_0.jpg"][:2], ("document", "vlm"))
         self.assertEqual(rows["cand_2.jpg"][:2], ("document", "vlm"))
-        self.assertTrue(any("VLM-ошибка" in m for m in logs.output))
+        self.assertTrue(any("VLM error" in m for m in logs.output))
 
 
 class TestVlmLabelsContract(unittest.TestCase):

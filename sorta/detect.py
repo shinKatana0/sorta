@@ -295,7 +295,7 @@ def torchvision_detector(model_name: str,
 
     builder = getattr(tv_detection, model_name, None)
     if builder is None:
-        raise ValueError(f"detect: неизвестная модель детектора {model_name!r}")
+        raise ValueError(f"detect: unknown detector model {model_name!r}")
     weights_enum = getattr(tv_detection, f"{_weights_enum_name(model_name)}", None)
     weights = getattr(weights_enum, "DEFAULT", None) if weights_enum is not None else None
     device = accel.torch_device(torch)  # F220: CUDA -> MPS -> CPU, chosen in one place
