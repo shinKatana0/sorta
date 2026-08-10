@@ -149,7 +149,7 @@ def _http_post_json(url: str, payload: dict[str, Any],
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     if not isinstance(result, dict):
-        raise ValueError(f"неожиданный ответ {url}: не JSON-объект")
+        raise ValueError(f"unexpected answer from {url}: not a JSON object")
     return result
 
 
@@ -299,7 +299,7 @@ def _batch_answers(runtime: VlmDescribeFn, groups: list[list[Image.Image]], prom
                 runtime.prepare_batch(groups, prompt), max_new_tokens))
             if len(answers) != len(groups):
                 raise ValueError(
-                    f"модель вернула {len(answers)} ответов на {len(groups)} кадров")
+                    f"the model returned {len(answers)} answers for {len(groups)} frames")
             batched: list[str | BaseException] = [str(a) for a in answers]
             return batched
         except Exception:  # noqa: BLE001 — fall back to the path that cannot misalign
@@ -323,7 +323,7 @@ def batched_describe(runtime: VlmDescribeFn,
     """
     items = [list(group) for group in groups]
     out: list[str | BaseException] = [
-        ValueError("нет кадров — модель не спрашивается") for _ in items]
+        ValueError("no frames — the model is not asked") for _ in items]
     kept = [i for i, group in enumerate(items) if group]
     if not kept:
         return out
@@ -750,7 +750,7 @@ def make_namer(settings: NamingSettings, vlm: VlmConfig | None = None) -> EventN
         return TemplateNamer()
     raise ValueError(
         f"naming.provider={settings.provider!r}: "
-        f"ожидается {' | '.join(NAMING_PROVIDERS)}"
+        f"expected {' | '.join(NAMING_PROVIDERS)}"
     )
 
 

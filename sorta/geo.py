@@ -246,12 +246,12 @@ class _NominatimClient:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            _log.warning("geo: nominatim reverse не удался для (%s, %s): %s", lat, lon, exc)
+            _log.warning("geo: nominatim reverse failed for (%s, %s): %s", lat, lon, exc)
             return _UNKNOWN_PLACE
 
         address = data.get("address") if isinstance(data, dict) else None
         if not address:
-            _log.warning("geo: nominatim пустой address для (%s, %s)", lat, lon)
+            _log.warning("geo: nominatim returned an empty address for (%s, %s)", lat, lon)
             return _UNKNOWN_PLACE
 
         country_code = address.get("country_code")
@@ -507,8 +507,8 @@ class _CachedOnlineResolver:
             if progress:
                 progress(done, len(coords))
         _log.info(
-            "geo: онлайн-кэш: групп %d (из %d координат), попаданий %d, просрочено %d, "
-            "запросов к провайдеру %d",
+            "geo: online cache: %d groups (out of %d coordinates), %d hits, %d expired, "
+            "%d requests to the provider",
             len(groups), len(coords), self._cache.hits, self._cache.expired,
             self._client.requests,
         )
@@ -563,15 +563,15 @@ class _CityFallbackResolver:
             if (self._city_missing == 1
                     or self._city_missing % _CITY_MISSING_WARN_EVERY == 0):
                 _log.warning(
-                    "geo: провайдер вернул ответ без города для (%s, %s), страна %s — "
-                    "случай %d, из них с городом из оффлайн-базы: %d",
+                    "geo: the provider answered without a city for (%s, %s), country %s — "
+                    "case %d, of which %d got a city from the offline base",
                     coords[i][0], coords[i][1], place.country,
                     self._city_missing, self._city_recovered,
                 )
         if self._city_missing:
             _log.warning(
-                "geo: ответов без города: %d, из них город найден в оффлайн-базе: %d "
-                "(остальные останутся на уровне страны)",
+                "geo: answers without a city: %d, of which %d found a city in the offline "
+                "base (the rest stay at the country level)",
                 self._city_missing, self._city_recovered,
             )
         return places
@@ -598,9 +598,9 @@ def _resolver_for(cfg: Config, conn: sqlite3.Connection,
         available = offline.data_available()
         if not available:
             _log.warning(
-                "geo: оффлайн-база недоступна (%s) — города, которых нет в ответе "
-                "провайдера, восстановить не получится, а кэш ответов будет "
-                "группировать координаты по сетке, а не по городу и району",
+                "geo: the offline base is unavailable (%s) — cities the provider leaves "
+                "out of its answer cannot be recovered, and the answer cache will group "
+                "coordinates by grid cell rather than by city and district",
                 offline.data_dir,
             )
         online = _CachedOnlineResolver(cfg, conn, _NominatimClient(cfg),
@@ -608,7 +608,7 @@ def _resolver_for(cfg: Config, conn: sqlite3.Connection,
         if not available:
             return online
         return _CityFallbackResolver(online, _OfflineBatchResolver(offline, lang))
-    raise ValueError(f"geo: неизвестный geo.provider={provider!r} (ожидается offline|online)")
+    raise ValueError(f"geo: unknown geo.provider={provider!r} (expected offline|online)")
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -990,10 +990,10 @@ def resolve_places(
             # Online has already logged each failed request; this is the total.
             data_dir = getattr(resolver, "data_dir", None)
             _log.warning(
-                "geo: %d из %d файлов с координатами не разрезолвились в место%s — "
-                "проверьте гео-данные (places.tsv)",
+                "geo: %d of %d files with coordinates did not resolve to a place%s — "
+                "check the geo data (places.tsv)",
                 gps_unresolved, len(coords),
-                f" (гео-данные: {data_dir})" if data_dir else "",
+                f" (geo data: {data_dir})" if data_dir else "",
             )
 
     # 2) session_inferred: the FULL place (country + both geonameids + city) inherited

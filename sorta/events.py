@@ -403,7 +403,7 @@ def rename_event(conn: sqlite3.Connection, event_id: int, name: str) -> None:
             (name, event_id),
         )
         if cur.rowcount == 0:
-            raise ValueError(f"events: событие с id={event_id} не найдено")
+            raise ValueError(f"events: no event with id={event_id}")
 
 
 def _parse_bound(s: str, *, end: bool) -> datetime:
@@ -411,8 +411,8 @@ def _parse_bound(s: str, *, end: bool) -> datetime:
         dt = datetime.fromisoformat(s).replace(tzinfo=None)
     except ValueError as exc:
         raise ValueError(
-            f"events: не удалось разобрать дату {s!r} — ожидается ISO 8601, "
-            "например 2026-01-10"
+            f"events: could not parse the date {s!r} — ISO 8601 is expected, "
+            "for example 2026-01-10"
         ) from exc
     if end and len(s) <= 10:  # a date without time → end of day inclusive
         dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -432,7 +432,7 @@ def add_manual_event(
     start = _parse_bound(date_from, end=False)
     end = _parse_bound(date_to, end=True)
     if start > end:
-        raise ValueError(f"events: date_from {date_from!r} позже date_to {date_to!r}")
+        raise ValueError(f"events: date_from {date_from!r} is later than date_to {date_to!r}")
 
     for r in conn.execute(
         "SELECT id, name, started_at, ended_at FROM events WHERE origin = 'manual'"
@@ -440,9 +440,9 @@ def add_manual_event(
         o_start, o_end = _parse_dt(r["started_at"]), _parse_dt(r["ended_at"])
         if o_start is not None and o_end is not None and start <= o_end and end >= o_start:
             raise ValueError(
-                f"events: диапазон {date_from}..{date_to} пересекается с ручным "
-                f"событием '{r['name']}' (id={r['id']}, "
-                f"{r['started_at']}..{r['ended_at']}) — сначала измените его"
+                f"events: the range {date_from}..{date_to} overlaps the manual "
+                f"event '{r['name']}' (id={r['id']}, "
+                f"{r['started_at']}..{r['ended_at']}) — change that one first"
             )
 
     files = [f for f in _load_files(conn) if start <= f.dt <= end]

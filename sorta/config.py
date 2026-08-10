@@ -49,9 +49,9 @@ def configure_logging(level: str) -> None:
                 existing.setLevel(console_level)
         logger.setLevel(min(console_level, file_log_level()))
     except Exception as exc:  # noqa: BLE001 — logging is never worth crashing over
-        logger.warning("config: не удалось включить файловый лог: %s", exc)
+        logger.warning("config: the file log could not be enabled: %s", exc)
     if invalid:
-        logger.warning("config: неверный log_level=%r, используется WARNING", level)
+        logger.warning("config: invalid log_level=%r, using WARNING", level)
 
 
 @dataclass
@@ -349,8 +349,8 @@ def _vlm_value(new: dict, old: dict, new_key: str, old_key: str) -> Any:
     if old_key not in _ALIAS_WARNED:
         _ALIAS_WARNED.add(old_key)
         _log.warning(
-            "config: ключ naming.%s устарел — переименуйте его в vlm.%s "
-            "(пока читается по-старому)", old_key, new_key)
+            "config: key naming.%s is deprecated — rename it to vlm.%s "
+            "(still read under the old name for now)", old_key, new_key)
     return old[old_key]
 
 
@@ -368,8 +368,8 @@ def _renamed_value(raw: dict, section: str, new_key: str, old_key: str) -> Any:
     if alias not in _ALIAS_WARNED:
         _ALIAS_WARNED.add(alias)
         _log.warning(
-            "config: ключ %s.%s устарел — переименуйте его в %s.%s "
-            "(пока читается по-старому)", section, old_key, section, new_key)
+            "config: key %s.%s is deprecated — rename it to %s.%s "
+            "(still read under the old name for now)", section, old_key, section, new_key)
     return raw[old_key]
 
 
@@ -457,7 +457,7 @@ def _as_repo_id(key: str, value: Any, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     if value is not None:
-        _log.warning("config: %s=%r — ожидался идентификатор модели, использую %r",
+        _log.warning("config: %s=%r — a model identifier was expected, using %r",
                      key, value, default)
     return default
 
@@ -470,7 +470,7 @@ def _as_fusion(value: Any, default: str) -> str:
     if isinstance(value, str) and value.strip().lower() in SEARCH_FUSION_MODES:
         return value.strip().lower()
     if value is not None:
-        _log.warning("config: features.search_fusion=%r не из %s — использую %r",
+        _log.warning("config: features.search_fusion=%r is not one of %s — using %r",
                      value, "/".join(SEARCH_FUSION_MODES), default)
     return default
 
@@ -486,8 +486,8 @@ def _as_model_name(value: Any, default: str) -> str:
     if sep and architecture.strip() and weights.strip():
         return text
     if value is not None:
-        _log.warning("config: features.search_model=%r — ожидалось "
-                     "'<модель open_clip>/<веса>', использую %r", value, default)
+        _log.warning("config: features.search_model=%r — expected "
+                     "'<open_clip model>/<weights>', using %r", value, default)
     return default
 
 
@@ -513,8 +513,8 @@ def _as_exclude_classes(value: object, default: tuple[str, ...]) -> tuple[str, .
     """
     if value is None or isinstance(value, (str, bytes)) or not isinstance(value, list):
         if value is not None:
-            _log.warning("config: vlm.exclude_classes=%r — ожидался список, "
-                         "использую %r", value, list(default))
+            _log.warning("config: vlm.exclude_classes=%r — a list was expected, "
+                         "using %r", value, list(default))
         return default
     out: list[str] = []
     for item in value:
@@ -522,14 +522,14 @@ def _as_exclude_classes(value: object, default: tuple[str, ...]) -> tuple[str, .
         if name in VLM_EXCLUDABLE_CLASSES:
             out.append(name)
         elif name:
-            _log.warning("config: vlm.exclude_classes — неизвестный класс %r, "
-                         "допустимы %s", name, "/".join(VLM_EXCLUDABLE_CLASSES))
+            _log.warning("config: vlm.exclude_classes — unknown class %r, "
+                         "allowed are %s", name, "/".join(VLM_EXCLUDABLE_CLASSES))
     if value and not out:
         # Every name was a typo. Falling through to "nothing excluded" would turn the
         # protection off for somebody who was writing it down: an empty list stays empty,
         # a list of typos does not become one.
-        _log.warning("config: vlm.exclude_classes — ни одно имя не распознано, "
-                     "использую %r", list(default))
+        _log.warning("config: vlm.exclude_classes — not one name was recognised, "
+                     "using %r", list(default))
         return default
     return tuple(dict.fromkeys(out))
 
@@ -641,9 +641,8 @@ def _as_saved_slices(value: object,
     """
     if not isinstance(value, dict):
         if value is not None:
-            _log.warning("config: features.saved_slices=%r — ожидалось отображение "
-                         "«имя среза: список формулировок», использую значение "
-                         "по умолчанию", value)
+            _log.warning("config: features.saved_slices=%r — expected a mapping of "
+                         "«slice name: list of phrasings», using the default", value)
         return default
     out: list[SavedSlice] = []
     for raw_name, raw_queries in value.items():
@@ -656,8 +655,8 @@ def _as_saved_slices(value: object,
         if name and queries:
             out.append(SavedSlice(name, queries))
         else:
-            _log.warning("config: features.saved_slices[%r] — ожидался непустой список "
-                         "формулировок, срез пропущен", raw_name)
+            _log.warning("config: features.saved_slices[%r] — expected a non-empty list "
+                         "of phrasings, the slice is skipped", raw_name)
     if value and not out:
         return default
     return tuple(out)
@@ -1322,7 +1321,7 @@ def _apply_logging_config(cfg: LoggingConfig) -> None:
 
         set_progress_interval(cfg.progress_interval_sec)
     except Exception as exc:  # noqa: BLE001 — logging is never worth crashing over
-        _log.warning("config: не удалось применить logging: %s", exc)
+        _log.warning("config: the logging section could not be applied: %s", exc)
 
 
 def _known(cls, raw: dict) -> dict:
