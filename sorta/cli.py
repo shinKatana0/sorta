@@ -27,6 +27,7 @@ from .dedup import assign_duplicates, compute_phashes, near_duplicate_groups
 from .diagnostics import (
     geo_data_health,
     gpu_health,
+    memory_health,
     warn_if_geo_data_missing,
     warn_if_gpu_mismatch,
 )
@@ -620,6 +621,18 @@ def _pipeline_steps() -> list[tuple[str, object]]:
     ]
 
 
+def _print_low_memory_warning(lang: Lang) -> bool:
+    """F237: one line before the run when there is little free memory. False — silence,
+    which is also the answer on a machine whose free memory could not be read."""
+    health = memory_health()
+    if not health.low:
+        return False
+    print(_t("cli.run.low_memory", lang,
+             free=wizard.human_size(health.available_mb or 0, lang),
+             needed=wizard.human_size(health.needed_mb, lang)))
+    return True
+
+
 def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
              deep: bool | None = None, geo: str | None = None,
              faces: bool = False, events: bool = False,
@@ -642,6 +655,7 @@ def _cmd_run(config_path: str, by: str | None = None, dest: str | None = None,
     log_environment(probe_gpu=True)  # F69: versions, package origin, GPU, geo data
     warn_if_gpu_mismatch()  # F63: loud if torch is CPU-only while a GPU is expected
     warn_if_geo_data_missing()  # F65: an unreadable geo base empties every place
+    _print_low_memory_warning(lang)  # F237: nothing prints once the kernel steps in
     if src:  # an explicit source overrides config sources for this run
         cfg.sources = [Path(src).resolve()]
     if not cfg.sources:

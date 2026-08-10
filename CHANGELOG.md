@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A run says whether this machine has the memory for it, before it starts** (F237). On a
+  virtual machine with 4 GB a run with the classification was **killed by the kernel**
+  (2026-08-09, cpu profile) — no `MemoryError`, no `except`, the log stopping mid-word; the
+  same profile on 6 GB finished. Nothing can be caught afterwards, because the process is
+  not the one that decides to end, so `sorta run` and the run screen read the free memory
+  **before** the start — `MemAvailable` of `/proc/meminfo` on Linux, `GlobalMemoryStatusEx`
+  through `ctypes` on Windows, no new dependency — and below 4 GB say one line: what is
+  free, what is needed, and what can be taken off (Deep analysis (VLM) and the frame
+  classification, without which a run goes through on a smaller machine and sorting into
+  city folders still works). A **warning and not a refusal**: memory moves — somebody
+  else's browser gives a gigabyte back a minute later — and the start button stays live.
+  Above the threshold, and on a platform that cannot be asked without a new dependency
+  (macOS), there is silence: an invented number is worse than none, and a warning shown on
+  every run stops being read (F233). The threshold is the size that DIED and not the size
+  that passed, because free memory is always below the machine's total. The console and the
+  screen take the same sentence from the same catalog entry, in all three languages.
+
 ## [0.5.0] - 2026-08-09
 
 ### Changed

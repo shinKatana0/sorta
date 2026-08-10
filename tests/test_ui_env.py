@@ -66,9 +66,10 @@ class TestApiEnv(UiServerTestBase):
         data = json.loads(body)
         # F222 added `parts` and `weights`: per line of the run screen, the weights
         # it raises and what the missing ones weigh — out of the same probe.
+        # F237 added `memory`: what is free on this machine against what a run needs.
         self.assertEqual(set(data.keys()),
                          {"gpu_profile", "gpu_present", "tiers", "parts",
-                          "weights"})
+                          "weights", "memory"})
         self.assertTrue(data["gpu_profile"])
         self.assertTrue(data["gpu_present"])
 

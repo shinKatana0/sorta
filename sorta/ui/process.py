@@ -23,7 +23,7 @@ from typing import Any, Callable, Sequence
 from .. import imaging
 from ..config import Config, skipped_stage_notes
 from ..dedup import assign_duplicates, compute_phashes
-from ..diagnostics import nvidia_gpu_present
+from ..diagnostics import memory_health, nvidia_gpu_present
 from ..events import build_events
 from ..faces import detect_and_cluster
 from ..geo import geo_cache_size, resolve_places
@@ -1232,6 +1232,16 @@ def _weights_payload(parts: list[PartState] | None = None) -> dict[str, int]:
     return sizes
 
 
+def _memory_payload() -> dict:
+    """F237: whether this machine has the memory for a run, and the two numbers the line
+    above the button states. Asked on every request rather than cached like the card
+    (`_gpu_present`): free memory is the one thing on this route that changes while the
+    page is open, which is what lets the line go away by itself when it does."""
+    health = memory_health()
+    return {"low": health.low, "free_mb": health.available_mb,
+            "needed_mb": health.needed_mb}
+
+
 def _env_payload() -> dict:
     """F64: the environment for the UI banner. `gpu_profile` — whether the GPU profile
     is installed (the nvidia-* packages exist only in the `gpu` extra; `find_spec`
@@ -1262,6 +1272,7 @@ def _env_payload() -> dict:
         "tiers": _tiers_payload(states),
         "parts": _parts_payload(parts),
         "weights": _weights_payload(parts),
+        "memory": _memory_payload(),
     }
 
 

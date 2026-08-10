@@ -483,6 +483,24 @@ _CLI_STRINGS: dict[str, dict[Lang, str]] = {
         "ja": "有効にするには: config.yaml の features.landmarks: true、sorta run の "
               "--landmarks フラグ、または実行画面の「見た目で場所を判定」チェック。",
     },
+    # F237: said before the run starts, because after it there is nobody to say it — the
+    # kernel kills the process without a traceback and the log stops mid-word. A warning
+    # and not a refusal: memory moves, and somebody else's browser gives a gigabyte back a
+    # minute later. The same sentence is the run screen's (`ui/strings.py` reads it).
+    "cli.run.low_memory": {
+        "ru": "Свободной памяти мало: {free}, а прогону с классификацией нужно около "
+              "{needed} — система может убить процесс без сообщения. Чтобы обойтись "
+              "меньшим, снимите «Глубокий анализ (VLM)» и классификацию кадров: "
+              "раскладка по городам работает и без них.",
+        "en": "Little free memory: {free}, and a run with the classification needs about "
+              "{needed} — the system may kill the process with no message. To get by with "
+              "less, switch off Deep analysis (VLM) and the frame classification: sorting "
+              "into city folders works without them.",
+        "ja": "空きメモリが少なめです: {free}。分類を含む実行には約 {needed} が必要で、"
+              "システムがメッセージなしにプロセスを終了させることがあります。少ない"
+              "メモリで済ませるには「詳細分析（VLM）」とコマの分類をオフにしてください: "
+              "都市ごとの振り分けはそれらがなくても動作します。",
+    },
     "cli.run.plan": {
         "ru": "[план] dry-run sort --by {by} -> {dest}",
         "en": "[plan] dry-run sort --by {by} -> {dest}",

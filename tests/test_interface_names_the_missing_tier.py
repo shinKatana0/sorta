@@ -313,7 +313,8 @@ class TestNothingIsInstalledFromTheBrowser(unittest.TestCase):
         """
         payload = ui.process._env_payload()
         self.assertEqual(set(payload),
-                         {"gpu_profile", "gpu_present", "tiers", "parts", "weights"})
+                         {"gpu_profile", "gpu_present", "tiers", "parts", "weights",
+                          "memory"})
 
 
 class TestASilentFallBackIsSaidOutLoud(ProcessTestBase):
