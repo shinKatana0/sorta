@@ -36,13 +36,6 @@ _LOG_METHODS = frozenset({"debug", "info", "warning", "error", "exception", "cri
 # for having all three languages; the web chrome of `ui/strings.py` answers to `test_ui_i18n`.
 _CATALOGS = frozenset({"sorta/i18n.py", "sorta/ui/strings.py"})
 
-# Still Russian on 2026-08-10, because F237 owns these files and was editing them while
-# F238 ran; splitting the translation was cheaper than a merge conflict over it. The
-# list is named rather than counted so that the next pass deletes it whole instead of
-# looking for what is left — and the assertion below goes red once a file here is clean,
-# so it cannot outlive its reason.
-_WAITING_FOR_F237 = frozenset({"sorta/cli.py", "sorta/ui/process.py"})
-
 
 def modules() -> list[Path]:
     return sorted(_PACKAGE.rglob("*.py"))
@@ -90,13 +83,16 @@ def russian_messages(source: str) -> list[tuple[int, str]]:
     return [(line, text) for line, text in message_strings(source) if unquoted_cyrillic(text)]
 
 
+def scanned() -> list[str]:
+    """The modules `offenders` reads. Named apart from it because a scan that has
+    quietly shrunk and a package that is clean produce the same green."""
+    return [name for name in map(module_name, modules()) if name not in _CATALOGS]
+
+
 def offenders() -> dict[str, list[tuple[int, str]]]:
     found = {}
-    for path in modules():
-        name = module_name(path)
-        if name in _CATALOGS:
-            continue
-        russian = russian_messages(path.read_text(encoding="utf-8"))
+    for name in scanned():
+        russian = russian_messages((_ROOT / name).read_text(encoding="utf-8"))
         if russian:
             found[name] = russian
     return found
@@ -104,23 +100,23 @@ def offenders() -> dict[str, list[tuple[int, str]]]:
 
 class TestNoRussianReachesTheLog(unittest.TestCase):
     def test_the_package_says_nothing_in_russian_to_a_reader_of_the_log(self):
-        red = {
-            name: lines for name, lines in offenders().items() if name not in _WAITING_FOR_F237
-        }
+        red = offenders()
         self.assertEqual(
             red, {},
             "\n".join([f"{name}:{line} {text!r}"
                        for name, lines in red.items() for line, text in lines]))
 
-    def test_every_file_waiting_for_f237_is_still_waiting(self):
-        """The list of exemptions dies with the reason for it, not a release later."""
-        clean = sorted(_WAITING_FOR_F237 - set(offenders()))
-        self.assertEqual(
-            clean, [],
-            f"translated already — delete them from _WAITING_FOR_F237: {clean}")
+    def test_nothing_is_exempt_but_the_catalogs(self):
+        """F239: the files F238 held back for F237 are read like the rest of the
+        package. The list that let them past is gone, and this says so."""
+        missing = [name for name in ("sorta/cli.py", "sorta/ui/process.py",
+                                     "sorta/diagnostics.py") if name not in scanned()]
+        self.assertEqual(missing, [])
+        self.assertEqual(sorted(set(map(module_name, modules())) - set(scanned())),
+                         sorted(_CATALOGS))
 
-    def test_the_files_named_as_waiting_exist(self):
-        for name in sorted(_WAITING_FOR_F237 | _CATALOGS):
+    def test_the_files_named_as_catalogs_exist(self):
+        for name in sorted(_CATALOGS):
             with self.subTest(module=name):
                 self.assertTrue((_ROOT / name).is_file())
 
@@ -143,6 +139,18 @@ class TestTheGuardGoesRed(unittest.TestCase):
         self.assertEqual(
             self._added_to("dates.py", 'raise ValueError(f"дата {1} не разобрана")'),
             ["дата ", " не разобрана"])
+
+    def test_a_russian_log_line_added_to_the_cli_is_found(self):
+        """Spoiled in memory: writing to the real `cli.py` would race the parallel half
+        of the gate, which imports it."""
+        self.assertEqual(
+            self._added_to("cli.py", '_log.error("cli: веса не скачались")'),
+            ["cli: веса не скачались"])
+
+    def test_a_russian_log_line_added_to_the_ui_pipeline_is_found(self):
+        self.assertEqual(
+            self._added_to("ui/process.py", '_log.exception("sorta ui: этап упал")'),
+            ["sorta ui: этап упал"])
 
     def test_a_cited_folder_name_is_not_a_russian_message(self):
         source = '_log.info("sort: junk goes to «_удалить»")\n'

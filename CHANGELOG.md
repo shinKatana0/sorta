@@ -53,6 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files at the time; a second assertion fails once one of them is clean, so the list cannot
   outlive its reason. `scripts/measure_*.py` are out of scope: they have an owner and no
   audience.
+- **The last files speak English too** (F239). The three messages F238 left behind are
+  translated — the failed download of a stage's weights in `sorta/cli.py` and in the run
+  screen, and the pipeline stage that crashed under `sorta ui` — so the package has **no
+  Russian left in a log line or an exception text**. What this feature is actually for is
+  the other half: the list of exempted files is **deleted**, not shortened. A guard that
+  is green because it stopped looking is the failure this project has met three times
+  already (the `sorta.ui` re-export, the arithmetic from `SCHEMA_VERSION`, the file list of
+  the English-documents guard) — while the list stood, the next Russian line in `cli.py`
+  would have passed in silence. The scan is now the package minus the two string catalogs,
+  which are the ru/ja translations themselves; that it covers `cli.py` and
+  `sorta/ui/process.py` is asserted rather than assumed, and a Russian line put back into
+  either of them is found.
 
 ## [0.5.0] - 2026-08-09
 

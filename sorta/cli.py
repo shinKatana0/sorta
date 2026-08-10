@@ -498,7 +498,8 @@ def _build_clip(cfg, stage: str, progress: object | None = None) -> Classifier:
     finally:
         _say_phase(progress, None)
     if failure is not None:
-        _log.error("не удалось скачать веса для стадии %r", stage, exc_info=failure)
+        _log.error("cli: the weights for stage %r were not downloaded", stage,
+                   exc_info=failure)
         raise SystemExit(
             tiers.download_failure(stage, pending, lang, failure)) from failure
     return built[0]
