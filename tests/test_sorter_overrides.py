@@ -239,7 +239,7 @@ class TestTargetEscapeIsRefused(OverridesTestBase):
                 # may carry a _N suffix — the earlier files of the loop live there too)
                 self.assertEqual(item.target_rel.rsplit("/", 1)[0], "France/Paris/2022")
                 self.assertEqual(report.manual_reassigned, 0)
-                self.assertTrue(any("ручная правка проигнорирована" in m
+                self.assertTrue(any("manual override ignored" in m
                                     for m in logs.output))
 
     def test_no_plan_destination_ever_leaves_the_sort_root(self):

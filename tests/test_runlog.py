@@ -284,7 +284,7 @@ class TestFailureIsNotFatal:
         with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             runlog.setup_file_logging(target)
 
-        assert any("файл лога" in r.getMessage() for r in caplog.records)
+        assert any("log file" in r.getMessage() for r in caplog.records)
         logging.getLogger("sorta.junk").warning("жизнь продолжается")  # must not raise
 
     def test_a_working_path_still_works_afterwards(self, tmp_path):

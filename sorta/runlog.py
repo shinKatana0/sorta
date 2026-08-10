@@ -170,9 +170,8 @@ def setup_file_logging(
             target,
             maxBytes=_MAX_BYTES,
             backupCount=_BACKUP_COUNT,
-            # utf-8 is mandatory: the messages carry file paths and folder names, and the
-            # default file encoding on Windows (cp1251) breaks the write on the first one
-            # that is not Russian either.
+            # utf-8 is mandatory: paths and folder names reach the messages, and the
+            # Windows default (cp1251) breaks the write on the first one it cannot encode.
             encoding="utf-8",
         )
     except Exception as exc:

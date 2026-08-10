@@ -363,7 +363,7 @@ class TestManualEvents(EventsBase):
 
     def test_overlapping_ranges_rejected(self):
         add_manual_event(self.conn, "Первое", "2026-01-01", "2026-01-10")
-        with self.assertRaisesRegex(ValueError, "пересекается.*Первое"):
+        with self.assertRaisesRegex(ValueError, "overlaps.*Первое"):
             add_manual_event(self.conn, "Второе", "2026-01-10", "2026-01-15")
         # back-to-back without overlap — allowed
         eid = add_manual_event(self.conn, "Третье", "2026-01-11", "2026-01-15")

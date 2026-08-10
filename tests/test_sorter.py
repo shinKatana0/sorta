@@ -1525,7 +1525,7 @@ class TestInPlaceSort(SorterTestBase):
         cfg = Config(sources=[], database=self.root / "test.db", raw={"language": "en"})
         with self.assertRaises(ValueError) as ctx:
             plan_and_sort(cfg, self.conn, "city", None, apply=False)
-        self.assertIn("единственного источника", str(ctx.exception))
+        self.assertIn("a single source", str(ctx.exception))
 
     def test_two_sources_raises(self):
         other = self.root / "other_src"

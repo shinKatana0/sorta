@@ -295,7 +295,7 @@ class TestMissingCityWarning(CityFallbackTestBase):
             self.run_geo()
         # 5 files without a city -> the first case + the final total, not 5 lines
         self.assertEqual(len(cm.records), 2)
-        self.assertIn("без города", cm.records[0].getMessage())
+        self.assertIn("without a city", cm.records[0].getMessage())
         self.assertIn("5", cm.records[-1].getMessage())
 
     def test_the_total_reports_how_many_cities_were_recovered(self):
@@ -304,8 +304,8 @@ class TestMissingCityWarning(CityFallbackTestBase):
         with self.assertLogs("sorta.geo", level="WARNING") as cm:
             self.run_geo()
         total = cm.records[-1].getMessage()
-        self.assertIn("без города: 2", total)
-        self.assertIn("оффлайн-базе: 1", total)
+        self.assertIn("without a city: 2", total)
+        self.assertIn("of which 1 found a city in the offline base", total)
 
     def test_every_nth_case_is_reported(self):
         for _ in range(4):
