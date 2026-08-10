@@ -67,6 +67,13 @@ two **mutually exclusive install profiles** — pick the one matching your hardw
 | RAM | **4 GB is not enough** — a run with the classification tier died there (Linux VM, 2026-08-09); **6 GB was enough** on the same profile (Windows VM), 8 GB+ is comfortable. Indexing/hashing is the RAM‑heavy part, independent of profile | Same, plus whatever the GPU driver reserves |
 | VRAM | n/a | **~3 GB** for base + faces (measured on RTX 5090: CLIP ViT‑L ≈2.0 GB + buffalo_l ≈0.6 GB) — a **≥4 GB** GPU is comfortable. The optional deep VLM tier (Qwen2.5‑VL‑3B) adds ≈7 GB (estimated from the 3B fp16 model, not measured) → **≥8 GB** total |
 
+
+**A run says so before it starts.** Below the threshold, `sorta run` and the run screen
+print one line — what is free, what is needed, and what can be switched off (Deep analysis
+and the frame classification) — and then let you start anyway: memory moves, and somebody
+else's browser may give a gigabyte back a minute later. Above the threshold, and on a
+platform the reading cannot be taken from without a new dependency (macOS), there is silence.
+
 The timings and VRAM figures are observations from our hardware, not a guarantee —
 your mileage will vary with collection composition (video previews, RAW files, and
 faces per photo are the main cost drivers).

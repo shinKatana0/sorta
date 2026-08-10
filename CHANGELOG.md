@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`ctypes.windll` does not exist off Windows, and mypy only reads the platform it runs
+  on** — so F237's memory probe passed a green local gate and failed both Linux runners.
+  The attribute is taken with `getattr` now (the `try/except` around it always caught this
+  at run time; a static check does not run, it reads). The gate gained a **second mypy
+  pass over the same files as the other platform**, which is the actual fix: the class of
+  defect where a name exists here and not there was invisible to every check we had, and
+  this is the fourth time in two days that a check turned out to be answering a question
+  about its own machine. It has its own cache directory — two platforms sharing
+  `.mypy_cache` evict each other and both passes go cold, measured as 2 s → 1 m 24 s — so
+  the fast half stays at five seconds.
+- **The three guides describe the memory warning F237 added.** The requirements table
+  already carried 4/6/8 GB; what a person actually meets — one line before the run saying
+  what is free, what is needed and what can be switched off — was documented nowhere.
+
 ### Added
 - **A run says whether this machine has the memory for it, before it starts** (F237). On a
   virtual machine with 4 GB a run with the classification was **killed by the kernel**

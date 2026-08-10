@@ -108,6 +108,19 @@ FAST_CHECKS = [
     # merged into main with their tests; a file that does not parse must not pass.
     ("ruff (lint)", [sys.executable, "-m", "ruff", "check", "sorta", "tests", "scripts"]),
     ("mypy (types)", [sys.executable, "-m", "mypy", "sorta"]),
+    # The same files read as the OTHER platform. mypy checks for the machine it runs on,
+    # so `ctypes.windll` — absent off Windows — passed here and failed both Linux runners
+    # on 2026-08-10, after a green local gate. The product supports both, so both are
+    # read; `--platform win32` is included so the same hole cannot open the other way on
+    # a Linux developer's machine. ~20 s for a class of defect that otherwise only the
+    # push finds.
+    # Its OWN cache directory, and that is not tidiness: mypy keys one cache per
+    # configuration, so two platforms sharing `.mypy_cache` evict each other and both
+    # passes go cold every run — measured here as 3 s -> 1 m 24 s for the first pass.
+    ("mypy (types, other platforms)",
+     [sys.executable, "-m", "mypy", "--platform",
+      "win32" if sys.platform != "win32" else "linux",
+      "--cache-dir", ".mypy_cache_other", "sorta"]),
 ]
 
 _COVERAGE = ["--cov=sorta", "--cov-append", "--cov-report="]

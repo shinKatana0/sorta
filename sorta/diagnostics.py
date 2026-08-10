@@ -502,8 +502,8 @@ def _linux_available_mb() -> int | None:
 def _windows_available_mb() -> int | None:
     """`ullAvailPhys` of GlobalMemoryStatusEx, in MB. None if the call fails.
 
-    The structure is declared inside: `ctypes.windll` does not exist off Windows, and
-    this module is imported on every platform.
+    The structure is declared inside, and `windll` is reached through getattr: it does
+    not exist off Windows, where this module is still imported and still type-checked.
     """
     try:
         import ctypes
@@ -523,7 +523,8 @@ def _windows_available_mb() -> int | None:
 
         status = _MemoryStatusEx()
         status.dwLength = ctypes.sizeof(_MemoryStatusEx)
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        windll = getattr(ctypes, "windll", None)
+        if windll is None or not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return None
         return int(status.ullAvailPhys) // _BYTES_PER_MB
     except Exception:
