@@ -19,7 +19,7 @@ tests/test_catalog_names_what_a_tier_does.py         131
 tests/test_classify_before_faces.py                  68
 tests/test_cli.py                                    53
 tests/test_cli_help.py                               84
-tests/test_cli_i18n.py                               72
+tests/test_cli_i18n.py                               74
 tests/test_cli_parity_flags.py                       62
 tests/test_clip_embeddings.py                        132
 tests/test_closed_eyes_slice.py                      116
@@ -40,6 +40,7 @@ tests/test_diagnostics.py                            30
 tests/test_docs_guides.py                            181
 tests/test_docs_say_what_was_run.py                  57
 tests/test_doctor_tiers.py                           46
+tests/test_does_this_machine_have_the_memory.py      30
 tests/test_drop_subject_question.py                  75
 tests/test_dupes_sharpness.py                        28
 tests/test_each_install_is_told_the_truth.py         101
@@ -192,7 +193,7 @@ tests/test_ui_city_names.py                          12
 tests/test_ui_cluster_progress.py                    20
 tests/test_ui_clusters.py                            4
 tests/test_ui_dupes.py                               24
-tests/test_ui_env.py                                 30
+tests/test_ui_env.py                                 31
 tests/test_ui_face_slices.py                         48
 tests/test_ui_filmstrip.py                           24
 tests/test_ui_folder_lang.py                         13
