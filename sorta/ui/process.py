@@ -212,7 +212,7 @@ def _pipeline_steps(
                 lambda: built.append(clip_classifier(naming_settings(cfg))),
                 lambda done: None if notify is None else notify(stage, pending, done))
             if failure is not None:
-                _log.error("sorta ui: не удалось скачать веса для этапа %r", stage,
+                _log.error("sorta ui: the weights for stage %r were not downloaded", stage,
                            exc_info=failure)
                 raise _DownloadRefused(download_failure(
                     stage, pending, _run_language(cfg), failure)) from failure
@@ -1605,7 +1605,7 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
             except Exception as exc:  # noqa: BLE001 — report via status, do not crash the thread
                 error = str(exc)
                 error_stage = name  # F191: named in the collapsed row, not behind a click
-                _log.exception("sorta ui: этап пайплайна %r упал", name)
+                _log.exception("sorta ui: pipeline stage %r failed", name)
                 completed = False
                 break
         if completed and error is None:
