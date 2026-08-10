@@ -3029,8 +3029,9 @@ class _DetectorPass:
                               dtype=np.float32)
         except Exception as exc:  # noqa: BLE001 — the stage must survive it
             _log.warning(
-                "junk: текстовый энкодер для отбора кандидатов детектора недоступен "
-                "(%s) — детектор не запускается, метки животных остаются прежними", exc)
+                "junk: the text encoder that picks the detector candidates is "
+                "unavailable (%s) — the detector does not start, the animal labels "
+                "stay as they were", exc)
             return None
         return unit_rows(rows)
 

@@ -185,21 +185,21 @@ def parse_where(exprs: Sequence[str], lang: i18n.Lang = "en",
         m = _EXPR_RE.match(expr)
         if not m:
             raise ValueError(
-                f"--where: не разобрано условие {expr!r}; формат <поле><оп><значение>, "
-                f"поля: {', '.join(_WHERE_FIELDS)}")
+                f"--where: condition {expr!r} not parsed; the format is "
+                f"<field><op><value>, fields: {', '.join(_WHERE_FIELDS)}")
         fld, op, value = m.group(1).lower(), m.group(2), m.group(3)
         if fld == "year":
             try:
                 params.append(int(value))
             except ValueError:
-                raise ValueError(f"--where: year сравнивается с целым числом, "
-                                 f"получено {value!r}") from None
+                raise ValueError(f"--where: year is compared with an integer, "
+                                 f"got {value!r}") from None
             conds.append(f"CAST(substr(f.taken_at, 1, 4) AS INTEGER) {op} ?")
         elif fld in _STR_CONDS:
             if op != "=":
                 raise ValueError(
-                    f"--where: для поля {fld} допустим только оператор '='; "
-                    f"операторы {' '.join(_YEAR_OPS)} — только для year")
+                    f"--where: field {fld} allows the operator '=' only; "
+                    f"the operators {' '.join(_YEAR_OPS)} are for year alone")
             if fld == "country":
                 cc = resolver.country_cc_by_name(value, lang) if resolver else None
                 conds.append(_STR_CONDS["country"])
@@ -223,8 +223,8 @@ def parse_where(exprs: Sequence[str], lang: i18n.Lang = "en",
                 conds.append(_STR_CONDS[fld])
                 params.append(value)
         else:
-            raise ValueError(f"--where: неизвестное поле {fld!r}; "
-                             f"допустимы: {', '.join(_WHERE_FIELDS)}")
+            raise ValueError(f"--where: unknown field {fld!r}; "
+                             f"allowed are: {', '.join(_WHERE_FIELDS)}")
     return (" AND ".join(conds) if conds else "1"), params
 
 
@@ -298,11 +298,11 @@ def _manual_target_parts(target: str | None, src: str) -> list[str] | None:
     if parts is not None:
         return parts
     if refusal == TARGET_EMPTY:
-        _log.warning("sort: ручная правка проигнорирована — пустой target: %r (%s)",
+        _log.warning("sort: manual override ignored — empty target: %r (%s)",
                      target, src)
     else:
-        _log.warning("sort: ручная правка проигнорирована — target выходит за корень "
-                     "раскладки или не является относительным путём: %r (%s)", target, src)
+        _log.warning("sort: manual override ignored — the target leaves the layout root "
+                     "or is not a relative path: %r (%s)", target, src)
     return None
 
 
@@ -622,10 +622,11 @@ def _copy_and_verify(src: Path, dst: Path, expected_hash: str) -> None:
         shutil.copy2(_fs(src), _fs(dst))
     except OSError as exc:
         _fs(dst).unlink(missing_ok=True)
-        raise TransferError(f"копирование не удалось: {src} -> {dst}: {exc}") from None
+        raise TransferError(f"copy failed: {src} -> {dst}: {exc}") from None
     if file_hash(_fs(dst))[0] != expected_hash:
         _fs(dst).unlink(missing_ok=True)
-        raise TransferError(f"хэш копии не совпал, копия удалена: {src} -> {dst}")
+        raise TransferError(f"the hash of the copy did not match, copy deleted: "
+                            f"{src} -> {dst}")
 
 
 def _transfer(src: Path, dst: Path, src_hash: str | None = None,
@@ -644,12 +645,12 @@ def _transfer(src: Path, dst: Path, src_hash: str | None = None,
     size = _fs(src).stat().st_size
     _fs(dst.parent).mkdir(parents=True, exist_ok=True)
     if _fs(dst).exists():
-        raise TransferError(f"dst уже существует, перезапись запрещена: {dst}")
+        raise TransferError(f"dst already exists, overwriting is forbidden: {dst}")
     if link:
         try:
             os.link(_fs(src), _fs(dst))
         except OSError as exc:
-            _log.warning("album: hardlink недоступен (%s), фолбэк на copy: %s -> %s",
+            _log.warning("album: hardlink unavailable (%s), falling back to copy: %s -> %s",
                         exc, src, dst)
             _copy_and_verify(src, dst, src_hash or file_hash(_fs(src))[0])
     elif copy:
@@ -661,7 +662,7 @@ def _transfer(src: Path, dst: Path, src_hash: str | None = None,
             _copy_and_verify(src, dst, src_hash or file_hash(_fs(src))[0])
             os.remove(_fs(src))
     if not _fs(dst).exists() or _fs(dst).stat().st_size != size:
-        raise TransferError(f"проверка после перемещения не прошла: {dst}")
+        raise TransferError(f"the check after the transfer did not pass: {dst}")
 
 
 def _is_the_same_file(dst: Path, src: Path, src_hash: str | None,
@@ -774,7 +775,8 @@ def _record_created_dirs(journal: Path | None, batch_id: int, dirs: list[Path]) 
                 fh.write(json.dumps({"batch_id": batch_id, "dir": str(path)},
                                     ensure_ascii=False) + "\n")
     except OSError as exc:
-        _log.warning("sort: журнал созданных каталогов не записан: %s (%s)", journal, exc)
+        _log.warning("sort: the journal of created directories was not written: %s (%s)",
+                     journal, exc)
 
 
 def _remove_created_dirs(conn: sqlite3.Connection, batch_id: int) -> int:
@@ -801,7 +803,8 @@ def _remove_created_dirs(conn: sqlite3.Connection, batch_id: int) -> int:
                 if isinstance(name, str):
                     dirs.setdefault(name, Path(name))
     except OSError as exc:
-        _log.warning("undo: журнал созданных каталогов не прочитан: %s (%s)", journal, exc)
+        _log.warning("undo: the journal of created directories was not read: %s (%s)",
+                     journal, exc)
         return 0
     removed = 0
     for path in sorted(dirs.values(), key=lambda p: len(p.parts), reverse=True):
@@ -999,7 +1002,7 @@ def _make_thumbnail(src: Path, dst: Path) -> bool:
         img.save(dst, "JPEG", quality=85)
         return True
     except Exception as exc:
-        _log.warning("sort: миниатюра не создана для %s: %s", src, exc)
+        _log.warning("sort: thumbnail not created for %s: %s", src, exc)
         return False
 
 
@@ -1254,12 +1257,12 @@ def _precheck_hash(conn: sqlite3.Connection, batch_id: int, item: PlanItem,
     try:
         src_hash, algo = file_hash(_fs(item.src))
     except OSError as exc:
-        _log.warning("sort: источник недоступен, пропуск: %s (%s)", item.src, exc)
+        _log.warning("sort: source unavailable, skipping: %s (%s)", item.src, exc)
         _record_failed(conn, batch_id, item, item.db_hash or "")
         report.failed += 1
         return None
     if item.db_hash and item.db_algo == algo and src_hash != item.db_hash:
-        _log.warning("sort: файл изменился после индексации, пропуск: %s", item.src)
+        _log.warning("sort: the file changed after indexing, skipping: %s", item.src)
         _record_failed(conn, batch_id, item, src_hash)
         report.failed += 1
         return None
@@ -1344,7 +1347,7 @@ def destinations(cfg: Config, conn: sqlite3.Connection, mode: str,
     is the target FOLDER. Nothing is written and no file is touched.
     """
     if mode not in MODES:
-        raise ValueError(f"неизвестный режим {mode!r}; допустимы: {', '.join(MODES)}")
+        raise ValueError(f"unknown mode {mode!r}; allowed are: {', '.join(MODES)}")
     ids = [int(fid) for fid in file_ids]
     if not ids:
         return {}
@@ -1419,13 +1422,13 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     re-copy what the first wrote, without which a run could be stopped but not continued.
     """
     if mode not in MODES:
-        raise ValueError(f"неизвестный режим {mode!r}; допустимы: {', '.join(MODES)}")
+        raise ValueError(f"unknown mode {mode!r}; allowed are: {', '.join(MODES)}")
     strategy = str(cfg.sort.multi_person)
     if strategy not in _MULTI_PERSON:
         raise ValueError(f"sort.multi_person: {strategy!r}; "
-                         f"допустимы: {', '.join(_MULTI_PERSON)}")
+                         f"allowed are: {', '.join(_MULTI_PERSON)}")
     if delete_worse_dupes and not dedupe:
-        raise ValueError("--delete-worse-dupes требует --dedupe")
+        raise ValueError("--delete-worse-dupes requires --dedupe")
     lang = i18n.normalize_lang(cfg.raw.get("language"))
     # sort.drop_unlocalized_district is not typed in SortConfig yet.
     drop_unlocalized_district = bool(
@@ -1436,8 +1439,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     if dest is None:
         if len(cfg.sources) != 1:
             raise ValueError(
-                "in-place раскладка требует единственного источника; "
-                "задайте --dest или оставьте один каталог в sources")
+                "an in-place layout needs a single source; "
+                "pass --dest or leave one directory in sources")
         dest = cfg.sources[0]
     if in_place_run and apply:
         print(i18n.cli_text("cli.sort.warn_in_place", lang,
@@ -1602,7 +1605,8 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
     for i, item in enumerate(plan, 1):
         if should_cancel is not None and should_cancel():
             # F97: break, never raise — the batch below MUST get its finished_at
-            _log.info("sort: отмена по запросу, перенесено %d из %d", report.moved, len(plan))
+            _log.info("sort: cancelled on request, %d of %d transferred",
+                      report.moved, len(plan))
             report.cancelled = True
             break
         if progress:
@@ -1628,7 +1632,7 @@ def plan_and_sort(cfg: Config, conn: sqlite3.Connection, mode: str,
             try:
                 _fs(item.src).unlink()
             except OSError as exc:
-                _log.warning("sort: удаление не удалось, пропуск: %s (%s)", item.src, exc)
+                _log.warning("sort: the deletion failed, skipping: %s (%s)", item.src, exc)
                 conn.execute("UPDATE moves SET status = 'failed' WHERE id = ?", (move_id,))
                 conn.commit()
                 report.failed += 1
@@ -1699,7 +1703,7 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
             "SELECT MAX(batch_id) AS last_id FROM moves WHERE status = 'done'"
         ).fetchone()
         if row is None or row["last_id"] is None:
-            raise ValueError("undo: нет завершённых перемещений для отката")
+            raise ValueError("undo: no finished transfers to roll back")
         batch_id = int(row["last_id"])
     batch = conn.execute(
         "SELECT operation FROM move_batches WHERE id = ?", (batch_id,)).fetchone()
@@ -1711,7 +1715,8 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
     stats = UndoStats(batch_id=batch_id)
     for i, r in enumerate(rows, 1):
         if should_cancel is not None and should_cancel():
-            _log.info("undo: отмена по запросу, откачено %d из %d", stats.undone, len(rows))
+            _log.info("undo: cancelled on request, %d of %d rolled back",
+                      stats.undone, len(rows))
             stats.cancelled = True
             break
         if progress:
@@ -1721,7 +1726,7 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
         if not _fs(dst).exists():
             if tail:
                 continue  # the FS operation never started — nothing was written
-            _log.warning("undo: dst отсутствует, статус остаётся 'done': %s", dst)
+            _log.warning("undo: dst is missing, the status stays 'done': %s", dst)
             stats.missing += 1
             continue
         if operation in ("copy", "link") or tail:
@@ -1730,15 +1735,17 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
             try:
                 dst_hash = file_hash(_fs(dst))[0]
             except OSError as exc:
-                _log.warning("undo: копия недоступна, пропуск: %s (%s)", dst, exc)
+                _log.warning("undo: the copy is unavailable, skipping: %s (%s)", dst, exc)
                 stats.failed += 1
                 continue
             if dst_hash != r["hash"]:
                 if tail:
-                    _log.warning("undo: битая копия прерванного переноса, НЕ удалена: %s", dst)
+                    _log.warning("undo: broken copy of an interrupted transfer, "
+                                 "NOT deleted: %s", dst)
                     stats.stray.append(str(dst))
                     continue
-                _log.warning("undo: хэш копии не совпал, копия НЕ удалена: %s", dst)
+                _log.warning("undo: the hash of the copy did not match, the copy was "
+                             "NOT deleted: %s", dst)
                 stats.failed += 1
                 continue
             if operation in ("copy", "link"):
@@ -1753,7 +1760,7 @@ def undo(conn: sqlite3.Connection, batch_id: int | None = None,
             n += 1
             restore = src.with_name(f"{src.stem}_{n}{src.suffix}")
         if n:
-            _log.warning("undo: %s занят, восстановление как %s", src, restore.name)
+            _log.warning("undo: %s is taken, restoring as %s", src, restore.name)
         try:
             _transfer(dst, restore)
         except TransferError as exc:
@@ -2229,13 +2236,16 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
     the album folder byte-for-byte is left alone.
     """
     if kind not in ALBUM_KINDS:
-        raise ValueError(f"неизвестный тип альбома {kind!r}; допустимы: {', '.join(ALBUM_KINDS)}")
+        raise ValueError(f"unknown album kind {kind!r}; "
+                         f"allowed are: {', '.join(ALBUM_KINDS)}")
     if mode not in ALBUM_MODES:
-        raise ValueError(f"неизвестный режим альбома {mode!r}; допустимы: {', '.join(ALBUM_MODES)}")
+        raise ValueError(f"unknown album mode {mode!r}; "
+                         f"allowed are: {', '.join(ALBUM_MODES)}")
     # F193: refused here as well as in the web route — this end answers the terminal,
     # that end answers with a status code the interface can caption.
     if file_ids is not None and not file_ids:
-        raise ValueError("пустой выбор кадров: не выбрано ни одного кадра для альбома")
+        raise ValueError("empty frame selection: not a single frame was chosen for "
+                         "the album")
     # F118: this function printed Russian whatever `language:` said — plan_and_sort read
     # the language and plan_album never did.
     lang = i18n.normalize_lang(cfg.raw.get("language"))
@@ -2259,7 +2269,8 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         # in the browser is not a rule.
         if kind in set(cfg.vlm.exclude_classes):
             raise ValueError(
-                f"альбом класса {kind!r} запрещён: класс указан в vlm.exclude_classes")
+                f"an album of class {kind!r} is forbidden: the class is listed in "
+                f"vlm.exclude_classes")
         resolved_name = i18n.folder(ALBUM_FOLDER_KEYS[kind], lang)
         subject_cond = "f.id IN (SELECT file_id FROM media_class WHERE verdict = ?)"
         subject_params = [kind]
@@ -2371,7 +2382,7 @@ def plan_album(cfg: Config, conn: sqlite3.Connection, kind: str, selector: str,
         try:
             src_hash, _algo = file_hash(_fs(item.src))
         except OSError as exc:
-            _log.warning("album: источник недоступен, пропуск: %s (%s)", item.src, exc)
+            _log.warning("album: source unavailable, skipping: %s (%s)", item.src, exc)
             report.failed += 1
             continue
         cur = conn.execute(
