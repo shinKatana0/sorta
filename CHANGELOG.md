@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The asker-pipeline watchdog measured 8 ms against a runner that adds 10.** It divides
+  the measured cost of a serial asker by a pipelined one and requires the ratio to exceed
+  two; scheduling overhead is added to BOTH sides, so on a loaded machine the ratio
+  collapses — 1.63 on windows py3.11, after the same test passed on py3.13 beside it. The
+  simulated work is five times larger now, which leaves the shape alone (the CPU half is
+  four times the GPU half, as measured on the live run) and puts the signal above a
+  constant that does not scale. Verified by running it while a full gate occupied the
+  machine, which is the condition that broke it.
 - **`ctypes.windll` does not exist off Windows, and mypy only reads the platform it runs
   on** — so F237's memory probe passed a green local gate and failed both Linux runners.
   The attribute is taken with `getattr` now (the `try/except` around it always caught this

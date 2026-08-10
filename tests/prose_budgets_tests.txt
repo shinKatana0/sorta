@@ -91,7 +91,7 @@ tests/test_installed_copy_finds_its_exiftool.py      114
 tests/test_installer_tiers.py                        32
 tests/test_interface_names_the_missing_tier.py       103
 tests/test_junk.py                                   194
-tests/test_junk_asker_pipeline.py                    133
+tests/test_junk_asker_pipeline.py                    135
 tests/test_junk_ocr_gate.py                          66
 tests/test_junk_parallel_ocr.py                      80
 tests/test_junk_phase_progress.py                    53

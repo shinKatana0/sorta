@@ -94,8 +94,10 @@ def _load_measure_script():
 # The synthetic shape of a frame's cost, and it is the production one in miniature: the
 # CPU half (decode + the processor) is the long one and the GPU half is short, which is
 # what the overlap exists for (F101 measured ~0.6 s against ~0.19 s on the live run).
-PREPARE_SECONDS = 0.008
-GENERATE_SECONDS = 0.002
+# Five-fold on 2026-08-10: at 8 ms and 2 ms a loaded runner added ~10 ms of scheduling
+# to BOTH sides and squeezed the ratio to 1.63 (windows py3.11, CI).
+PREPARE_SECONDS = 0.040
+GENERATE_SECONDS = 0.010
 # What the watchdog allows. Serial costs PREPARE+GENERATE a frame where the pipeline costs
 # about max(PREPARE / workers, GENERATE) — a factor of four here, threefold on the live
 # run — so a limit of two is comfortably clear of scheduling noise and nowhere near the
