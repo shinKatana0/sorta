@@ -32,7 +32,8 @@ _PACKAGE = _ROOT / "sorta"
 _LOG_METHODS = frozenset({"debug", "info", "warning", "error", "exception", "critical"})
 
 # The two string catalogs: Russian in them is the ru translation of the interface, which
-# is the whole point of the file, and `tests/test_i18n.py` is what holds them to account.
+# is the whole point of the file. `tests/test_i18n.py` is what holds `i18n.py` to account
+# for having all three languages; the web chrome of `ui/strings.py` answers to `test_ui_i18n`.
 _CATALOGS = frozenset({"sorta/i18n.py", "sorta/ui/strings.py"})
 
 # Still Russian on 2026-08-10, because F237 owns these files and was editing them while
