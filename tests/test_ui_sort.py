@@ -15,8 +15,6 @@ import json
 import threading
 import time
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +22,7 @@ from sorta import ui
 from sorta.config import Config
 from sorta.sorter import SortReport
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
@@ -42,16 +41,8 @@ class SortTestBase(UiServerTestBase):
     """JSON POST + snapshots of /api/sort/status and /api/process/status on top of U1."""
 
     def post(self, path: str, data: dict) -> tuple[int, dict]:
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
     def sort_status(self) -> dict:
         status, body, _ctype = self.get("/api/sort/status")

@@ -25,6 +25,7 @@ import numpy as np
 from sorta import ui
 from sorta.junk import pack_embedding, search_index_model
 
+from tests import waiting
 from tests.test_search import unit
 from tests.test_ui import UiServerTestBase
 
@@ -91,15 +92,8 @@ class SearchUiTestBase(UiServerTestBase):
         return json.loads(body)
 
     def post(self, path: str, data: object) -> tuple[int, dict]:
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
 
 class TestSearchIndexState(SearchUiTestBase):

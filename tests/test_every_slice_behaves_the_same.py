@@ -26,8 +26,6 @@ import dataclasses
 import json
 import re
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from sorta import ui
@@ -36,6 +34,7 @@ from sorta.sorter import (
     SELECTORLESS_ALBUM_KINDS,
 )
 
+from tests import waiting
 from tests.test_search import unit
 from tests.test_ui_search import SearchUiTestBase
 
@@ -46,16 +45,8 @@ class SliceUniformityTestBase(SearchUiTestBase):
     being loaded for it."""
 
     def post(self, path: str, data: object) -> tuple[int, dict]:
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
     def album(self, kind: str, **extra) -> tuple[int, dict]:
         body: dict = {"kind": kind, "mode": "link", "apply": False}

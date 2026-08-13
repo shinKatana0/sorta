@@ -28,6 +28,7 @@ from unittest.mock import patch
 from sorta import db, geo, ui
 from sorta.geodata import GeoResolver
 
+from tests import waiting
 from tests.test_geo_path_hint import _ATHENS, write_geo_fixture
 from tests.test_ui import UiServerTestBase
 
@@ -44,17 +45,8 @@ class PlaceTestBase(UiServerTestBase):
         self.addCleanup(patcher.stop)
 
     def post(self, path: str, data: object) -> tuple[int, dict]:
-        import urllib.error
-        import urllib.request
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
     def get_json(self, path: str) -> dict:
         _status, body, _ctype = self.get(path)

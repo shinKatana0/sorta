@@ -11,6 +11,7 @@ from pathlib import Path
 from sorta import ui
 from sorta.config import save_language
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
@@ -72,17 +73,8 @@ class FolderLangServerBase(UiServerTestBase):
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
 
     def post(self, path: str, payload: dict) -> tuple[int, dict]:
-        import urllib.error
-        import urllib.request
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(f"{self.base_url}{path}", data=data,
-                                     headers={"Content-Type": "application/json"},
-                                     method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", payload)
+        return answer.status, answer.json()
 
 
 class TestApiConfig(FolderLangServerBase):

@@ -14,8 +14,6 @@ import os
 import re
 import threading
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +22,7 @@ import yaml
 from sorta import imaging, ui
 from sorta.config import load_config
 
+from tests import waiting
 from tests.test_ui_process import ProcessTestBase, _poll_until
 
 _F104_SETTINGS_KEYS = (
@@ -89,15 +88,8 @@ class SettingsTestBase(ProcessTestBase):
 
     def post_raw(self, path: str, payload: object) -> tuple[int, dict]:
         """POST an arbitrary JSON body (ProcessTestBase.post wants a dict)."""
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(f"{self.base_url}{path}", data=data,
-                                     headers={"Content-Type": "application/json"},
-                                     method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", payload)
+        return answer.status, answer.json()
 
 
 class TestReadSettings(SettingsTestBase):
