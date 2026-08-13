@@ -33,7 +33,7 @@ uv run --extra cpu --extra dev python scripts/check.py         # everything, in 
 
 | Invocation | What runs | When |
 |---|---|---|
-| `--fast` | version sync + ruff + mypy | Before every commit — it takes seconds and catches what makes a diff not worth reading. |
+| `--fast` | version sync + ruff + mypy, twice | Before every commit — it takes seconds and catches what makes a diff not worth reading. |
 | `--slow` | pytest with coverage | Start it in the background and wait for it; a fast pass is not a green gate on its own. |
 | no flags | both, fast half first | What CI runs and what a merge is checked with. |
 
@@ -60,7 +60,13 @@ Pass the same profile you installed with (`cpu` or `gpu`) plus `dev`. A bare
 dependencies and drops the dev tools — always include the extras.
 
 - **ruff** — linting/formatting.
-- **mypy** — static typing.
+- **mypy** — static typing, over the same files **twice**: once for the platform you are
+  on, once with `--platform` set to the other one, into a separate cache directory. A name
+  that exists here and not there (`ctypes.windll`) is invisible to a single pass, because
+  a static check does not run the code, it reads it — that shape passed a green local gate
+  and failed both Linux runners on 2026-08-10. The second cache is required, not tidy:
+  sharing `.mypy_cache` between two platforms makes each pass evict the other, measured as
+  2 s → 1 m 24 s.
 - **pytest** — tests, with a coverage floor enforced in `pyproject.toml`.
 
 Any half exits non‑zero on the first failed check and says which one it was;

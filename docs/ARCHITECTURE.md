@@ -237,6 +237,17 @@ before finding out it was surplus. Nothing below the bind is needed to answer a 
 `sorta doctor` is where those probes are run on purpose. `sorta ui` makes the same move
 for its GPU check.
 
+### a run starts by asking whether this machine has the memory (F237, 2026-08-10)
+
+`diagnostics.available_memory_mb` (`/proc/meminfo` `MemAvailable` on Linux,
+`GlobalMemoryStatusEx` via `ctypes` on Windows, `None` anywhere else) →
+`diagnostics.memory_health` compares it against `MEMORY_FLOOR_MB` → below the floor, one
+sentence from the catalog naming what is free, what is needed and which tiers can be taken
+off. `sorta run` and the run screen take the same sentence from the same entry.
+
+It runs **before** the first stage because there is nothing to catch afterwards: the kernel
+ends the process without an exception. `None` — an unaskable platform — prints nothing.
+
 ### index (Phase 1, implemented)
 walk → filter by extension/size → incremental check path+size+mtime →
 batch of 200: exiftool -json -n (or Pillow fallback) + blake3 + pHash + date cascade →

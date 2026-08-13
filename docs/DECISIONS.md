@@ -372,6 +372,60 @@ as the fact stood, as a ceiling and never as a target, and there is deliberately
 on a single block — a trap sometimes needs six lines, and a per-block limit would get it
 split in two rather than deleted.
 
+### A small machine is warned before the run, and never refused
+
+**Decided 2026-08-10.** A run reads the free memory before it starts — `MemAvailable` on
+Linux, `GlobalMemoryStatusEx` through `ctypes` on Windows, no new dependency — and below
+4 GB says one line: what is free, what is needed, and what can be switched off.
+
+It has to happen before, because afterwards there is nothing to catch: a 4 GB VM running
+the classification tier was killed by the kernel (2026-08-09, cpu profile), no
+`MemoryError`, no traceback, the log stopping mid-word. The threshold is **the size that
+died and not the size that passed**, because free memory is always below the machine's
+total. On a platform that cannot be asked without a new dependency (macOS) the run says
+nothing at all: an invented number is worse than none.
+
+**What this does not claim:** not that 4 GB cannot work. It is a warning and the start
+button stays live — memory moves, somebody else's browser gives a gigabyte back a minute
+later — and a warning shown on every run stops being read.
+
+### The log speaks the product's language, and is not in the catalog
+
+**Decided 2026-08-11/12.** Every log line and exception text in the package is English,
+matching the default interface language; none of them went into the `i18n` catalog.
+
+They are two different things. Catalog text is the product and costs three translations
+and a completeness guard per entry; a log line is the instrument for taking a run apart,
+and the guides ask for it to be attached to a report — sent by somebody whose product
+speaks English, half of it in a language they cannot read. An `ast` walk found **83
+Russian log lines and 29 Russian exception texts** on 2026-08-09, past every audit,
+because the rule that keeps prose work out of the interface named "CLI messages, i18n
+dictionaries, folder names" — and these strings were never in a dictionary. A hole
+between two rules, not a lapse.
+
+The guard walks the package and **carries no list of exempt files**: the shortened list is
+how the `sorta.ui` re-export guard, the arithmetic from `SCHEMA_VERSION` and the
+English-documents guard were each got past. A guard has to find what it judges.
+
+### A check answers about the machine it runs on, unless it is made to ask twice
+
+**Decided 2026-08-10.** The gate runs mypy a second time, over the same files with
+`--platform` set to the other one, and that pass gets **its own cache directory**.
+
+`ctypes.windll` does not exist off Windows. The author knew — said so in the docstring,
+wrapped it in `try/except` — and the local gate was green while both Linux runners went
+red, because **a static check does not run the code, it reads it**. This was the fifth
+time in two days that a check turned out to be answering a question about its own machine;
+the other four were about the OS, this one about the platform of the type system. The
+separate cache is not tidiness: two platforms sharing `.mypy_cache` evict each other and
+both passes go cold, measured as 2 s → 1 m 24 s.
+
+**The general form**, and the reason this is written down rather than fixed and forgotten:
+a green check on one machine is evidence about that machine. Where the answer must hold
+elsewhere, the check has to be made to ask about elsewhere — by files where it can be
+(the payload guard reads import tables and starts nothing), by a second pass where it
+cannot.
+
 ## 7. Questions closed by measurement — do not re-open without new data
 
 | question | verdict |
