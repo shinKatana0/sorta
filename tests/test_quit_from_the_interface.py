@@ -146,11 +146,10 @@ class ServedProgramTestBase(unittest.TestCase):
     def _stop_if_still_serving(self) -> None:
         """Leave no server (and no open database file) behind after a test.
 
-        No grace period before the second `/api/quit`: a program that was never asked to
-        quit would spend the whole budget here for nothing, once per test. A quit sent
-        into a server whose loop is already winding down is answered by a reset socket
-        rather than by JSON, which is why the send is wrapped — that is a fact about
-        this cleanup, not about the route.
+        No grace period before the second `/api/quit`: a program nobody asked to quit
+        would spend the whole budget here once per test. A quit sent into a loop already
+        winding down comes back as a reset socket rather than as JSON, which is why the
+        send is wrapped — a fact about this cleanup, not about the route.
         """
         thread = self.thread
         if thread is None:
