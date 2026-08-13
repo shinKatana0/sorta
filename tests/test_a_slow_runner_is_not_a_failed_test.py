@@ -264,8 +264,7 @@ class TestTheHelperTalksToARealServer(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
+        self.addCleanup(waiting.stop_server, self.server, self.thread)
 
     def test_a_get_brings_back_status_body_and_type(self):
         answer = waiting.fetch(f"{self.base_url}/")
