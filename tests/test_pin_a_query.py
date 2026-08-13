@@ -46,6 +46,7 @@ from sorta.config import (
     save_saved_slices,
 )
 
+from tests import waiting
 from tests.test_search import unit
 from tests.test_ui import UiServerTestBase
 from tests.test_ui_search import SearchUiTestBase
@@ -86,9 +87,7 @@ class PinTestBase(SearchUiTestBase):
         This is the test the feature exists for: a pin that lives only in the running
         process is a pin the next morning does not have.
         """
-        self.server.shutdown()
-        self.thread.join(timeout=5)
-        self.server.server_close()
+        waiting.stop_server(self.server, self.thread)
         self.cfg = load_config(str(self.config_path))
         self.start_server()
 

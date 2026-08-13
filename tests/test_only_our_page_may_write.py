@@ -30,6 +30,7 @@ from unittest import mock
 import sorta.exif as exif
 from sorta import ui
 
+from tests import waiting
 from tests.test_exif_flags import FakeExifTool
 from tests.test_ui import UiServerTestBase
 from tests.test_ui_master_switch import _BODIES, _post_routes
@@ -154,13 +155,12 @@ class PostingTestBase(UiServerTestBase):
             req = urllib.request.Request(
                 f"{self.base_url}{path}", data=body, headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    return resp.status, json.loads(resp.read())
-            except urllib.error.HTTPError as exc:
-                return exc.code, json.loads(exc.read())
+                answer = waiting.fetch(req)
             except (ConnectionError, TimeoutError):
                 if attempt == 2:
                     raise
+            else:
+                return answer.status, answer.json()
         raise AssertionError("unreachable")
 
 
@@ -294,12 +294,8 @@ class TestGetIsUntouched(UiServerTestBase):
     an answer here is the browser's own origin policy, and that has not changed."""
 
     def get_with_headers(self, path: str, headers: dict[str, str]) -> int:
-        req = urllib.request.Request(f"{self.base_url}{path}", headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status
-        except urllib.error.HTTPError as exc:
-            return exc.code
+        return waiting.fetch(urllib.request.Request(f"{self.base_url}{path}",
+                                                    headers=headers)).status
 
     def test_the_page_and_the_read_routes_answer_without_a_content_type(self):
         self.start_server()
@@ -322,14 +318,10 @@ class TestTheServerGrantsNoPreflight(UiServerTestBase):
 
     def test_options_is_not_answered_with_permission(self):
         self.start_server()
-        req = urllib.request.Request(f"{self.base_url}/api/sort", method="OPTIONS")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                status, headers = resp.status, resp.headers
-        except urllib.error.HTTPError as exc:
-            status, headers = exc.code, exc.headers
-        self.assertNotEqual(status, 200)
-        self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
+        answer = waiting.fetch(
+            urllib.request.Request(f"{self.base_url}/api/sort", method="OPTIONS"))
+        self.assertNotEqual(answer.status, 200)
+        self.assertIsNone(answer.headers.get("Access-Control-Allow-Origin"))
 
     def test_no_route_ever_sends_a_cross_origin_header(self):
         """Read off the sources, because it is a property of the WHOLE server and not of

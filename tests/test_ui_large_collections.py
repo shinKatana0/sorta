@@ -22,6 +22,7 @@ from sorta.config import Config
 from sorta.db import connect
 from sorta.sorter import PlanItem
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
@@ -159,7 +160,7 @@ class TestPlanCacheThreadSafety(PlanCacheTestBase):
         start = threading.Event()
 
         def worker() -> None:
-            start.wait(5)
+            waiting.wait_for(start)
             try:
                 results.append(cache.aggregate("city"))
             except BaseException as exc:  # noqa: BLE001 — the test is about "no exception"
@@ -170,7 +171,7 @@ class TestPlanCacheThreadSafety(PlanCacheTestBase):
             t.start()
         start.set()
         for t in threads:
-            t.join(timeout=10)
+            waiting.join_thread(t)
 
         self.assertEqual(errors, [])
         self.assertEqual(len(results), 8)

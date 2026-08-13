@@ -26,7 +26,8 @@ from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
-def _poll_until(get_status, predicate, timeout=5.0, interval=0.02):
+def _poll_until(get_status, predicate, timeout=None, interval=0.02):
+    timeout = waiting.timeout_s() if timeout is None else timeout
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
@@ -220,7 +221,7 @@ class SortBlockingTestBase(SortTestBase):
             calls.append((mode, dest, apply, copy))
             if progress:
                 progress(0, 1)
-            block_event.wait(timeout=5)
+            waiting.wait_for(block_event)
             return SortReport(
                 mode=mode, dest=Path(dest) if dest else Path(cfg.sources[0]),
                 csv_path=self.root / "plan.csv", html_path=self.root / "plan.html",
@@ -302,7 +303,7 @@ class TestSortBlockedDuringProcess(SortTestBase):
         block = threading.Event()
 
         def fake_index(cfg, conn, progress=None):
-            block.wait(timeout=5)
+            waiting.wait_for(block)
 
         def fake_noop(*args, **kwargs):
             return None

@@ -27,6 +27,7 @@ from pathlib import Path
 from sorta import ui
 from sorta.sorter import plan_and_sort
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 _F104_SUMMARY_KEYS = (
@@ -134,16 +135,8 @@ class TestSummaryCountsThePlan(SummaryTestBase):
         self.assertEqual(data["files"], 3)
 
     def _post(self, path: str, payload: dict) -> tuple[int, dict]:
-        import urllib.error
-        import urllib.request
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", payload)
+        return answer.status, answer.json()
 
 
 class TestSummaryLooksIntoTheDestination(SummaryTestBase):

@@ -9,8 +9,10 @@ busy elsewhere turns into a function that answered wrong.
 
 The budget is therefore generous and it lives here. Generosity is free: the timeout is
 spent only on a run that is failing anyway, so 30 s costs a green gate exactly what 5 s
-cost it. `SORTA_TEST_HTTP_TIMEOUT` overrides it for a machine slower or faster than the
-ones this was measured on.
+cost it. Thirty is the number the one site that had already been forced up arrived at —
+`test_ui_process_browse`, where five seconds under the load of the full suite had made
+every gate a coin flip. `SORTA_TEST_HTTP_TIMEOUT` overrides it for a machine slower or
+faster than the ones this was measured on.
 
 The teardown wait is the same defect and not a second one. A join that gives up leaves
 the server thread holding `test.db`, so `TemporaryDirectory.cleanup()` raises
@@ -24,6 +26,7 @@ program that has to start Python again, not about our own threads.
 """
 from __future__ import annotations
 
+import http.client
 import http.server
 import json
 import os
@@ -51,7 +54,11 @@ class Answer(NamedTuple):
 
     status: int
     body: bytes
-    content_type: str
+    headers: http.client.HTTPMessage
+
+    @property
+    def content_type(self) -> str:
+        return self.headers.get("Content-Type", "")
 
     def json(self) -> Any:
         return json.loads(self.body)
@@ -66,9 +73,9 @@ def fetch(target: str | urllib.request.Request) -> Answer:
     """
     try:
         with urllib.request.urlopen(target, timeout=timeout_s()) as resp:
-            return Answer(resp.status, resp.read(), resp.headers.get("Content-Type", ""))
+            return Answer(resp.status, resp.read(), resp.headers)
     except urllib.error.HTTPError as exc:
-        return Answer(exc.code, exc.read(), exc.headers.get("Content-Type", ""))
+        return Answer(exc.code, exc.read(), exc.headers)
 
 
 def post_json(url: str, payload: object) -> Answer:

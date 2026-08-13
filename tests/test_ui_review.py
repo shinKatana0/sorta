@@ -23,8 +23,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import unittest
-import urllib.error
-import urllib.request
 from unittest import mock
 
 from sorta import ui
@@ -599,18 +597,9 @@ class TestNoBulkDeleteRoute(ReviewTestBase):
         other status is returned as it came. What is retried is a connection that never
         carried an answer at all.
         """
-        body = json.dumps(data).encode("utf-8")
         for attempt in (1, 2):
-            req = urllib.request.Request(
-                f"{self.base_url}{path}", data=body, method="POST",
-                headers={"Content-Type": "application/json"},
-            )
             try:
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    return resp.status
-            except urllib.error.HTTPError as exc:
-                exc.read()
-                return exc.code
+                return waiting.post_json(f"{self.base_url}{path}", data).status
             except (ConnectionError, TimeoutError):
                 if attempt == 2:
                     raise

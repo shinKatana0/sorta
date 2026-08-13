@@ -36,6 +36,8 @@ from sorta import i18n, tray, ui
 from sorta.config import Config
 from sorta.db import connect
 
+from tests import waiting
+
 _LANGS = ("ru", "en", "ja")
 
 
@@ -50,13 +52,13 @@ def _printed(mocked) -> str:
     return " ".join(str(call.args[0]) for call in mocked.call_args_list if call.args)
 
 
-def _wait_for_print(mocked, needle: str, timeout: float = 10.0) -> str:
+def _wait_for_print(mocked, needle: str) -> str:
     """Everything printed so far, once `needle` is among it (or the wait ran out).
 
     The lines this waits for are written by the program's own thread AFTER the server
     started answering, so "the server is up" is not yet "the line is out".
     """
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + waiting.timeout_s()
     while time.monotonic() < deadline:
         said = _printed(mocked)
         if needle in said:
@@ -150,7 +152,7 @@ class TrayProgramTestBase(unittest.TestCase):
 
         self.thread = threading.Thread(target=run, daemon=True)
         self.thread.start()
-        self.assertTrue(opened.wait(30), "поток программы не стартовал")
+        self.assertTrue(waiting.wait_for(opened), "поток программы не стартовал")
         self._wait_until_answering()
         if icon_factory is None:
             self._wait_for_the_icon()
@@ -163,8 +165,8 @@ class TrayProgramTestBase(unittest.TestCase):
             if self.start_error is not None:
                 raise self.start_error
             try:
-                with urllib.request.urlopen(f"{self.base_url}/api/config", timeout=2):
-                    return
+                waiting.fetch(f"{self.base_url}/api/config")
+                return
             except (OSError, urllib.error.URLError):
                 time.sleep(0.05)
         self.fail(f"сервер не отвечает на порту {self.port}")
@@ -181,16 +183,18 @@ class TrayProgramTestBase(unittest.TestCase):
         self.assertIsNotNone(self.icon, "значок не построен")
 
     def _stop_if_still_serving(self) -> None:
+        """No grace period before the quit: a program nobody asked to quit would spend
+        the whole budget here once per test. A quit sent into a loop that is already
+        winding down comes back as a reset socket, which is why the send is wrapped."""
         thread = self.thread
         if thread is None:
             return
-        thread.join(timeout=2)
         if thread.is_alive():
             try:
                 tray.request_quit(self.port, confirm=True)
             except OSError:
                 pass
-            thread.join(timeout=10)
+        waiting.join_thread(thread)
 
     # --- what the tests say --------------------------------------------------
 
@@ -199,13 +203,12 @@ class TrayProgramTestBase(unittest.TestCase):
         self.icon.on_quit()
 
     def assert_program_ended(self) -> None:
-        self.thread.join(timeout=15)
+        waiting.join_thread(self.thread)
         self.assertFalse(self.thread.is_alive(), "программа не завершилась")
         self.assertEqual(self.exit_code, 0)
 
     def assert_still_serving(self) -> None:
-        with urllib.request.urlopen(f"{self.base_url}/api/config", timeout=5) as resp:
-            self.assertEqual(resp.status, 200)
+        self.assertEqual(waiting.fetch(f"{self.base_url}/api/config").status, 200)
 
 
 class _CountingRun:
@@ -236,10 +239,10 @@ class _CountingRun:
             self.state.finish(None)
             self.cancelled.set()
 
-    def progressed(self, timeout: float = 2.0) -> bool:
+    def progressed(self) -> bool:
         """Did the run advance from where it is now? — the proof it was not lost."""
         was = self.state.snapshot()["done"]
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + waiting.timeout_s()
         while time.monotonic() < deadline:
             if self.state.snapshot()["done"] > was:
                 return True
@@ -248,7 +251,7 @@ class _CountingRun:
 
     def stop(self) -> None:
         self.state.request_cancel()
-        self._thread.join(timeout=5)
+        waiting.join_thread(self._thread)
 
 
 class RunningProgramTestBase(TrayProgramTestBase):
@@ -296,7 +299,7 @@ class TestQuittingDuringARunAsks(RunningProgramTestBase):
     def test_a_yes_interrupts_the_run_through_the_existing_flag(self):
         self.answer = True
         self.press_quit()
-        self.assertTrue(self.run.cancelled.wait(5), "прогон не был прерван")
+        self.assertTrue(waiting.wait_for(self.run.cancelled), "прогон не был прерван")
         self.assertFalse(self.state.snapshot()["running"])
 
     def test_a_yes_closes_the_program_and_takes_the_icon_away(self):
@@ -501,7 +504,8 @@ class TestAPortHeldByAStranger(unittest.TestCase):
         question asked before anything is bound, so the neighbour keeps answering."""
         conn = connect(self.cfg.database)
         tray.start(self.cfg, conn, port=self.port, open_browser=False)
-        with socket.create_connection(("127.0.0.1", self.port), timeout=5):
+        with socket.create_connection(("127.0.0.1", self.port),
+                                     timeout=waiting.timeout_s()):
             pass
 
     def test_a_port_nobody_holds_is_free(self):

@@ -29,7 +29,8 @@ class _FakeIndexStats:
         self.scanned = scanned
 
 
-def _poll_until(get_status, predicate, timeout=5.0, interval=0.02):
+def _poll_until(get_status, predicate, timeout=None, interval=0.02):
+    timeout = waiting.timeout_s() if timeout is None else timeout
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
@@ -66,7 +67,7 @@ class ProcessTestBase(UiServerTestBase):
 
         def maybe_block(name: str) -> None:
             if name == block_stage and block_event is not None:
-                block_event.wait(timeout=5)
+                waiting.wait_for(block_event)
 
         def fake_index(cfg, conn, progress=None):
             calls.append("index")
@@ -308,7 +309,7 @@ class TestProcessCancel(ProcessTestBase):
 
         def blocking_geo(cfg, conn, progress=None):
             self.calls.append("geo")
-            block.wait(timeout=5)                    # wait until the test requests a cancel
+            waiting.wait_for(block)                    # wait until the test requests a cancel
             if progress:
                 progress(1, 1)                       # after the cancel → _PipelineCancelled
             self.calls.append("geo_after_progress")  # must NOT execute

@@ -88,9 +88,10 @@ class UiServerTestBase(unittest.TestCase):
         self.conn.commit()
         return file_id, p, content
 
-    def get(self, path: str) -> waiting.Answer:
+    def get(self, path: str) -> tuple[int, bytes, str]:
         """(status, body, content_type); does not raise on 4xx/5xx — like urllib.request."""
-        return waiting.fetch(f"{self.base_url}{path}")
+        answer = waiting.fetch(f"{self.base_url}{path}")
+        return answer.status, answer.body, answer.content_type
 
 
 class TestServerSmoke(UiServerTestBase):

@@ -45,8 +45,6 @@ import tempfile
 import threading
 import time
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -55,6 +53,7 @@ import pytest
 from sorta import i18n, launcher, runlog, splash as splash_mod, tray, ui
 from sorta.ui.common import _StartupState
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -599,14 +598,12 @@ class TestTheRouteAnswersWhileTheLaunchIsGoing(UiServerTestBase):
         last: OSError | None = None
         for _attempt in (1, 2):
             try:
-                with urllib.request.urlopen(f"{self.base_url}/api/startup",
-                                            timeout=5) as resp:
-                    self.assertEqual(resp.status, 200)
-                    return json.loads(resp.read())
-            except urllib.error.HTTPError as exc:
-                self.fail(f"/api/startup ответил {exc.code}")
+                answer = waiting.fetch(f"{self.base_url}/api/startup")
             except OSError as exc:
                 last = exc
+            else:
+                self.assertEqual(answer.status, 200, "/api/startup ответил не 200")
+                return answer.json()
         raise AssertionError(f"/api/startup недоступен: {last}")
 
     def test_a_server_that_declared_no_launch_says_it_is_ready(self):
@@ -841,7 +838,7 @@ class TestTheServerSideOfTheLaunchIsWiredUp(unittest.TestCase):
             code = tray.start(mock.Mock(language="en"), conn, port=8756,
                               open_browser=True, splash=splash)
         self.assertEqual(code, 0)
-        self.assertTrue(finished.wait(5), "проверки окружения не запустились")
+        self.assertTrue(waiting.wait_for(finished), "проверки окружения не запустились")
         self.assertNotEqual(seen["thread"], threading.main_thread().name)
         opened.assert_called_once()
         conn.close.assert_called_once()

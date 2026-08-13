@@ -21,6 +21,7 @@ from unittest import mock
 from sorta import ui
 from sorta.sorter import SortReport, UndoStats
 
+from tests import waiting
 from tests.test_ui_sort import SortTestBase, _poll_until
 
 
@@ -148,7 +149,7 @@ class UndoBlockingTestBase(UndoTestBase):
             calls.append(batch_id)
             if progress:
                 progress(0, 1)
-            block_event.wait(timeout=5)
+            waiting.wait_for(block_event)
             return UndoStats(batch_id=batch_id or 0, undone=1,
                              cancelled=bool(should_cancel and should_cancel()))
 
@@ -165,7 +166,7 @@ class UndoBlockingTestBase(UndoTestBase):
             calls.append((mode, dest, apply, copy))
             if progress:
                 progress(0, 1)
-            block_event.wait(timeout=5)
+            waiting.wait_for(block_event)
             return SortReport(
                 mode=mode, dest=Path(dest) if dest else Path(cfg.sources[0]),
                 csv_path=self.root / "plan.csv", html_path=self.root / "plan.html",

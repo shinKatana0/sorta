@@ -29,6 +29,7 @@ from unittest import mock
 
 from sorta import ui
 
+from tests import waiting
 from tests.test_ui_restore_anywhere import RestoreAnywhereBase
 
 
@@ -42,9 +43,7 @@ class CeilingTestBase(RestoreAnywhereBase):
         """A changed ceiling needs a new server — the config is read when it is built,
         which is also what a person editing the key and restarting `sorta ui` does."""
         if self.server is not None:
-            self.server.shutdown()
-            self.thread.join(timeout=5)
-            self.server.server_close()
+            waiting.stop_server(self.server, self.thread)
             self.server = None
         self.start_server()
 

@@ -22,7 +22,6 @@ What is pinned here:
 """
 from __future__ import annotations
 
-import json
 import re
 import socket
 import sqlite3
@@ -40,6 +39,8 @@ import pytest
 from sorta import ui
 from sorta.config import Config
 from sorta.db import connect
+
+from tests import waiting
 
 # serial: the whole file runs the REAL program — `ui.serve` on a port chosen a moment
 # earlier, its loop on a second thread, and a shutdown the assertions wait for. In
@@ -61,14 +62,8 @@ def _free_port() -> int:
 
 def _post(url: str, payload: object) -> tuple[int, dict]:
     """POST as the page sends it (F208: the content type is what gets it served)."""
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status, json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read())
+    answer = waiting.post_json(url, payload)
+    return answer.status, answer.json()
 
 
 class ServedProgramTestBase(unittest.TestCase):
@@ -131,7 +126,7 @@ class ServedProgramTestBase(unittest.TestCase):
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
-        self.assertTrue(opened.wait(30), "серверный поток не стартовал")
+        self.assertTrue(waiting.wait_for(opened), "серверный поток не стартовал")
         return thread
 
     def _wait_until_answering(self) -> None:
@@ -142,8 +137,8 @@ class ServedProgramTestBase(unittest.TestCase):
             if self.serve_error is not None:
                 raise self.serve_error
             try:
-                with urllib.request.urlopen(f"{self.base_url}/api/config", timeout=2):
-                    return
+                waiting.fetch(f"{self.base_url}/api/config")
+                return
             except (OSError, urllib.error.URLError):
                 time.sleep(0.05)
         self.fail(f"сервер не отвечает на порту {self.port}")
@@ -151,33 +146,32 @@ class ServedProgramTestBase(unittest.TestCase):
     def _stop_if_still_serving(self) -> None:
         """Leave no server (and no open database file) behind after a test.
 
-        The join comes first: a test that already asked the program to quit is usually
-        a fraction of a second away from it, and a second `/api/quit` sent into a server
-        whose loop is winding down is answered by a reset socket rather than by JSON —
-        which is a fact about this cleanup, not about the route.
+        No grace period before the second `/api/quit`: a program that was never asked to
+        quit would spend the whole budget here for nothing, once per test. A quit sent
+        into a server whose loop is already winding down is answered by a reset socket
+        rather than by JSON, which is why the send is wrapped — that is a fact about
+        this cleanup, not about the route.
         """
         thread = self.thread
         if thread is None:
             return
-        thread.join(timeout=2)
         if thread.is_alive():
             try:
                 _post(f"{self.base_url}/api/quit", {"confirm": True})
             except OSError:
                 pass
-            thread.join(timeout=10)
+        waiting.join_thread(thread)
 
     def quit(self, **body: object) -> tuple[int, dict]:
         return _post(f"{self.base_url}/api/quit", body)
 
     def assert_program_ended(self) -> None:
         """The serve loop returned and `serve` ran its `finally` — i.e. it really quit."""
-        self.thread.join(timeout=10)
+        waiting.join_thread(self.thread)
         self.assertFalse(self.thread.is_alive(), "серверный поток не завершился")
 
     def assert_still_serving(self) -> None:
-        with urllib.request.urlopen(f"{self.base_url}/api/config", timeout=5) as resp:
-            self.assertEqual(resp.status, 200)
+        self.assertEqual(waiting.fetch(f"{self.base_url}/api/config").status, 200)
 
 
 class _CountingRun:
@@ -209,10 +203,10 @@ class _CountingRun:
             self.state.finish(None)
             self.cancelled.set()
 
-    def progressed(self, timeout: float = 2.0) -> bool:
+    def progressed(self) -> bool:
         """Did the run advance from where it is now? — the proof it was not lost."""
         was = self.state.snapshot()["done"]
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + waiting.timeout_s()
         while time.monotonic() < deadline:
             if self.state.snapshot()["done"] > was:
                 return True
@@ -221,7 +215,7 @@ class _CountingRun:
 
     def stop(self) -> None:
         self.state.request_cancel()
-        self._thread.join(timeout=5)
+        waiting.join_thread(self._thread)
 
 
 class RunningProgramTestBase(ServedProgramTestBase):
@@ -287,7 +281,7 @@ class TestAConfirmedQuitInterruptsTheRun(RunningProgramTestBase):
         status, resp = self.quit(confirm=True)
         self.assertEqual(status, 200, resp)
         self.assertEqual(resp["cancelled"], "process")
-        self.assertTrue(self.run.cancelled.wait(5), "прогон не был прерван")
+        self.assertTrue(waiting.wait_for(self.run.cancelled), "прогон не был прерван")
         self.assertFalse(self.state.snapshot()["running"])
 
     def test_the_server_closes(self):

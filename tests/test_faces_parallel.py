@@ -19,6 +19,7 @@ import numpy as np
 import sorta.faces as faces_mod
 from sorta.config import Config
 from sorta.faces import EMBED_DIM, _detect_parallel, _infer_workers, detect_faces
+from tests import waiting
 from tests.test_faces import FacesTestCase
 
 WORKERS = 4
@@ -81,7 +82,7 @@ class FakeSessions:
         with self._lock:
             self.session_threads.append(threading.get_ident())
         try:
-            self._barrier.wait(timeout=30)
+            self._barrier.wait(timeout=waiting.timeout_s())
         except threading.BrokenBarrierError:  # fewer live workers than requested
             self.all_sessions_live = False
 

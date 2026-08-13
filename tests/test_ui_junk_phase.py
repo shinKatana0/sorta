@@ -18,6 +18,7 @@ from sorta.junk import (
     CLASSIFY_PHASE_WRITE,
 )
 
+from tests import waiting
 from tests.test_ui_process import ProcessTestBase, _poll_until
 
 
@@ -37,7 +38,7 @@ class TestJunkPhaseInStatus(ProcessTestBase):
             calls.append("junk")
             progress.phase(phase)
             progress(done, total)
-            block.wait(timeout=5)
+            waiting.wait_for(block)
 
         self._patch("classify_junk", blocking_junk)
 
@@ -90,10 +91,10 @@ class TestJunkPhaseInStatus(ProcessTestBase):
             calls.append("junk")
             progress.phase(CLASSIFY_PHASE_WRITE)
             progress(24196, 24196)
-            seen.wait(timeout=5)
+            waiting.wait_for(seen)
             progress.phase(CLASSIFY_PHASE_VLM)
             progress(0, 1843)
-            block.wait(timeout=5)
+            waiting.wait_for(block)
 
         self._patch("classify_junk", two_phase_junk)
         self.start_server()

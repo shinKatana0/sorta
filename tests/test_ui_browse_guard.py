@@ -12,6 +12,8 @@ import unittest.mock
 
 from sorta import ui
 
+from tests import waiting
+
 
 class TestBrowseDialogGuard(unittest.TestCase):
     def test_concurrent_calls_open_one_dialog(self):
@@ -28,10 +30,10 @@ class TestBrowseDialogGuard(unittest.TestCase):
             results: list[str] = []
             first = threading.Thread(target=lambda: results.append(ui._browse_for_folder()))
             first.start()
-            self.assertTrue(started.wait(2), "первый диалог не стартовал")
+            self.assertTrue(waiting.wait_for(started), "первый диалог не стартовал")
             # a second click while the first dialog is still coming up
             results.append(ui._browse_for_folder())
-            first.join(5)
+            waiting.join_thread(first)
 
         self.assertEqual(len(opened), 1, "второй клик открыл ещё один диалог")
         self.assertIn(("C:/chosen", ""), results)
