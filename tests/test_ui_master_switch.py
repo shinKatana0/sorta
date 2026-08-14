@@ -19,15 +19,13 @@ because that one is a race between two writers and not a matter of how a button 
 from __future__ import annotations
 
 import inspect
-import json
 import re
 import unittest
-import urllib.error
-import urllib.request
 from unittest import mock
 
 from sorta import ui
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
@@ -408,19 +406,14 @@ class TestEveryWriteRouteRefusesWhileBusy(UiServerTestBase):
         answer of any other status is returned as it came. What is retried is a
         connection that never carried an answer at all.
         """
-        data = json.dumps(payload).encode("utf-8")
         for attempt in (1, 2):
-            req = urllib.request.Request(f"{self.base_url}{path}", data=data,
-                                         headers={"Content-Type": "application/json"},
-                                         method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    return resp.status, json.loads(resp.read())
-            except urllib.error.HTTPError as exc:
-                return exc.code, json.loads(exc.read())
+                answer = waiting.post_json(f"{self.base_url}{path}", payload)
             except (ConnectionError, TimeoutError):
                 if attempt == 2:
                     raise
+            else:
+                return answer.status, answer.json()
         raise AssertionError("unreachable")
 
     def test_every_route_answers_409(self):
@@ -454,17 +447,10 @@ class TestTheRoutesComeBackWhenNothingRuns(UiServerTestBase):
         self.assertTrue(state.try_start())
         with mock.patch.object(ui, "_SortState", return_value=state):
             self.start_server()
-            data = json.dumps({"file_ids": [1], "action": "exclude"}).encode("utf-8")
 
             def post():
-                req = urllib.request.Request(
-                    f"{self.base_url}/api/overrides", data=data,
-                    headers={"Content-Type": "application/json"}, method="POST")
-                try:
-                    with urllib.request.urlopen(req, timeout=5) as resp:
-                        return resp.status
-                except urllib.error.HTTPError as exc:
-                    return exc.code
+                return waiting.post_json(f"{self.base_url}/api/overrides",
+                                         {"file_ids": [1], "action": "exclude"}).status
 
             self.assertEqual(post(), 409)
             state.finish(None, None)

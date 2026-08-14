@@ -12,12 +12,11 @@ import json
 import threading
 import time
 import unittest
-import urllib.error
-import urllib.request
 from unittest import mock
 
 from sorta import ui
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
@@ -30,7 +29,8 @@ class _FakeIndexStats:
         self.scanned = scanned
 
 
-def _poll_until(get_status, predicate, timeout=5.0, interval=0.02):
+def _poll_until(get_status, predicate, timeout=None, interval=0.02):
+    timeout = waiting.timeout_s() if timeout is None else timeout
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
@@ -67,7 +67,7 @@ class ProcessTestBase(UiServerTestBase):
 
         def maybe_block(name: str) -> None:
             if name == block_stage and block_event is not None:
-                block_event.wait(timeout=5)
+                waiting.wait_for(block_event)
 
         def fake_index(cfg, conn, progress=None):
             calls.append("index")
@@ -137,16 +137,8 @@ class ProcessTestBase(UiServerTestBase):
         self._patch("compute_phashes", fake_phash)
 
     def post(self, path: str, data: dict) -> tuple[int, dict]:
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
     def status(self) -> dict:
         status, body, _ctype = self.get("/api/process/status")
@@ -317,7 +309,7 @@ class TestProcessCancel(ProcessTestBase):
 
         def blocking_geo(cfg, conn, progress=None):
             self.calls.append("geo")
-            block.wait(timeout=5)                    # wait until the test requests a cancel
+            waiting.wait_for(block)                    # wait until the test requests a cancel
             if progress:
                 progress(1, 1)                       # after the cancel → _PipelineCancelled
             self.calls.append("geo_after_progress")  # must NOT execute

@@ -26,6 +26,7 @@ from sorta.junk import (
     classify,
     resolve_ocr_workers,
 )
+from tests import waiting
 from tests.test_junk import _RECEIPT_IDX, FakeClassifier
 
 WORKERS = 4
@@ -73,7 +74,7 @@ class FakeDetectors:
         # tests are deterministic too: every worker reaches its build attempt.
         if self._barrier is not None:
             try:
-                self._barrier.wait(timeout=30)
+                self._barrier.wait(timeout=waiting.timeout_s())
             except threading.BrokenBarrierError:  # fewer live workers than requested
                 self.all_attempted = False
         if self.builds_ok is not None and n > self.builds_ok:

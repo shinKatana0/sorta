@@ -13,6 +13,7 @@ import unittest
 from sorta import ui
 from sorta.faces import CLUSTER_PHASE_CLUSTER, CLUSTER_PHASE_READ
 
+from tests import waiting
 from tests.test_ui_process import ProcessTestBase, _poll_until
 
 
@@ -124,7 +125,7 @@ class TestStatusEndpointPhase(ProcessTestBase):
             self.calls.append("faces")
             progress.phase(CLUSTER_PHASE_CLUSTER)
             progress(0, None)
-            block.wait(timeout=5)
+            waiting.wait_for(block)
             return None
 
         self._patch("detect_and_cluster", blocking_faces)

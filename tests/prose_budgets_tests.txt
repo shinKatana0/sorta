@@ -11,6 +11,7 @@ tests/conftest.py                                    46
 tests/schema_history.py                              44
 tests/test_a_download_that_stopped_halfway.py        104
 tests/test_a_run_says_what_it_will_download.py       151
+tests/test_a_slow_runner_is_not_a_failed_test.py     49
 tests/test_a_stage_waiting_on_a_download_says_so.py  67
 tests/test_accelerator_choice.py                     235
 tests/test_blurred_is_a_ranking.py                   78
@@ -180,7 +181,7 @@ tests/test_sorter_undated.py                         26
 tests/test_the_first_launch_says_it_is_starting.py   160
 tests/test_the_log_speaks_english.py                 44
 tests/test_three_tiers_of_sameness.py                83
-tests/test_tray_icon.py                              107
+tests/test_tray_icon.py                              110
 tests/test_two_vlm_options_reach_the_screen.py       130
 tests/test_ui.py                                     21
 tests/test_ui_album_dest.py                          7
@@ -215,7 +216,7 @@ tests/test_ui_package.py                             44
 tests/test_ui_photo_trash.py                         6
 tests/test_ui_place_prefix_search.py                 49
 tests/test_ui_process.py                             127
-tests/test_ui_process_browse.py                      26
+tests/test_ui_process_browse.py                      22
 tests/test_ui_progress_delete_ux.py                  11
 tests/test_ui_region_place.py                        93
 tests/test_ui_rerun_optional.py                      17
@@ -246,3 +247,4 @@ tests/test_utility_frames.py                         64
 tests/test_vlm_master_switch.py                      88
 tests/test_vlm_phase_names.py                        73
 tests/test_worker_ceilings.py                        42
+tests/waiting.py                                     48

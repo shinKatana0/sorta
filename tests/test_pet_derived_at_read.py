@@ -28,6 +28,7 @@ from sorta import ui
 from sorta.junk import PET_VLM_DEPICTION, PET_VLM_NONE, PET_VLM_REAL
 from sorta.sorter import plan_album
 
+from tests import waiting
 from tests.test_sorter_album_animal import AnimalAlbumTestBase
 from tests.test_ui_animals import AnimalsTestBase
 
@@ -354,14 +355,9 @@ class TestTheWebAppReadsTheSameRule(DerivedRuleUiCase):
                 self.assertNotIn(ids["coat.jpg"], self.tab_animal_ids())
 
     def post_mark(self, file_id: int, action: str) -> tuple[int, dict]:
-        import urllib.request
-
-        body = json.dumps({"file_ids": [file_id], "action": action}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}/api/animals/mark", data=body, method="POST",
-            headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status, json.loads(resp.read())
+        answer = waiting.post_json(f"{self.base_url}/api/animals/mark",
+                                   {"file_ids": [file_id], "action": action})
+        return answer.status, answer.json()
 
 
 class TestTheTabAppearsByTheSameRule(DerivedRuleUiCase):

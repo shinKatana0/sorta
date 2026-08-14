@@ -17,6 +17,7 @@ from sorta.config import Config, IndexConfig
 from sorta.db import connect
 from sorta.hashing import file_hash
 from sorta.indexer import index, refresh_exif
+from tests import waiting
 from tests.test_exif_flags import FakeExifTool
 from tests.test_exif_parallel import meta_for
 from tests.test_indexer import make_jpeg
@@ -116,7 +117,7 @@ class TestPhasesOverlap(IndexerExifTestCase):
 
         def watching_read_batch(paths, workers=None):
             # if the phases were serial (exif first), no hash task could have started
-            overlapped.append(started.wait(timeout=30))
+            overlapped.append(waiting.wait_for(started))
             return real_read_batch(paths, workers)
 
         with mock.patch.object(indexer_mod, "_hash_one", slow_hash_one), \

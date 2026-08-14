@@ -3,13 +3,13 @@
 thread-safe, and the ThreadingHTTPServer handler is not on the main thread)."""
 from __future__ import annotations
 
-import json
 import subprocess
 import unittest
 from unittest import mock
 
 from sorta import ui
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
@@ -85,17 +85,8 @@ class TestBrowseButtonHtml(UiServerTestBase):
 
 class TestBrowseEndpoint(UiServerTestBase):
     def post_browse(self):
-        import urllib.request
-        req = urllib.request.Request(
-            f"{self.base_url}/api/browse", data=b"{}", method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        # 5 s was not enough under the load of the full suite: this test spins up a
-        # real HTTP server, and on a busy machine the handler thread does not always
-        # get scheduled in time. Isolated runs never failed; only the whole-suite run
-        # did, which made every gate a coin flip.
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, json.loads(resp.read())
+        answer = waiting.post_json(f"{self.base_url}/api/browse", {})
+        return answer.status, answer.json()
 
     def test_returns_selected_path(self):
         with mock.patch.object(ui, "_browse_for_folder",

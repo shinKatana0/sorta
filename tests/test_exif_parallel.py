@@ -22,6 +22,7 @@ from unittest import mock
 import pytest
 
 import sorta.exif as exif
+from tests import waiting
 from tests.test_exif_flags import FakeExifTool
 
 
@@ -244,7 +245,7 @@ class TestThreadSafety(FakeExifToolTestCase):
 
         def worker(idx: int) -> None:
             try:
-                barrier.wait(timeout=30)
+                barrier.wait(timeout=waiting.timeout_s())
                 results[idx] = exif.read_batch(groups[idx], 8)
             except Exception as e:  # reported by the assertions below, not swallowed
                 errors.append(e)
@@ -253,7 +254,7 @@ class TestThreadSafety(FakeExifToolTestCase):
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=60)
+            waiting.join_thread(t)
         self.assertEqual(errors, [])
         for idx, group in enumerate(groups):
             self.assertEqual(set(results[idx]), {self.key(p) for p in group})

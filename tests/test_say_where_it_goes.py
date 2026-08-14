@@ -16,7 +16,6 @@ and the plan cannot be allowed to drift apart, so they are pinned to each other.
 from __future__ import annotations
 
 import io
-import json
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -25,6 +24,7 @@ from unittest import mock
 from sorta import i18n, ui
 from sorta.sorter import Destination, destinations, plan_and_sort
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 from tests.test_ui_animals import AnimalsTestBase
 from tests.test_ui_junk_buckets import JunkViewTestBase
@@ -230,18 +230,8 @@ class TestAnimalCardsSayNothingMoves(AnimalsTestBase):
     something»."""
 
     def post(self, path: str, data: object) -> tuple[int, dict]:
-        import urllib.error
-        import urllib.request
-
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
     def test_the_card_names_the_folder_the_frame_already_lies_in(self):
         file_id, _p, _c = self.add_photo_file("cat.jpg", country="ru", city="Moscow")

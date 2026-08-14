@@ -22,6 +22,8 @@ from sorta.config import Config
 from sorta.db import connect
 from sorta.indexer import load_excludes
 
+from tests import waiting
+
 
 class SourceTreeTestBase(unittest.TestCase):
     def setUp(self):
@@ -39,9 +41,7 @@ class SourceTreeTestBase(unittest.TestCase):
 
     def tearDown(self):
         if self.server is not None:
-            self.server.shutdown()
-            self.thread.join(timeout=5)
-            self.server.server_close()
+            waiting.stop_server(self.server, self.thread)
         self.conn.close()
         self.tmp.cleanup()
 
@@ -58,24 +58,15 @@ class SourceTreeTestBase(unittest.TestCase):
         return p
 
     def get(self, path: str) -> tuple[int, object]:
-        try:
-            with urllib.request.urlopen(f"{self.base_url}{path}", timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.fetch(f"{self.base_url}{path}")
+        return answer.status, answer.json()
 
     def get_tree(self, root: Path | str) -> tuple[int, object]:
         return self.get("/api/source-tree?path=" + urllib.parse.quote(str(root)))
 
     def post(self, path: str, payload: dict) -> tuple[int, object]:
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", payload)
+        return answer.status, answer.json()
 
 
 class TestSourceTreeEndpoint(SourceTreeTestBase):

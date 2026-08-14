@@ -17,23 +17,14 @@ import urllib.parse
 
 from sorta import db, ui
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
 class OverridesTestBase(UiServerTestBase):
     def post(self, path: str, data: object) -> tuple[int, dict]:
-        import urllib.error
-        import urllib.request
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
     def rows(self) -> dict[int, tuple[str, str | None]]:
         return {r["file_id"]: (r["action"], r["target"]) for r in self.conn.execute(

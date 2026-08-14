@@ -18,6 +18,7 @@ import numpy as np
 
 import sorta.faces as faces_mod
 from sorta.faces import _detect_parallel, detect_faces
+from tests import waiting
 from tests.test_faces import FacesTestCase
 from tests.test_faces_parallel import (
     FakeSessions,
@@ -62,7 +63,7 @@ class BarrierDecoder:
             synced = self._synced
         if not synced:
             try:
-                self._barrier.wait(timeout=30)
+                self._barrier.wait(timeout=waiting.timeout_s())
             except threading.BrokenBarrierError:  # fewer live decoders than requested
                 self.all_workers_live = False
             with self._lock:

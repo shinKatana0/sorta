@@ -6,12 +6,11 @@ from __future__ import annotations
 import json
 import threading
 import unittest
-import urllib.error
-import urllib.request
 from unittest import mock
 
 from sorta import imaging
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 from tests.test_ui_process import ProcessTestBase
 
@@ -174,15 +173,8 @@ class ResetTestBase(ProcessTestBase):
     """Data fixtures in all tables that reset must wipe."""
 
     def post_reset(self):
-        req = urllib.request.Request(
-            f"{self.base_url}/api/process/reset", data=b"{}", method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}/api/process/reset", {})
+        return answer.status, answer.json()
 
     def seed_full_index(self):
         fid, _p, _c = self.add_photo_file("a.jpg", country="ru", city="Moscow")

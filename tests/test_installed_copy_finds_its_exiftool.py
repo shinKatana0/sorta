@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from sorta import cli, exif, i18n, install, wizard
+from tests import waiting
 from tests.test_build_installer import builder
 
 _LANGS: tuple[i18n.Lang, ...] = ("ru", "en", "ja")
@@ -285,7 +286,7 @@ class TestTheShippedBinaryReallyRuns(TheInstalledCopy):
             self.assertIn(_FAKE_VERSION, (proc.stdout.readline() or b"").decode())
         finally:
             proc.kill()
-            proc.wait(timeout=10)
+            proc.wait(timeout=waiting.timeout_s())
 
 
 class TestAMachineWithNeither(TheInstalledCopy):

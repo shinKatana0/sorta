@@ -19,12 +19,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from sorta import ui
 
+from tests import waiting
 from tests.test_ui import UiServerTestBase
 
 
@@ -73,15 +72,8 @@ class FaceSliceTestBase(UiServerTestBase):
         return [item["file_id"] for item in data["items"]]
 
     def post(self, path: str, data: object) -> tuple[int, dict]:
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}{path}", data=body, method="POST",
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read())
+        answer = waiting.post_json(f"{self.base_url}{path}", data)
+        return answer.status, answer.json()
 
 
 class TestTheMarkerRowIsNeverAFace(FaceSliceTestBase):

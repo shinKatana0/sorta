@@ -4,6 +4,43 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **A slow runner is not a failed test** (F240). 37 test files raise a local HTTP server —
+  1048 test functions, 17% of the suite — and 38 places asked it for an answer with a
+  `timeout=5` typed at the call site. That number is an assertion about SPEED inside a test
+  about CORRECTNESS: nothing in `test_garbage_flag_does_not_clear` is about milliseconds,
+  but at five seconds a runner that was busy elsewhere turns into a function that answered
+  wrong. All three red gates since 0.5.0 were of that kind — every one about time, not one
+  about code. The cost is not the twenty-minute re-runs: it is that **a red gate people
+  are used to re-running stops being a signal**, and this project has already paid for
+  that once (`test_ui_master_switch` was filed as a flake for a day and was a real race).
+  The waits now come from **one helper, `tests/waiting.py`**: 30 s by default, overridable
+  with `SORTA_TEST_HTTP_TIMEOUT`, for the GET and the JSON POST alike. Generosity is free —
+  a timeout is spent only on a run that is failing anyway, so 30 s costs a green gate
+  exactly what 5 s cost it, and 30 is the number the one site already forced up
+  (`test_ui_process_browse`, where five seconds under the load of the full suite had made
+  every gate a coin flip) had arrived at. **Teardown is the same defect, not a second
+  one**: a join that gave up left the server thread holding `test.db`, so the temporary
+  directory could not be removed and one failure was reported as a failure plus a
+  `PermissionError [WinError 32]`, with the directory left on disk. `stop_server` shuts the
+  loop, waits for the thread, then closes the socket — before anything is deleted.
+  81 waits in 42 files went through this, and a new watchdog
+  (`tests/test_a_slow_runner_is_not_a_failed_test.py`) reads `tests/` with `ast` and goes
+  red on the next one. **It has no list of exceptions**: the three timeouts that stay are
+  told apart by the FORM of the call — `tray.sorta_is_serving(port, timeout=5)`,
+  `tray.port_holder(...)` and `nominatim_timeout=5.0` hand the number to somebody else's
+  function, which is the subject of those tests rather than the patience of this suite. A
+  green watchdog that guards nothing is a failure this project has met four times.
+  **Why not the `serial` marker**, which is the first thing anyone suggests: measured, it
+  does not work. The red gate of 08-10 was a test that was ALREADY marked `serial` — a
+  single-process pass removes the load of the neighbouring workers, not the spread of the
+  GitHub machine itself. And it is not free: on the same commit the parallel half is 6246
+  tests in 17 m 55 s against 35 tests in 1 m 09 s serially, so moving 1048 tests across
+  would add about twenty minutes to every gate for a cure that was shown not to cure. No
+  marker moved in any file.
+
 ## [0.5.1] - 2026-08-13
 
 ### Fixed

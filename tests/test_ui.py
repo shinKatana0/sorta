@@ -5,9 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 from PIL import Image
@@ -16,6 +14,8 @@ from sorta import ui
 from sorta.config import Config
 from sorta.db import connect
 from sorta.hashing import file_hash
+
+from tests import waiting
 
 _JPEG_MAGIC = b"\xff\xd8"
 
@@ -52,9 +52,7 @@ class UiServerTestBase(unittest.TestCase):
 
     def tearDown(self):
         if self.server is not None:
-            self.server.shutdown()
-            self.thread.join(timeout=5)
-            self.server.server_close()
+            waiting.stop_server(self.server, self.thread)
         self.conn.close()
         self.tmp.cleanup()
 
@@ -92,11 +90,8 @@ class UiServerTestBase(unittest.TestCase):
 
     def get(self, path: str) -> tuple[int, bytes, str]:
         """(status, body, content_type); does not raise on 4xx/5xx — like urllib.request."""
-        try:
-            with urllib.request.urlopen(f"{self.base_url}{path}", timeout=5) as resp:
-                return resp.status, resp.read(), resp.headers.get("Content-Type", "")
-        except urllib.error.HTTPError as exc:
-            return exc.code, exc.read(), exc.headers.get("Content-Type", "")
+        answer = waiting.fetch(f"{self.base_url}{path}")
+        return answer.status, answer.body, answer.content_type
 
 
 class TestServerSmoke(UiServerTestBase):
