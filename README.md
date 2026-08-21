@@ -26,6 +26,13 @@ app**.
 > wants a 24 GB card. The CPU profile runs the rest and has never been timed on a
 > large collection — see [System requirements](#system-requirements).
 
+> 💾 **Have a backup before you let any tool — this one included — move a photo
+> archive.** Sorta is built so that you should not need one: sorting is dry‑run by
+> default, every move is journaled before it happens, `sorta undo` reverses it, and
+> deleting means the recycle bin rather than `unlink`. That is a design, not a
+> guarantee, and the only copy of twenty years is worth more than anyone's confidence
+> in their own code.
+
 > 📖 **User guide:** [English](docs/guide/user-guide.en.md) ·
 > [Русский](docs/guide/user-guide.ru.md) · [日本語](docs/guide/user-guide.ja.md)
 
@@ -260,6 +267,11 @@ are in the [user guide](docs/guide/user-guide.en.md).
 - **Originals are never modified.** Sorting moves/copies files; EXIF is not rewritten.
 - **Dry‑run by default;** every operation is journaled before it runs; `sorta undo`
   reverses it.
+- **Deleting means the recycle bin.** The review screens hand a file to `send2trash`;
+  the OS keeps it until you empty the bin. Note the split: `undo` replays the move
+  journal backwards, so a trashed file comes back from the bin and not from `undo`.
+- **Keep a backup regardless.** Everything above is design. A backup is what covers
+  the case where the design is wrong.
 - **No image ever leaves your machine.** Not "off by default" — there is no code
   left that sends one. The cloud event‑naming provider was removed together with its
   upload, and a test keeps it from returning quietly. The single outbound path is
@@ -279,7 +291,8 @@ See [SECURITY.md](SECURITY.md) for details.
   command & config reference, troubleshooting (EN / RU / JA)
 - `docs/ARCHITECTURE.md` — architecture, module ownership, data contracts
 - `CONTRIBUTING.md` — how to contribute · `SECURITY.md` — privacy & reporting ·
-  `NOTICE` — third‑party data attribution (GeoNames, OpenStreetMap/Nominatim)
+  `NOTICE` — third‑party attribution, and the licences of the model weights Sorta
+  downloads (two of them non‑commercial research only)
 
 ---
 
@@ -295,4 +308,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup and quality-gate detai
 ## License
 
 MIT — see [LICENSE](LICENSE). Bundled/queried third‑party geo data has its own
-attribution requirements — see [NOTICE](NOTICE).
+attribution requirements, and the model weights Sorta downloads at run time carry
+their own licences — the face model and the deep tier's VLM are **non‑commercial
+research only**. Both stages are opt‑in. See [NOTICE](NOTICE) §5.

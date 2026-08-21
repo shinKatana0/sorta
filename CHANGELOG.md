@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **A backup is asked for, the recycle bin is stated, and the model weights get their
+  licences** — the pass before showing this to strangers. Three separate gaps, all found
+  by reading the tree rather than trusting it. (1) **No published document said the word
+  "backup"**: zero occurrences across three READMEs and three guides, while the product
+  moves files a person cannot re-take. Dry‑run, the journal, `undo` and blake3 make a
+  strong position, and a strong position is not a guarantee — both READMEs' opening and
+  §15 of every guide now say to have a copy first, of any tool including this one.
+  (2) **Deletion has gone to the recycle bin since the review screens existed**
+  (`send2trash`, never `unlink`) and no user-facing document mentioned it — the best
+  answer to "can this destroy my library" was sitting unstated in `sorta/ui/common.py`.
+  Said now, together with the seam it hides: `undo` replays the move journal, so a trashed
+  file returns from the bin and not from `undo`. (3) **`NOTICE` covered GeoNames, OSM,
+  ExifTool and the MSVC runtime, and said nothing about the four model families the
+  product downloads.** Two of them are research-only — insightface's pretrained weights
+  ("ALL models are available for non-commercial research purposes only") and
+  Qwen2.5-VL-3B-Instruct (`license_name: qwen-research`, **not** Apache-2.0, which is the
+  assumption worth correcting). Both are opt-in stages, so a commercial deployment can
+  decline them and lose only the `product` class and face clustering; §5 says so.
+  Verified against the upstream sources on 2026-08-21, not from memory.
+
 ### Changed
 - **A slow runner is not a failed test** (F240). 37 test files raise a local HTTP server —
   1048 test functions, 17% of the suite — and 38 places asked it for an answer with a

@@ -3,9 +3,11 @@ Sorta — third-party data attribution
 
 This project bundles and/or queries geographic data from third parties, and
 the Windows installer additionally bundles one third-party program (§3) and
-three Microsoft runtime libraries (§4). Sorta's own source code is
-MIT-licensed (see LICENSE); the notices below cover only the data, that
-program and those libraries, not the code.
+three Microsoft runtime libraries (§4). It also downloads machine-learning
+model weights to the user's own machine, under licences that are not this
+project's (§5). Sorta's own source code is MIT-licensed (see LICENSE); the
+notices below cover only the data, that program, those libraries and those
+weights, not the code.
 
 1. GeoNames (bundled, offline reverse geocoding)
 -------------------------------------------------
@@ -87,3 +89,45 @@ ship their own copies of `msvcp140.dll` in their wheels.
 This applies to the Windows installer only. A `uv tool install` of Sorta
 does not carry these libraries: the wheels it installs bring their own, and
 a Python already on the machine brought its own runtime with it.
+
+5. Machine-learning model weights (downloaded, never bundled)
+---------------------------------------------------------------
+Sorta ships no model weights. The first run of a stage that needs one fetches it
+to the user's own machine and caches it there. The licence that applies is the
+upstream one and NOT Sorta's MIT licence, and two of the four permit
+non-commercial research use only. That is stated here rather than left to be
+discovered by whoever puts this to work inside a business.
+
+  stage                model                             licence
+  faces                buffalo_l (insightface)           non-commercial research only
+  scenes, landmarks,   ViT-L-14-quickgelu, `openai`      MIT
+    slices               weights (open_clip)
+  search by words      xlm-roberta-base-ViT-B-32,        MIT
+                         laion5b_s13b_b90k (open_clip)
+  deep tier (opt-in)   Qwen2.5-VL-3B-Instruct            Qwen RESEARCH licence
+
+- The insightface model zoo states: "ALL models are available for non-commercial
+  research purposes only"
+  (https://github.com/deepinsight/insightface/tree/master/model_zoo, checked
+  2026-08-21). The insightface CODE is MIT; the restriction is on the pretrained
+  weights, which is what the `faces` stage downloads. That stage is opt-in
+  (`--faces`, or the matching checkbox) and nothing else in the product depends
+  on it.
+
+- open_clip is MIT (https://github.com/mlfoundations/open_clip). The `openai`
+  weights come from OpenAI's CLIP release, MIT
+  (https://github.com/openai/CLIP/blob/main/LICENSE). The LAION checkpoint used
+  for search by words is published under MIT on Hugging Face
+  (laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k).
+
+- Qwen2.5-VL-3B-Instruct carries the Qwen RESEARCH licence, not Apache-2.0
+  (`license_name: qwen-research`,
+  https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE, checked
+  2026-08-21). The deep tier that uses it is off by default and produces exactly
+  one thing the rest of the pipeline cannot — the `product` class — so a
+  deployment that must avoid this licence can leave `vlm.enabled: false` and lose
+  nothing else.
+
+Face recognition also carries obligations that have nothing to do with licences:
+biometric data is regulated in several jurisdictions. Everything the `faces`
+stage computes stays in the local index, and the stage runs only when asked for.

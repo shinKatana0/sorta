@@ -28,6 +28,10 @@ Sorta processes personal photos and videos — including, potentially, images of
   model is an error rather than a download.
 - **Originals are never modified.** Sorting moves/copies files and never rewrites
   EXIF. With `--copy`/`--link`, originals stay exactly where they are.
+- **Deleting is the recycle bin, not `unlink`.** The review screens hand a file to
+  `send2trash`, so the operating system holds it until the bin is emptied. `sorta
+  undo` is the move journal played backwards and covers moves: a trashed file comes
+  back from the bin, not from `undo`.
 - **Documents are collected locally.** Detected documents go to a local
   `_Documents/` review folder for you to handle. They are processed only on your
   machine.
@@ -36,6 +40,10 @@ Sorta processes personal photos and videos — including, potentially, images of
 
 ## Your responsibilities
 
+- **Have a backup of the collection before the first `--apply`.** Dry‑run, the
+  journal, `undo`, blake3 verification and the recycle bin are a design meant to make
+  one unnecessary — they are not a guarantee, and no reading of this document should
+  be taken as one. This is the advice we would give about any tool that moves files.
 - The generated index (`sorta.db`) and any HTML plans/thumbnails contain metadata and
   derived thumbnails of your photos. Store them where you'd store the photos
   themselves, and exclude them from any accidental sharing.

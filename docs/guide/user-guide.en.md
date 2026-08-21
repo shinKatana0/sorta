@@ -1310,6 +1310,10 @@ Classification: 12/12 processed (photo: 11, screenshot: 1)
 
 ## 15. Safety, undo & privacy
 
+- **Have a backup first.** Everything in this section is design, and design is not a
+  guarantee. Before the first `--apply` against a collection you cannot replace, have
+  a copy of it somewhere Sorta cannot reach — that advice applies to every tool that
+  moves files, this one included.
 - **Dry‑run by default** — nothing moves until `--apply`.
 - **A summary before the start (web UI)** — the layout button first opens a dialog
   with the numbers: where to, move or copy, how many files into how many folders and
