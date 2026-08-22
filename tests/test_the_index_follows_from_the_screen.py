@@ -16,6 +16,7 @@ unreachable until a plan has been shown.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import tempfile
@@ -315,6 +316,25 @@ class TestTheEngineIsCalledAndNotCopied(RelocateServerTestBase):
         self.assertEqual(status, 200)
         self.assertEqual(resp["error"], ui.RELOCATE_REFUSED)
         self.assertEqual(resp["reason"], "no such folder")
+
+
+class TestAMovedCollectionLeavesTheStateTheOfferKeysOn(RelocateServerTestBase):
+    """The two ends tied together: the button appears for `error_stage == "index"`.
+
+    Run against sources that are not there over an index that is not empty — the exact
+    situation `relocate.refuse_if_the_collection_moved` exists for — the pipeline has to
+    leave that stage name behind, or the offer is drawn for a state nothing produces.
+    """
+
+    def test_the_run_stops_on_index_and_says_what_to_do(self):
+        cfg = dataclasses.replace(self.cfg, sources=[self.root / "gone"])
+        state = ui._ProcessState()
+        self.assertTrue(state.try_start(str(self.root / "gone")))
+        ui._run_pipeline(Path(self.cfg.database).resolve(), cfg, None, state,
+                         ui.PlanCache(cfg, self.conn, self.root / "_preview"))
+        snapshot = state.snapshot()
+        self.assertEqual(snapshot["error_stage"], "index")
+        self.assertIn("relocate", snapshot["error"])
 
 
 class TestTheOldPrefixIsOffered(RelocateServerTestBase):

@@ -182,7 +182,7 @@ tests/test_the_bin_can_refuse.py                      14
 tests/test_the_collection_can_move.py                25
 tests/test_the_cpu_tier_gets_a_number.py             59
 tests/test_the_first_launch_says_it_is_starting.py   160
-tests/test_the_index_follows_from_the_screen.py      67
+tests/test_the_index_follows_from_the_screen.py      73
 tests/test_the_log_speaks_english.py                 44
 tests/test_three_tiers_of_sameness.py                83
 tests/test_tray_icon.py                              110
