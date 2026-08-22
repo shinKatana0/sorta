@@ -31,6 +31,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
 from PIL import Image
 
 from sorta import __version__
@@ -213,6 +214,11 @@ class TestTheMeasurementGetsADatabaseOfItsOwn(unittest.TestCase):
             self.assertFalse((root / "photos.db").exists())
 
 
+# serial: this class runs the product's real stages and then asserts about the wall-clock
+# seconds they took — the one assertion a loaded machine can turn into a lie (a stage that
+# finished inside the log's millisecond), and the one kind of test the parallel half of the
+# gate is not the place for.
+@pytest.mark.serial
 class TestASyntheticCollectionGoesThroughWhole(unittest.TestCase):
     """Criterion 4: dozens of files in a temporary directory, every field in its place."""
 
