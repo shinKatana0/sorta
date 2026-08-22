@@ -423,6 +423,23 @@ other writing route refuses while busy (F145). Only a second request carrying
 is the server's and not the page's, per F133: a dialog the interface draws forbids
 nothing, and a request sent past the interface would close the program all the same.
 
+(28) `GET /api/relocate/suggest`, `POST /api/relocate` (F244, the run screen) — pointing
+the index at a collection that moved, from the screen that refuses to index it. F242 gave
+the product `sorta relocate` and the stop whose sentence already reaches the collapsed
+error row; acting on it needed a terminal, which half the users of an equal-rights web
+app will not open. The POST takes
+`{"old_prefix": str, "new_prefix": str, "apply": bool=False}` and calls
+`relocate.relocate` — which columns hold a path, where a prefix ends, the refusals and
+the single transaction all stay there and are not repeated here. Without `apply` it
+answers the plan and writes nothing; with it, the same plan carrying `applied`. A
+`RelocateError` is an ANSWER and not a 500 (`{"error": "relocate_refused", "reason": ...}`
+with HTTP 200): the engine writes nothing when it refuses, so the request did not fail.
+In `_BUSY_GUARDED_ROUTES` like every other writer — it rewrites `files.path`, the column
+each stage of a run is keyed by — and the plan cache is dropped after an applied move,
+since every built plan is about the old paths. The GET prefills the old prefix from the
+index (`_indexed_prefix`): the database knows that path, and a path typed by hand is a
+path mistyped.
+
 Security: the only entry to a file on disk for reading (`/thumb`, `/photo`) is a
 file_id, resolved strictly via `SELECT path FROM files WHERE id = ?`. These routes
 never accept a path directly from the request, so an arbitrary path (incl. `../..`)
@@ -687,7 +704,7 @@ from .moves import (
     _UndoState, _last_batch_id, _moves_payload, _run_undo, _target_rel,
 )
 from .process import (
-    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, BROWSE_CANCELLED, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
+    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, BROWSE_CANCELLED, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, RELOCATE_REFUSED, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
     _DownloadRefused,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
     _OPTIONAL_STAGES, TIER_ABSENT, TIER_READY, TIER_WEIGHTS, _deep_tier_ran,
@@ -699,12 +716,15 @@ from .process import (
     _StageProgress, _StageStats,
     _TREE_MAX_DEPTH, _TREE_MAX_NODES, _any_truncated, _browse_for_folder, _browse_lock,
     _cache_payload, _env_payload, _estimate_cache, _estimate_cache_clear, _estimate_cache_lock,
-    _excludes_payload, _memory_payload, _pipeline_steps, _positive_or_none,
+    _excludes_payload, _indexed_prefix, _memory_payload, _pipeline_steps,
+    _positive_or_none,
     _process_defaults_payload,
-    _process_estimate_payload, _resolve_rates, _run_browse_dialog, _run_cfg, _run_log_fingerprint,
+    _process_estimate_payload, _relocate_payload, _relocate_plan_to_json, _resolve_rates,
+    _run_browse_dialog,
+    _run_cfg, _run_log_fingerprint,
     _run_pipeline, _scan_dir, _source_tree_payload, _stage_stats, _sum_dir,
     _validate_cache_clear_payload, _validate_excludes_payload, _validate_process_payload,
-    _validate_rerun_optional_payload, _validate_tree_root,
+    _validate_relocate_payload, _validate_rerun_optional_payload, _validate_tree_root,
 )
 from .page import (
     _INDEX_HTML_TEMPLATE, _WEB_DIR, _load_index_template, _read_web, _render_index_html, _t,
@@ -750,6 +770,10 @@ _BUSY_GUARDED_ROUTES = frozenset({
     "/api/clusters/label", "/api/clusters/merge",
     # ...files moved on disk...
     "/api/dupes/trash", "/api/photo/trash", "/api/photos/trash", "/api/album",
+    # F244: it rewrites `files.path` in every row at once — the column each stage of a
+    # run reads its work from — so a move crossing a run is the loudest version of the
+    # race this table exists for.
+    "/api/relocate",
     # ...and config.yaml.
     "/api/source-tree/excludes",
     # F156: the three writes of `features.saved_slices`. Nothing a run reads is touched by
@@ -934,6 +958,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json(undo_state.snapshot())
             elif path == "/api/sort/suggest-dest":
                 self._send_json({"dest": _suggested_sort_dest(cfg, db_path)})
+            elif path == "/api/relocate/suggest":
+                self._send_json({"old_prefix": _indexed_prefix(db_path)})
             elif path == "/api/sort/summary":
                 self._serve_sort_summary(parse_qs(parts.query))
             elif path == "/api/tabs/visibility":
@@ -1040,6 +1066,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._handle_unpin_saved_slice()
             elif path == "/api/saved-slices/move":
                 self._handle_move_saved_slice()
+            elif path == "/api/relocate":
+                self._handle_relocate()
             elif path == "/api/browse":
                 self._handle_browse()
             elif path == "/api/source-tree/excludes":
@@ -1768,6 +1796,28 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 # not answer both the same way: on Ubuntu without python3-tk it looked
                 # like nothing happened at all.
                 payload["problem"] = problem
+            self._send_json(payload)
+
+        def _handle_relocate(self) -> None:
+            # F244: the engine is `relocate.relocate` and every decision about the move
+            # is inside it — this end validates a body, chooses a status and drops the
+            # plan cache, which is all that is left over.
+            parsed = _validate_relocate_payload(self._read_json_body())
+            if parsed is None:
+                self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            old_prefix, new_prefix, apply_ = parsed
+            payload = _relocate_payload(db_path, old_prefix, new_prefix, apply=apply_)
+            if payload.get("applied"):
+                # Every built plan is about the old paths, so it is dropped here rather
+                # than left to expire: the next request rebuilds it (F70, lazily).
+                conn = _connect(db_path)
+                try:
+                    cache.rebuild(cfg, conn)
+                finally:
+                    conn.close()
+            # A refusal keeps the 200: nothing was written, the answer says why, and the
+            # page has a sentence to show instead of a failed request to explain.
             self._send_json(payload)
 
         # --- F81/F82: "do not scan" / "do not lay out" (the source block) --------

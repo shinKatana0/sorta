@@ -357,6 +357,9 @@ _BODIES: dict[str, object] = {
     "/api/clusters/merge": {"source_id": 1, "target_id": 2},
     "/api/album": {"kind": "animal", "mode": "hardlink"},
     "/api/source-tree/excludes": {"root": ".", "scan": [], "sort": []},
+    # F244: a dry run, which is what the button sends first — and still a refusal while
+    # busy, because the route that answers it is the one that would rewrite every path.
+    "/api/relocate": {"old_prefix": "/old", "new_prefix": "/new"},
     "/api/saved-slices/pin": {"name": "mountains", "query": "mountains"},
     "/api/saved-slices/unpin": {"slice": "children"},
     "/api/saved-slices/move": {"slice": "children", "delta": 1},

@@ -217,6 +217,30 @@ a1.7 1.7 0 0 0-1.56 1z"/></svg>
 <div id="process-stages-list" class="stage-chips" style="display:none"></div>
 </div>
 <div id="process-status" class="process-status"></div>
+<div id="relocate-offer" class="relocate-offer" style="display:none">
+<span class="process-toggle-hint">{{relocate_offer_hint}}</span>
+<button type="button" id="relocate-open-btn" class="btn btn-ghost">{{relocate_open_button}}</button>
+</div>
+<div id="relocate-panel" class="relocate-panel" style="display:none">
+<p class="step-title">{{relocate_title}}</p>
+<span class="process-toggle-hint">{{relocate_hint}}</span>
+<div class="process-path-row">
+<label class="relocate-label" for="relocate-old">{{relocate_old_label}}</label>
+<input type="text" id="relocate-old">
+</div>
+<div class="process-path-row">
+<label class="relocate-label" for="relocate-new">{{relocate_new_label}}</label>
+<input type="text" id="relocate-new">
+<button type="button" id="relocate-browse-btn" class="btn btn-ghost">{{process_browse_button}}</button>
+</div>
+<div id="relocate-plan" class="relocate-plan"></div>
+<div class="process-actions">
+<button type="button" id="relocate-plan-btn" class="btn btn-ghost">{{relocate_plan_button}}</button>
+<button type="button" id="relocate-apply-btn" class="btn btn-primary" disabled>{{relocate_apply_button}}</button>
+<button type="button" id="relocate-close-btn" class="btn btn-ghost">{{process_cancel_button}}</button>
+<span id="relocate-status" class="relocate-status"></span>
+</div>
+</div>
 <div id="process-summary" class="process-summary"></div>
 <div id="process-skipped-notes" class="env-warning" style="display:none"></div>
 <div id="process-deep-fallback" class="env-warning" style="display:none"></div>

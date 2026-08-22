@@ -38,6 +38,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+- **The moved collection is carried over from the screen, not only from the terminal**
+  (F244). F242 taught the program to stop in front of a collection that has moved — with
+  rows in the index and not one source folder on disk, a run refuses to start, because
+  indexing from the new location would call every file new and lose the face names, the
+  places, the marks and the duplicate decisions somebody entered by hand. It also taught
+  it to name the cure: `sorta relocate --from <old> --to <new>`. That sentence reached
+  the run screen and could be acted on nowhere but a terminal, which is where the owner
+  hit it while checking a build in a VM as an ordinary user would. For a product whose
+  web app is an equal-rights entry point, that is a diagnosis handed to half the users
+  with no way to accept the cure.
+
+  So the cure is now on the screen that states the problem: beside the collapsed error
+  row of a failed `index` stage there is a button, and behind it a form with both
+  prefixes — the old one **prefilled from the index**, because the database knows that
+  path and a path typed by hand is a path mistyped — the existing folder picker for the
+  new one, and two buttons: show the plan, then move. **The plan is not optional**: the
+  button that writes stays dead until a plan for exactly those two paths has been shown
+  (and goes dead again the moment either path is edited), which is the same rule as the
+  dry run of `sort`, the price quoted on the run screen and the dialog before a layout.
+  When the move is applied, the page re-reads its counters instead of leaving numbers
+  built on the old paths standing.
+
+  Underneath there is **no second copy of anything**: `POST /api/relocate` calls
+  `relocate.relocate` and adds only a body to validate, a status to choose and a plan
+  cache to drop; which columns hold a path, where a prefix ends, when the move must be
+  refused and that applying it is one transaction all stay where F242 put them, and a
+  test proves the route goes through that function rather than around it. A refusal — a
+  destination that is not there, a prefix that matches nothing, two rows that would land
+  on one path — comes back as an ANSWER with a reason (HTTP 200, `relocate_refused`) and
+  not as a 500: the engine writes nothing when it refuses, so the request did not fail.
+  The route is a writing one with all that follows: it refuses with 409 while a run, a
+  layout or an undo is in flight (it rewrites `files.path`, the column every stage is
+  keyed by), only this server's own page may POST to it, and a malformed body earns a 400
+  instead of a traceback. Every caption is in the three languages, like the rest of the
+  interface.
+
 - **The rig that will give the CPU tier a number — and that refuses to produce a false
   one** (F243, phase 0). The CPU profile is the only tier of this project with no
   measurement of any kind, while being the ONLY tier a machine without a video card has;

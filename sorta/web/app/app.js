@@ -3468,6 +3468,16 @@
     return vals;
   }
 
+  // F244+F245 met here: a refusal of the move carries a code like every other fault of
+  // ours, so it is rendered from the same catalog. `reason` is what an entry-less code
+  // falls back to — the engine's own English sentence, which is better than nothing.
+  function faultSentence(resp) {
+    if (!resp) return "";
+    var template = resp.code ? I18N["fault_" + resp.code] : null;
+    if (!template) return resp.reason || resp.error || "";
+    return fmt(template, faultValues(resp.params || {}));
+  }
+
   function processErrorText(data) {
     var params = data.error_params || {};
     var template = data.error_code ? I18N["fault_" + data.error_code] : null;
@@ -3506,6 +3516,7 @@
     renderSkippedNotes(data);
     renderProcessSummary(data);
     renderDeepFallback(data);
+    renderRelocateOffer(data);
     if (data.running) {
       if (data.cancel_requested) {
         // a cancel was asked for — feedback while the stage stops or finishes up
@@ -3654,6 +3665,146 @@
       document.getElementById("process-source-dir").value = path;
       sourceDirChanged();
     });
+  });
+
+  // --- F244: the collection moved, and the way out is on this screen ----------------
+
+  // The offer keys on the STAGE that failed, never on the text of the message: that
+  // sentence belongs to sorta/relocate.py, it is rewritten and translated without this
+  // file being opened, and a client matching on prose would go quiet the day it changed.
+  // Every other `index` failure is offered the same button — it opens a form that writes
+  // nothing until a plan has been shown, so an offer made in vain costs a click.
+  function renderRelocateOffer(data) {
+    var failed = data.error ? (data.error_stage || data.stage) : null;
+    document.getElementById("relocate-offer").style.display =
+        failed === "index" ? "" : "none";
+  }
+
+  // Whether the plan on screen is about what the fields hold right now. The apply button
+  // lives off this and nothing else: the whole product shows what it will do before
+  // doing it, and a plan stops being about anything the moment a path is edited.
+  var relocatePlanned = false;
+
+  // One place decides whether the move may be pressed, so the two ways into that state —
+  // a plan came back, a path was edited — cannot drift apart.
+  function setRelocatePlanned(planned) {
+    relocatePlanned = planned;
+    document.getElementById("relocate-apply-btn").disabled = !relocatePlanned;
+  }
+
+  function resetRelocatePlan() {
+    setRelocatePlanned(false);
+    document.getElementById("relocate-plan").textContent = I18N.relocate_plan_first;
+  }
+
+  function setRelocateStatus(text, failed) {
+    var el = document.getElementById("relocate-status");
+    el.textContent = text;
+    el.className = "relocate-status" + (failed ? " failed" : "");
+  }
+
+  function relocateLine(text, warn) {
+    var line = document.createElement("span");
+    if (warn) line.className = "relocate-warn";
+    line.textContent = text;
+    return line;
+  }
+
+  function renderRelocatePlan(resp) {
+    var box = document.getElementById("relocate-plan");
+    box.textContent = "";
+    if (!resp.rows) {
+      box.appendChild(relocateLine(I18N.relocate_plan_empty, true));
+      return;
+    }
+    box.appendChild(relocateLine(fmt(I18N.relocate_plan_summary, {
+      rows: resp.rows, columns: (resp.columns || []).length })));
+    (resp.examples || []).forEach(function (example) {
+      box.appendChild(relocateLine(fmt(I18N.relocate_plan_example, {
+        before: example.before, after: example.after })));
+    });
+    box.appendChild(relocateLine(
+      resp.new_prefix_exists ? I18N.relocate_dest_ok : I18N.relocate_dest_missing,
+      !resp.new_prefix_exists));
+  }
+
+  function requestRelocate(apply) {
+    var oldPrefix = document.getElementById("relocate-old").value.trim();
+    var newPrefix = document.getElementById("relocate-new").value.trim();
+    if (!oldPrefix || !newPrefix) {
+      setRelocateStatus(I18N.relocate_needs_both, true);
+      return;
+    }
+    setRelocateStatus(I18N.loading, false);
+    postJson("/api/relocate", { old_prefix: oldPrefix, new_prefix: newPrefix,
+                                apply: apply })
+      .then(function (resp) {
+        if (!resp || resp.error) {
+          // A refusal carries the reason the engine gives — the destination that is not
+          // there, the prefix that matched nothing, the paths that would collide. Nothing
+          // was written in any of those cases, so the plan simply has to be asked again.
+          setRelocateStatus(I18N.relocate_refused_prefix
+                            + faultSentence(resp), true);
+          resetRelocatePlan();
+          return;
+        }
+        renderRelocatePlan(resp);
+        if (!resp.applied) {
+          setRelocateStatus("", false);
+          // A plan of nothing is not a plan: with no row under the old prefix there is
+          // nothing to press, and the engine would refuse the apply anyway.
+          setRelocatePlanned(!!resp.rows);
+          return;
+        }
+        setRelocateStatus(fmt(I18N.relocate_applied, { rows: resp.rows }), false);
+        resetRelocatePlan();
+        document.getElementById("relocate-offer").style.display = "none";
+        // Every count and every plan on this page was built on the old paths, so they are
+        // re-read here rather than left to whenever a tab is next opened.
+        refreshTabsAfterProcess();
+      });
+  }
+
+  ["relocate-old", "relocate-new"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", resetRelocatePlan);
+  });
+
+  document.getElementById("relocate-open-btn").addEventListener("click", function () {
+    document.getElementById("relocate-panel").style.display = "";
+    resetRelocatePlan();
+    setRelocateStatus("", false);
+    var field = document.getElementById("relocate-old");
+    if (field.value.trim()) return;
+    // Prefilled from the INDEX and not from the source field above: that field says where
+    // the collection is being looked for, while what has to be rewritten is the prefix
+    // the database stores — and a path the program knows is not worth mistyping.
+    fetch("/api/relocate/suggest")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.old_prefix && !field.value.trim()) {
+          field.value = data.old_prefix;
+        }
+      })
+      .catch(function () {});
+  });
+
+  document.getElementById("relocate-close-btn").addEventListener("click", function () {
+    document.getElementById("relocate-panel").style.display = "none";
+  });
+
+  document.getElementById("relocate-browse-btn").addEventListener("click", function () {
+    browseIntoField(this, function (path) {
+      document.getElementById("relocate-new").value = path;
+      resetRelocatePlan();  // set from code, so the `input` listener above never fires
+    });
+  });
+
+  document.getElementById("relocate-plan-btn").addEventListener("click", function () {
+    requestRelocate(false);
+  });
+
+  document.getElementById("relocate-apply-btn").addEventListener("click", function () {
+    requestRelocate(true);
   });
 
   // --- F81: «не сканировать» and the three blocks of the first tab -------

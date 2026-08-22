@@ -182,6 +182,7 @@ tests/test_the_bin_can_refuse.py                      14
 tests/test_the_collection_can_move.py                25
 tests/test_the_cpu_tier_gets_a_number.py             59
 tests/test_the_first_launch_says_it_is_starting.py   160
+tests/test_the_index_follows_from_the_screen.py      76
 tests/test_the_log_speaks_english.py                 44
 tests/test_the_screen_speaks_the_users_language.py   104
 tests/test_three_tiers_of_sameness.py                83
@@ -211,7 +212,7 @@ tests/test_ui_junk_phase.py                          19
 tests/test_ui_large_collections.py                   36
 tests/test_ui_layout_workplace.py                    74
 tests/test_ui_lightbox_reset.py                      27
-tests/test_ui_master_switch.py                       144
+tests/test_ui_master_switch.py                       146
 tests/test_ui_moves.py                               6
 tests/test_ui_one_run_button.py                      43
 tests/test_ui_overrides.py                           24
