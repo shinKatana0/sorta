@@ -164,6 +164,22 @@ roughly ×2 the collection size, `--link` (hardlink) needs almost none.
 Timings above are from our own hardware, not a guarantee. Full breakdown, including
 RAM/VRAM notes, in the [user guide](docs/guide/user-guide.en.md#2-requirements).
 
+### Why there is no Docker image
+
+Sorta assumes an NVIDIA GPU. On a low-power home server a container would run the base
+tier — index, geolocation, duplicates, sorting by city — and none of what makes this more
+than a folder script: CLIP classification, face clusters, search by words. Handing the
+least interesting half of the product to the machines least able to run the rest is a poor
+trade, so there is no image, and that is a decision rather than an oversight.
+
+The blocker is not packaging. The web app binds to `127.0.0.1` and has no authentication,
+because on localhost it never needed any — and the screens it serves show faces, documents
+and a delete button. Putting them on a network is a product question that wants an answer
+before a Dockerfile, not after.
+
+If you want an image, open an issue and say what hardware you would run it on. That is the
+measurement this decision is missing.
+
 ---
 
 ## Quick start
