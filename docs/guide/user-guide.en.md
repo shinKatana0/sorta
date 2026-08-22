@@ -1408,6 +1408,11 @@ sorta reset [--yes|-y] [--clear-geo]
                                   photos and any already-sorted folders untouched
                                   (names of people/events and dup decisions are lost).
                                   The online-geo cache survives unless --clear-geo
+sorta relocate --from OLD --to NEW [--apply]
+                                  Point the index at a moved collection: swaps one
+                                  path prefix for another, keeps every row id (and so
+                                  the names of people and the manual marks), touches
+                                  no file. Dry-run without --apply (§17)
 sorta ui [--port 8756]            Local web app (Overview / Review / Layout / Slices / Moves)
 sorta doctor                      Environment check: torch/onnxruntime, GPU, geo data,
                                   log path, preview cache path (§3.5)
@@ -1488,6 +1493,35 @@ out — it is the value that means "no ceiling".
 Deleting the cache is safe at any moment: it is lazy and rebuilds itself, one frame
 at a time, in whichever stage next needs that frame. The only cost is that those
 frames get decoded from the originals once more.
+
+### `sorta relocate`
+
+The index is incremental **by path** — an absolute one, normalised when the file was
+first seen. A drive letter that changed, a folder that was renamed, an external disk
+mounted somewhere else therefore make every file look new. Running `sorta index` then
+repeats the whole pipeline and, because the rows are new rows, **the names you gave to
+people and every manual mark are lost with the old ones**. The photographs are never in
+danger; the hours and the typing are.
+
+```bash
+$ sorta relocate --from D:/Photos --to E:/Photos
+relocate: D:/Photos -> E:/Photos
+38485 values in 3 columns would move
+  files.path: 38485
+  ...
+nothing written — run it again with --apply
+```
+
+Nothing is written until `--apply`, and then it is one transaction: every column or
+none. `--apply` refuses when the new prefix does not exist, when nothing matched the old
+one (a typo, most likely), and when the move would put two rows on one path.
+
+The match is on a path-component boundary, so `--from /photos` leaves `/photos-backup`
+alone, and the separator style each row was written in is kept.
+
+`sorta index` also stops before it walks anything when the database holds rows and not
+one of the source folders exists — that is this situation, and reindexing from scratch
+is the expensive wrong answer to it.
 
 ---
 

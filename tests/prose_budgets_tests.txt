@@ -178,7 +178,8 @@ tests/test_sorter_forwarded.py                       27
 tests/test_sorter_layout_excludes.py                 20
 tests/test_sorter_overrides.py                       25
 tests/test_sorter_undated.py                         26
-tests/test_the_bin_can_refuse.py                     14
+tests/test_the_bin_can_refuse.py                      14
+tests/test_the_collection_can_move.py                25
 tests/test_the_first_launch_says_it_is_starting.py   160
 tests/test_the_log_speaks_english.py                 44
 tests/test_three_tiers_of_sameness.py                83
