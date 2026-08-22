@@ -37,6 +37,7 @@ from sorta.faults import Fault
 from sorta.i18n import Lang
 from sorta.runlog import setup_file_logging
 from sorta.ui import process
+from sorta.ui.page import _render_index_html
 from sorta.ui.strings import _UI_STRINGS
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -393,6 +394,20 @@ class TestThePersonalityReachesThePage(unittest.TestCase):
             with self.subTest(lang=lang):
                 text = _UI_STRINGS["process_error_unknown"][lang]
                 self.assertIn("{stage}", text)
+
+    def test_the_page_the_browser_gets_carries_every_key_the_renderer_asks_for(self):
+        """A catalog the server holds and the page does not ship is a code drawn as
+        nothing. What is checked is `window.I18N` of the real rendered page."""
+        for lang in _LANGS:
+            served = json.loads(re.search(r"window\.I18N = (\{.*\});",
+                                          _render_index_html(lang)).group(1))
+            for _exc, code in a_fault_of_each_kind():
+                with self.subTest(lang=lang, code=code):
+                    self.assertIn(f"fault_{code}", served)
+            for key in ("fault_download_refused", "fault_download_offline",
+                        "process_error_unknown", "stage_name_landmarks"):
+                with self.subTest(lang=lang, key=key):
+                    self.assertTrue(served[key])
 
 
 class _NoCache:
