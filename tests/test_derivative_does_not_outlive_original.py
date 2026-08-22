@@ -217,7 +217,7 @@ class TestTrashTakesThePreview(PreviewCacheMixin, DupesTestBase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["trashed"], [{"file_id": file_id, "name": "a.jpg"}])
-        trash.assert_called_once()
+        self.assertEqual(len(self.trashed_paths(trash)), 1)
         self.assertIsNone(self.conn.execute(
             "SELECT id FROM files WHERE id = ?", (file_id,)).fetchone())
 
@@ -232,7 +232,7 @@ class TestTrashTakesThePreview(PreviewCacheMixin, DupesTestBase):
             status, _payload = self.post("/api/photo/trash", {"file_id": file_id})
 
         self.assertEqual(status, 200)
-        trash.assert_called_once()
+        self.assertEqual(len(self.trashed_paths(trash)), 1)
         self.assertIsNone(self.conn.execute(
             "SELECT id FROM files WHERE id = ?", (file_id,)).fetchone())
         self.assertTrue(previews[0].exists())

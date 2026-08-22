@@ -534,10 +534,31 @@
 
   // --- deleting a single frame (the shared path for both tabs) ---------
 
+  // F241: the trash may refuse — a volume that has none refuses everything on it, and
+  // an individual file may be held open. Nothing was deleted in either case, so the
+  // screen has to say so; the two read differently because the answers differ. Nothing
+  // on this volume can be deleted at all, or these named files stayed behind.
+  function reportTrashRefusal(resp) {
+    var refused = (resp && resp.refused) || [];
+    if (!refused.length) return;
+    var trashed = (resp && resp.trashed) || [];
+    var noBin = !trashed.length && refused.every(function (r) {
+      return r.reason === "no_trash_on_volume";
+    });
+    if (noBin) {
+      window.alert(I18N.trash_no_bin_on_volume);
+      return;
+    }
+    window.alert(fmt(I18N.trash_partly_refused, {
+      names: refused.map(function (r) { return r.name; }).join(", "),
+    }));
+  }
+
   function deletePhoto(fileId, onSuccess) {
     var remember = document.getElementById("delete-remember").checked;
     if (!remember && !window.confirm(I18N.confirm_delete_photo)) return;
     postJson("/api/photo/trash", { file_id: fileId }).then(function (resp) {
+      reportTrashRefusal(resp);
       if (resp.trashed && resp.trashed.length) onSuccess();
     });
   }
@@ -546,6 +567,7 @@
   // onSuccess gets the list of file_ids that were really sent to the bin.
   function deletePhotos(fileIds, onSuccess) {
     postJson("/api/photos/trash", { file_ids: fileIds }).then(function (resp) {
+      reportTrashRefusal(resp);
       if (resp.trashed) {
         onSuccess(resp.trashed.map(function (t) { return t.file_id; }));
       }
@@ -6437,7 +6459,10 @@
         return !kept[id];
       }));
       postJson("/api/dupes/trash", { group: group, keep_file_id: keeps[0] })
-        .then(loadDupes);
+        .then(function (resp) {
+          reportTrashRefusal(resp);
+          loadDupes();
+        });
     });
     box.appendChild(btnTrash);
 

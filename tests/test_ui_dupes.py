@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 from unittest import mock
+
+from sorta.ui import common
 
 from tests import waiting
 from tests.test_ui import UiServerTestBase
@@ -41,6 +44,15 @@ class DupesTestBase(UiServerTestBase):
     def post(self, path: str, data: dict) -> tuple[int, dict]:
         answer = waiting.post_json(f"{self.base_url}{path}", data)
         return answer.status, answer.json()
+
+    def trashed_paths(self, mock_trash) -> list[str]:
+        """The real files a mocked `send_to_trash` was given.
+
+        F241 sends it one more path per volume — the preflight probe — and that one is
+        not a file anybody asked to delete, so it is not counted here.
+        """
+        return [call.args[0] for call in mock_trash.call_args_list
+                if not Path(call.args[0]).name.startswith(common._TRASH_PROBE_PREFIX)]
 
 
 class TestApiDupesGet(DupesTestBase):
@@ -200,7 +212,7 @@ class TestApiDupesTrash(DupesTestBase):
             status, payload = self.post(
                 "/api/dupes/trash", {"group": [fid1, fid2], "keep_file_id": fid1})
         self.assertEqual(status, 200)
-        mock_trash.assert_called_once_with(path2)
+        self.assertEqual(self.trashed_paths(mock_trash), [path2])
         self.assertEqual(payload["trashed"], [{"file_id": fid2, "name": "b.jpg"}])
 
         remaining_ids = {r["id"] for r in self.conn.execute("SELECT id FROM files").fetchall()}
@@ -226,7 +238,7 @@ class TestApiDupesTrash(DupesTestBase):
         self.start_server()
         with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             self.post("/api/dupes/trash", {"group": [fid1, fid2], "keep_file_id": fid1})
-        mock_trash.assert_called_once()
+        self.assertEqual(len(self.trashed_paths(mock_trash)), 1)
         row = self.conn.execute("SELECT id FROM files WHERE id = ?", (fid1,)).fetchone()
         self.assertIsNotNone(row)
 

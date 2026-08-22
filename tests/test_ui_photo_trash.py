@@ -21,7 +21,7 @@ class TestApiPhotoTrash(DupesTestBase):
         with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post("/api/photo/trash", {"file_id": fid})
         self.assertEqual(status, 200)
-        mock_trash.assert_called_once_with(path)
+        self.assertEqual(self.trashed_paths(mock_trash), [path])
         self.assertEqual(payload["trashed"], [{"file_id": fid, "name": "a.jpg"}])
 
         row = self.conn.execute("SELECT id FROM files WHERE id = ?", (fid,)).fetchone()
@@ -35,7 +35,7 @@ class TestApiPhotoTrash(DupesTestBase):
         with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post("/api/photo/trash", {"file_id": 999999})
         self.assertEqual(status, 200)
-        self.assertEqual(payload, {"trashed": []})
+        self.assertEqual(payload, {"trashed": [], "refused": []})
         mock_trash.assert_not_called()
 
     def test_missing_file_id_returns_400(self):
@@ -84,7 +84,7 @@ class TestApiPhotosTrash(DupesTestBase):
         with mock.patch("sorta.ui.common.send_to_trash") as mock_trash:
             status, payload = self.post("/api/photos/trash", {"file_ids": [a, b]})
         self.assertEqual(status, 200)
-        self.assertEqual(mock_trash.call_count, 2)
+        self.assertEqual(len(self.trashed_paths(mock_trash)), 2)
         self.assertEqual({t["file_id"] for t in payload["trashed"]}, {a, b})
         rows = self.conn.execute("SELECT id FROM files WHERE id IN (?, ?)", (a, b)).fetchall()
         self.assertEqual(rows, [])

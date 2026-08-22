@@ -1267,8 +1267,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "keep_file_id must be in group"},
                                 status=HTTPStatus.BAD_REQUEST)
                 return
-            trashed = _trash_group(db_path, group, keep)
-            self._send_json({"trashed": trashed})
+            trashed, refused = _trash_group(db_path, group, keep)
+            self._send_json({"trashed": trashed, "refused": refused})
 
         def _handle_review_mark(self) -> None:
             # F126: a soft mark and nothing else — the same `dedup_choice` the
@@ -1318,8 +1318,10 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             if file_id is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            trashed = _trash_files(db_path, [file_id])
-            self._send_json({"trashed": trashed})
+            # F241: a refusal is not a failure of the request — 200 with both halves
+            # named, so the page can say what stayed instead of guessing from a 500.
+            trashed, refused = _trash_files(db_path, [file_id])
+            self._send_json({"trashed": trashed, "refused": refused})
 
         def _handle_photos_trash(self) -> None:
             # bulk deletion of the selected (the shared _trash_files path, same as single)
@@ -1327,8 +1329,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             if ids is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            trashed = _trash_files(db_path, ids)
-            self._send_json({"trashed": trashed})
+            trashed, refused = _trash_files(db_path, ids)
+            self._send_json({"trashed": trashed, "refused": refused})
 
         def _handle_overrides(self) -> None:
             # F77: marks only — nothing is moved on disk here (the physical move is the

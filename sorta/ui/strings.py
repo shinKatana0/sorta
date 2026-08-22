@@ -956,6 +956,22 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Удалить {n} файлов в корзину?", "en": "Move {n} files to trash?",
         "ja": "{n} 件のファイルをごみ箱に移動しますか?",
     },
+    # F241: the two shapes a refusal has. The first is about the VOLUME and so about
+    # every frame on it — naming files there would suggest retrying one of them; the
+    # second is about these files and nothing else, so it names them.
+    "trash_no_bin_on_volume": {
+        "ru": "На этом диске нет корзины — ничего не удалено. Удаление доступно только "
+              "там, где корзина принимает файлы.",
+        "en": "This drive has no trash — nothing was deleted. Deletion works only where "
+              "the trash accepts files.",
+        "ja": "このドライブにはごみ箱がありません — 何も削除していません。削除は"
+              "ごみ箱が使える場所でのみ行えます。",
+    },
+    "trash_partly_refused": {
+        "ru": "Не удалось удалить: {names}. Эти файлы остались на месте.",
+        "en": "Could not delete: {names}. These files stayed where they were.",
+        "ja": "削除できませんでした: {names}。これらのファイルはそのまま残っています。",
+    },
     "status_planned": {"ru": "запланировано", "en": "planned", "ja": "予定"},
     "status_done": {"ru": "выполнено", "en": "done", "ja": "完了"},
     "status_undone": {"ru": "отменено", "en": "undone", "ja": "取消"},

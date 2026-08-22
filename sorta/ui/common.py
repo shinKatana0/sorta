@@ -6,6 +6,7 @@ re-exports all of it under the old names.
 """
 from __future__ import annotations
 
+import errno
 import io
 import logging
 import os
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from send2trash import send2trash as send_to_trash
+from send2trash.exceptions import TrashPermissionError
 
 from .. import imaging
 from ..config import Config
@@ -210,42 +212,152 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _trash_files(db_path: Path, ids: list[int]) -> list[dict]:
+# --- F241: the trash is allowed to refuse -------------------------------------------
+#
+# A volume with no trash to put the file in (read-only mount, a network share without
+# one, a file system that has no such thing) makes `send2trash` raise. Deleting anyway
+# would quietly turn the only promise this button makes — that it is reversible — into
+# an `unlink` nobody asked for, so instead nothing is deleted from that volume at all.
+
+TRASH_REFUSED_NO_BIN = "no_trash_on_volume"
+TRASH_REFUSED_PERMISSION = "permission"
+TRASH_REFUSED_IN_USE = "in_use"
+TRASH_REFUSED_FAILED = "failed"
+
+# Recognisable on sight: the probe lands in somebody's photo folder for a moment, and if
+# a crash ever leaves one behind it has to be obvious what it was.
+_TRASH_PROBE_PREFIX = ".sorta-trash-probe-"
+# ERROR_SHARING_VIOLATION — a file another process holds open on Windows arrives as a
+# PermissionError, and it is the one refusal that goes away by itself.
+_WIN_SHARING_VIOLATION = 32
+
+
+def _trash_volume_key(path: str) -> str:
+    """The volume `path` lives on — the unit the preflight probe is cached by.
+
+    Not the platform and not the directory: `send2trash` decides by where the file is,
+    so a verdict about `C:\\` says nothing about `\\\\nas\\photos`, while two folders of
+    one disk must not cost two probes. Where there are no drive letters the nearest
+    mount point upwards answers the same question.
+    """
+    full = os.path.abspath(path)
+    drive = os.path.splitdrive(full)[0]
+    if drive:
+        return os.path.normcase(drive)
+    directory = os.path.dirname(full)
+    while directory and not os.path.ismount(directory):
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return os.path.normcase(directory or os.sep)
+
+
+def _volume_accepts_trash(directory: Path) -> bool | None:
+    """Does the OS trash take files from `directory`? Asked by really trashing one.
+
+    A real probe rather than a rule about the platform, and next to the target rather
+    than anywhere else, because that is what `send2trash` itself goes by. None means the
+    probe could not be placed at all — the volume was never asked, so nothing about it
+    may be cached and the real attempt has to answer instead.
+    """
+    probe = directory / f"{_TRASH_PROBE_PREFIX}{os.getpid()}-{threading.get_ident()}"
+    try:
+        probe.write_bytes(b"")
+    except OSError as exc:
+        _log.warning("ui: the trash probe could not be written to %s: %s", directory, exc)
+        return None
+    try:
+        send_to_trash(str(probe))
+        return True
+    except OSError as exc:
+        _log.warning("ui: %s does not accept files into the trash: %s", directory, exc)
+        return False
+    finally:
+        # Both ways round: the probe survives a refusal, and under a test double it
+        # survives the success too.
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+
+
+def _refusal_reason(exc: OSError) -> str:
+    """The machine code for a failed `send_to_trash` — never the text of the exception.
+
+    The text goes to the log; the screen speaks from the string catalog, so this side
+    owes it a code and not a sentence.
+    """
+    if isinstance(exc, TrashPermissionError):
+        return TRASH_REFUSED_NO_BIN
+    if (getattr(exc, "winerror", None) == _WIN_SHARING_VIOLATION
+            or exc.errno in (errno.EBUSY, errno.ETXTBSY)):
+        return TRASH_REFUSED_IN_USE
+    if isinstance(exc, PermissionError):
+        return TRASH_REFUSED_PERMISSION
+    return TRASH_REFUSED_FAILED
+
+
+def _trash_files(db_path: Path, ids: list[int]) -> tuple[list[dict], list[dict]]:
     """The single trash path: ids -> OS trash + DELETE of their files/dedup_choice rows.
+
+    Returns (trashed, refused). A frame the trash would not take stays on disk AND in
+    `files`, keeps its preview, and comes back in `refused` with a reason code: the
+    DELETE runs over what actually left, never over what was asked for.
 
     An id outside the current files is silently skipped — idempotent on a repeat.
     F210: the frame's preview goes with it, keyed off the ROW (path, mtime, size),
     because after `send2trash` none of the three can be read off the disk any more.
     """
     if not ids:
-        return []
+        return [], []
     conn = _connect(db_path)
     try:
         placeholders = ",".join("?" * len(ids))
         rows = conn.execute(
             f"SELECT id, path, mtime, size FROM files WHERE id IN ({placeholders})", ids
         ).fetchall()
-        trashed = []
+        trashed: list[dict] = []
+        refused: list[dict] = []
+        accepts: dict[str, bool] = {}
         for r in rows:
-            send_to_trash(r["path"])
+            path = Path(r["path"])
+            entry = {"file_id": r["id"], "name": path.name}
+            key = _trash_volume_key(r["path"])
+            verdict = accepts.get(key)
+            if verdict is None:
+                verdict = _volume_accepts_trash(path.parent)
+                if verdict is not None:
+                    accepts[key] = verdict
+            if verdict is False:
+                _log.warning("ui: %s was not deleted (%s)", r["path"], TRASH_REFUSED_NO_BIN)
+                refused.append({**entry, "reason": TRASH_REFUSED_NO_BIN})
+                continue
+            try:
+                send_to_trash(r["path"])
+            except OSError as exc:
+                reason = _refusal_reason(exc)
+                _log.warning("ui: %s was not deleted (%s): %s", r["path"], reason, exc)
+                refused.append({**entry, "reason": reason})
+                continue
             imaging.preview_delete(r["path"], r["mtime"], r["size"])
-            trashed.append({"file_id": r["id"], "name": Path(r["path"]).name})
-        found_ids = [r["id"] for r in rows]
-        if found_ids:
-            ph2 = ",".join("?" * len(found_ids))
+            trashed.append(entry)
+        gone_ids = [t["file_id"] for t in trashed]
+        if gone_ids:
+            ph2 = ",".join("?" * len(gone_ids))
             with conn:
-                conn.execute(f"DELETE FROM dedup_choice WHERE file_id IN ({ph2})", found_ids)
+                conn.execute(f"DELETE FROM dedup_choice WHERE file_id IN ({ph2})", gone_ids)
                 # F149: both directions. The derivation is a fact about a PAIR, so
                 # either half going to the bin ends it — otherwise the button keeps
                 # answering "you already have one" about a file that is gone.
                 conn.execute(
                     f"DELETE FROM restored_files "
                     f"WHERE file_id IN ({ph2}) OR source_file_id IN ({ph2})",
-                    found_ids + found_ids)
-                conn.execute(f"DELETE FROM files WHERE id IN ({ph2})", found_ids)
+                    gone_ids + gone_ids)
+                conn.execute(f"DELETE FROM files WHERE id IN ({ph2})", gone_ids)
     finally:
         conn.close()
-    return trashed
+    return trashed, refused
 
 
 def _validate_file_id_payload(payload: object) -> int | None:
