@@ -123,18 +123,20 @@ reproducible is scriptable; nothing that needs an opinion pretends to be.
 > lighter — about 3 GB — so **city sorting, duplicates, faces and events are comfortable on
 > a 6–8 GB card**.
 >
-> **The CPU profile works and has never been measured end to end.** It exists so that a
-> machine without a GPU can still index, geolocate, find duplicates and sort by city. Take
-> it as: small collections, or a large one with faces, events and the deep tier switched
-> off. Nobody has run 38 000 files through it, and we will not pretend to know how long
-> that takes.
+> **The CPU profile's base tier is measured; its model stages are not.** Index,
+> geolocation, near‑duplicates and sorting by city cost **24 min 51 s** on 40 295 files
+> (2026‑08‑22, 24 logical cores, cold preview cache). Nineteen of those minutes are the
+> first decode of every frame into the preview cache — the GPU profile spends 19 min 02 s
+> on exactly the same work, so it is not a penalty for having no card. What was **not**
+> measured on CPU is everything that runs a model: classification, faces, landmarks, the
+> deep tier. Those are the stages a GPU exists for, and we will not guess at them.
 
 
 | | CPU profile (the `cpu` extra) | GPU profile (the `gpu` extra) |
 |---|---|---|
 | Hardware | Any x86‑64 machine | NVIDIA GPU + driver supporting **CUDA 13** |
 | VRAM | n/a | **~3 GB** for everything except the deep tier (measured on RTX 5090: CLIP ViT‑L 2.0 GB + buffalo_l 0.6 GB) — **6 GB** comfortable. The **deep VLM tier peaks at 20.5 GB**, measured, so it wants a **24 GB** card |
-| Speed | Works; **never measured end to end** on a large collection | Measured 2026‑08‑05, 38 485 files from cold: index 5.3 min · geo 3 s offline · landmarks 4.9 · classify 32.4 · faces 14.2 · events 2 s · junk 19.3 · phash 45 s — **77.5 min** in all, and ~10 minutes less with the preview cache warm |
+| Speed | **Base tier measured 2026‑08‑22**, 40 295 files, 24 logical cores, cold cache: index 5 min 40 s · geo 3 s · phash 19 min 07 s · dupes 1 s — **24 min 51 s**. Model stages (classify / faces / landmarks / deep tier) **not measured on CPU** | Measured 2026‑08‑05, 38 485 files from cold: index 5.3 min · geo 3 s offline · landmarks 4.9 · classify 32.4 · faces 14.2 · events 2 s · junk 19.3 · phash 45 s — **77.5 min** in all, and ~10 minutes less with the preview cache warm. Read `phash 45 s` with its position: it runs fifth, when the earlier stages have already decoded every frame into the cache. First in line it costs 19 minutes, on either profile |
 | Best for | City sorting + duplicates on any machine; smaller collections with faces/events on | Large collections with faces/events routinely on — the run above was **380 GB / 38 485 files** |
 
 ### Running on a smaller card

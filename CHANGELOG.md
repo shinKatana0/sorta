@@ -6,6 +6,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Measured
+- **The CPU tier has a number, and the number it replaces turned out to be about
+  something else** (F243, phases 1-2). Measured 2026-08-22 on 40 295 files (26 447
+  canonical, 0 errors), 24 logical cores, cold preview cache, on a venv proven CPU-only
+  three ways: index 5 min 40 s, geo 3 s, phash 19 min 07 s, dupes 1 s -- **24 min 51 s**
+  for everything that sorts a collection by city. Faces, classification, landmarks and
+  the deep tier were **out of scope by decision** and are still unmeasured on CPU; the
+  documents say so rather than estimating.
+
+  The interesting part is the comparison that did not survive contact. Against the
+  2026-08-05 GPU run, `index` costs 5 min 40 s where the card managed 5 min 18 s on a
+  slightly smaller collection, and `geo` is 3 seconds on both -- neither stage touches a
+  GPU, so neither pays for its absence. That left `phash` at 19 minutes against a
+  published **45 s**, a 25x gap that reads as the price of having no card. It is not.
+  A second run put the same 24 504 frames through `phash` on the **GPU** profile with an
+  equally cold cache: **19 min 02 s**, within half a percent. The 45 s figure is true and
+  is about stage ORDER -- `phash` runs fifth in a full run, by which point `index`,
+  `landmarks`, `classify`, `faces` and `junk` have decoded every frame into the preview
+  cache already. Measured first in line, that decode costs 19 minutes on either profile.
+  So the CPU base tier is not dominated by a CPU penalty at all: it carries, under one
+  stage name, work the GPU run books under five others.
+
+  Method, because a number is worth what its method is worth: the rig refuses to start on
+  a stack it cannot prove is CPU-only and writes the proof into its report. The GPU
+  comparison could therefore not use it, and did not get an exemption either -- it went
+  through the product's own `sorta phash`, timed by wall clock, which includes a few
+  seconds of interpreter start the rig's figure excludes. Both runs used a preview cache
+  directory of their own (7.6 GB built each time), so neither warmed the other and the
+  owner's cache was left alone.
+
+
 ### Added
 - **The rig that will give the CPU tier a number — and that refuses to produce a false
   one** (F243, phase 0). The CPU profile is the only tier of this project with no
