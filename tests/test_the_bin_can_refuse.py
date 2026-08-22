@@ -147,6 +147,34 @@ class TestOneFileThatWillNotGo(TrashRefusalBase):
             "SELECT file_id FROM dedup_choice WHERE file_id = ?", (stuck,)).fetchone())
 
 
+class TestEveryRefusalIsInTheLog(TrashRefusalBase):
+    def test_a_volume_without_a_trash_names_the_path_and_the_reason(self):
+        file_id, path = self.add_file("a.jpg")
+        self.start_server()
+
+        with self.assertLogs("sorta.ui", level="WARNING") as logs, \
+                mock.patch("sorta.ui.common.send_to_trash",
+                           side_effect=_no_bin_anywhere()):
+            self.post("/api/photo/trash", {"file_id": file_id})
+
+        line = [m for m in logs.output if str(path) in m]
+        self.assertEqual(len(line), 1)
+        self.assertIn(common.TRASH_REFUSED_NO_BIN, line[0])
+
+    def test_a_single_file_that_stuck_names_the_path_and_the_reason(self):
+        file_id, path = self.add_file("a.jpg")
+        self.start_server()
+
+        with self.assertLogs("sorta.ui", level="WARNING") as logs, \
+                mock.patch("sorta.ui.common.send_to_trash",
+                           side_effect=_refusing_only(str(path))):
+            self.post("/api/photo/trash", {"file_id": file_id})
+
+        line = [m for m in logs.output if str(path) in m]
+        self.assertEqual(len(line), 1)
+        self.assertIn(common.TRASH_REFUSED_PERMISSION, line[0])
+
+
 class TestTheProbeTidiesUpAfterItself(TrashRefusalBase):
     def probe_leftovers(self) -> list[Path]:
         return [p for p in self.src_dir.rglob("*")
