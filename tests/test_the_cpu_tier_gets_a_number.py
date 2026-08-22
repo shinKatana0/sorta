@@ -277,6 +277,12 @@ class TestASyntheticCollectionGoesThroughWhole(unittest.TestCase):
         self.assertFalse((self.root / "sorta.db").exists())
         self.assertFalse((self.src / "measure.db").exists())
 
+    def test_the_collection_itself_was_not_touched(self):
+        """A measurement that sorted the files it measured would be a different feature."""
+        left = sorted(path.name for path in self.src.rglob("*"))
+        self.assertEqual(len(left), self.files)
+        self.assertTrue(all(name.endswith(".jpg") for name in left))
+
     def test_the_console_form_says_the_same_thing(self):
         text = rig.format_report(self.report)
         for name in rig.DEFAULT_STAGES:
