@@ -133,6 +133,26 @@ def constructed_codes() -> dict[str, set[str]]:
     return used
 
 
+def assigned_codes() -> set[str]:
+    """Every code the package writes down without an exception class behind it.
+
+    The run screen can fail outside a stage — the plan cache after a run that otherwise
+    finished — and that failure has a code too. Found by reading what is assigned to
+    `error_code`, so the next one written that way owes three translations as well.
+    """
+    found: set[str] = set()
+    for path in sorted(_PACKAGE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+                continue
+            if not isinstance(node.value.value, str):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "error_code":
+                    found.add(node.value.value)
+    return found
+
+
 def render(code: str, params: dict[str, object], lang: Lang) -> str:
     """The sentence the page builds, in `lang` — the Python side of `processErrorText`.
 
@@ -338,6 +358,18 @@ class TestTheEnglishScreenDidNotChange(unittest.TestCase):
                     self.assertNotIn("{", text)
                     for value in faults.fault_params(exc).values():
                         self.assertIn(str(value), text)
+
+    def test_a_failure_outside_a_stage_has_a_code_and_three_languages_too(self):
+        """The plan cache after a run that otherwise finished — the one failure of the
+        run screen with no exception class of ours behind it. It used to be the last
+        Russian sentence in `ui/process.py`, shown whatever the interface was."""
+        self.assertEqual(assigned_codes(), {"plan_not_rebuilt"})
+        for code in assigned_codes():
+            for lang in _LANGS:
+                with self.subTest(code=code, lang=lang):
+                    self.assertTrue(_UI_STRINGS[f"fault_{code}"][lang])
+        self.assertEqual(render("plan_not_rebuilt", {"error": "database is locked"}, "en"),
+                         "the plan was not rebuilt: database is locked")
 
     def test_the_download_refusal_is_still_the_sentence_the_console_prints(self):
         """It is generated from the CLI catalog, so the two cannot drift; asserted

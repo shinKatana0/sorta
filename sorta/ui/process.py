@@ -41,10 +41,10 @@ from ..junk import (
 from ..landmarks import _SCAN_KEY as _LANDMARK_SCAN_KEY
 from ..landmarks import Classifier, clip_classifier, detect_landmarks
 from ..naming import name_events, naming_settings
+from ..offline import ENV_ALLOW_DOWNLOAD, offline_by_us
 from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
-from ..offline import ENV_ALLOW_DOWNLOAD, offline_by_us
 from ..tiers import (
     PartState, TierState, download_failure, megabytes, run_parts, stage_downloads,
     tier_states, watch_download, weights_size_mb,
@@ -1634,7 +1634,7 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
             except Exception as exc:  # noqa: BLE001 — report via status, do not crash the thread
                 error = str(exc)
                 error_stage = name  # F191: named in the collapsed row, not behind a click
-                # F245: what the page says the same thing in its own language from.
+                # F245: the code the page redraws this in its own language from.
                 error_code = fault_code(exc)
                 error_params = fault_params(exc)
                 _log.exception("sorta ui: pipeline stage %r failed", name)
