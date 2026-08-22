@@ -3468,6 +3468,16 @@
     return vals;
   }
 
+  // F244+F245 met here: a refusal of the move carries a code like every other fault of
+  // ours, so it is rendered from the same catalog. `reason` is what an entry-less code
+  // falls back to — the engine's own English sentence, which is better than nothing.
+  function faultSentence(resp) {
+    if (!resp) return "";
+    var template = resp.code ? I18N["fault_" + resp.code] : null;
+    if (!template) return resp.reason || resp.error || "";
+    return fmt(template, faultValues(resp.params || {}));
+  }
+
   function processErrorText(data) {
     var params = data.error_params || {};
     var template = data.error_code ? I18N["fault_" + data.error_code] : null;
@@ -3734,7 +3744,7 @@
           // there, the prefix that matched nothing, the paths that would collide. Nothing
           // was written in any of those cases, so the plan simply has to be asked again.
           setRelocateStatus(I18N.relocate_refused_prefix
-                            + ((resp && (resp.reason || resp.error)) || ""), true);
+                            + faultSentence(resp), true);
           resetRelocatePlan();
           return;
         }

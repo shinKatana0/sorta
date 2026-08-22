@@ -29,6 +29,7 @@ from sorta import ui
 from sorta.db import connect
 from sorta.relocate import RelocateError, RelocatePlan
 from sorta.ui import process as ui_process
+from sorta.ui import strings
 
 from tests import waiting
 from tests.test_ui import UiServerTestBase
@@ -310,12 +311,25 @@ class TestTheEngineIsCalledAndNotCopied(RelocateServerTestBase):
         self.assertEqual(self.paths(), before)
 
     def test_the_engines_refusal_is_the_one_the_route_reports(self):
-        with mock.patch.object(ui_process, "relocate",
-                               side_effect=RelocateError("no such folder")):
+        refusal = RelocateError("no such folder", "relocate_target_missing",
+                                new_prefix="D:/gone")
+        with mock.patch.object(ui_process, "relocate", side_effect=refusal):
             status, resp = self.relocate(apply=True)
         self.assertEqual(status, 200)
         self.assertEqual(resp["error"], ui.RELOCATE_REFUSED)
         self.assertEqual(resp["reason"], "no such folder")
+
+    def test_the_refusal_carries_the_code_the_catalog_renders(self):
+        """F245 merged beside this one: a refusal of ours is drawn from the catalog in
+        the interface language, so the route has to hand over the code and its values and
+        not only the English sentence."""
+        refusal = RelocateError("no such folder", "relocate_target_missing",
+                                new_prefix="D:/gone")
+        with mock.patch.object(ui_process, "relocate", side_effect=refusal):
+            _status, resp = self.relocate(apply=True)
+        self.assertEqual(resp["code"], "relocate_target_missing")
+        self.assertEqual(resp["params"], {"new_prefix": "D:/gone"})
+        self.assertIn("fault_relocate_target_missing", strings._UI_STRINGS)
 
 
 class TestAMovedCollectionLeavesTheStateTheOfferKeysOn(RelocateServerTestBase):

@@ -1742,5 +1742,9 @@ def _relocate_payload(db_path: Path, old_prefix: str, new_prefix: str, *,
     try:
         plan = relocate(db_path, old_prefix, new_prefix, apply=apply)
     except RelocateError as exc:
-        return {"error": RELOCATE_REFUSED, "reason": str(exc)}
+        # F245 landed beside this: a refusal of ours carries a code, and every relocate
+        # code is in the catalog, so the page renders it in the interface language. The
+        # sentence stays as the fallback for a code the page has no entry for.
+        return {"error": RELOCATE_REFUSED, "reason": str(exc),
+                "code": exc.code, "params": exc.params}
     return _relocate_plan_to_json(plan)
