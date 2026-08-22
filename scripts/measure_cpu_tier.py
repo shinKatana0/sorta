@@ -499,6 +499,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     log = Path(args.log) if args.log else db.with_suffix(".log")
     out = Path(args.out)
+    if not out.parent.exists():
+        raise SystemExit(f"--out: {out.parent} does not exist, and a run of hours must not "
+                         "find that out at the end of them")
     started = datetime.now()
     attach_run_log(log, cfg)
     conn = connect(db)

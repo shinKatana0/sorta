@@ -146,6 +146,15 @@ class TestARefusalLeavesNothingBehind(unittest.TestCase):
         self.assertFalse((self.root / "out.json").exists())
         self.assertFalse((self.root / "measure.db").exists())
 
+    def test_a_report_path_that_cannot_be_written_stops_the_run_at_the_start(self):
+        """Hours of run and then a typo in `--out` is not somewhere to find that out."""
+        args = ["--config", str(self.root / "config.yaml"), "--src", str(self.root),
+                "--db", str(self.root / "measure.db"),
+                "--out", str(self.root / "nowhere" / "out.json")]
+        with mock.patch.dict(sys.modules, CPU_ONLY_STACK), self.assertRaises(SystemExit):
+            rig.main(args)
+        self.assertFalse((self.root / "measure.db").exists())
+
 
 class TestTheMeasurementGetsADatabaseOfItsOwn(unittest.TestCase):
     """Criterion 3: not photos.db, not sorta.db, and not what config.yaml points at."""
