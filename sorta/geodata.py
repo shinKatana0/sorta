@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 
+from .faults import Fault
 from .i18n import Lang
 
 _log = logging.getLogger(__name__)
@@ -52,8 +53,10 @@ _MISSING_DATA_HINT = (
 )
 
 
-class GeoDataMissing(FileNotFoundError):
+class GeoDataMissing(Fault, FileNotFoundError):
     """Bundled `places.tsv` is not where the resolver looked for it."""
+
+    codes = ("geo_data_missing",)
 
 
 def _default_data_dir() -> Path:
@@ -215,7 +218,8 @@ class GeoResolver:
         if not path.exists():
             # F65: the main file — staying silent here turns every coordinate into an
             # empty place and fakes "exact_gps" all the way down to the DB.
-            raise GeoDataMissing(_MISSING_DATA_HINT.format(path=path))
+            raise GeoDataMissing(_MISSING_DATA_HINT.format(path=path),
+                                 "geo_data_missing", path=str(path))
         with path.open(encoding="utf-8", newline="") as f:
             for row in csv.reader(f, delimiter="\t"):
                 if len(row) < 9:

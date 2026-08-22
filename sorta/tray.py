@@ -46,6 +46,7 @@ from .splash import _Splash
 from .config import configure_logging, load_config
 from .db import connect
 from .diagnostics import warn_if_geo_data_missing, warn_if_gpu_mismatch
+from .faults import Fault
 from .runlog import log_environment
 
 _LOG = logging.getLogger(__name__)
@@ -113,10 +114,12 @@ _STARTUP_LINE = "startup step=%s elapsed=%.3f"
 _STARTUP_READY_LINE = "startup ready elapsed=%.3f"
 
 
-class TrayUnavailable(RuntimeError):
+class TrayUnavailable(Fault, RuntimeError):
     """This machine has no tray (or no library for it) — serve without an icon. The
     absence of an indicator is a property of somebody's desktop, never a reason for the
     program not to start."""
+
+    codes = ("tray_icon_unreadable", "tray_no_pystray", "tray_no_backend")
 
 
 def url_for(port: int) -> str:
@@ -417,7 +420,9 @@ def icon_image() -> Any:
         with Image.open(ICON_PATH) as image:
             return image.convert("RGBA")
     except (OSError, ValueError) as exc:
-        raise TrayUnavailable(f"cannot read {ICON_PATH.name}: {exc}") from exc
+        raise TrayUnavailable(f"cannot read {ICON_PATH.name}: {exc}",
+                              "tray_icon_unreadable", icon=ICON_PATH.name,
+                              error=str(exc)) from exc
 
 
 def build_icon(port: int, lang: i18n.Lang, *,
@@ -432,7 +437,8 @@ def build_icon(port: int, lang: i18n.Lang, *,
     try:
         import pystray
     except ImportError as exc:
-        raise TrayUnavailable(f"pystray is not installed: {exc}") from exc
+        raise TrayUnavailable(f"pystray is not installed: {exc}", "tray_no_pystray",
+                              error=str(exc)) from exc
     image = icon_image()
     try:
         menu = pystray.Menu(
@@ -446,7 +452,8 @@ def build_icon(port: int, lang: i18n.Lang, *,
                                                 url=url_for(port)),
                             menu=menu)
     except Exception as exc:  # a backend that refuses to load (no indicator, no DISPLAY)
-        raise TrayUnavailable(f"no tray on this system: {exc}") from exc
+        raise TrayUnavailable(f"no tray on this system: {exc}", "tray_no_backend",
+                              error=str(exc)) from exc
 
 
 def _stop_icon_when_the_server_stops(serving: threading.Thread, icon: Any) -> None:

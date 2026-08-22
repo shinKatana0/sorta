@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import install, launch
+from .faults import Fault
 
 _EXIFTOOL_TAGS = [
     "-DateTimeOriginal", "-CreateDate", "-GPSLatitude", "-GPSLongitude",
@@ -143,10 +144,12 @@ _SESSION_ARGS = _QUERY_ARGS + (
 )
 
 
-class UnsafeExifPath(ValueError):
+class UnsafeExifPath(Fault, ValueError):
     """A path that must not be handed to exiftool (F208) — see `_require_absolute`. Its
     own type so the fallback below can tell a refusal apart from a dead session: that one
     is retried one-shot, this one must not be retried at all."""
+
+    codes = ("exif_relative_path",)
 
 
 def _require_absolute(paths: list[Path]) -> None:
@@ -160,7 +163,8 @@ def _require_absolute(paths: list[Path]) -> None:
     """
     for path in paths:
         if not Path(path).is_absolute():
-            raise UnsafeExifPath(f"exiftool: path must be absolute, got {str(path)!r}")
+            raise UnsafeExifPath(f"exiftool: path must be absolute, got {str(path)!r}",
+                                 "exif_relative_path", path=repr(str(path)))
 
 
 def _close_pipes(proc: subprocess.Popen) -> None:

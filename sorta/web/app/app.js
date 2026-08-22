@@ -3451,6 +3451,41 @@
     box.style.display = notes.length ? "" : "none";
   }
 
+  // F245: a failure of OURS arrives with a code and the values it names, so it is drawn
+  // from this catalog in the language of the interface. Its English sentence travels
+  // with it and is what the log keeps; the page simply stops being the place that shows
+  // it. A failure that is not ours (sqlite3, the file system) has no code, and inventing
+  // a translation for it would be worse than the English it came with — that one keeps
+  // its own text under a wrapper naming the stage that stopped.
+  function faultValues(params) {
+    var vals = {};
+    Object.keys(params).forEach(function (name) { vals[name] = params[name]; });
+    // Two of the params are keys rather than text: a stage is named by the catalog the
+    // sentence was written against (not by the short chip caption), and a number of
+    // megabytes is read out differently in each language.
+    if (vals.stage) vals.stage = I18N["stage_name_" + vals.stage] || vals.stage;
+    if (vals.size_mb !== undefined) vals.size = downloadSize(vals.size_mb);
+    return vals;
+  }
+
+  function processErrorText(data) {
+    var params = data.error_params || {};
+    var template = data.error_code ? I18N["fault_" + data.error_code] : null;
+    if (!template) {
+      var stage = processStageLabel(data.error_stage || data.stage);
+      return stage
+          ? fmt(I18N.process_error_unknown, { stage: stage }) + data.error
+          : I18N.process_error_prefix + data.error;
+    }
+    var text = fmt(template, faultValues(params));
+    // The one sentence of ours built from two: the download refusal adds why the loaders
+    // were offline when it was Sorta that switched them off.
+    if (params.offline_variable) {
+      text += " " + fmt(I18N.fault_download_offline, { variable: params.offline_variable });
+    }
+    return I18N.process_error_prefix + text;
+  }
+
   function renderProcessStatus(data) {
     var startBtn = document.getElementById("process-start-btn");
     var cancelBtn = document.getElementById("process-cancel-btn");
@@ -3524,7 +3559,7 @@
       return;
     }
     if (data.error) {
-      statusEl.textContent = I18N.process_error_prefix + data.error;
+      statusEl.textContent = processErrorText(data);
     } else if (data.cancel_requested) {
       statusEl.textContent = I18N.process_cancelled;
       refreshTabsAfterProcess();

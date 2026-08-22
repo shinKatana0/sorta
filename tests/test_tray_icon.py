@@ -377,7 +377,8 @@ class TestAMachineWithoutATray(TrayProgramTestBase):
     """Brief test 3: no indicator, no pystray, no display — the program still runs."""
 
     def _no_tray(self, port, lang, *, on_open, on_quit):
-        raise tray.TrayUnavailable("pystray is not installed: no module named pystray")
+        raise tray.TrayUnavailable("pystray is not installed: no module named pystray",
+                           "tray_no_pystray", error="no module named pystray")
 
     def test_the_server_works_and_nothing_fails(self):
         # The address is still printed, exactly as `sorta ui` prints it: without an icon

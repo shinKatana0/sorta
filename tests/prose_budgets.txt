@@ -16,6 +16,7 @@ sorta/diagnostics.py  151
 sorta/events.py       100
 sorta/exif.py         92
 sorta/faces.py        412
+sorta/faults.py       26
 sorta/geo.py          343
 sorta/geodata.py      224
 sorta/hashing.py      12
@@ -44,9 +45,11 @@ sorta/ui/layout.py    535
 sorta/ui/moves.py     35
 sorta/ui/overview.py  50
 sorta/ui/page.py      23
-sorta/ui/process.py   717
+sorta/ui/process.py   730   # F245 +13: why the download refusal is English now,
+                            # and what the two new fields of the status payload are
 sorta/ui/review.py    325
 sorta/ui/slices.py    506
-sorta/ui/strings.py   475
+sorta/ui/strings.py   497   # F245 +22: the fault catalog — one section note, and
+                            # the rule that its `en` column IS the exception's message
 sorta/weights.py      76
 sorta/wizard.py       408

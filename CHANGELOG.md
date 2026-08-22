@@ -156,6 +156,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of files that stayed.
 
 ### Changed
+- **The run screen speaks the language of the interface; the log goes on speaking
+  English** (F245). F238/F239 moved every diagnostic sentence and every exception text to
+  English and put a guard on `ast` to keep them there — the right call for a log that
+  arrives attached to a complaint, and the wrong text for the red box of the run screen,
+  where a Russian or Japanese interface was showing an English paragraph. The two are not
+  in conflict once the failure stops travelling as a STRING: by the time the page draws
+  it, `error = str(exc)` is all that is left, and a string cannot be translated after the
+  fact.
+
+  So the failures this package raises now carry themselves. `faults.Fault` is a mixin
+  giving each of them a `code` (WHAT happened) and `params` (the values its sentence
+  names) while `str(exc)`, `args` and the built-in it is a kind of stay exactly what they
+  were — nine classes across `exif`, `geodata`, `relocate`, `search`, `sorter`, `tray` and
+  the pipeline itself. `/api/process/status` carries `error_code`/`error_params` beside
+  the unchanged `error`, and the page renders the code from the string catalog in its own
+  language. An error that is NOT ours — `sqlite3`, `OSError`, `MemoryError` — has no code
+  and is shown as it arrived, under a wrapper that names the stage that stopped: a
+  translation nobody wrote is worse than English.
+
+  Two guards, and the second is the one that will matter in a year. The first walks the
+  package for exception classes and demands three languages for every code — a class
+  added tomorrow is a red gate until it has them, and it is FOUND rather than listed
+  (F239). The second runs the pipeline's failure path with the interface in `ru` and in
+  `ja` and reads the `sorta.log` it produced: English, or red. It caught one case while
+  being written — the download refusal (F222) was built in the interface's language at
+  the raise site, so a Russian paragraph went into the traceback the log keeps of it; it
+  is now English there and localized on the page, from the same CLI catalog `sorta run`
+  prints from. The plan-cache failure, the last Russian sentence in the run screen's own
+  code, went the same way.
 - **A slow runner is not a failed test** (F240). 37 test files raise a local HTTP server —
   1048 test functions, 17% of the suite — and 38 places asked it for an answer with a
   `timeout=5` typed at the call site. That number is an assertion about SPEED inside a test
