@@ -85,6 +85,16 @@ class TestDryRunWritesNothing(MovedCollection):
                                 and line.startswith("  ")))
         self.assertIn("--apply", text)
 
+    def test_a_blob_that_reads_as_a_path_is_left_alone(self):
+        # SQLite casts a BLOB to text for `replace`, so the SQL filter picks one up and
+        # only the Python side can tell it is not a path.
+        conn = connect(self.db)
+        conn.execute("UPDATE face_clusters SET label = CAST(? AS BLOB) WHERE id = 1",
+                     (str(self.old / "x.jpg"),))
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.move().rows, 3)
+
 
 class TestTheMoveKeepsTheIds(MovedCollection):
     def test_paths_point_at_the_new_prefix(self):
