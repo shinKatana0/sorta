@@ -178,6 +178,7 @@ tests/test_sorter_forwarded.py                       27
 tests/test_sorter_layout_excludes.py                 20
 tests/test_sorter_overrides.py                       25
 tests/test_sorter_undated.py                         26
+tests/test_the_bin_can_refuse.py                      14
 tests/test_the_collection_can_move.py                25
 tests/test_the_cpu_tier_gets_a_number.py             59
 tests/test_the_first_launch_says_it_is_starting.py   160
@@ -196,7 +197,7 @@ tests/test_ui_cache.py                               48
 tests/test_ui_city_names.py                          12
 tests/test_ui_cluster_progress.py                    20
 tests/test_ui_clusters.py                            4
-tests/test_ui_dupes.py                               24
+tests/test_ui_dupes.py                               26
 tests/test_ui_env.py                                 31
 tests/test_ui_face_slices.py                         48
 tests/test_ui_filmstrip.py                           24

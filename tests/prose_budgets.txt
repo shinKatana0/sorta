@@ -38,8 +38,8 @@ sorta/sorter.py       808
 sorta/splash.py       39
 sorta/tiers.py        137
 sorta/tray.py         219
-sorta/ui/__init__.py  859
-sorta/ui/common.py    140
+sorta/ui/__init__.py  861
+sorta/ui/common.py    167
 sorta/ui/layout.py    535
 sorta/ui/moves.py     35
 sorta/ui/overview.py  50
@@ -47,6 +47,6 @@ sorta/ui/page.py      23
 sorta/ui/process.py   717
 sorta/ui/review.py    325
 sorta/ui/slices.py    506
-sorta/ui/strings.py   473
+sorta/ui/strings.py   475
 sorta/weights.py      76
 sorta/wizard.py       408
