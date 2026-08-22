@@ -30,6 +30,7 @@ from .config import Config
 from .dates import resolve_taken_at
 from .exif import ExifData, read_batch, resolve_exif_workers
 from .hashing import file_hash, resolve_workers
+from .relocate import refuse_if_the_collection_moved
 
 _log = logging.getLogger(__name__)
 
@@ -494,6 +495,7 @@ def _hash_one(item: tuple[Path, str]) -> _HashResult:
 def index(cfg: Config, conn: sqlite3.Connection,
           progress: Callable[[IndexStats], None] | None = None) -> IndexStats:
     stats = IndexStats()
+    refuse_if_the_collection_moved(cfg, conn)
     # F81: the exclusions are read here, not in cli.py — every entry point (CLI, web
     # app) goes through index() and must obey the same file.
     excludes = load_excludes(excludes_path(cfg))
