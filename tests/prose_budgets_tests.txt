@@ -184,6 +184,7 @@ tests/test_the_cpu_tier_gets_a_number.py             59
 tests/test_the_first_launch_says_it_is_starting.py   160
 tests/test_the_index_follows_from_the_screen.py      73
 tests/test_the_log_speaks_english.py                 44
+tests/test_the_screen_speaks_the_users_language.py   104
 tests/test_three_tiers_of_sameness.py                83
 tests/test_tray_icon.py                              110
 tests/test_two_vlm_options_reach_the_screen.py       130
@@ -219,7 +220,7 @@ tests/test_ui_overview.py                            138
 tests/test_ui_package.py                             44
 tests/test_ui_photo_trash.py                         6
 tests/test_ui_place_prefix_search.py                 49
-tests/test_ui_process.py                             127
+tests/test_ui_process.py                             129  # F245 +2: the two new fields of the status payload
 tests/test_ui_process_browse.py                      22
 tests/test_ui_progress_delete_ux.py                  11
 tests/test_ui_region_place.py                        93

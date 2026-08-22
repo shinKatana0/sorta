@@ -153,7 +153,11 @@ class TestProcessStartAndProgress(ProcessTestBase):
         self.assertEqual(
             set(data.keys()),
             {"running", "stage", "stage_index", "stage_total", "done", "total",
-             "error", "error_stage", "finished", "cancel_requested", "source_dir",
+             "error", "error_stage",
+             # F245: WHICH failure it was and the values it names, so the page can say
+             # it in the interface's language while the log keeps the English sentence.
+             "error_code", "error_params",
+             "finished", "cancel_requested", "source_dir",
              "stage_stats", "phase", "phase_elapsed",
              # F217: the deep tier was asked for, and whether anything came of it.
              "deep_requested", "deep_ran",

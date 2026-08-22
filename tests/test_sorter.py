@@ -639,7 +639,7 @@ class TestApplyAndJournal(SorterTestBase):
     def test_transfer_error_marks_failed_and_continues(self):
         fid1 = self.add_file("img1.jpg", country="France", city="Paris")
         fid2 = self.add_file("img2.jpg", country="RU", city="Moskva")
-        with patch("sorta.sorter._transfer", side_effect=TransferError("boom")):
+        with patch("sorta.sorter._transfer", side_effect=TransferError("boom", "sorter_copy_failed")):
             report = plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=True)
         self.assertEqual(report.failed, 2)
         self.assertEqual(report.moved, 0)
@@ -723,7 +723,7 @@ class TestUndoRoundTrip(SorterTestBase):
     def test_undo_transfer_error_marks_failed_and_continues(self):
         fid = self.add_file("img1.jpg", country="France", city="Paris")
         report = plan_and_sort(self.cfg, self.conn, "city", self.dest, apply=True)
-        with patch("sorta.sorter._transfer", side_effect=TransferError("boom")):
+        with patch("sorta.sorter._transfer", side_effect=TransferError("boom", "sorter_copy_failed")):
             stats = undo(self.conn, batch_id=report.batch_id)
         self.assertEqual(stats.failed, 1)
         self.assertEqual(stats.undone, 0)

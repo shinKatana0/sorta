@@ -20,12 +20,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from .. import imaging
+from .. import imaging, tiers
 from ..config import Config, skipped_stage_notes
 from ..dedup import assign_duplicates, compute_phashes
 from ..diagnostics import memory_health, nvidia_gpu_present
 from ..events import build_events
 from ..faces import detect_and_cluster
+from ..faults import Fault, fault_code, fault_params
 from ..geo import geo_cache_size, resolve_places
 from ..i18n import Lang, normalize_lang
 from ..indexer import excludes_path, index as run_index, load_excludes
@@ -105,7 +106,7 @@ def _stage_stats(stats: object, processed: tuple[str, ...], skipped: str) -> _St
     return {"processed": sum(values[:-1]), "skipped": values[-1]}
 
 
-class _DownloadRefused(RuntimeError):
+class _DownloadRefused(Fault, RuntimeError):
     """F222: the weights would not come down, said in words.
 
     A distinct class so that the message travelling to the browser is known to be the
@@ -113,7 +114,13 @@ class _DownloadRefused(RuntimeError):
     before it existed was `<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>` in the
     red box of the run screen — no stage, no model, no size, and nothing to do about it.
     The traceback still goes to the log.
+
+    F245: the sentence it carries is now the ENGLISH one and the page builds its own from
+    `params`. Written in the interface language here, it put a Russian paragraph into the
+    traceback the log keeps of it.
     """
+
+    codes = ("download_refused",)
 
 
 class _LazyClassifierHolder:
@@ -215,8 +222,16 @@ def _pipeline_steps(
             if failure is not None:
                 _log.error("sorta ui: the weights for stage %r were not downloaded", stage,
                            exc_info=failure)
-                raise _DownloadRefused(download_failure(
-                    stage, pending, _run_language(cfg), failure)) from failure
+                raise _DownloadRefused(
+                    download_failure(stage, pending, "en", failure), "download_refused",
+                    stage=stage, weights=", ".join(pending) or "-",
+                    size_mb=weights_size_mb(pending),
+                    error=str(failure).strip() or failure.__class__.__name__,
+                    # Through `tiers` and not from `offline` directly: the suffix has to
+                    # appear under exactly the condition `download_failure` adds it under.
+                    offline_variable=(tiers.ENV_ALLOW_DOWNLOAD
+                                      if tiers.offline_by_us() else ""),
+                ) from failure
             return built[0]
         finally:
             if notify is not None:
@@ -309,6 +324,8 @@ class _ProcessState:
         # the last stage that succeeded — and the collapsed stage row has to name the
         # failure without being opened.
         self.error_stage: str | None = None
+        self.error_code: str | None = None
+        self.error_params: dict[str, object] = {}
         self.finished = False
         self.source_dir: str | None = None
         self.phase: str | None = None
@@ -447,12 +464,19 @@ class _ProcessState:
         with self._lock:
             return self._cancel_requested
 
-    def finish(self, error: str | None, error_stage: str | None = None) -> None:
+    def finish(self, error: str | None, error_stage: str | None = None,
+               error_code: str | None = None,
+               error_params: dict[str, object] | None = None) -> None:
+        """End the run. `error_code`/`error_params` are the F245 personality of the
+        failure, absent for anything that is not ours — the page then has only the
+        English sentence, which is what it shows."""
         with self._lock:
             self.running = False
             self.finished = True
             self.error = error
             self.error_stage = error_stage
+            self.error_code = error_code
+            self.error_params = dict(error_params or {})
             self.phase = None  # a finished run is not in any phase (F84)
             self._phase_started = 0.0
 
@@ -469,6 +493,11 @@ class _ProcessState:
                 # F191: the stage the error came from, so the collapsed stage row can
                 # say which one fell over. None when the run failed outside a stage.
                 "error_stage": self.error_stage,
+                # F245: which failure it was and the values it names, for the page to say
+                # the same thing in its own language. Null for `sqlite3`, `OSError` and
+                # everything else not ours — those are shown as they arrived.
+                "error_code": self.error_code,
+                "error_params": dict(self.error_params),
                 "finished": self.finished,
                 "cancel_requested": self._cancel_requested,
                 # F135: also what puts the source of the last run back into an empty
@@ -1560,6 +1589,8 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     conn = _connect(db_path)
     error: str | None = None
     error_stage: str | None = None
+    error_code: str | None = None
+    error_params: dict[str, object] = {}
     try:
         run_cfg = _run_cfg(cfg, source_dir, opts)
         enabled_optional = {"faces": opts.faces, "events": opts.events,
@@ -1606,6 +1637,9 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
             except Exception as exc:  # noqa: BLE001 — report via status, do not crash the thread
                 error = str(exc)
                 error_stage = name  # F191: named in the collapsed row, not behind a click
+                # F245: the code the page redraws this in its own language from.
+                error_code = fault_code(exc)
+                error_params = fault_params(exc)
                 _log.exception("sorta ui: pipeline stage %r failed", name)
                 completed = False
                 break
@@ -1618,10 +1652,12 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
             try:
                 cache.rebuild(cfg, conn)
             except Exception as exc:  # noqa: BLE001
-                error = f"план не обновлён: {exc}"
+                error = f"the plan was not rebuilt: {exc}"
+                error_code = "plan_not_rebuilt"
+                error_params = {"error": str(exc)}
     finally:
         conn.close()
-        state.finish(error, error_stage)
+        state.finish(error, error_stage, error_code, error_params)
 
 
 # --- F244: the collection moved, and the cure is on the screen that names it ------
