@@ -3298,8 +3298,8 @@ _FAULT_STRINGS: dict[str, dict[str, str]] = {
               "lose the face names, places, marks and duplicate decisions entered by "
               "hand, so it stops instead. Carry the index over with `sorta relocate "
               "--from <old> --to <new>`, or point `sources` at the folder that exists.",
-        "ja": "コレクションが見つかりません: ソースフォルダーがどれも存在しませんが"
-              "（{roots}）、インデックスにはすでに {rows} 件のファイルがあります"
+        "ja": "コレクションが見つかりません: ソースフォルダー（{roots}）がどれも存在"
+              "しないのに、インデックスにはすでに {rows} 件のファイルがあります"
               "（例: {sample}）。よくある原因は移動です — ドライブレターの変更、"
               "フォルダー名の変更、別の場所にマウントされたボリュームなど。ここから"
               "インデックスを作り直すと、すべてのファイルが新規と見なされ、手で入力した"
