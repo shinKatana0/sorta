@@ -24,7 +24,7 @@ Switching the sort mode does not require re-running the pipelines.
 | Module | Files | Reads | Writes |
 |---|---|---|---|
 | core | `config.py`, `db/`, `hashing.py`, `dates.py`, `exif.py`, `imaging.py`, `accel.py` (F214: the ONE place that asks the machine what it can compute on — `torch` CUDA→MPS→CPU, `onnxruntime` CUDA→CoreML→CPU; four copies of that decision used to live in `naming`, `landmarks`, `faces` and `junk`), `launch.py` (F228: the ONE place that starts a subprocess, so a windowed parent opens no console nobody asked for; an `ast` walk over the package fails the suite on any other launch), `install.py` (F226/F230: what the Windows build left beside the program, and which of the three install kinds this is — `checkout`, `installed`, `tool`. It is what every hint naming a command is chosen by, so `sorta.exif` can resolve the bundled `exiftool` without importing the tier catalog) | FS (decode), the install manifest | — |
-| indexer | `indexer.py`, `dedup.py` | FS | `files` |
+| indexer | `indexer.py`, `dedup.py`, `relocate.py` (F242: the ONE writer of `files.path` outside a scan — a prefix swap in one transaction, so a collection that moved keeps its row ids and everything attached to them; the index is incremental BY PATH, so without it every file reads as new and the names typed onto face clusters are lost) | FS | `files` |
 | geo | `geo.py` | `files`, `geo_cache` | `places`, `geo_cache` (online provider only) |
 | faces | `faces.py` | `files`, `media_class` (F165: it detects only where the classifier has not said "not a photograph"; no row = detect) | `faces`, `face_clusters` |
 | events | `events.py` | `files`, `places` | `events`, `event_files` |
@@ -46,7 +46,7 @@ Switching the sort mode does not require re-running the pipelines.
 
 ## 3. Data contracts (stable interfaces between modules)
 
-### files (written only by indexer)
+### files (written only by indexer; `path` also by `relocate` — F242)
 - `path` — absolute, POSIX separators; `dup_of IS NULL` = canonical file.
   All downstream modules work ONLY with the canonical ones (`WHERE dup_of IS NULL
   AND error IS NULL`).
