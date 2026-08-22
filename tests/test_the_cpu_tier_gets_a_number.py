@@ -72,11 +72,11 @@ CPU_ONLY_STACK = {"torch": fake_torch(), "onnxruntime": fake_onnx("CPUExecutionP
 
 @contextmanager
 def own_cache(root: Path):
-    """The environment of one run: its own preview cache and its own run log.
+    """A preview cache of this run's own.
 
-    `conftest.py` points both at ONE sandbox for the whole suite, and the pHash stage
-    fills a preview per frame. Eight gate workers sharing a directory that this test
-    writes two dozen files into is load and noise nobody asked for.
+    `conftest.py` points every test at ONE sandbox directory, and the pHash stage fills a
+    preview per frame. Two dozen files written into a directory the whole gate shares is
+    load and noise nobody asked for. (The run log is already private — `--log`.)
     """
     with mock.patch.dict(os.environ, {"SORTA_PREVIEW_DIR": str(root / "previews")}):
         yield
