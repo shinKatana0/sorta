@@ -48,7 +48,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sorta import accel, exif, runlog  # noqa: E402 — after the path insert
+from sorta import __version__, accel, exif, runlog  # noqa: E402 — after the path insert
 from sorta.config import Config, configure_logging, load_config  # noqa: E402
 from sorta.db import connect  # noqa: E402
 from sorta.dedup import assign_duplicates, compute_phashes, near_duplicate_groups  # noqa: E402
@@ -315,9 +315,18 @@ MEASURED_PACKAGES = ("sorta", "torch", "onnxruntime", "onnxruntime-gpu", "numpy"
 
 
 def package_versions(names: Sequence[str] = MEASURED_PACKAGES) -> dict[str, str]:
-    """name -> version, or "not installed" — which is an answer and is written down."""
+    """name -> version, or "not installed" — which is an answer and is written down.
+
+    `sorta` is read off the imported module, not off the install record: an editable
+    install keeps whatever version it was created with (0.1.0 in the repo venv on
+    2026-08-22, against 0.5.1 in the tree), so the record would name code that did not
+    run. Every other name here is a real wheel and answers correctly through metadata.
+    """
     found = {}
     for name in names:
+        if name == "sorta":
+            found[name] = __version__
+            continue
         try:
             found[name] = metadata.version(name)
         except Exception:
