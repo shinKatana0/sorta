@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The rig that will give the CPU tier a number — and that refuses to produce a false
+  one** (F243, phase 0). The CPU profile is the only tier of this project with no
+  measurement of any kind, while being the ONLY tier a machine without a video card has;
+  the READMEs say so in as many words ("has never been measured end to end"), and the rule
+  here is that only a measured number reaches a document. Closing that means one run of the
+  whole 380 GB / 38 485-file collection — phase 1, on the owner's machine, in a venv of its
+  own — and `scripts/measure_cpu_tier.py` is what that run uses. **The reason it is code
+  and not a stopwatch is the trap**: the repository's venv is the GPU profile (`nvidia-*`,
+  CUDA torch), running "the CPU measurement" in it is the easiest thing in the world, and
+  the result is a number about CUDA wearing the label of a number about the CPU — the exact
+  class this project has been catching in itself since 2026-08-07, where a check answers
+  about its own machine instead of about its subject. So the rig **refuses to start** unless
+  three questions all come back CPU: `torch.cuda.is_available()`, the torch BUILD (a CUDA
+  wheel on a card-less machine answers "no" at runtime and is still the wrong profile), and
+  the providers onnxruntime really OFFERS (`available_providers`, never `onnx_providers` —
+  that one returns the historical `[CUDA, CPU]` pair on a runtime that offers neither). All
+  three answers, refusal or not, are written **into the JSON report** alongside the
+  processor, the core count, the interpreter path and the package versions, so the report
+  can be read in six months without its author. Refusal is the feature: a measurement nobody
+  can prove was about the CPU is worse than none, because it lies with the face of a number.
+  The seconds come from the run log the product already writes (`stage=` / `elapsed=`,
+  F219/F235) instead of from a second stopwatch, filtered to the lines of THIS run — an
+  append-only log holds earlier ones, and borrowing their seconds would be the same defect
+  with no way to notice it afterwards. A stage that leaves no timing is a row in the report
+  with the reason, never a gap. It measures the base tier only (index, geo, phash, dupes):
+  faces and the deep tier are out of scope by decision, their cost on a CPU is predictably
+  unacceptable, and the report names what it did not measure. It moves no file, writes into
+  a database of its own (`photos.db`/`sorta.db` need `--allow-real-db`), downloads nothing
+  and touches no product code — the diff in `sorta/` is zero lines.
 - **The collection can move without the people in it losing their names** (F242). The
   index is keyed by absolute path and incrementality is path + mtime + size, so a file
   whose path changed is a NEW file. A drive letter that came back different, a renamed
