@@ -36,6 +36,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unacceptable, and the report names what it did not measure. It moves no file, writes into
   a database of its own (`photos.db`/`sorta.db` need `--allow-real-db`), downloads nothing
   and touches no product code — the diff in `sorta/` is zero lines.
+- **The collection can move without the people in it losing their names** (F242). The
+  index is keyed by absolute path and incrementality is path + mtime + size, so a file
+  whose path changed is a NEW file. A drive letter that came back different, a renamed
+  folder, a volume mounted elsewhere — and the whole collection reads as new: the old
+  `files` rows point nowhere, everything is indexed, hashed and detected again, and the
+  run costs an hour (4.5 with the deep tier). **That hour comes back on its own. The face
+  names do not** — nor the manual places, the animal marks, the duplicate decisions or the
+  layout overrides, which are the only data in the product a person typed by hand and
+  which all hang off `files.id`. Same class of defect as F65: silent uselessness instead
+  of an error, four hours of work that helps nobody.
+  `sorta.relocate.relocate(db, old, new)` swaps one path prefix for another **in place,
+  keeping every row id**, so nothing that references an id notices the move. Dry run by
+  default, like everything here that touches data — it names the count, the columns and
+  three "before -> after" — and `--apply` is one transaction: every column or none.
+  Both prefixes go through the indexer's own normalization (expanduser + resolve +
+  as_posix), so `D:\Photos`, `D:/Photos/` and `~/photos` are one prefix; the match ends on
+  a **path component**, so `/photos` leaves `/photos-backup` alone; and separators are
+  folded for the comparison while each row keeps its own style, because a path is stored
+  as `str(Path)` — backslashes on Windows — and half a database written the other way is
+  worse than either. `--apply` refuses, before writing anything, when the new prefix is
+  not on disk, when nothing matched the old one (a typed argument), or when the move would
+  put two `files` rows on one path.
+  **Which columns are covered is discovered, not listed**: every TEXT column of every
+  table, with the VALUE deciding — a list of the four that hold a path today
+  (`files.path`, `moves.src`, `moves.dst`, `move_batches.dest_root`) would be true now and
+  silently partial after the next feature adds a table. The guard in `tests/` works the
+  same way round: it fills every TEXT column of the real schema with a path, applies the
+  move, and sweeps the whole database for anything left behind, so a column added later is
+  covered on the day it is written and by nobody's memory.
+  **The indexer now stops instead of starting over**: a non-empty index plus not one
+  source root existing on disk raises before the walk begins, names the likely cause and
+  the command that fixes it. The threshold is deliberately strict — every root gone — so
+  adding a second source folder before it is plugged in still runs, and an empty index
+  says nothing at all, because a first run has nothing to lose.
 
 ### Documentation
 - **A backup is asked for, the recycle bin is stated, and the model weights get their
