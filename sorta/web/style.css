@@ -616,6 +616,20 @@ label { cursor: pointer; }
 .excludes-legend { list-style: none; margin: 0; padding: 0; font-size: 0.8rem;
       color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
 .excludes-legend .tri-mark { font-weight: 600; color: var(--ink); }
+/* F244: the way out of a failed `index` stage, drawn where the failure is said. The
+   panel borrows the shape of the excludes panel — it opens under the same run screen and
+   asks for two paths in the same rows. */
+.relocate-offer { display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap;
+      margin: var(--space-sm) 0; }
+.relocate-panel { display: flex; flex-direction: column; gap: var(--space-sm);
+      border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-md);
+      background: var(--chip); margin: var(--space-sm) 0; }
+.relocate-label { font-size: 0.85rem; min-width: 6.5rem; }
+.relocate-plan { display: flex; flex-direction: column; gap: 2px; font-size: 0.8rem;
+      color: var(--muted); overflow-wrap: anywhere; }
+.relocate-plan .relocate-warn { color: var(--danger); }
+.relocate-status { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.relocate-status.failed { color: var(--danger); }
 .process-toggle-label { font-size: 0.85rem; display: inline-flex; align-items: center; gap: 4px; }
 .process-toggle-hint { font-size: 0.8rem; color: var(--muted); margin-left: 20px; }
 .process-toggle-warn { color: var(--danger); }

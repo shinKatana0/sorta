@@ -646,6 +646,84 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_start_error_prefix": {
         "ru": "Не удалось запустить: ", "en": "Failed to start: ", "ja": "開始できません: ",
     },
+    # F244: the way out of the one stage failure that has one. The offer is next to the
+    # error because that is where the person meets the problem; the sentence explaining
+    # WHY the run stopped is the engine's own and arrives in `error`, so these captions
+    # say what can be done about it and never repeat it.
+    "relocate_offer_hint": {
+        "ru": "Если коллекция переехала, индекс можно перенести на новый путь — "
+              "имена людей, места и решения по дубликатам сохранятся.",
+        "en": "If the collection moved, the index can be carried over to the new path — "
+              "the face names, the places and the duplicate decisions all stay.",
+        "ja": "コレクションが移動した場合は、インデックスを新しいパスへ移せます — "
+              "人物名・場所・重複の判断はそのまま残ります。",
+    },
+    "relocate_open_button": {
+        "ru": "Перенести индекс…", "en": "Move the index…", "ja": "インデックスを移す…",
+    },
+    "relocate_title": {
+        "ru": "Перенос индекса", "en": "Moving the index", "ja": "インデックスの移動",
+    },
+    "relocate_hint": {
+        "ru": "Пути в индексе будут переписаны с одного начала на другое. Файлы на диске "
+              "не трогаются, идентификаторы строк не меняются.",
+        "en": "The paths in the index are rewritten from one beginning to another. No "
+              "file on disk is touched and no row id changes.",
+        "ja": "インデックス内のパスの先頭を書き換えます。ディスク上のファイルには触れず、"
+              "行の識別子も変わりません。",
+    },
+    "relocate_old_label": {"ru": "Старый путь", "en": "Old path", "ja": "旧パス"},
+    "relocate_new_label": {"ru": "Новый путь", "en": "New path", "ja": "新パス"},
+    "relocate_plan_button": {
+        "ru": "Показать план", "en": "Show the plan", "ja": "計画を表示",
+    },
+    "relocate_apply_button": {"ru": "Перенести", "en": "Move", "ja": "移す"},
+    "relocate_plan_first": {
+        "ru": "Перенос доступен после показанного плана.",
+        "en": "The move becomes available once the plan has been shown.",
+        "ja": "計画を表示すると移動できるようになります。",
+    },
+    "relocate_needs_both": {
+        "ru": "Укажите оба пути.", "en": "Enter both paths.",
+        "ja": "両方のパスを入力してください。",
+    },
+    "relocate_plan_summary": {
+        "ru": "Переедет значений: {rows} (колонок: {columns}).",
+        "en": "{rows} values in {columns} columns would move.",
+        "ja": "{columns} 列の {rows} 件の値が移動します。",
+    },
+    "relocate_plan_example": {
+        "ru": "{before} → {after}", "en": "{before} → {after}",
+        "ja": "{before} → {after}",
+    },
+    "relocate_dest_ok": {
+        "ru": "Папка назначения найдена.", "en": "The destination folder is there.",
+        "ja": "移動先のフォルダを確認しました。",
+    },
+    "relocate_dest_missing": {
+        "ru": "Папки назначения нет — перенос будет отклонён.",
+        "en": "The destination folder is not there — the move would be refused.",
+        "ja": "移動先のフォルダがありません — 移動は拒否されます。",
+    },
+    "relocate_plan_empty": {
+        "ru": "Ни одно значение в индексе не начинается со старого пути. Сверьте его с "
+              "путём, который индекс действительно хранит: регистр важен.",
+        "en": "No value in the index starts with the old path. Check it against a path "
+              "the index really holds — the match is case-sensitive.",
+        "ja": "旧パスで始まる値はインデックスにありません。インデックスが実際に保持して"
+              "いるパスと照らし合わせてください（大文字小文字は区別されます）。",
+    },
+    "relocate_applied": {
+        "ru": "Перенесено значений: {rows}. Числа на странице обновлены; прогон можно "
+              "запустить заново — теперь он найдёт коллекцию.",
+        "en": "{rows} values moved. The numbers on this page have been refreshed; the "
+              "run can be started again — it will find the collection now.",
+        "ja": "{rows} 件の値を移動しました。ページの数値を更新しました。処理をもう一度"
+              "開始すれば、コレクションが見つかります。",
+    },
+    "relocate_refused_prefix": {
+        "ru": "Перенос отклонён: ", "en": "Move refused: ", "ja": "移動は拒否されました: ",
+    },
     # F84: the sub-phases of clustering inside the `faces` stage. The keys mirror
     # faces.CLUSTER_PHASE_* ("process_phase_" + the key from /api/process/status).
     "process_phase_cluster_read": {

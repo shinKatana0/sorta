@@ -3471,6 +3471,7 @@
     renderSkippedNotes(data);
     renderProcessSummary(data);
     renderDeepFallback(data);
+    renderRelocateOffer(data);
     if (data.running) {
       if (data.cancel_requested) {
         // a cancel was asked for — feedback while the stage stops or finishes up
@@ -3619,6 +3620,139 @@
       document.getElementById("process-source-dir").value = path;
       sourceDirChanged();
     });
+  });
+
+  // --- F244: the collection moved, and the way out is on this screen ----------------
+
+  // The offer keys on the STAGE that failed, never on the text of the message: that
+  // sentence belongs to sorta/relocate.py, it is rewritten and translated without this
+  // file being opened, and a client matching on prose would go quiet the day it changed.
+  // Every other `index` failure is offered the same button — it opens a form that writes
+  // nothing until a plan has been shown, so an offer made in vain costs a click.
+  function renderRelocateOffer(data) {
+    var failed = data.error ? (data.error_stage || data.stage) : null;
+    document.getElementById("relocate-offer").style.display =
+        failed === "index" ? "" : "none";
+  }
+
+  // Whether the plan on screen is about what the fields hold right now. The apply button
+  // lives off this and nothing else: the whole product shows what it will do before
+  // doing it, and a plan stops being about anything the moment a path is edited.
+  var relocatePlanned = false;
+
+  function resetRelocatePlan() {
+    relocatePlanned = false;
+    document.getElementById("relocate-plan").textContent = I18N.relocate_plan_first;
+    document.getElementById("relocate-apply-btn").disabled = true;
+  }
+
+  function setRelocateStatus(text, failed) {
+    var el = document.getElementById("relocate-status");
+    el.textContent = text;
+    el.className = "relocate-status" + (failed ? " failed" : "");
+  }
+
+  function relocateLine(text, warn) {
+    var line = document.createElement("span");
+    if (warn) line.className = "relocate-warn";
+    line.textContent = text;
+    return line;
+  }
+
+  function renderRelocatePlan(resp) {
+    var box = document.getElementById("relocate-plan");
+    box.textContent = "";
+    if (!resp.rows) {
+      box.appendChild(relocateLine(I18N.relocate_plan_empty, true));
+      return;
+    }
+    box.appendChild(relocateLine(fmt(I18N.relocate_plan_summary, {
+      rows: resp.rows, columns: (resp.columns || []).length })));
+    (resp.examples || []).forEach(function (example) {
+      box.appendChild(relocateLine(fmt(I18N.relocate_plan_example, {
+        before: example.before, after: example.after })));
+    });
+    box.appendChild(relocateLine(
+      resp.new_prefix_exists ? I18N.relocate_dest_ok : I18N.relocate_dest_missing,
+      !resp.new_prefix_exists));
+  }
+
+  function requestRelocate(apply) {
+    var oldPrefix = document.getElementById("relocate-old").value.trim();
+    var newPrefix = document.getElementById("relocate-new").value.trim();
+    if (!oldPrefix || !newPrefix) {
+      setRelocateStatus(I18N.relocate_needs_both, true);
+      return;
+    }
+    setRelocateStatus(I18N.loading, false);
+    postJson("/api/relocate", { old_prefix: oldPrefix, new_prefix: newPrefix,
+                                apply: apply })
+      .then(function (resp) {
+        if (!resp || resp.error) {
+          // A refusal carries the reason the engine gives — the destination that is not
+          // there, the prefix that matched nothing, the paths that would collide. Nothing
+          // was written in any of those cases, so the plan simply has to be asked again.
+          setRelocateStatus(I18N.relocate_refused_prefix
+                            + ((resp && (resp.reason || resp.error)) || ""), true);
+          resetRelocatePlan();
+          return;
+        }
+        renderRelocatePlan(resp);
+        if (!resp.applied) {
+          setRelocateStatus("", false);
+          relocatePlanned = !!resp.rows;
+          document.getElementById("relocate-apply-btn").disabled = !resp.rows;
+          return;
+        }
+        setRelocateStatus(fmt(I18N.relocate_applied, { rows: resp.rows }), false);
+        resetRelocatePlan();
+        document.getElementById("relocate-offer").style.display = "none";
+        // Every count and every plan on this page was built on the old paths, so they are
+        // re-read here rather than left to whenever a tab is next opened.
+        refreshTabsAfterProcess();
+      });
+  }
+
+  ["relocate-old", "relocate-new"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", resetRelocatePlan);
+  });
+
+  document.getElementById("relocate-open-btn").addEventListener("click", function () {
+    document.getElementById("relocate-panel").style.display = "";
+    resetRelocatePlan();
+    setRelocateStatus("", false);
+    var field = document.getElementById("relocate-old");
+    if (field.value.trim()) return;
+    // Prefilled from the INDEX and not from the source field above: that field says where
+    // the collection is being looked for, while what has to be rewritten is the prefix
+    // the database stores — and a path the program knows is not worth mistyping.
+    fetch("/api/relocate/suggest")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.old_prefix && !field.value.trim()) {
+          field.value = data.old_prefix;
+        }
+      })
+      .catch(function () {});
+  });
+
+  document.getElementById("relocate-close-btn").addEventListener("click", function () {
+    document.getElementById("relocate-panel").style.display = "none";
+  });
+
+  document.getElementById("relocate-browse-btn").addEventListener("click", function () {
+    browseIntoField(this, function (path) {
+      document.getElementById("relocate-new").value = path;
+      resetRelocatePlan();  // set from code, so the `input` listener above never fires
+    });
+  });
+
+  document.getElementById("relocate-plan-btn").addEventListener("click", function () {
+    requestRelocate(false);
+  });
+
+  document.getElementById("relocate-apply-btn").addEventListener("click", function () {
+    requestRelocate(true);
   });
 
   // --- F81: «не сканировать» and the three blocks of the first tab -------

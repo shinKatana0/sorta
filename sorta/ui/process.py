@@ -40,6 +40,7 @@ from ..junk import (
 from ..landmarks import _SCAN_KEY as _LANDMARK_SCAN_KEY
 from ..landmarks import Classifier, clip_classifier, detect_landmarks
 from ..naming import name_events, naming_settings
+from ..relocate import RelocateError, RelocatePlan, relocate
 from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
@@ -1621,3 +1622,89 @@ def _run_pipeline(db_path: Path, cfg: Config, source_dir: str | None,
     finally:
         conn.close()
         state.finish(error, error_stage)
+
+
+# --- F244: the collection moved, and the cure is on the screen that names it ------
+
+# The refusal code of `POST /api/relocate`. A code plus the engine's own sentence, like
+# every other refusal here: nothing was written, so this is an ANSWER and not a failed
+# request, and the page has to be able to tell the two apart without reading prose.
+RELOCATE_REFUSED = "relocate_refused"
+
+
+def _indexed_prefix(db_path: Path) -> str:
+    """The folder every indexed path sits under, in the spelling the index holds.
+
+    Read off the smallest and the largest `files.path`: for strings in lexicographic
+    order their common prefix IS the common prefix of all of them, so this costs two
+    values instead of half a million.
+
+    Answers "" for an empty index, for a collection spanning two drives — and for a bare
+    root, because `D:` reads as "the current directory of that drive" to `Path.resolve`,
+    which is a different folder from `D:\\`.
+    """
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("SELECT min(path) AS lo, max(path) AS hi FROM files").fetchone()
+    finally:
+        conn.close()
+    lo, hi = (row["lo"] or ""), (row["hi"] or "")
+    if not lo or not hi:
+        return ""
+    common = os.path.commonprefix([lo, hi])
+    # Cut back to a separator: the longest common STRING prefix of `.../a1.jpg` and
+    # `.../a2.jpg` ends in the middle of a file name, and half a name is not a folder.
+    cut = max(common.rfind("/"), common.rfind("\\"))
+    prefix = common[:cut] if cut > 0 else ""
+    return "" if prefix.endswith(":") else prefix
+
+
+def _validate_relocate_payload(payload: object) -> tuple[str, str, bool] | None:
+    """Parse `{"old_prefix": str, "new_prefix": str, "apply": bool=False}`.
+
+    None -> invalid: not a dict / a prefix missing, not a string or empty after strip /
+    `apply` given but not a bool. The prefixes themselves are not checked here at all —
+    whether they exist, match anything or collide is what the plan answers, with a reason.
+    """
+    if not isinstance(payload, dict):
+        return None
+    prefixes: list[str] = []
+    for key in ("old_prefix", "new_prefix"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        prefixes.append(value.strip())
+    apply = payload.get("apply", False)
+    if not isinstance(apply, bool):
+        return None
+    return prefixes[0], prefixes[1], apply
+
+
+def _relocate_plan_to_json(plan: RelocatePlan) -> dict:
+    return {
+        "old_prefix": plan.old_prefix,
+        "new_prefix": plan.new_prefix,
+        "rows": plan.rows,
+        "columns": [{"table": hit.table, "column": hit.column, "rows": hit.rows}
+                    for hit in plan.columns],
+        "examples": [{"before": before, "after": after}
+                     for before, after in plan.examples],
+        "new_prefix_exists": plan.new_prefix_exists,
+        "applied": plan.applied,
+    }
+
+
+def _relocate_payload(db_path: Path, old_prefix: str, new_prefix: str, *,
+                      apply: bool = False) -> dict:
+    """What `POST /api/relocate` answers: the plan `relocate.relocate` builds, as JSON.
+
+    Every decision about the move belongs to `sorta.relocate` and is called, never
+    repeated here; what this adds is the shape the page reads. A `RelocateError` comes
+    back as `{"error": RELOCATE_REFUSED, "reason": ...}` rather than as an exception —
+    the engine writes nothing when it refuses, so the request did not fail.
+    """
+    try:
+        plan = relocate(db_path, old_prefix, new_prefix, apply=apply)
+    except RelocateError as exc:
+        return {"error": RELOCATE_REFUSED, "reason": str(exc)}
+    return _relocate_plan_to_json(plan)
