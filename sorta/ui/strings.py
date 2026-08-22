@@ -3225,7 +3225,7 @@ _UI_STRINGS["low_memory_warning"] = {
 # character. That is what keeps an English interface showing exactly the sentence the log
 # holds, and the equality is asserted — a message edited in its module without this file
 # is a red gate rather than two versions of one failure.
-_FAULT_STRINGS: dict[str, dict[str, str]] = {
+_UI_STRINGS.update({
     "fault_exif_relative_path": {
         "ru": "exiftool: путь должен быть абсолютным, получено {path}",
         "en": "exiftool: path must be absolute, got {path}",
@@ -3360,26 +3360,22 @@ _FAULT_STRINGS: dict[str, dict[str, str]] = {
         "en": "the plan was not rebuilt: {error}",
         "ja": "プランを更新できませんでした: {error}",
     },
-}
-
-# The refusal of a download is the CLI's own sentence, for the same reason the tier notes
-# above are: `sorta run` prints it in a console and the run screen shows it in a red box,
-# and one fact worded two ways is two facts.
-_FAULT_STRINGS["fault_download_refused"] = {
-    lang: _doctor_line("cli.download.failed", lang, "stage", "weights", "size", "error")
-    for lang in _TIER_LANGS
-}
-_FAULT_STRINGS["fault_download_offline"] = {
-    lang: _doctor_line("cli.download.offline_by_us", lang, "variable")
-    for lang in _TIER_LANGS
-}
-
-# The stages that have a NAME (F222): the sentence above was built against
-# `i18n.stage_label`, and `process_stage_*` is a different word for the same stage —
-# "landmarks" against "Places recognised by sight".
-_FAULT_STRINGS.update({
-    f"stage_name_{stage}": {lang: i18n.stage_label(stage, lang) for lang in _TIER_LANGS}
-    for stage in ("landmarks", "classify", "faces", "junk")
+    # The refusal of a download is the CLI's own sentence, for the same reason the tier
+    # notes above are: `sorta run` prints it in a console and the run screen shows it in
+    # a red box, and one fact worded two ways is two facts.
+    "fault_download_refused": {
+        lang: _doctor_line("cli.download.failed", lang, "stage", "weights", "size",
+                           "error")
+        for lang in _TIER_LANGS
+    },
+    "fault_download_offline": {
+        lang: _doctor_line("cli.download.offline_by_us", lang, "variable")
+        for lang in _TIER_LANGS
+    },
+    # The stages that have a NAME (F222): the sentence above was built against
+    # `i18n.stage_label`, and `process_stage_*` is a different word for the same stage —
+    # "landmarks" against "Places recognised by sight".
+    **{f"stage_name_{stage}": {lang: i18n.stage_label(stage, lang)
+                               for lang in _TIER_LANGS}
+       for stage in ("landmarks", "classify", "faces", "junk")},
 })
-
-_UI_STRINGS.update(_FAULT_STRINGS)

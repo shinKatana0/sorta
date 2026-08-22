@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from .. import imaging
+from .. import imaging, tiers
 from ..config import Config, skipped_stage_notes
 from ..dedup import assign_duplicates, compute_phashes
 from ..diagnostics import memory_health, nvidia_gpu_present
@@ -41,7 +41,6 @@ from ..junk import (
 from ..landmarks import _SCAN_KEY as _LANDMARK_SCAN_KEY
 from ..landmarks import Classifier, clip_classifier, detect_landmarks
 from ..naming import name_events, naming_settings
-from ..offline import ENV_ALLOW_DOWNLOAD, offline_by_us
 from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
@@ -227,7 +226,10 @@ def _pipeline_steps(
                     stage=stage, weights=", ".join(pending) or "-",
                     size_mb=weights_size_mb(pending),
                     error=str(failure).strip() or failure.__class__.__name__,
-                    offline_variable=ENV_ALLOW_DOWNLOAD if offline_by_us() else "",
+                    # Through `tiers` and not from `offline` directly: the suffix has to
+                    # appear under exactly the condition `download_failure` adds it under.
+                    offline_variable=(tiers.ENV_ALLOW_DOWNLOAD
+                                      if tiers.offline_by_us() else ""),
                 ) from failure
             return built[0]
         finally:
