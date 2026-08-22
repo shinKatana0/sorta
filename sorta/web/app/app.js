@@ -3640,10 +3640,16 @@
   // doing it, and a plan stops being about anything the moment a path is edited.
   var relocatePlanned = false;
 
+  // One place decides whether the move may be pressed, so the two ways into that state —
+  // a plan came back, a path was edited — cannot drift apart.
+  function setRelocatePlanned(planned) {
+    relocatePlanned = planned;
+    document.getElementById("relocate-apply-btn").disabled = !relocatePlanned;
+  }
+
   function resetRelocatePlan() {
-    relocatePlanned = false;
+    setRelocatePlanned(false);
     document.getElementById("relocate-plan").textContent = I18N.relocate_plan_first;
-    document.getElementById("relocate-apply-btn").disabled = true;
   }
 
   function setRelocateStatus(text, failed) {
@@ -3700,8 +3706,9 @@
         renderRelocatePlan(resp);
         if (!resp.applied) {
           setRelocateStatus("", false);
-          relocatePlanned = !!resp.rows;
-          document.getElementById("relocate-apply-btn").disabled = !resp.rows;
+          // A plan of nothing is not a plan: with no row under the old prefix there is
+          // nothing to press, and the engine would refuse the apply anyway.
+          setRelocatePlanned(!!resp.rows);
           return;
         }
         setRelocateStatus(fmt(I18N.relocate_applied, { rows: resp.rows }), false);

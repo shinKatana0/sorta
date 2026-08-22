@@ -443,16 +443,11 @@ class TestTheMoveWaitsForItsPlan(ScreenCase):
                       self.html)
 
     def test_only_a_shown_plan_enables_it(self):
-        body = self.body("requestRelocate")
-        self.assertIn('document.getElementById("relocate-apply-btn")'
-                      '.disabled = !resp.rows;', body)
-        self.assertIn("relocatePlanned = !!resp.rows;", body)
+        self.assertIn("setRelocatePlanned(!!resp.rows);", self.body("requestRelocate"))
+        self.assertIn('.disabled = !relocatePlanned;', self.body("setRelocatePlanned"))
 
     def test_an_edited_path_takes_the_plan_away_again(self):
-        reset = self.body("resetRelocatePlan")
-        self.assertIn("relocatePlanned = false;", reset)
-        self.assertIn('document.getElementById("relocate-apply-btn").disabled = true;',
-                      reset)
+        self.assertIn("setRelocatePlanned(false);", self.body("resetRelocatePlan"))
         self.assertIn('.addEventListener("input", resetRelocatePlan)', self.html)
 
     def test_the_plan_button_asks_for_a_dry_run(self):
