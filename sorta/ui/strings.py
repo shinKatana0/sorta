@@ -956,9 +956,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Удалить {n} файлов в корзину?", "en": "Move {n} files to trash?",
         "ja": "{n} 件のファイルをごみ箱に移動しますか?",
     },
-    # F241: the two shapes a refusal has. The first is about the VOLUME and so about
-    # every frame on it — naming files there would suggest retrying one of them; the
-    # second is about these files and nothing else, so it names them.
+    # F241: the first is about the VOLUME, so it names no files — that would invite
+    # retrying one of them; the second is about these files only, so it lists them.
     "trash_no_bin_on_volume": {
         "ru": "На этом диске нет корзины — ничего не удалено. Удаление доступно только "
               "там, где корзина принимает файлы.",

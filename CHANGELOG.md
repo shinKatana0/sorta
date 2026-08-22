@@ -27,6 +27,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decline them and lose only the `product` class and face clustering; §5 says so.
   Verified against the upstream sources on 2026-08-21, not from memory.
 
+### Fixed
+- **The recycle bin can refuse, and that no longer breaks the database halfway**
+  (F241). `_trash_files` — the single deletion path all three routes go through
+  (`/api/dupes/trash`, `/api/photo/trash`, `/api/photos/trash`) — sent every file to
+  `send2trash` with no `try/except`, and ran its `DELETE FROM files` **after** the loop.
+  On the machine this was written on that never fired: Windows always has a recycle bin
+  and a local disk accepts it. It is not always there. `send2trash` raises
+  `TrashPermissionError` (and plain `OSError`) when there is nowhere to put the file —
+  a read-only mount, a network share without its own bin, a file system that has no such
+  thing, a missing `$HOME`. Then files 1..k were already in the bin with their previews
+  gone, file k+1 threw, the `DELETE` never ran, and the answer was a 500: **the database
+  claimed the files were still there when they were not**, and every screen, every layout
+  and `sort --apply` afterwards worked off rows with nothing behind them. Separately, the
+  public position of the project rests on that one line — all three READMEs and
+  `SECURITY.md` say deletion is the recycle bin and not `unlink`, which is true exactly as
+  long as the bin accepts.
+  **If there is no bin, there is no deletion** — not permanent, not partial. The promise
+  that deletion is reversible is the only thing this screen's trust stands on, and a
+  product that quietly swaps it for `unlink` in unfamiliar surroundings is worse than one
+  that refuses: a refusal is visible, a loss is not. Three parts. (1) A **preflight probe,
+  one per request and per volume rather than per file**: a temporary file next to the
+  target really goes to the bin, because `send2trash` decides by where the file lies, so a
+  verdict about `C:\` says nothing about `\\nas\photos`. The probe removes itself whether
+  it succeeded or threw. (2) A file that fails on its own (held open, a permission of its
+  own) **stays on disk, stays in `files`, keeps its preview** and comes back named — the
+  `DELETE` now runs over what actually left, not over what was asked for. (3) The routes
+  answer `{"trashed": [...], "refused": [{"file_id", "name", "reason"}]}` with 200 rather
+  than 500; `reason` is a machine code (`no_trash_on_volume`, `permission`, `in_use`,
+  `failed`), the exception text goes to `sorta.log`, and the screen speaks from the string
+  catalog in all three languages — a volume with no bin reads differently from a handful
+  of files that stayed.
+
 ### Changed
 - **A slow runner is not a failed test** (F240). 37 test files raise a local HTTP server —
   1048 test functions, 17% of the suite — and 38 places asked it for an answer with a

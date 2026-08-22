@@ -46,11 +46,8 @@ class DupesTestBase(UiServerTestBase):
         return answer.status, answer.json()
 
     def trashed_paths(self, mock_trash) -> list[str]:
-        """The real files a mocked `send_to_trash` was given.
-
-        F241 sends it one more path per volume — the preflight probe — and that one is
-        not a file anybody asked to delete, so it is not counted here.
-        """
+        """The real files a mocked `send_to_trash` got — F241's per-volume preflight
+        probe is a path too, and is not one of them."""
         return [call.args[0] for call in mock_trash.call_args_list
                 if not Path(call.args[0]).name.startswith(common._TRASH_PROBE_PREFIX)]
 

@@ -1318,8 +1318,8 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
             if file_id is None:
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            # F241: a refusal is not a failure of the request — 200 with both halves
-            # named, so the page can say what stayed instead of guessing from a 500.
+            # F241: a refusal is not a failed request — 200 with both halves named, so
+            # the page can say what stayed instead of guessing behind a 500.
             trashed, refused = _trash_files(db_path, [file_id])
             self._send_json({"trashed": trashed, "refused": refused})
 

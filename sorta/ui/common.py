@@ -212,33 +212,27 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-# --- F241: the trash is allowed to refuse -------------------------------------------
-#
-# A volume with no trash to put the file in (read-only mount, a network share without
-# one, a file system that has no such thing) makes `send2trash` raise. Deleting anyway
-# would quietly turn the only promise this button makes — that it is reversible — into
-# an `unlink` nobody asked for, so instead nothing is deleted from that volume at all.
-
+# F241: a volume with nowhere to put the file (read-only mount, a share without a trash)
+# makes `send2trash` raise. Deleting it anyway would turn the only promise this button
+# makes — that it is reversible — into an `unlink` nobody asked for, so a volume that
+# cannot take a file into the trash loses none.
 TRASH_REFUSED_NO_BIN = "no_trash_on_volume"
 TRASH_REFUSED_PERMISSION = "permission"
 TRASH_REFUSED_IN_USE = "in_use"
 TRASH_REFUSED_FAILED = "failed"
 
-# Recognisable on sight: the probe lands in somebody's photo folder for a moment, and if
-# a crash ever leaves one behind it has to be obvious what it was.
 _TRASH_PROBE_PREFIX = ".sorta-trash-probe-"
-# ERROR_SHARING_VIOLATION — a file another process holds open on Windows arrives as a
-# PermissionError, and it is the one refusal that goes away by itself.
+# ERROR_SHARING_VIOLATION — a file another process holds open comes back as a plain
+# PermissionError on Windows, and it is the one refusal that goes away by itself.
 _WIN_SHARING_VIOLATION = 32
 
 
 def _trash_volume_key(path: str) -> str:
     """The volume `path` lives on — the unit the preflight probe is cached by.
 
-    Not the platform and not the directory: `send2trash` decides by where the file is,
-    so a verdict about `C:\\` says nothing about `\\\\nas\\photos`, while two folders of
-    one disk must not cost two probes. Where there are no drive letters the nearest
-    mount point upwards answers the same question.
+    Neither the platform nor the directory: `send2trash` decides by where the file is,
+    so `C:\\` says nothing about `\\\\nas\\photos`, while two folders of one disk must
+    not cost two probes.
     """
     full = os.path.abspath(path)
     drive = os.path.splitdrive(full)[0]
@@ -256,10 +250,8 @@ def _trash_volume_key(path: str) -> str:
 def _volume_accepts_trash(directory: Path) -> bool | None:
     """Does the OS trash take files from `directory`? Asked by really trashing one.
 
-    A real probe rather than a rule about the platform, and next to the target rather
-    than anywhere else, because that is what `send2trash` itself goes by. None means the
-    probe could not be placed at all — the volume was never asked, so nothing about it
-    may be cached and the real attempt has to answer instead.
+    None means the probe could not be placed at all: the volume was never asked, so
+    nothing about it may be cached and the real attempt has to answer instead.
     """
     probe = directory / f"{_TRASH_PROBE_PREFIX}{os.getpid()}-{threading.get_ident()}"
     try:
@@ -274,8 +266,8 @@ def _volume_accepts_trash(directory: Path) -> bool | None:
         _log.warning("ui: %s does not accept files into the trash: %s", directory, exc)
         return False
     finally:
-        # Both ways round: the probe survives a refusal, and under a test double it
-        # survives the success too.
+        # Both ways round: the probe outlives a refusal, and under a test double it
+        # outlives the success too.
         try:
             probe.unlink()
         except OSError:
@@ -283,10 +275,9 @@ def _volume_accepts_trash(directory: Path) -> bool | None:
 
 
 def _refusal_reason(exc: OSError) -> str:
-    """The machine code for a failed `send_to_trash` — never the text of the exception.
+    """The machine code for a failed `send_to_trash`, never the text of the exception.
 
-    The text goes to the log; the screen speaks from the string catalog, so this side
-    owes it a code and not a sentence.
+    The text goes to the log; the screen speaks from the string catalog.
     """
     if isinstance(exc, TrashPermissionError):
         return TRASH_REFUSED_NO_BIN
@@ -302,7 +293,7 @@ def _trash_files(db_path: Path, ids: list[int]) -> tuple[list[dict], list[dict]]
     """The single trash path: ids -> OS trash + DELETE of their files/dedup_choice rows.
 
     Returns (trashed, refused). A frame the trash would not take stays on disk AND in
-    `files`, keeps its preview, and comes back in `refused` with a reason code: the
+    `files`, keeps its preview, and comes back in `refused` with a reason code — the
     DELETE runs over what actually left, never over what was asked for.
 
     An id outside the current files is silently skipped — idempotent on a repeat.

@@ -376,11 +376,7 @@ def _apply_batch_choices(
 
 def _trash_group(db_path: Path, group: list[int], keep_file_id: int
                  ) -> tuple[list[dict], list[dict]]:
-    """The group's non-keepers -> trash (see `_trash_files` — the shared trash path).
-
-    Returns (trashed, refused): the shared path may refuse, and this route hides none
-    of it (F241).
-    """
+    """The group's non-keepers -> (trashed, refused), the shared `_trash_files` path."""
     conn = _connect(db_path)
     try:
         placeholders = ",".join("?" * len(group))
