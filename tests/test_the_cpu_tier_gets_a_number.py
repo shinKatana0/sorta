@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +67,36 @@ def fake_onnx(*providers):
 
 
 CPU_ONLY_STACK = {"torch": fake_torch(), "onnxruntime": fake_onnx("CPUExecutionProvider")}
+
+
+@contextmanager
+def own_cache(root: Path):
+    """The environment of one run: its own preview cache and its own run log.
+
+    `conftest.py` points both at ONE sandbox for the whole suite, and the pHash stage
+    fills a preview per frame. Eight gate workers sharing a directory that this test
+    writes two dozen files into is load and noise nobody asked for.
+    """
+    with mock.patch.dict(os.environ, {"SORTA_PREVIEW_DIR": str(root / "previews")}):
+        yield
+
+
+@contextmanager
+def logging_put_back():
+    """Give the worker process its logging back after the rig has wired it up.
+
+    The rig configures the product's own logging, which lowers the `sorta` logger to INFO
+    and leaves a console handler on it — for the rest of the process, i.e. for every test
+    that runs after this one in the same xdist worker.
+    """
+    logger, root = logging.getLogger("sorta"), logging.getLogger()
+    level, handlers, root_level = logger.level, list(logger.handlers), root.level
+    try:
+        yield
+    finally:
+        logger.setLevel(level)
+        logger.handlers[:] = handlers
+        root.setLevel(root_level)
 
 
 def make_jpeg(path: Path, seed: int) -> None:
@@ -194,11 +226,16 @@ class TestASyntheticCollectionGoesThroughWhole(unittest.TestCase):
             make_jpeg(cls.src / f"IMG_2019070{i % 8}_1234{i:02d}.jpg", i)
         cls.out = cls.root / "report.json"
         cls.log = cls.root / "run.log"
-        args = ["--config", str(cls.root / "config.yaml"), "--src", str(cls.src),
+        config = cls.root / "config.yaml"
+        # Two workers, because this runs inside a gate that is already using the machine
+        # (`check.py` -n 8): the default is `min(8, cores)` threads per pooled stage, and
+        # a burst of those next to eight pytest workers is load the suite does not owe.
+        config.write_text("index:\n  workers: 2\n", encoding="utf-8")
+        args = ["--config", str(config), "--src", str(cls.src),
                 "--db", str(cls.root / "measure.db"), "--out", str(cls.out),
                 "--log", str(cls.log)]
-        with mock.patch.dict(sys.modules, CPU_ONLY_STACK), \
-                mock.patch.dict(os.environ, {}):
+        with mock.patch.dict(sys.modules, CPU_ONLY_STACK), own_cache(cls.root), \
+                logging_put_back():
             cls.code = rig.main(args)
         cls.report = json.loads(cls.out.read_text(encoding="utf-8"))
 
@@ -242,7 +279,11 @@ class TestASyntheticCollectionGoesThroughWhole(unittest.TestCase):
         self.assertEqual(collection["files"], self.files)
         self.assertEqual(collection["errors"], 0)
         self.assertEqual(collection["sources"], [str(self.src)])
-        self.assertGreaterEqual(collection["workers"], 1)
+
+    def test_the_config_file_was_read_and_its_settings_reported(self):
+        """`--config` is not decoration: what a run was configured with is part of what
+        the seconds mean, and `index.workers` is the knob that moves them most."""
+        self.assertEqual(self.report["collection"]["workers"], 2)
 
     def test_the_proof_travels_with_the_numbers(self):
         self.assertTrue(self.report["cpu_only"])
