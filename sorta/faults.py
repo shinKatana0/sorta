@@ -1,14 +1,12 @@
 """F245: what went wrong, as a value — so a screen can say it in its own language.
 
-An exception that has crossed one `except` is a string: `str(exc)` is all that is left of
-it, and a string cannot be translated after the fact. The classes this package raises
-therefore carry the failure itself alongside the sentence — `code` says WHAT happened and
-`params` holds the values the sentence mentions.
+An exception that has crossed one `except` is a string, and a string cannot be
+translated after the fact. So the classes this package raises carry the failure itself
+next to the sentence: `code` says WHAT happened, `params` holds the values it names.
 
-The sentence itself does not change and stays English (F238/F239): the log, the terminal
-and the file attached to a complaint are the record of a run, and a record nobody but its
-author can read is not one. Only the web app renders from `code`, in the language of its
-interface; everything it has no key for is shown as it arrived.
+The sentence stays English (F238/F239) — the log and the terminal are the record of a
+run, and a record only its author can read is not one. The web app renders from `code`;
+anything it has no key for it shows as it arrived.
 """
 from __future__ import annotations
 
@@ -17,13 +15,19 @@ class Fault(Exception):
     """One of our own failures: an English sentence plus the fact behind it.
 
     Mixed in FIRST, before the built-in this exception is a kind of
-    (`class X(Fault, ValueError)`), so that `super().__init__(message)` reaches that
-    built-in and `str(exc)`, `args` and `except ValueError` all behave as they did before
-    the class carried anything.
+    (`class X(Fault, ValueError)`), so `super().__init__(message)` reaches that built-in
+    and `str(exc)`, `args` and `except ValueError` behave as they did before.
 
     `params` travels to a browser as JSON: strings and numbers belong in it, `Path` and
     exception objects do not — convert at the raise site.
+
+    `codes` is every code the class can raise with. It is what the guard asks a class
+    for: the raise sites are spread over a module and one of them builds its code from a
+    value (`EmbeddingsMissing`), so they cannot be read off the source. Adding a code
+    here is what turns into a demand for three translations.
     """
+
+    codes: tuple[str, ...] = ()
 
     def __init__(self, message: str, code: str, **params: object) -> None:
         super().__init__(message)

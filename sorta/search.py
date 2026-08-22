@@ -40,6 +40,7 @@ from .config import (
     Config,
     FeaturesConfig,
 )
+from .faults import Fault
 from .junk import (
     embedding_model,
     read_clip_embeddings,
@@ -75,7 +76,7 @@ _CLASS_TABLE = "clip_embeddings"     # F128: the classification vectors, ViT-L-1
 RRF_K = 60
 
 
-class EmbeddingsMissing(RuntimeError):
+class EmbeddingsMissing(Fault, RuntimeError):
     """No usable vector for this query — raised instead of returning an empty list.
 
     The reason is a code, not a message: the sentence a user reads belongs in the i18n
@@ -83,8 +84,12 @@ class EmbeddingsMissing(RuntimeError):
     and `total` every row, which makes "19 757 vectors, all of another model" sayable.
     """
 
+    codes = ("search_embeddings_empty", "search_embeddings_other_model")
+
     def __init__(self, reason: str, model: str, total: int, stored: int) -> None:
-        super().__init__(f"{reason}: model={model!r}, stored={stored}, total={total}")
+        super().__init__(f"{reason}: model={model!r}, stored={stored}, total={total}",
+                         f"search_embeddings_{reason}",
+                         reason=reason, model=repr(model), stored=stored, total=total)
         self.reason = reason
         self.model = model
         self.total = total

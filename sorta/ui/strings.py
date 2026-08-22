@@ -643,6 +643,14 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     "process_error_prefix": {
         "ru": "Ошибка обработки: ", "en": "Processing error: ", "ja": "処理エラー: ",
     },
+    # F245: what a failure that is NOT ours is shown under. The wrapper is in the
+    # interface's language and the text after it is left exactly as sqlite3 or the
+    # operating system wrote it — a translation nobody wrote is worse than English.
+    "process_error_unknown": {
+        "ru": "этап {stage} не смог завершиться: ",
+        "en": "stage {stage} could not finish: ",
+        "ja": "ステージ {stage} を完了できませんでした: ",
+    },
     "process_start_error_prefix": {
         "ru": "Не удалось запустить: ", "en": "Failed to start: ", "ja": "開始できません: ",
     },
@@ -3205,3 +3213,173 @@ _UI_STRINGS["low_memory_warning"] = {
     lang: _doctor_line("cli.run.low_memory", lang, "free", "needed")
     for lang in _TIER_LANGS
 }
+
+
+# --- F245: our own failures, in three languages ---------------------------------------
+#
+# One entry per code a `faults.Fault` can carry (`fault_` + the code); the values arrive
+# with the error as `error_params` and are substituted in the browser, so the templates
+# keep their `{fields}`.
+#
+# The `en` column is not a translation: it is the exception's own message, character for
+# character. That is what keeps an English interface showing exactly the sentence the log
+# holds, and the equality is asserted — a message edited in its module without this file
+# is a red gate rather than two versions of one failure.
+_FAULT_STRINGS: dict[str, dict[str, str]] = {
+    "fault_exif_relative_path": {
+        "ru": "exiftool: путь должен быть абсолютным, получено {path}",
+        "en": "exiftool: path must be absolute, got {path}",
+        "ja": "exiftool: パスは絶対パスである必要があります。受け取った値: {path}",
+    },
+    "fault_geo_data_missing": {
+        "ru": "гео-данные не найдены: файла {path} нет. Данные GeoNames должны лежать "
+              "внутри пакета (sorta/data/geo). Соберите их заново командой "
+              "`python scripts/build_geodata.py` или переустановите sorta — без них "
+              "любая координата превращается в пустое место.",
+        "en": "geo data not found: {path} is missing. The bundled GeoNames data must "
+              "live inside the package (sorta/data/geo). Rebuild it with "
+              "`python scripts/build_geodata.py` or reinstall sorta — without it every "
+              "coordinate resolves to an empty place.",
+        "ja": "地理データが見つかりません: {path} がありません。同梱の GeoNames データは"
+              "パッケージ内（sorta/data/geo）に置く必要があります。"
+              "`python scripts/build_geodata.py` で作り直すか、sorta を再インストール"
+              "してください。これがないと、どの座標も空の場所になります。",
+    },
+    "fault_relocate_same_prefix": {
+        "ru": "старый и новый префикс — это один и тот же путь ({prefix}).",
+        "en": "the old and the new prefix are the same path ({prefix}).",
+        "ja": "古いプレフィックスと新しいプレフィックスが同じパスです（{prefix}）。",
+    },
+    "fault_relocate_no_index": {
+        "ru": "по пути {path} индекса нет.",
+        "en": "no index at {path}.",
+        "ja": "{path} にインデックスがありません。",
+    },
+    "fault_relocate_target_missing": {
+        "ru": "{prefix} не существует — ничего не записано. Новое место должно "
+              "появиться раньше, чем на него укажет индекс.",
+        "en": "{prefix} does not exist — nothing was written. The new location has to "
+              "be there before the index is pointed at it.",
+        "ja": "{prefix} は存在しません — 何も書き込まれていません。インデックスを"
+              "向ける前に、新しい場所が存在している必要があります。",
+    },
+    "fault_relocate_no_rows": {
+        "ru": "ни одно значение индекса не начинается с {prefix} — ничего не записано. "
+              "Сверьте старый префикс с путём, который в индексе действительно есть; "
+              "сравнение учитывает регистр.",
+        "en": "no value in the index starts with {prefix} — nothing was written. Check "
+              "the old prefix against a path the index actually holds; the match is "
+              "case-sensitive.",
+        "ja": "インデックス内のどの値も {prefix} で始まっていません — 何も書き込まれて"
+              "いません。実際にインデックスにあるパスと古いプレフィックスを照合して"
+              "ください。大文字と小文字は区別されます。",
+    },
+    "fault_relocate_collisions": {
+        "ru": "{count} путей столкнулись бы со строками, которые уже есть "
+              "(например {sample}) — ничего не записано.",
+        "en": "{count} paths would collide with rows that are already there (for "
+              "example {sample}) — nothing was written.",
+        "ja": "{count} 件のパスが既にある行と衝突します（例: {sample}） — "
+              "何も書き込まれていません。",
+    },
+    "fault_relocate_collection_moved": {
+        "ru": "коллекция не найдена: ни одной из папок-источников нет ({roots}), а в "
+              "индексе уже {rows} файлов (например {sample}). Обычная причина — "
+              "переезд: другая буква диска, переименованная папка, том, подключённый в "
+              "другое место. Индексация отсюда сочла бы новым каждый файл и потеряла бы "
+              "имена людей, места, метки и решения по дубликатам, введённые руками, "
+              "поэтому она останавливается. Перенесите индекс командой "
+              "`sorta relocate --from <старый> --to <новый>` или укажите в `sources` ту "
+              "папку, которая существует.",
+        "en": "the collection was not found: none of the source folders exist ({roots}), "
+              "while the index already holds {rows} files (for example {sample}). The "
+              "usual cause is a move — another drive letter, a renamed folder, a volume "
+              "mounted somewhere else. Indexing from here would call every file new and "
+              "lose the face names, places, marks and duplicate decisions entered by "
+              "hand, so it stops instead. Carry the index over with `sorta relocate "
+              "--from <old> --to <new>`, or point `sources` at the folder that exists.",
+        "ja": "コレクションが見つかりません: ソースフォルダーがどれも存在しませんが"
+              "（{roots}）、インデックスにはすでに {rows} 件のファイルがあります"
+              "（例: {sample}）。よくある原因は移動です — ドライブレターの変更、"
+              "フォルダー名の変更、別の場所にマウントされたボリュームなど。ここから"
+              "インデックスを作り直すと、すべてのファイルが新規と見なされ、手で入力した"
+              "人物名・場所・マーク・重複の判断が失われるため、中断しました。"
+              "`sorta relocate --from <古い> --to <新しい>` でインデックスを引き継ぐか、"
+              "`sources` に存在するフォルダーを指定してください。",
+    },
+    # The two states of a search with nothing to search in. Their `en` is a diagnostic
+    # line and not a sentence, because that is what the exception says: the slices tab
+    # has its own captions for a person (F129) and never shows this one.
+    "fault_search_embeddings_empty": {
+        "ru": "empty: модель={model}, сохранено={stored}, всего={total}",
+        "en": "empty: model={model}, stored={stored}, total={total}",
+        "ja": "empty: モデル={model}、保存済み={stored}、合計={total}",
+    },
+    "fault_search_embeddings_other_model": {
+        "ru": "other_model: модель={model}, сохранено={stored}, всего={total}",
+        "en": "other_model: model={model}, stored={stored}, total={total}",
+        "ja": "other_model: モデル={model}、保存済み={stored}、合計={total}",
+    },
+    "fault_sorter_copy_failed": {
+        "ru": "копирование не удалось: {src} -> {dst}: {error}",
+        "en": "copy failed: {src} -> {dst}: {error}",
+        "ja": "コピーに失敗しました: {src} -> {dst}: {error}",
+    },
+    "fault_sorter_hash_mismatch": {
+        "ru": "хеш копии не совпал, копия удалена: {src} -> {dst}",
+        "en": "the hash of the copy did not match, copy deleted: {src} -> {dst}",
+        "ja": "コピーのハッシュが一致しなかったため、コピーを削除しました: {src} -> {dst}",
+    },
+    "fault_sorter_dst_exists": {
+        "ru": "приёмник уже существует, перезапись запрещена: {dst}",
+        "en": "dst already exists, overwriting is forbidden: {dst}",
+        "ja": "コピー先がすでに存在します。上書きは禁止されています: {dst}",
+    },
+    "fault_sorter_check_failed": {
+        "ru": "проверка после переноса не прошла: {dst}",
+        "en": "the check after the transfer did not pass: {dst}",
+        "ja": "転送後の確認に失敗しました: {dst}",
+    },
+    "fault_tray_icon_unreadable": {
+        "ru": "не удалось прочитать {icon}: {error}",
+        "en": "cannot read {icon}: {error}",
+        "ja": "{icon} を読み込めません: {error}",
+    },
+    "fault_tray_no_pystray": {
+        "ru": "pystray не установлен: {error}",
+        "en": "pystray is not installed: {error}",
+        "ja": "pystray がインストールされていません: {error}",
+    },
+    "fault_tray_no_backend": {
+        "ru": "в этой системе нет системного лотка: {error}",
+        "en": "no tray on this system: {error}",
+        "ja": "このシステムにはトレイがありません: {error}",
+    },
+    "fault_plan_not_rebuilt": {
+        "ru": "план не обновлён: {error}",
+        "en": "the plan was not rebuilt: {error}",
+        "ja": "プランを更新できませんでした: {error}",
+    },
+}
+
+# The refusal of a download is the CLI's own sentence, for the same reason the tier notes
+# above are: `sorta run` prints it in a console and the run screen shows it in a red box,
+# and one fact worded two ways is two facts.
+_FAULT_STRINGS["fault_download_refused"] = {
+    lang: _doctor_line("cli.download.failed", lang, "stage", "weights", "size", "error")
+    for lang in _TIER_LANGS
+}
+_FAULT_STRINGS["fault_download_offline"] = {
+    lang: _doctor_line("cli.download.offline_by_us", lang, "variable")
+    for lang in _TIER_LANGS
+}
+
+# The stages that have a NAME (F222): the sentence above was built against
+# `i18n.stage_label`, and `process_stage_*` is a different word for the same stage —
+# "landmarks" against "Places recognised by sight".
+_FAULT_STRINGS.update({
+    f"stage_name_{stage}": {lang: i18n.stage_label(stage, lang) for lang in _TIER_LANGS}
+    for stage in ("landmarks", "classify", "faces", "junk")
+})
+
+_UI_STRINGS.update(_FAULT_STRINGS)

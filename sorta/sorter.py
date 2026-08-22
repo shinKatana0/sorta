@@ -65,6 +65,7 @@ from . import i18n, imaging
 from .config import Config, FeaturesConfig
 from .dedup import near_duplicate_groups
 from .detect import ANIMAL_LABELS, DetectorSettings, detector_settings
+from .faults import Fault
 from .geodata import GeoResolver
 from .hashing import file_hash
 from .indexer import excludes_path, load_excludes
@@ -612,8 +613,11 @@ def _fs(path: Path) -> Path:
     return Path(_LONG_PATH_PREFIX + full)
 
 
-class TransferError(RuntimeError):
+class TransferError(Fault, RuntimeError):
     """Transferring a single file failed; the caller marks the move failed."""
+
+    codes = ("sorter_copy_failed", "sorter_hash_mismatch", "sorter_dst_exists",
+             "sorter_check_failed")
 
 
 def _copy_and_verify(src: Path, dst: Path, expected_hash: str) -> None:
@@ -622,11 +626,13 @@ def _copy_and_verify(src: Path, dst: Path, expected_hash: str) -> None:
         shutil.copy2(_fs(src), _fs(dst))
     except OSError as exc:
         _fs(dst).unlink(missing_ok=True)
-        raise TransferError(f"copy failed: {src} -> {dst}: {exc}") from None
+        raise TransferError(f"copy failed: {src} -> {dst}: {exc}", "sorter_copy_failed",
+                            src=str(src), dst=str(dst), error=str(exc)) from None
     if file_hash(_fs(dst))[0] != expected_hash:
         _fs(dst).unlink(missing_ok=True)
         raise TransferError(f"the hash of the copy did not match, copy deleted: "
-                            f"{src} -> {dst}")
+                            f"{src} -> {dst}",
+                            "sorter_hash_mismatch", src=str(src), dst=str(dst))
 
 
 def _transfer(src: Path, dst: Path, src_hash: str | None = None,
@@ -645,7 +651,8 @@ def _transfer(src: Path, dst: Path, src_hash: str | None = None,
     size = _fs(src).stat().st_size
     _fs(dst.parent).mkdir(parents=True, exist_ok=True)
     if _fs(dst).exists():
-        raise TransferError(f"dst already exists, overwriting is forbidden: {dst}")
+        raise TransferError(f"dst already exists, overwriting is forbidden: {dst}",
+                            "sorter_dst_exists", dst=str(dst))
     if link:
         try:
             os.link(_fs(src), _fs(dst))
@@ -662,7 +669,8 @@ def _transfer(src: Path, dst: Path, src_hash: str | None = None,
             _copy_and_verify(src, dst, src_hash or file_hash(_fs(src))[0])
             os.remove(_fs(src))
     if not _fs(dst).exists() or _fs(dst).stat().st_size != size:
-        raise TransferError(f"the check after the transfer did not pass: {dst}")
+        raise TransferError(f"the check after the transfer did not pass: {dst}",
+                            "sorter_check_failed", dst=str(dst))
 
 
 def _is_the_same_file(dst: Path, src: Path, src_hash: str | None,

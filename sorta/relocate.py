@@ -19,6 +19,7 @@ from typing import Iterator
 
 from .config import Config
 from .db import connect
+from .faults import Fault
 
 _log = logging.getLogger(__name__)
 
@@ -28,12 +29,17 @@ _EXAMPLES = 3
 _FOLD = "replace({column}, '\\', '/')"
 
 
-class RelocateError(RuntimeError):
+class RelocateError(Fault, RuntimeError):
     """A refusal: the move cannot be applied, and nothing has been written."""
 
+    codes = ("relocate_same_prefix", "relocate_no_index", "relocate_target_missing",
+             "relocate_no_rows", "relocate_collisions")
 
-class CollectionMoved(RuntimeError):
+
+class CollectionMoved(Fault, RuntimeError):
     """Every source root is gone while the index is full — the move this module undoes."""
+
+    codes = ("relocate_collection_moved",)
 
 
 _MOVED_HINT = (
@@ -63,8 +69,11 @@ def refuse_if_the_collection_moved(cfg: Config, conn: sqlite3.Connection) -> Non
     row = conn.execute("SELECT count(*) AS n, min(path) AS sample FROM files").fetchone()
     if not row["n"]:
         return
-    raise CollectionMoved(_MOVED_HINT.format(
-        roots=", ".join(str(root) for root in roots), rows=row["n"], sample=row["sample"]))
+    listed = ", ".join(str(root) for root in roots)
+    raise CollectionMoved(
+        _MOVED_HINT.format(roots=listed, rows=row["n"], sample=row["sample"]),
+        "relocate_collection_moved",
+        roots=listed, rows=row["n"], sample=row["sample"])
 
 
 @dataclass(frozen=True)
@@ -205,17 +214,20 @@ def _refuse_unless_applicable(conn: sqlite3.Connection, plan: RelocatePlan) -> N
     if not plan.new_prefix_exists:
         raise RelocateError(
             f"{plan.new_prefix} does not exist — nothing was written. The new location "
-            "has to be there before the index is pointed at it.")
+            "has to be there before the index is pointed at it.",
+            "relocate_target_missing", prefix=plan.new_prefix)
     if not plan.rows:
         raise RelocateError(
             f"no value in the index starts with {plan.old_prefix} — nothing was written. "
             "Check the old prefix against a path the index actually holds; the match is "
-            "case-sensitive.")
+            "case-sensitive.",
+            "relocate_no_rows", prefix=plan.old_prefix)
     clashes = _conflicts(conn, plan.old_prefix, plan.new_prefix)
     if clashes:
         raise RelocateError(
             f"{len(clashes)} paths would collide with rows that are already there "
-            f"(for example {clashes[0]}) — nothing was written.")
+            f"(for example {clashes[0]}) — nothing was written.",
+            "relocate_collisions", count=len(clashes), sample=clashes[0])
 
 
 def relocate(db_path: str | Path, old_prefix: str | Path, new_prefix: str | Path, *,
@@ -232,10 +244,11 @@ def relocate(db_path: str | Path, old_prefix: str | Path, new_prefix: str | Path
     """
     old, new = normalize_prefix(old_prefix), normalize_prefix(new_prefix)
     if old == new:
-        raise RelocateError(f"the old and the new prefix are the same path ({old}).")
+        raise RelocateError(f"the old and the new prefix are the same path ({old}).",
+                            "relocate_same_prefix", prefix=old)
     db = Path(db_path).expanduser()
     if not db.exists():
-        raise RelocateError(f"no index at {db}.")
+        raise RelocateError(f"no index at {db}.", "relocate_no_index", path=str(db))
     conn = connect(db)
     try:
         plan = _plan(conn, old, new)
