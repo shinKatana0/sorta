@@ -58,6 +58,7 @@ from .junk import (
 from .junk import classify as classify_junk
 from .landmarks import Classifier, clip_classifier, detect_landmarks
 from .naming import name_events, naming_settings
+from .relocate import RelocateError, format_plan, relocate
 from .progress import progress_task
 from .runlog import default_log_path, log_environment, observe, stage_timer
 from .search import (
@@ -1051,6 +1052,20 @@ def _cache_models(lang: Lang, *, clear: bool,
         print(_t("cli.cache.models_failed", lang, path=path, error=error))
 
 
+def _cmd_relocate(config_path: str, old_prefix: str, new_prefix: str, *,
+                  apply: bool = False) -> None:
+    """F242: point the index at a moved collection, keeping every row id.
+
+    A `RelocateError` becomes an exit, not a traceback — each one is a refusal to act on.
+    """
+    cfg = load_config(config_path)
+    try:
+        plan = relocate(cfg.database, old_prefix, new_prefix, apply=apply)
+    except RelocateError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(format_plan(plan))
+
+
 def _cmd_cache(config_path: str, *, clear: bool = False, clear_geo: bool = False,
                preview_max_gb: float | None = None, models: bool = False,
                clear_models: bool = False,
@@ -1410,6 +1425,16 @@ def build_app(lang: Lang) -> typer.Typer:
         _cmd_cache(config, clear=clear, clear_geo=clear_geo,
                    preview_max_gb=preview_max_gb, models=models,
                    clear_models=clear_models, confirm=None if yes else ask)
+
+    @app.command("relocate", help=h("cli.help.relocate"))
+    def relocate_cmd(
+        # `from` is a keyword, so the parameter cannot carry the flag's own name.
+        from_: str = typer.Option(..., "--from", help=h("cli.help.relocate.from")),
+        to: str = typer.Option(..., "--to", help=h("cli.help.relocate.to")),
+        apply: bool = typer.Option(False, "--apply", help=h("cli.help.relocate.apply")),
+        config: str = cfg_opt,
+    ):
+        _cmd_relocate(config, from_, to, apply=apply)
 
     @app.command(help=h("cli.help.ui"))
     def ui(port: int = typer.Option(8756, "--port", help=h("cli.help.ui.port")),
