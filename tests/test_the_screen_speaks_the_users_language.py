@@ -366,10 +366,13 @@ class TestTheEnglishScreenDidNotChange(unittest.TestCase):
 
     def test_a_failure_outside_a_stage_has_a_code_and_three_languages_too(self):
         """The failures with no exception class of ours behind them: the plan cache after
-        a run that otherwise finished, and (F249) the filesystem's own `OSError` stopping
-        a layout halfway. Both are given a code where they are caught."""
+        a run that otherwise finished, the filesystem's own `OSError` stopping a layout
+        halfway (F249), and whatever else stops one — a MemoryError under a loaded gate
+        was the case that asked for the third, 2026-08-23. All are given a code where
+        they are caught."""
         self.assertEqual(assigned_codes(),
-                         {"plan_not_rebuilt", "sort_stopped_by_filesystem"})
+                         {"plan_not_rebuilt", "sort_stopped_by_filesystem",
+                          "sort_stopped_unexpectedly"})
         for code in assigned_codes():
             for lang in _LANGS:
                 with self.subTest(code=code, lang=lang):

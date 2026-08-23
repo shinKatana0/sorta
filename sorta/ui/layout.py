@@ -1471,6 +1471,17 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
                 error_params = {"path": str(where), "error": str(exc), "moved": moved}
                 error = (f"the layout stopped at {where}: {exc}. {moved} files had "
                          f"already been moved and can be rolled back.")
+        except Exception as exc:  # noqa: BLE001 — the thread must not die silently
+            # F249 gave the filesystem refusals an answer; anything ELSE still walked
+            # out of here, and `finally` then finished the run with no error and no
+            # result — a state the page reads as "done" and can say nothing about. Met
+            # 2026-08-23 as a MemoryError under a loaded gate, which is neither a
+            # ValueError nor an OSError. The docstring's promise is that this thread does
+            # not crash; that has to cover the exception nobody predicted.
+            _log.exception("sorta ui: the layout stopped on an unexpected error")
+            error_code = "sort_stopped_unexpectedly"
+            error_params = {"error": f"{type(exc).__name__}: {exc}"}
+            error = f"the layout stopped: {type(exc).__name__}: {exc}"
         else:
             result = {
                 "moved": report.moved,

@@ -3455,6 +3455,18 @@ _UI_STRINGS.update({
         "ja": "{path} で振り分けが停止しました: {error}。すでに {moved} 件が移動済みで、"
               "元に戻せます。",
     },
+    # The one with no cause named: whatever stopped the layout was not something this
+    # code knows how to describe, so the message says the type and stops there instead
+    # of guessing. The rollback line stays — the journal is written before every move,
+    # so it holds whether or not anybody understood the failure.
+    "fault_sort_stopped_unexpectedly": {
+        "ru": "раскладка остановилась: {error}. Уже перемещённые файлы можно откатить "
+              "на вкладке «Перемещения».",
+        "en": "the layout stopped: {error}. Whatever had already moved can be rolled "
+              "back from the Moves tab.",
+        "ja": "振り分けが停止しました: {error}。すでに移動したものは「移動」タブから"
+              "元に戻せます。",
+    },
     "fault_plan_not_rebuilt": {
         "ru": "план не обновлён: {error}",
         "en": "the plan was not rebuilt: {error}",

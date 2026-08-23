@@ -47,7 +47,7 @@ sorta/tray.py         228   # F246 +9: why a step writes a line when it BEGINS, 
 sorta/ui/__init__.py  896   # F248 +8: the route docstring names both refusals a start
                             # can answer with, and which of them carries the offer
 sorta/ui/common.py    167
-sorta/ui/layout.py    556   # F249 +21: what `_run_sort` does with a refusal of the file
+sorta/ui/layout.py    563   # F249 +21: what `_run_sort` does with a refusal of the file
                             # system — the two new status fields, why the destination is
                             # probed first, and where the "how many moved" number is read
 sorta/ui/moves.py     35
@@ -66,7 +66,7 @@ sorta/ui/process.py   790   # F248 +16: why "the folder is not there" is answere
                             # carries a code as well as its sentence
 sorta/ui/review.py    325
 sorta/ui/slices.py    506
-sorta/ui/strings.py   519   # F248 +4: why a refusal with no exception class behind
+sorta/ui/strings.py   523   # F248 +4: why a refusal with no exception class behind
                             # it is in the fault catalog all the same. F249 +3: the
                             # same question about the mid-run refusal.
                             # F247 +11: the picker's refusals are computed and not
