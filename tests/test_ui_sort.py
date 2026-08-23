@@ -181,8 +181,10 @@ class TestSortStatusShape(SortTestBase):
         data = self.sort_status()
         self.assertEqual(
             set(data.keys()),
-            {"running", "done", "total", "error", "finished", "result",
-             "cancel_requested"})
+            # F249: `error_code`/`error_params` — the refusal as a value, so the page
+            # can say a filesystem's "no" in the language of the interface.
+            {"running", "done", "total", "error", "error_code", "error_params",
+             "finished", "result", "cancel_requested"})
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])
         self.assertIsNone(data["error"])

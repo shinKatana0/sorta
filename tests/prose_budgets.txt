@@ -37,14 +37,18 @@ sorta/relocate.py     68
 sorta/restore.py      248
 sorta/runlog.py       272
 sorta/search.py       225
-sorta/sorter.py       808
+sorta/sorter.py       830   # F249 +22: the destination preflight — why the probe is a
+                            # real mkdir and not a permission check, what it says nothing
+                            # about (free space), and why it takes its levels back
 sorta/splash.py       39
 sorta/tiers.py        137
 sorta/tray.py         228   # F246 +9: why a step writes a line when it BEGINS, and why
                             # nothing behind "ready" may import torch either
 sorta/ui/__init__.py  888
 sorta/ui/common.py    167
-sorta/ui/layout.py    535
+sorta/ui/layout.py    556   # F249 +21: what `_run_sort` does with a refusal of the file
+                            # system — the two new status fields, why the destination is
+                            # probed first, and where the "how many moved" number is read
 sorta/ui/moves.py     35
 sorta/ui/overview.py  50
 sorta/ui/page.py      23
@@ -58,7 +62,9 @@ sorta/ui/process.py   774   # F247 +12: why the child answers in UTF-8 bytes and
                             # carries a code as well as its sentence
 sorta/ui/review.py    325
 sorta/ui/slices.py    506
-sorta/ui/strings.py   512   # F247 +11: the picker's refusals are computed and not
+sorta/ui/strings.py   515   # F249 +3: why the mid-run refusal has a code although no
+                            # exception class of ours is behind it.
+                            # F247 +11: the picker's refusals are computed and not
                             # written down — which system package applies is a question
                             # about the machine, and apt was shown on Windows.
                             # F245 +22: the fault catalog — one section note, and the

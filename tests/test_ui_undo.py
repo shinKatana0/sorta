@@ -122,11 +122,15 @@ class TestUndoStatusShape(UndoTestBase):
         data = self.undo_status()
         self.assertEqual(
             set(data.keys()),
-            {"running", "done", "total", "error", "finished", "result",
-             "cancel_requested"})
+            # F249 gave `_SortState` a code and its values; `_UndoState` inherits the
+            # snapshot and answers null/empty — a rollback has no refusal of its own yet.
+            {"running", "done", "total", "error", "error_code", "error_params",
+             "finished", "result", "cancel_requested"})
         self.assertFalse(data["running"])
         self.assertFalse(data["finished"])
         self.assertIsNone(data["result"])
+        self.assertIsNone(data["error_code"])
+        self.assertEqual(data["error_params"], {})
 
     def test_result_shape_after_a_real_rollback(self):
         self.add_photo_file("a.jpg", country="ru", city="Moscow")

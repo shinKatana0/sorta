@@ -12,6 +12,7 @@
 tests/__init__.py                                    0
 tests/conftest.py                                    46
 tests/schema_history.py                              44
+tests/test_a_destination_that_refuses_is_an_answer.py  36
 tests/test_a_download_that_stopped_halfway.py        104
 tests/test_a_run_says_what_it_will_download.py       151
 tests/test_a_slow_runner_is_not_a_failed_test.py     49
@@ -241,7 +242,8 @@ tests/test_ui_search.py                              63
 tests/test_ui_search_person.py                       55
 tests/test_ui_settings.py                            103
 tests/test_ui_slice_albums.py                        52
-tests/test_ui_sort.py                                41
+tests/test_ui_sort.py                                43   # F249 +2: the two
+                            # new fields of the status payload
 tests/test_ui_sort_dest.py                           8
 tests/test_ui_sort_summary.py                        49
 tests/test_ui_source_dir.py                          11
@@ -251,7 +253,8 @@ tests/test_ui_tabs.py                                4
 tests/test_ui_tabs_visibility.py                     32
 tests/test_ui_three_layers.py                        91
 tests/test_ui_tri_state.py                           31
-tests/test_ui_undo.py                                27
+tests/test_ui_undo.py                                29   # F249 +2: why the
+                            # rollback snapshot inherited the two fields
 tests/test_undo_takes_back_the_folders.py            12
 tests/test_uninstalling_leaves_nothing.py            86
 tests/test_utility_frames.py                         64
