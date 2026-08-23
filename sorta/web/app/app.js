@@ -1379,6 +1379,18 @@
     });
   });
 
+  // The tab the markup opens on has to be ACTIVATED, not merely visible. `overview-body`
+  // carries a "loading" line in page.html, and only `activateTab` asks for the numbers
+  // that replace it — so on a fresh page the overview sat at "loading" until somebody
+  // left the tab and came back. Found in the VM, 2026-08-23. The name is taken from the
+  // markup rather than written twice; a guard in the suite keeps the two in step.
+  (function activateTheTabTheMarkupOpensOn() {
+    var opened = TAB_NAMES.filter(function (t) {
+      return document.getElementById("tab-" + t).classList.contains("active");
+    })[0];
+    if (opened) activateTab(opened);
+  })();
+
   // --- F133: the slices ------------------------------------------------------
   // The pin row is BUILT, never written out in the markup: F129 replaces the fixed list
   // with a query, and a row of hand-written buttons would have to be thrown away then.
