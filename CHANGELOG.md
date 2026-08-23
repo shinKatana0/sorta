@@ -195,8 +195,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was indistinguishable from a dead process, which is why the owner restarted it.
 
   **Measured on 2026-08-23**, this machine (24 cores, NVMe, warm cache, `cpu` profile,
-  otherwise idle), one real launch per row, a client asking `/api/startup` fifty times a
-  second from a process of its own for the whole launch:
+  otherwise idle), one real launch per row, with a client in a process of its own asking
+  `/api/startup` in a tight loop (~20 answers a second) for the whole launch:
 
   | | before | after |
   |---|---|---|
