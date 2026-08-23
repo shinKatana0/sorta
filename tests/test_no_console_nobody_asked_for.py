@@ -169,6 +169,8 @@ _NOT_THROUGH_THE_HELPER: dict[tuple[str, str], str] = {
 # exiftool fallback, which starts the same program by another route.
 _THROUGH_THE_HELPER = {
     ("diagnostics.py", "_run_nvidia_smi"),
+    # F246: the GPU probe moved out of the server process and became the sixth child.
+    ("diagnostics.py", "_run_gpu_probe"),
     ("exif.py", "_starts"),
     ("exif.py", "ExifToolSession._ensure"),
     ("exif.py", "read_batch_exiftool"),

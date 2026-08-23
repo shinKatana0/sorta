@@ -160,6 +160,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified against the upstream sources on 2026-08-21, not from memory.
 
 ### Fixed
+- **The start-up diagnostics no longer take the process away from the server** (F246).
+  The owner met this in a clean VM as `TypeError: Failed to fetch` — first on the "Browse"
+  button, then on everything: browsing, typing a path, starting a run. A restart cured it.
+  **There was not one `ERROR`, `Traceback` or `Exception` in the log**; the server had not
+  died. What the log did carry was `startup ready elapsed=8.314`, then the line with the
+  address THIRTY SECONDS later, then the last served request, then fourteen minutes of
+  nothing — and no `step=gpu` line at all. The restarted program wrote
+  `startup step=gpu elapsed=72.818`, with the file cache already warm.
+
+  F227 moved the probes behind the bind so the page would come up early, and it did — but
+  they stayed in the SAME PROCESS: `warn_if_gpu_mismatch` → `gpu_health` → `import torch`,
+  on a thread of a program that was already answering requests. An import holds the
+  interpreter, so the tab that had just been shown the program could fetch nothing for as
+  long as it took. The promise F227 exists for — "the program answers while the
+  diagnostics run" — held only until the diagnostics reached torch, and then failed
+  completely, silently, and worst on exactly the machines it was written for. (The F237
+  memory warning does not look here: it measures before a RUN, and this is the start-up.)
+
+  **The torch question now leaves the process.** `diagnostics.probe_torch_facts` starts a
+  child through `sorta/launch.py` (F228, so no console window), the child prints one line
+  of JSON, and the parent rebuilds the same `GpuHealth` out of it — the hardware half
+  stays here, `nvidia-smi` needing neither stack. The child is given a **timeout of 300 s**
+  and every way of not knowing (no interpreter, a child that died, one still importing
+  when the time ran out, an answer that cannot be read) is a line in the log and no
+  warning: a diagnosis is never invented out of missing data. Which road is taken is
+  decided by one rule, the one `runlog` already followed — **where torch is loaded
+  already** (`sorta run`, which is about to use it; `sorta doctor`, which has nothing else
+  to do) the question costs an attribute lookup and is asked in place; **where it is not**
+  (the tray, `sorta ui`) it goes to the child. So `sorta doctor` and a run are unchanged,
+  and both server entry points stop importing torch — without a line changing in `cli.py`.
+  The F63/F76 warning still arrives, by the new road. Separately, a step now writes a line
+  when it **begins** and not only when it ends: fourteen minutes with no `step=gpu` line
+  was indistinguishable from a dead process, which is why the owner restarted it.
+
+  **Measured on 2026-08-23**, this machine (24 cores, NVMe, warm cache, `cpu` profile,
+  otherwise idle), one real launch per row, with a client in a process of its own asking
+  `/api/startup` in a tight loop (~20 answers a second) for the whole launch:
+
+  | | before | after |
+  |---|---|---|
+  | `torch` in the server process afterwards | yes | **no** |
+  | worst answer while the probe ran | 168–170 ms | **27–31 ms** |
+  | mean answer while the probe ran | 11.2–11.4 ms | **6.9–7.4 ms** |
+  | answers served over the whole launch | 212–218 | **272–275** |
+  | to "ready" | 4.2 s | 4.2 s |
+  | the `gpu` step itself | 7.2 s | 7.8 s |
+
+  Read the last two rows together with the first: the step costs about **half a second
+  more** (a second interpreter has to start) and nobody waits for it, while a quarter more
+  requests get answered in the same launch. The 168 ms is what this machine's fast disk
+  makes of the defect — the owner's VM made 72.8 s of it on a good day and more than
+  fifteen minutes on a bad one, and that is the number the shape of the table is about.
+  The suite pins it as a fact and not as a list of forbidden calls (F239): a meta-path
+  tripwire watches the whole start-up path, so a probe added by a neighbouring feature is
+  caught by the same test.
 - **The recycle bin can refuse, and that no longer breaks the database halfway**
   (F241). `_trash_files` — the single deletion path all three routes go through
   (`/api/dupes/trash`, `/api/photo/trash`, `/api/photos/trash`) — sent every file to

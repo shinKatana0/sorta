@@ -12,7 +12,9 @@ sorta/dates.py        17
 sorta/db/__init__.py  97
 sorta/dedup.py        191
 sorta/detect.py       175
-sorta/diagnostics.py  151
+sorta/diagnostics.py  215   # F246 +64: the GPU probe moved into a child process — what
+                            # the torch import costs the process that pays it, why the
+                            # child is told the import path, and which caller asks where
 sorta/events.py       100
 sorta/exif.py         92
 sorta/faces.py        412
@@ -38,7 +40,8 @@ sorta/search.py       225
 sorta/sorter.py       808
 sorta/splash.py       39
 sorta/tiers.py        137
-sorta/tray.py         219
+sorta/tray.py         228   # F246 +9: why a step writes a line when it BEGINS, and why
+                            # nothing behind "ready" may import torch either
 sorta/ui/__init__.py  888
 sorta/ui/common.py    167
 sorta/ui/layout.py    535

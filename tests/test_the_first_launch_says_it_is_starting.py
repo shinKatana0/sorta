@@ -27,14 +27,14 @@ What this module pins, in the order the brief asks for it:
 4. **the tab.** It says which step the launch is on, in three languages, and shows the
    program by itself when the last step is done;
 5. **the log.** One line per step with its duration — and in a shape `runlog` will not
-   mistake for a stage of a run.
+   mistake for a stage of a run. F246 added a second line, at the START of a step; what
+   it is for is pinned in `test_the_diagnostics_do_not_starve_the_server.py`.
 
 The seconds themselves are deliberately NOT asserted anywhere: they are a property of
 somebody's disk. What is asserted is the order, which is what the seconds followed from.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
@@ -214,16 +214,17 @@ with open(result_path, "w", encoding="utf-8") as handle:
 
 
 # serial: this class starts real launches — a bound port, a server thread and an exit the
-# assertions wait for — and each one spawns a fresh interpreter that imports torch. A
-# loaded machine is exactly where a free port stops being free between the probe and the
-# bind, which is the class of failure the split of the gate exists for.
+# assertions wait for — and each one is a fresh interpreter that starts one of its own for
+# the GPU probe (F246). A loaded machine is exactly where a free port stops being free
+# between the probe and the bind, which is the class of failure the split of the gate
+# exists for.
 @pytest.mark.serial
 class TestNothingHeavyIsImportedOnTheWayToAnAnsweringPort(unittest.TestCase):
     """Requirements 1 and 2, asked of a whole process because that is what they are about.
 
-    Both launches happen once, in `setUpClass`: each one is a fresh interpreter that ends
-    up importing torch, and the cases below read different parts of the same report rather
-    than paying for it four times.
+    Both launches happen once, in `setUpClass`: each one is a fresh interpreter running a
+    real launch, and the cases below read different parts of the same report rather than
+    paying for it four times.
     """
 
     @classmethod
@@ -256,12 +257,15 @@ class TestNothingHeavyIsImportedOnTheWayToAnAnsweringPort(unittest.TestCase):
             with self.subTest(step=done["step"]):
                 self.assertGreaterEqual(done["seconds"], 0.0)
 
-    def test_the_gpu_check_really_did_import_torch_after_the_bind(self):
-        """The other half of the same sentence: `warn_if_gpu_mismatch` is still the call
-        that imports torch — it just does it with the port already answering."""
-        if importlib.util.find_spec("torch") is None:  # pragma: no cover — no torch here
-            self.skipTest("torch is not installed in this environment")
-        self.assertIn("torch", self.first["after"])
+    def test_the_gpu_check_leaves_the_stacks_out_of_the_server_process(self):
+        """F246 turned this assertion round. `warn_if_gpu_mismatch` used to be the call
+        that imported torch, behind the bind but in the same process — where the import
+        held the interpreter and the tab that had just been shown the program could fetch
+        nothing for as long as it took. The check still runs (its step is in `done`
+        above); it runs in a child. Read off a whole launch, which is the only place
+        this can be a fact rather than a list of calls."""
+        self.assertEqual(self.first["after"], [],
+                         "запуск втянул тяжёлый стек в процесс сервера")
 
     def test_a_second_launch_imports_nothing_and_opens_nothing(self):
         """Ten clicks used to be ten torch imports. This is what one of the nine costs."""
@@ -723,13 +727,13 @@ class TestTheLaunchWritesDownWhatItSpent(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_a_step_writes_one_line_with_its_name_and_its_duration(self):
+    def test_a_step_writes_a_line_with_its_name_and_its_duration(self):
         with self.assertLogs("sorta.tray", level="INFO") as logs:
             with tray._startup_step(ui.STARTUP_GPU):
                 pass
         lines = [record.getMessage() for record in logs.records]
-        self.assertEqual(len(lines), 1, lines)
-        self.assertRegex(lines[0], r"^startup step=gpu elapsed=\d+\.\d{3}$")
+        self.assertEqual(len(lines), 2, lines)
+        self.assertRegex(lines[-1], r"^startup step=gpu elapsed=\d+\.\d{3}$")
 
     def test_a_step_that_raised_is_still_timed(self):
         """A launch that fell over is exactly the one whose timings are worth having."""
@@ -737,7 +741,7 @@ class TestTheLaunchWritesDownWhatItSpent(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with tray._startup_step(ui.STARTUP_DATABASE):
                     raise ValueError("no index")
-        self.assertRegex(logs.records[0].getMessage(),
+        self.assertRegex(logs.records[-1].getMessage(),
                          r"^startup step=database elapsed=")
 
     def test_the_line_is_not_read_back_as_a_stage_of_a_run(self):
@@ -766,12 +770,15 @@ class TestTheLaunchWritesDownWhatItSpent(unittest.TestCase):
              self.assertLogs("sorta.tray", level="INFO") as logs:
             tray._finish_startup()
         lines = [record.getMessage() for record in logs.records]
-        self.assertEqual(len(lines), 4, lines)
+        self.assertEqual(len(lines), 7, lines)
         self.assertRegex(lines[0], r"^startup ready elapsed=\d+\.\d{3}$")
-        for line, step in zip(lines[1:], (ui.STARTUP_ENVIRONMENT, ui.STARTUP_GPU,
-                                          ui.STARTUP_GEO)):
+        # Two lines per step since F246: one when it begins, one when it is over.
+        for begun, over, step in zip(lines[1::2], lines[2::2],
+                                     (ui.STARTUP_ENVIRONMENT, ui.STARTUP_GPU,
+                                      ui.STARTUP_GEO)):
             with self.subTest(step=step):
-                self.assertRegex(line, rf"^startup step={step} elapsed=\d+\.\d{{3}}$")
+                self.assertEqual(begun, f"startup step={step} started")
+                self.assertRegex(over, rf"^startup step={step} elapsed=\d+\.\d{{3}}$")
         self.assertTrue(self.state.snapshot()["ready"])
 
     def test_ready_does_not_wait_for_a_slow_check(self):
