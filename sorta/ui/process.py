@@ -562,6 +562,15 @@ _BROWSE_DIALOG_TIMEOUT_S = 120
 # Serialises the folder dialog — see _browse_for_folder.
 _browse_lock = threading.Lock()
 
+# F247: the child's own code for "the dialog answered and the answer did not get out".
+# Every OTHER non-zero code means the dialog never happened, and the two are different
+# sentences on the screen — an exit code is the one channel that survives a broken stdout.
+_BROWSE_NO_ANSWER_EXIT = 7
+
+# F247: the answer is UTF-8 BYTES, not text in whatever the locale picked. `sys.stdout.
+# write(path)` raised UnicodeEncodeError for the owner on 2026-08-23 (cp1251 has no
+# character for parts of that path), and the traceback was all that came back of a folder
+# that had been chosen. `-X utf8` below is the same decision for the rest of the output.
 _BROWSE_DIALOG_SCRIPT = (
     "import tkinter, tkinter.filedialog, sys\n"
     "root = tkinter.Tk()\n"
@@ -569,7 +578,16 @@ _BROWSE_DIALOG_SCRIPT = (
     "root.attributes('-topmost', True)\n"
     "path = tkinter.filedialog.askdirectory()\n"
     "root.destroy()\n"
-    "sys.stdout.write(path or '')\n"
+    "try:\n"
+    "    out = sys.stdout.buffer\n"
+    "    out.write((path or '').encode('utf-8'))\n"
+    "    out.flush()\n"
+    "except Exception as exc:\n"
+    "    try:\n"
+    "        sys.stderr.write('the picked path did not reach stdout: %r\\n' % (exc,))\n"
+    "    except Exception:\n"
+    "        pass\n"
+    f"    raise SystemExit({_BROWSE_NO_ANSWER_EXIT})\n"
 )
 
 
@@ -579,9 +597,9 @@ def _browse_for_folder() -> tuple[str, str]:
     tkinter is not thread-safe and requires the process's main thread — the
     POST /api/browse handler runs on a ThreadingHTTPServer thread, so the dialog is
     opened in a SEPARATE process (its own main thread, without a conflict with the web
-    server). Any failure (no display/GUI, cancel, timeout, exception) -> an empty
-    string, not an error — the button is just a convenience, manual path entry always
-    works.
+    server). No failure is an error here — the button is just a convenience, manual path
+    entry always works — so every one of them comes back as an empty path and one of the
+    three problem codes below.
 
     Only one dialog at a time: the subprocess takes a second or two to show a window,
     and every request that arrives meanwhile used to spawn another Explorer. The
@@ -604,24 +622,40 @@ def _browse_for_folder() -> tuple[str, str]:
 # failing branch below did not even log. Met on 2026-08-09.
 BROWSE_CANCELLED = ""
 BROWSE_UNAVAILABLE = "unavailable"
+# F247: the third outcome — the dialog was drawn, a folder was chosen, and the path did
+# not come back. It answered BROWSE_UNAVAILABLE, which told the owner the machine has no
+# folder picker while he was looking at the one it had just closed.
+BROWSE_NO_ANSWER = "no_answer"
+
+
+def _browse_text(raw: bytes | None) -> str:
+    """The child's bytes as text — UTF-8, which is what it wrote; no locale is asked."""
+    return (raw or b"").decode("utf-8", "replace")
 
 
 def _run_browse_dialog() -> tuple[str, str]:
     """-> (path, problem). An empty problem means the answer is the path, cancel included."""
     try:
         result = subprocess.run(
-            [sys.executable, "-c", _BROWSE_DIALOG_SCRIPT],
-            capture_output=True, text=True, timeout=_BROWSE_DIALOG_TIMEOUT_S,
+            [sys.executable, "-X", "utf8", "-c", _BROWSE_DIALOG_SCRIPT],
+            capture_output=True, timeout=_BROWSE_DIALOG_TIMEOUT_S,
             check=False,
         )
+    except subprocess.TimeoutExpired:
+        # A window open for two minutes is not a machine without a picker.
+        _log.warning("browse: the folder dialog did not answer in %ss",
+                     _BROWSE_DIALOG_TIMEOUT_S)
+        return "", BROWSE_NO_ANSWER
     except Exception:
         _log.exception("browse: could not start the folder dialog")
         return "", BROWSE_UNAVAILABLE
     if result.returncode != 0:
-        _log.warning("browse: the folder dialog exited %s: %s",
-                     result.returncode, (result.stderr or "").strip()[:400])
-        return "", BROWSE_UNAVAILABLE
-    return result.stdout.strip(), BROWSE_CANCELLED
+        problem = (BROWSE_NO_ANSWER if result.returncode == _BROWSE_NO_ANSWER_EXIT
+                   else BROWSE_UNAVAILABLE)
+        _log.warning("browse: the folder dialog exited %s (%s): %s",
+                     result.returncode, problem, _browse_text(result.stderr).strip()[:400])
+        return "", problem
+    return _browse_text(result.stdout).strip(), BROWSE_CANCELLED
 
 
 # --- F81: the source folder tree ("do not scan") --------------------------------

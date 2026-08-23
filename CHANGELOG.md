@@ -160,6 +160,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified against the upstream sources on 2026-08-21, not from memory.
 
 ### Fixed
+- **The folder that was picked reaches the field, and a refusal names what happened**
+  (F247). In a clean VM the owner pressed "Browse", Explorer opened, a folder was
+  chosen — and the screen answered *"The folder picker is unavailable on this machine —
+  type the path in the field instead. On Ubuntu/Debian it comes from: sudo apt install
+  python3-tk"*. Four times in a row, on Windows, about a picker that had just been used.
+  The log (2026-08-23) named the line that broke: `browse: the folder dialog exited 1:
+  Traceback ... sys.stdout.write(path or '')` — the very last statement of the child
+  script, the one that hands the chosen path back.
+
+  Three defects stood in that one sentence, and all three are fixed:
+
+  * **The path was lost on the way out.** The child wrote the path as TEXT and the parent
+    read it as text, so both used the locale's encoding — cp1251 here, which has no
+    character for parts of that path. The child now writes UTF-8 **bytes** to
+    `sys.stdout.buffer` (and runs under `-X utf8`), and the parent reads bytes and decodes
+    UTF-8 itself. Nothing in the answer depends on the locale any more: a folder named in
+    Cyrillic, Chinese or emoji arrives whole on an English Windows exactly as it does on a
+    Russian one.
+  * **The refusal described something that had not happened.** There were two outcomes —
+    a path, or `unavailable` — so a dialog that ran and lost its answer was reported as a
+    machine without a dialog. There is now a third, `no_answer`, with a message of its
+    own: the folder was picked, the path did not get back, the exit code and the child's
+    output are in the log. The child reports it deliberately (exit code 7) instead of
+    dying on a traceback, so a stream that cannot be written to is a sentence rather than
+    a stack trace. A dialog nobody answered within the two-minute timeout is filed the
+    same way, for the same reason: the window was there.
+  * **The advice was for another operating system.** `sudo apt install python3-tk` was one
+    string shown on every platform. The package line is now chosen by the platform the
+    server runs on — Debian/Ubuntu get it, Windows and macOS get the sentence without it —
+    in all three languages.
+
+  The log line stays English and still carries the child's exit code and `stderr` (F245:
+  the log is the source of truth, the screen is translated). It is what found this defect,
+  and it now names which of the two refusals was sent.
+
 - **The start-up diagnostics no longer take the process away from the server** (F246).
   The owner met this in a clean VM as `TypeError: Failed to fetch` — first on the "Browse"
   button, then on everything: browsing, typing a path, starting a run. A restart cured it.

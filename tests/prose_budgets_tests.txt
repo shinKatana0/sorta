@@ -186,6 +186,7 @@ tests/test_the_first_launch_says_it_is_starting.py   166   # F246 +6: the assert
                             # torch after a launch turned round, and what turned it
 tests/test_the_index_follows_from_the_screen.py      76
 tests/test_the_log_speaks_english.py                 44
+tests/test_the_picked_folder_reaches_the_field.py     33
 tests/test_the_screen_speaks_the_users_language.py   104
 tests/test_three_tiers_of_sameness.py                83
 tests/test_tray_icon.py                              110
@@ -223,7 +224,9 @@ tests/test_ui_package.py                             44
 tests/test_ui_photo_trash.py                         6
 tests/test_ui_place_prefix_search.py                 49
 tests/test_ui_process.py                             129  # F245 +2: the two new fields of the status payload
-tests/test_ui_process_browse.py                      22
+tests/test_ui_process_browse.py                      30   # F247 +8: what the three
+                            # refusals of the picker are, and why the child is read as
+                            # bytes
 tests/test_ui_progress_delete_ux.py                  11
 tests/test_ui_region_place.py                        93
 tests/test_ui_rerun_optional.py                      17

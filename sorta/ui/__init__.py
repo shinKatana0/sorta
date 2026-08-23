@@ -624,7 +624,10 @@ from ..sorter import _fs, _is_the_same_file
 # F217: `tiers` and `wizard` ride along because `strings` reads the tier catalog out of
 # them rather than spelling one out by hand — and the package re-exports every name a tab
 # module defines, which the suite checks.
-from .strings import _TIER_LANGS, _UI_STRINGS, _doctor_line, _tier_strings, tiers, wizard
+from .strings import (
+    _BROWSE_APT_HINT, _BROWSE_NO_ANSWER, _BROWSE_UNAVAILABLE, _TIER_LANGS, _UI_STRINGS,
+    _browse_strings, _doctor_line, _tier_strings, tiers, wizard,
+)
 from .common import (
     DEFAULT_PORT, STARTUP_CONFIG, STARTUP_DATABASE, STARTUP_ENVIRONMENT, STARTUP_GEO,
     STARTUP_GPU, STARTUP_PORT, STARTUP_SERVER, STARTUP_STEPS,
@@ -704,7 +707,8 @@ from .moves import (
     _UndoState, _last_batch_id, _moves_payload, _run_undo, _target_rel,
 )
 from .process import (
-    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, BROWSE_CANCELLED, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, RELOCATE_REFUSED, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
+    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, _BROWSE_NO_ANSWER_EXIT, _browse_text,
+    BROWSE_CANCELLED, BROWSE_NO_ANSWER, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, RELOCATE_REFUSED, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
     _DownloadRefused,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
     _OPTIONAL_STAGES, TIER_ABSENT, TIER_READY, TIER_WEIGHTS, _deep_tier_ran,
