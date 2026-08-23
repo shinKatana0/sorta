@@ -110,10 +110,10 @@ user to the terminal for exactly the situation the journal was written for.
 
 (10) `POST /api/browse` (F51, the "Browse…" button — next to the "Process" path field
 and next to the layout destination field on the "Cities" tab) — opens a native
-folder-picker dialog and returns `{"path": str}` (an empty string on cancel/error/no
-GUI — not a 500, the button is just a convenience, manual path entry always works).
-The dialog — tkinter `askdirectory` in a SEPARATE subprocess (`_browse_for_folder`,
-`subprocess.run([sys.executable, "-c", ...])`): tkinter is not thread-safe, and the
+folder-picker dialog and returns `{"path": str}`, plus a `problem` code when there is no
+path (F247: no picker, or one that lost its answer). Never a 500: the button is just a
+convenience, manual path entry always works. The dialog — tkinter `askdirectory` in a
+SEPARATE subprocess (`_browse_for_folder`): tkinter is not thread-safe, and the
 POST handler runs on a ThreadingHTTPServer thread, not the process's main thread; a
 fresh process = its own main thread, without a conflict with the server. The returned
 path is not processed at all on the server — `POST /api/process` already validates
@@ -624,7 +624,10 @@ from ..sorter import _fs, _is_the_same_file
 # F217: `tiers` and `wizard` ride along because `strings` reads the tier catalog out of
 # them rather than spelling one out by hand — and the package re-exports every name a tab
 # module defines, which the suite checks.
-from .strings import _TIER_LANGS, _UI_STRINGS, _doctor_line, _tier_strings, tiers, wizard
+from .strings import (
+    _BROWSE_APT_HINT, _BROWSE_NO_ANSWER, _BROWSE_UNAVAILABLE, _TIER_LANGS, _UI_STRINGS,
+    _browse_strings, _doctor_line, _tier_strings, tiers, wizard,
+)
 from .common import (
     DEFAULT_PORT, STARTUP_CONFIG, STARTUP_DATABASE, STARTUP_ENVIRONMENT, STARTUP_GEO,
     STARTUP_GPU, STARTUP_PORT, STARTUP_SERVER, STARTUP_STEPS,
@@ -704,7 +707,8 @@ from .moves import (
     _UndoState, _last_batch_id, _moves_payload, _run_undo, _target_rel,
 )
 from .process import (
-    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, BROWSE_CANCELLED, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, RELOCATE_REFUSED, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
+    _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, _BROWSE_NO_ANSWER_EXIT, _browse_text,
+    BROWSE_CANCELLED, BROWSE_NO_ANSWER, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, RELOCATE_REFUSED, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
     _DownloadRefused,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
     _OPTIONAL_STAGES, TIER_ABSENT, TIER_READY, TIER_WEIGHTS, _deep_tier_ran,

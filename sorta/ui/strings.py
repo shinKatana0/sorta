@@ -15,6 +15,8 @@ would be the second copy the feature exists to remove.
 """
 from __future__ import annotations
 
+import sys
+
 from .. import i18n, tiers, wizard
 
 
@@ -46,17 +48,9 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "ja": "写真フォルダを指定して「処理する」を押すと、インデックスが作成されます"
               "（位置情報、顔、イベント、不要写真、類似写真）。ファイルは移動されません。",
     },
-    # F51 said a failed picker is "just a convenience, manual entry always works" — true,
-    # and the button still has to say why it did nothing. `python3-tk` is the Ubuntu case:
-    # the system interpreter carries no tkinter until it is installed.
-    "browse_unavailable": {
-        "ru": "Диалог выбора папки недоступен на этой машине — введите путь в поле. "
-              "На Ubuntu/Debian его даёт: sudo apt install python3-tk",
-        "en": "The folder picker is unavailable on this machine — type the path in the "
-              "field instead. On Ubuntu/Debian it comes from: sudo apt install python3-tk",
-        "ja": "このマシンではフォルダ選択ダイアログを利用できません。パスを入力欄に直接"
-              "入力してください。Ubuntu/Debian では sudo apt install python3-tk で導入できます",
-    },
+    # F247 took the picker's two refusals out of this table: one of them names a system
+    # package, and which package — if any — depends on the machine. See
+    # `_browse_strings` at the bottom of the file.
     "process_path_placeholder": {
         "ru": "Путь к папке с фото", "en": "Path to photo folder",
         "ja": "写真フォルダのパス",
@@ -3457,3 +3451,52 @@ _UI_STRINGS.update({
                                for lang in _TIER_LANGS}
        for stage in ("landmarks", "classify", "faces", "junk")},
 })
+
+
+# --- F247: the folder picker's two refusals -------------------------------------------
+#
+# Computed rather than written into the table above: one of them names a system package,
+# and which package applies is a question about THIS machine. `sudo apt install
+# python3-tk` was shown on Windows, where there is no apt and where the picker had in fact
+# opened, been used, and lost its answer on the way back.
+
+_BROWSE_UNAVAILABLE = {
+    "ru": "Диалог выбора папки недоступен на этой машине — введите путь в поле.",
+    "en": "The folder picker is unavailable on this machine — type the path in the "
+          "field instead.",
+    "ja": "このマシンではフォルダ選択ダイアログを利用できません。パスを入力欄に直接"
+          "入力してください。",
+}
+
+# Debian and Ubuntu ship a system interpreter without tkinter until this is installed —
+# the case of 2026-08-09 this sentence was written for. Windows has it with the
+# interpreter; on macOS the answer depends on where that interpreter came from, so there
+# is no one command to name and neither gets a package line.
+_BROWSE_APT_HINT = {
+    "ru": " На Ubuntu/Debian его даёт: sudo apt install python3-tk",
+    "en": " On Ubuntu/Debian it comes from: sudo apt install python3-tk",
+    "ja": "Ubuntu/Debian では sudo apt install python3-tk で導入できます。",
+}
+
+_BROWSE_NO_ANSWER = {
+    "ru": "Папка выбрана, но её путь не дошёл до Sorta — введите его в поле. "
+          "Код возврата диалога и его вывод записаны в журнал.",
+    "en": "The folder was picked, but its path did not reach Sorta — type it in the "
+          "field instead. The dialog's exit code and output are in the log.",
+    "ja": "フォルダは選択されましたが、そのパスが Sorta に届きませんでした。"
+          "パスを入力欄に直接入力してください。"
+          "ダイアログの終了コードと出力はログに記録されています。",
+}
+
+
+def _browse_strings(platform: str = sys.platform) -> dict[str, dict[str, str]]:
+    """The picker's refusals for `platform` — with its package advice and no other's."""
+    hint = _BROWSE_APT_HINT if platform.startswith("linux") else {}
+    return {
+        "browse_unavailable": {lang: text + hint.get(lang, "")
+                               for lang, text in _BROWSE_UNAVAILABLE.items()},
+        "browse_no_answer": dict(_BROWSE_NO_ANSWER),
+    }
+
+
+_UI_STRINGS.update(_browse_strings())

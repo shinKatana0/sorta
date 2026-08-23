@@ -88,6 +88,13 @@ class TestBrowseEndpoint(UiServerTestBase):
         answer = waiting.post_json(f"{self.base_url}/api/browse", {})
         return answer.status, answer.json()
 
+    def fake_dialog(self, fake_subprocess, **fields):
+        """The child as `subprocess.run` returns it — BYTES on both streams since F247,
+        because the answer is UTF-8 and not text in the locale's encoding."""
+        fake_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+        fake_subprocess.run.return_value = mock.Mock(
+            **{"returncode": 0, "stdout": b"", "stderr": b"", **fields})
+
     def test_returns_selected_path(self):
         with mock.patch.object(ui, "_browse_for_folder",
                                return_value=("C:\\Users\\me\\Photos", "")):
@@ -96,10 +103,19 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(status, 200)
         self.assertEqual(resp, {"path": "C:\\Users\\me\\Photos"})
 
+    def test_a_path_with_non_ascii_letters_reaches_the_field(self):
+        # F247: the whole feature, seen from the route — the folder the owner picked was
+        # called «Фото», and what came back was a refusal.
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
+            self.fake_dialog(fake_subprocess, stdout="C:\\Фото 📷".encode("utf-8"))
+            self.start_server()
+            status, resp = self.post_browse()
+        self.assertEqual(status, 200)
+        self.assertEqual(resp, {"path": "C:\\Фото 📷"})
+
     def test_cancelled_dialog_returns_empty_path_not_500(self):
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
-            fake_subprocess.run.return_value = mock.Mock(
-                returncode=0, stdout="", stderr="")
+            self.fake_dialog(fake_subprocess)
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
@@ -110,6 +126,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         the dialog said exactly what a cancel says until 2026-08-09, so on Ubuntu without
         python3-tk the button did nothing and wrote nothing anywhere."""
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
+            fake_subprocess.TimeoutExpired = subprocess.TimeoutExpired
             fake_subprocess.run.side_effect = RuntimeError("no display")
             self.start_server()
             status, resp = self.post_browse()
@@ -117,6 +134,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         self.assertEqual(resp, {"path": "", "problem": "unavailable"})
 
     def test_subprocess_timeout_returns_empty_path_not_500(self):
+        # F247: an unanswered dialog is not a missing one — the window was drawn.
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
             fake_subprocess.TimeoutExpired = subprocess.TimeoutExpired
             fake_subprocess.run.side_effect = subprocess.TimeoutExpired(
@@ -124,21 +142,30 @@ class TestBrowseEndpoint(UiServerTestBase):
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
-        self.assertEqual(resp, {"path": "", "problem": "unavailable"})
+        self.assertEqual(resp, {"path": "", "problem": "no_answer"})
 
     def test_nonzero_returncode_returns_empty_path_not_500(self):
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
-            fake_subprocess.run.return_value = mock.Mock(
-                returncode=1, stdout="", stderr="ModuleNotFoundError: tkinter")
+            self.fake_dialog(fake_subprocess, returncode=1,
+                             stderr=b"ModuleNotFoundError: tkinter")
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
         self.assertEqual(resp, {"path": "", "problem": "unavailable"})
 
+    def test_a_child_that_could_not_write_the_answer_says_so_on_the_route(self):
+        # F247: the third outcome, end to end — the dialog ran and the path was lost.
+        with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
+            self.fake_dialog(fake_subprocess, returncode=ui._BROWSE_NO_ANSWER_EXIT,
+                             stderr=b"the picked path did not reach stdout: ValueError()")
+            self.start_server()
+            status, resp = self.post_browse()
+        self.assertEqual(status, 200)
+        self.assertEqual(resp, {"path": "", "problem": "no_answer"})
+
     def test_strips_whitespace_from_selected_path(self):
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
-            fake_subprocess.run.return_value = mock.Mock(
-                returncode=0, stdout=" C:\\Photos \n", stderr="")
+            self.fake_dialog(fake_subprocess, stdout=b" C:\\Photos \n")
             self.start_server()
             status, resp = self.post_browse()
         self.assertEqual(status, 200)
@@ -149,8 +176,7 @@ class TestBrowseEndpoint(UiServerTestBase):
         # the dialog must go through subprocess.run, not a direct import of tkinter
         # in the request handler.
         with mock.patch.object(ui.process, "subprocess") as fake_subprocess:
-            fake_subprocess.run.return_value = mock.Mock(
-                returncode=0, stdout="C:\\X", stderr="")
+            self.fake_dialog(fake_subprocess, stdout=b"C:\\X")
             self.start_server()
             self.post_browse()
         self.assertTrue(fake_subprocess.run.called)
@@ -158,6 +184,9 @@ class TestBrowseEndpoint(UiServerTestBase):
         cmd = args[0]
         self.assertIn(ui.sys.executable, cmd)
         self.assertIn("tkinter", " ".join(cmd))
+        # F247: the parent reads BYTES. `text=True` would decode the child's answer in
+        # the locale's encoding, which is the half of the defect that lives on this side.
+        self.assertNotIn("text", kwargs)
 
 
 class TestBrowseJsWiring(UiServerTestBase):
