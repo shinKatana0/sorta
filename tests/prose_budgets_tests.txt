@@ -193,7 +193,7 @@ tests/test_the_opening_tab_is_activated.py            15
 tests/test_the_picked_folder_reaches_the_field.py     33
 tests/test_the_screen_speaks_the_users_language.py   104
 tests/test_three_tiers_of_sameness.py                83
-tests/test_tray_icon.py                              110
+tests/test_tray_icon.py                              118
 tests/test_two_vlm_options_reach_the_screen.py       130
 tests/test_ui.py                                     21
 tests/test_ui_album_dest.py                          7

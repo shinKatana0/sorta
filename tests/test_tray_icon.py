@@ -135,9 +135,18 @@ class TrayProgramTestBase(unittest.TestCase):
         return self.icon
 
     def start_program(self, *, icon_factory=None) -> None:
-        """`tray.start` on a thread, with whatever it raises kept for the assertions."""
+        """`tray.start` on a thread, with whatever it raises kept for the assertions.
+
+        The GPU probe is stubbed out. F246 sent it to a child process, and a child that
+        imports torch from scratch costs whole seconds where the in-process call used to
+        find the module already loaded by the suite — times eight xdist workers starting
+        trays at once. What these cases are about is the icon and the quitting; the probe
+        is F246's own subject and has its own file.
+        """
         factory = self._make_icon if icon_factory is None else icon_factory
         opened = threading.Event()
+        self.enterContext(mock.patch.object(tray, "warn_if_gpu_mismatch",
+                                            lambda *a, **k: False))
 
         def run() -> None:
             conn = connect(self.cfg.database)
@@ -158,8 +167,9 @@ class TrayProgramTestBase(unittest.TestCase):
             self._wait_for_the_icon()
 
     def _wait_until_answering(self) -> None:
-        # Generous on purpose: `start` opens with `log_environment`, which probes the
-        # GPU, and the first call of that in a test process imports torch (~7 s).
+        # Generous on purpose, and the number is its own rather than the suite's: a tray
+        # start does more than answer a port. The probe behind it is stubbed above, so
+        # what is left is the bind and the icon.
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if self.start_error is not None:
