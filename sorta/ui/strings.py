@@ -3432,9 +3432,9 @@ _UI_STRINGS.update({
         "en": "the destination does not accept a folder: {dest}: {error}",
         "ja": "保存先がフォルダを受け付けません: {dest}: {error}",
     },
-    # The one refusal here with no exception class of ours behind it: the filesystem's
-    # own `OSError`, given a code where it is caught (`layout._run_sort`) because a
-    # traceback in the log is not an answer and a translated `strerror` is not one either.
+    # No exception class of ours carries this code: it is the filesystem's own `OSError`,
+    # given one where it is caught (`layout._run_sort`). `{error}` is therefore the OS's
+    # sentence and may arrive in any language — the rest of the line is ours.
     "fault_sort_stopped_by_filesystem": {
         "ru": "раскладка остановилась на {path}: {error}. Уже перемещено файлов: "
               "{moved} — их можно откатить.",
