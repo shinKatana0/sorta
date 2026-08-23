@@ -3317,6 +3317,18 @@ _UI_STRINGS.update({
               "`python scripts/build_geodata.py` で作り直すか、sorta を再インストール"
               "してください。これがないと、どの座標も空の場所になります。",
     },
+    # F248: not an exception — a refusal of `POST /api/process`, which never raises one.
+    # It is here and shaped like the rest because the page renders every refusal of ours
+    # through one path, and the alternative was the raw `not a directory` this catalog
+    # exists to end.
+    "fault_source_missing": {
+        "ru": "по пути {path} нет папки — проверьте путь или выберите его кнопкой "
+              "рядом с полем.",
+        "en": "there is no folder at {path} — check the path, or pick it with the "
+              "button beside the field.",
+        "ja": "{path} にフォルダーがありません — パスを確認するか、入力欄の横の"
+              "ボタンで選んでください。",
+    },
     "fault_relocate_same_prefix": {
         "ru": "старый и новый префикс — это один и тот же путь ({prefix}).",
         "en": "the old and the new prefix are the same path ({prefix}).",

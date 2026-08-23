@@ -160,6 +160,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified against the upstream sources on 2026-08-21, not from memory.
 
 ### Fixed
+- **The stop about a moved collection can be reached from the interface** (F248). In a
+  VM the owner walked exactly the path the check instructions describe — index a folder,
+  rename it in the explorer, press start — and got *"Failed to start: not a directory"*.
+  No stop on the `index` stage, no explanation about a move, no offer to carry the index
+  over: **F242 and F244 were unreachable from the screen they were built for**.
+  `POST /api/process` validates `is_dir()` BEFORE the pipeline, while the guard about a
+  moved collection lives INSIDE the `index` stage — so `error_stage` never became
+  `"index"` and the offer, which is drawn for exactly that state, was never drawn.
+
+  This was a defect of the specification, not of an implementation: F244 asked for the
+  offer "beside the failed `index` stage" and got it. What nobody checked was that the
+  state could be reached at all.
+
+  The `is_dir()` check stays — walking a folder that is not there is pointless, and
+  nothing starts in either case now. What changed is that **"the folder is not there" is
+  answered as the two different things it means**: over an EMPTY index it is a mistyped
+  path and the refusal says so; over a full one it is a collection that moved, and the
+  answer carries the explanation plus the prefix the index holds, which opens the same
+  transfer panel a failed `index` stage opens — prefilled, one panel, two ways in. Which
+  of the two it is, is **asked of `relocate.refuse_if_the_collection_moved`** rather than
+  re-derived here, so the threshold cannot drift into two versions. Both refusals carry a
+  code and are drawn from the catalog in the interface language (the F245 rule); the raw
+  English `not a directory` that used to land on a localized screen is gone. The suite
+  now walks the whole path in one test — index, rename, start, read the answer the page
+  reads — which is the check whose absence let this through.
 - **The folder that was picked reaches the field, and a refusal names what happened**
   (F247). In a clean VM the owner pressed "Browse", Explorer opened, a folder was
   chosen — and the screen answered *"The folder picker is unavailable on this machine —

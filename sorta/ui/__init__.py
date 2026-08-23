@@ -59,6 +59,11 @@ them are absent from this disk and how big they are, all out of the one `tier_st
 probe `sorta doctor` reads. While a download is running the status snapshot carries
 `download` ({stage, weights, mb}); a refusal to download reaches `error` as a sentence
 naming the stage, the model and the size, with the traceback in the log.
+F248: a `source_dir` that is not a folder is refused with a CODE (`_source_refusal`) —
+`source_missing` for a mistyped path, `relocate_collection_moved` over a full index,
+and the second one carries `relocate.old_prefix`, which is what draws the transfer
+offer on this path as well as beside a failed `index` stage. Nothing is walked either
+way; what the two answers differ in is what the screen then says and offers.
 
 (8) `POST /api/process/reset` (F42, the "Start over" button) — wipes the ENTIRE index
 via the ready `db.reset_index(conn)` (the same tables as the CLI `sorta reset`:
@@ -708,7 +713,7 @@ from .moves import (
 )
 from .process import (
     _BROWSE_DIALOG_SCRIPT, _BROWSE_DIALOG_TIMEOUT_S, _BROWSE_NO_ANSWER_EXIT, _browse_text,
-    BROWSE_CANCELLED, BROWSE_NO_ANSWER, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, RELOCATE_REFUSED, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
+    BROWSE_CANCELLED, BROWSE_NO_ANSWER, BROWSE_UNAVAILABLE, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM, RELOCATE_REFUSED, SOURCE_MISSING, _CACHE_TARGETS, _DEEP_TIER_SQL, _DEFAULT_RATES,
     _DownloadRefused,
     _ESTIMATE_CACHE_MAX_ITEMS, _LANDMARK_SCAN_KEY, _LIVE_PHOTOS_SQL, _LazyClassifierHolder,
     _OPTIONAL_STAGES, TIER_ABSENT, TIER_READY, TIER_WEIGHTS, _deep_tier_ran,
@@ -726,7 +731,7 @@ from .process import (
     _process_estimate_payload, _relocate_payload, _relocate_plan_to_json, _resolve_rates,
     _run_browse_dialog,
     _run_cfg, _run_log_fingerprint,
-    _run_pipeline, _scan_dir, _source_tree_payload, _stage_stats, _sum_dir,
+    _run_pipeline, _scan_dir, _source_refusal, _source_tree_payload, _stage_stats, _sum_dir,
     _validate_cache_clear_payload, _validate_excludes_payload, _validate_process_payload,
     _validate_relocate_payload, _validate_rerun_optional_payload, _validate_tree_root,
 )
@@ -1511,8 +1516,12 @@ def _make_handler(db_path: Path, cache: PlanCache, cfg: Config,
                 self._send_json({"error": "invalid body"}, status=HTTPStatus.BAD_REQUEST)
                 return
             source_dir, options = parsed
-            if not Path(source_dir).is_dir():
-                self._send_json({"error": "not a directory"}, status=HTTPStatus.BAD_REQUEST)
+            # F248: still a refusal and still no walk of a folder that is not there —
+            # what changed is that it says WHICH of the two things happened, and the
+            # moved one arrives with the way out attached.
+            refusal = _source_refusal(db_path, cfg, source_dir)
+            if refusal is not None:
+                self._send_json(refusal, status=HTTPStatus.BAD_REQUEST)
                 return
             # F43/F45: sort (layout apply) and process — both heavy operations
             # write/move files; the shared busy_lock makes the "the other is not
