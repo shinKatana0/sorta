@@ -12,11 +12,10 @@ each other and so read "both are CPU-only" as a legitimate CPU machine. It happe
 site-packages/onnxruntime/, so whichever lands last wins. Hence the separate `nvidia-smi`
 probe — not torch, whose import costs ~4.5 s and whose install is what may be broken.
 
-F246: the torch half of that question is asked in ANOTHER PROCESS. `import torch` holds
-the interpreter for seconds on a fast machine and for minutes on a cold disk, and the
-launch that asks it is a server that is already answering requests — so on the owner's
-VM the page stopped answering and the browser showed `TypeError: Failed to fetch`. Only
-a caller that has torch loaded already asks it here; see `current_gpu_health`.
+F246: the torch half of that question is asked in ANOTHER PROCESS. The import holds the
+interpreter for seconds on a fast machine and for minutes on a cold disk, and the launch
+that asks it is a server already answering requests — so on the owner's VM the page went
+dead with `TypeError: Failed to fetch`. See `current_gpu_health`.
 
 F65 is the same story by another mechanism: `sorta/data/geo/places.tsv` did not travel
 into the wheel, and 15 955 files with honest GPS resolved to empty places without a
@@ -361,9 +360,9 @@ def gpu_health(*, gpu_present: bool | None = None,
                install_kind: str | None = None) -> GpuHealth:
     """Collect the device state of both stacks and of the hardware. Never raises.
 
-    IMPORTS TORCH INTO THIS PROCESS, which is seconds to minutes of an interpreter that
-    can do nothing else — `sorta doctor` is a command that has nothing else to do, a
-    server is not. `current_gpu_health` is the question a server asks.
+    IMPORTS TORCH INTO THIS PROCESS — seconds to minutes of an interpreter that can do
+    nothing else, which `sorta doctor` can afford and a server cannot;
+    `current_gpu_health` is the question a server asks.
 
     `gpu_present` overrides the nvidia-smi probe for a caller that already knows; by
     default it runs once, with a timeout. `install_kind` overrides F230's question.
@@ -383,14 +382,11 @@ def gpu_health(*, gpu_present: bool | None = None,
 #
 # What the import costs the process that pays it: 3.76 s on a fast machine with a warm
 # cache (F227), 72.8 s in the owner's virtual machine — and on the launch that opened
-# this feature it had not come back after FIFTEEN MINUTES, with the server answering
-# nothing for all of them. So the launch asks a child instead: the child may be slow, may
-# hang, may die, and the only thing that reaches the server is a line of JSON or nothing.
+# this feature it had not come back after FIFTEEN MINUTES. A child may be as slow as it
+# likes: what reaches the parent is a line of JSON or nothing.
 
-# How long a child may take before it is nobody's answer any more. Generous on purpose —
-# it is not holding anything up, and a machine on which the import is slow is exactly the
-# machine whose GPU stack is worth a warning. What it is NOT is infinite: a probe with no
-# end is what the fifteen minutes of silence were.
+# Generous, because it holds nothing up — and finite, because a probe without an end is
+# what those fifteen minutes were.
 GPU_PROBE_TIMEOUT_S = 300.0
 
 # The child's whole job. `-c` and not `-m sorta.diagnostics`: a module entry point is a
@@ -400,7 +396,6 @@ _PROBE_SCRIPT = (
     "from sorta import diagnostics;"
     "sys.stdout.write(diagnostics.torch_facts_json())"
 )
-# The keys of that line — the four answers that cannot be had without the two imports.
 _PROBE_FIELDS = ("torch_version", "torch_cuda_available", "torch_device_name",
                  "ort_providers")
 
@@ -414,11 +409,10 @@ ProbeRunner = Callable[[float], "subprocess.CompletedProcess[str]"]
 
 
 def torch_facts() -> dict[str, object]:
-    """The device state of the two heavy stacks, as plain JSON-able data.
+    """The device state of the two heavy stacks, as plain JSON-able data. Never raises.
 
-    Says nothing about the hardware: `nvidia-smi` needs no torch and is asked by whoever
-    wants the answer. Never raises — `_torch_state`/`_ort_providers` answer for an absent
-    or broken install rather than failing.
+    Says nothing about the hardware: `nvidia-smi` needs neither stack, and whoever wants
+    that answer asks for it where it is cheap.
     """
     version, cuda_available, device_name = _torch_state()
     return {"torch_version": version, "torch_cuda_available": cuda_available,
@@ -433,9 +427,9 @@ def torch_facts_json() -> str:
 def _probe_env() -> dict[str, str]:
     """The child's environment: the import path of THIS process, spelled out.
 
-    Not left to the interpreter's default: an installed copy lives in a
-    `uv pip install --target` tree that a bare `python -c` has no reason to look into, so
-    the child would answer "torch is not installed" about a machine where it is.
+    An installed copy lives in a `uv pip install --target` tree that a bare `python -c`
+    has no reason to look into, so without this the child would answer "torch is not
+    installed" about a machine where it is.
     """
     return {**os.environ,
             "PYTHONPATH": os.pathsep.join(entry for entry in sys.path if entry)}
@@ -444,9 +438,8 @@ def _probe_env() -> dict[str, str]:
 def _run_gpu_probe(timeout: float) -> "subprocess.CompletedProcess[str]":
     """Start the child. F228: through `launch.run`, so no console window opens.
 
-    `errors="replace"`: the child's stderr carries whatever the two stacks print on
-    import, and a byte the console codepage cannot decode is not a reason to lose the
-    answer on stdout.
+    `errors="replace"`: a byte of the child's own output that the console codepage
+    cannot decode is not a reason to lose the answer.
     """
     return launch.run(
         [sys.executable, "-c", _PROBE_SCRIPT],
@@ -460,11 +453,8 @@ def _run_gpu_probe(timeout: float) -> "subprocess.CompletedProcess[str]":
 
 
 def _parse_facts(stdout: str) -> dict[str, object] | None:
-    """The child's line of JSON, or None if there is no readable one.
-
-    The LAST non-empty line: a library that greets the world on import writes to stdout
-    of the child too, and the answer is what the child said last.
-    """
+    """The child's line of JSON, or None if there is no readable one. The LAST non-empty
+    line: a library that greets the world on import writes to the child's stdout too."""
     lines = [line for line in stdout.splitlines() if line.strip()]
     if not lines:
         return None
@@ -482,10 +472,9 @@ def probe_torch_facts(*, timeout: float = GPU_PROBE_TIMEOUT_S,
                       log: logging.Logger = _LOG) -> dict[str, object] | None:
     """Ask a child process what torch and onnxruntime are. None — it did not answer.
 
-    Every way of not knowing (no interpreter, a child that died, a child still importing
-    torch when the time ran out, an answer this cannot read) is a None and a line in the
-    log. The line is the requirement: the defect this exists for was fifteen minutes
-    without one.
+    Every way of not knowing (no interpreter, a child that died, one still importing
+    torch when the time ran out, an answer this cannot read) is a None AND a line in the
+    log: the defect this exists for was fifteen minutes without one.
     """
     try:
         completed = (run or _run_gpu_probe)(timeout)
@@ -519,9 +508,9 @@ def gpu_health_out_of_process(*, timeout: float = GPU_PROBE_TIMEOUT_S,
                               log: logging.Logger = _LOG) -> GpuHealth | None:
     """`gpu_health()` without importing torch here. None — the child gave no answer.
 
-    The hardware half is asked in this process on purpose: `nvidia-smi` is a 3-second
-    call that needs neither stack, and one probe is what keeps the wizard and the launch
-    from disagreeing about whether there is a card (F230).
+    The hardware half stays in this process: `nvidia-smi` is a bounded call that needs
+    neither stack, and one probe is what keeps the wizard and the launch from disagreeing
+    about whether there is a card (F230).
     """
     facts = probe_torch_facts(timeout=timeout, run=run, log=log)
     if facts is None:
@@ -542,10 +531,9 @@ def current_gpu_health(*, timeout: float = GPU_PROBE_TIMEOUT_S,
     """The GPU state for a caller that must stay responsive. None — nobody answered.
 
     The rule is the one `runlog._gpu_line` already follows: where torch is ALREADY in
-    this process (a run — it is about to use it anyway) the question is an attribute
-    lookup and is answered here; where it is not (the tray, `sorta ui`) asking here would
-    import torch on a thread of a program that is serving requests, so a child is asked
-    and this process keeps answering while it does.
+    this process (a run, which is about to use it anyway) the question costs an attribute
+    lookup and is answered here; where it is not (the tray, `sorta ui`) it goes to a child
+    and this process keeps serving while the child imports.
     """
     if "torch" in sys.modules:
         return gpu_health()
@@ -561,8 +549,8 @@ def warn_if_gpu_mismatch(
     an entry point (`sorta run` / `sorta ui` startup), not inside a loop.
 
     F246: with no `health` given it asks `current_gpu_health`, which does not drag torch
-    into a process that is serving. A probe that did not answer is False and a line of
-    its own — never a raise, and never a warning invented out of no data.
+    into a process that is serving. A probe with no answer is False — never a warning
+    invented out of no data.
     """
     if health is None:
         health = current_gpu_health(timeout=timeout, log=log)

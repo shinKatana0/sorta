@@ -134,7 +134,7 @@ tests/test_naming_landmarks.py                       36
 tests/test_naming_providers.py                       36
 tests/test_naming_vlm.py                             76
 tests/test_naming_vlm_batching.py                    71
-tests/test_no_console_nobody_asked_for.py            83
+tests/test_no_console_nobody_asked_for.py            84   # F246 +1: the sixth child
 tests/test_offline.py                                22
 tests/test_only_our_page_may_write.py                89
 tests/test_orchestrator_wiring.py                    16
@@ -181,7 +181,9 @@ tests/test_sorter_undated.py                         26
 tests/test_the_bin_can_refuse.py                      14
 tests/test_the_collection_can_move.py                25
 tests/test_the_cpu_tier_gets_a_number.py             59
-tests/test_the_first_launch_says_it_is_starting.py   160
+tests/test_the_diagnostics_do_not_starve_the_server.py  104
+tests/test_the_first_launch_says_it_is_starting.py   166   # F246 +6: the assertion about
+                            # torch after a launch turned round, and what turned it
 tests/test_the_index_follows_from_the_screen.py      76
 tests/test_the_log_speaks_english.py                 44
 tests/test_the_screen_speaks_the_users_language.py   104
