@@ -219,6 +219,10 @@ def a_fault_of_each_kind() -> list[tuple[BaseException, str]]:
                              "sorter_dst_exists", dst="/b/x.jpg"),
         sorter.TransferError("the check after the transfer did not pass: /b/x.jpg",
                              "sorter_check_failed", dst="/b/x.jpg"),
+        sorter.DestinationRefused(
+            "the destination does not accept a folder: /b: [Errno 13] Permission denied",
+            "sort_dest_refused", dest="/b",
+            error="[Errno 13] Permission denied"),
         tray.TrayUnavailable("cannot read favicon.ico: broken", "tray_icon_unreadable",
                              icon="favicon.ico", error="broken"),
         tray.TrayUnavailable("pystray is not installed: No module named 'pystray'",
@@ -316,7 +320,8 @@ class TestEveryFailureOfOursCanBeDrawn(unittest.TestCase):
         self.assertGreaterEqual(len(found), 9)
         for name in ("sorta.exif.UnsafeExifPath", "sorta.relocate.RelocateError",
                      "sorta.relocate.CollectionMoved", "sorta.search.EmbeddingsMissing",
-                     "sorta.sorter.TransferError", "sorta.tray.TrayUnavailable",
+                     "sorta.sorter.TransferError", "sorta.sorter.DestinationRefused",
+                     "sorta.tray.TrayUnavailable",
                      "sorta.geodata.GeoDataMissing",
                      "sorta.ui.process._DownloadRefused",
                      "sorta.ui.process._PipelineCancelled"):
@@ -360,10 +365,11 @@ class TestTheEnglishScreenDidNotChange(unittest.TestCase):
                         self.assertIn(str(value), text)
 
     def test_a_failure_outside_a_stage_has_a_code_and_three_languages_too(self):
-        """The plan cache after a run that otherwise finished — the one failure of the
-        run screen with no exception class of ours behind it. It used to be the last
-        Russian sentence in `ui/process.py`, shown whatever the interface was."""
-        self.assertEqual(assigned_codes(), {"plan_not_rebuilt"})
+        """The failures with no exception class of ours behind them: the plan cache after
+        a run that otherwise finished, and (F249) the filesystem's own `OSError` stopping
+        a layout halfway. Both are given a code where they are caught."""
+        self.assertEqual(assigned_codes(),
+                         {"plan_not_rebuilt", "sort_stopped_by_filesystem"})
         for code in assigned_codes():
             for lang in _LANGS:
                 with self.subTest(code=code, lang=lang):

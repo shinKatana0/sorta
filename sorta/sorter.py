@@ -53,6 +53,7 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -822,6 +823,55 @@ def _remove_created_dirs(conn: sqlite3.Connection, batch_id: int) -> int:
             continue
         removed += 1
     return removed
+
+
+# --- F249: will the destination take a folder at all? -------------------------
+#
+# Asked before the first file moves, and asked by DOING it — the same arrangement F241
+# gave the trash, for the same reason: reasoning about permissions is what got this
+# wrong, a probe answers. A refusal halfway through leaves half a collection laid out,
+# which is worse than one that never started.
+
+
+class DestinationRefused(Fault, OSError):
+    """The destination will not take a directory from us.
+
+    An `OSError` and not a `ValueError`: what it reports is the filesystem saying no, so
+    every caller that already treats a failed write that way catches this unchanged.
+    """
+
+    codes = ("sort_dest_refused",)
+
+
+_DEST_PROBE_PREFIX = ".sorta-dest-probe-"
+
+
+def check_dest_writable(dest: Path) -> None:
+    """Raise `DestinationRefused` unless `dest` takes a directory and gives it back.
+
+    The probe goes through `_fs().mkdir()`, the very call that raised `PermissionError`
+    on the live collection. It says nothing about free SPACE or about any individual
+    file: an empty directory costs no blocks, so a full disk passes here and stops
+    mid-run instead.
+
+    Every level the probe had to create is taken back, deepest first — a destination
+    that did not exist yet is left not existing, so the layout creates it through the
+    journal that lets `undo` remove it again.
+    """
+    probe = dest / f"{_DEST_PROBE_PREFIX}{os.getpid()}-{threading.get_ident()}"
+    created = _levels_to_create(probe)
+    try:
+        _fs(probe).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DestinationRefused(
+            f"the destination does not accept a folder: {dest}: {exc}",
+            "sort_dest_refused", dest=str(dest), error=str(exc)) from None
+    finally:
+        for level in reversed(created):
+            try:
+                _fs(level).rmdir()
+            except OSError:
+                pass
 
 
 # --- Plan and apply ---------------------------------------------------------

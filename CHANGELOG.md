@@ -185,6 +185,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   English `not a directory` that used to land on a localized screen is gone. The suite
   now walks the whole path in one test — index, rename, start, read the answer the page
   reads — which is the check whose absence let this through.
+- **A destination folder that will not take the collection is an answer, not a
+  traceback** (F249). The owner started a layout in a VM and it died in the background
+  thread: `PermissionError: [WinError 5] Отказано в доступе:
+  '\\?\D:\Photos\Russia\St Petersburg\2020'`, from the `mkdir` that makes a target
+  folder. Nothing reached the screen — no message, no reason, no path — because
+  `_run_sort` caught `ValueError` alone, and a `PermissionError` is an `OSError`. The
+  page, whose state closed anyway, went on to report *"Sorted 0"*. The path in that
+  traceback is the sample from `config.example.yaml`, which the installer copies as the
+  starting config, so what hit this is not an exotic setup but any machine without a
+  writable `D:`.
+
+  This is the only operation in the product that moves a person's files, and everything
+  else about it — the dry run by default, the journal written before the operation,
+  `undo`, the blake3 check — exists so that a failure has a way out. Falling silent was
+  the one behaviour that cancelled all of it. So:
+
+  * **The destination is asked before the first file moves**, and asked by doing it: a
+    probe directory is created and removed again, through the same `mkdir` call the
+    layout will use. That is the arrangement F241 gave the trash and it is here for the
+    same reason — reasoning about permissions is what got this wrong, a probe answers.
+    A destination that refuses stops the run with **no batch, no journal row and not one
+    file touched**: a refusal before the start is better than a refusal halfway, and half
+    a laid-out collection is worse than an unsorted one.
+  * **Every `OSError` is an answer.** Permission denied, a disk with no space left, a
+    volume that went away mid-run — the thread stays alive, the state closes, and the
+    page shows what happened. The message names the folder, the reason, and **how many
+    files had already moved**, read off the moves journal rather than off a report a
+    raise never returns.
+  * **What did move still rolls back.** The journal is committed before every file
+    operation, so a run that stopped on the hundredth file leaves rows `undo` can read
+    and an unfinished batch it closes. Nothing in the journal or in `undo` changed —
+    what changed is that this is now covered by a test instead of being assumed.
+
+  The message travels as a code with its values (F245) and is drawn on the page in the
+  language of the interface, in all three; the log keeps the English sentence, as always.
+  The existing answers are untouched: an in-place layout with several sources still gets
+  its `ValueError`, and a layout that goes through reports exactly what it used to.
+
+  Out of scope on purpose: whether `D:/Photos` is a sensible default destination in
+  `config.example.yaml` is the owner's call, not this feature's.
 - **The folder that was picked reaches the field, and a refusal names what happened**
   (F247). In a clean VM the owner pressed "Browse", Explorer opened, a folder was
   chosen — and the screen answered *"The folder picker is unavailable on this machine —

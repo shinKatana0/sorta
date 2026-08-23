@@ -3439,6 +3439,22 @@ _UI_STRINGS.update({
         "en": "no tray on this system: {error}",
         "ja": "このシステムにはトレイがありません: {error}",
     },
+    "fault_sort_dest_refused": {
+        "ru": "папка назначения не принимает запись: {dest}: {error}",
+        "en": "the destination does not accept a folder: {dest}: {error}",
+        "ja": "保存先がフォルダを受け付けません: {dest}: {error}",
+    },
+    # No exception class of ours carries this code: it is the filesystem's own `OSError`,
+    # given one where it is caught (`layout._run_sort`). `{error}` is therefore the OS's
+    # sentence and may arrive in any language — the rest of the line is ours.
+    "fault_sort_stopped_by_filesystem": {
+        "ru": "раскладка остановилась на {path}: {error}. Уже перемещено файлов: "
+              "{moved} — их можно откатить.",
+        "en": "the layout stopped at {path}: {error}. {moved} files had already been "
+              "moved and can be rolled back.",
+        "ja": "{path} で振り分けが停止しました: {error}。すでに {moved} 件が移動済みで、"
+              "元に戻せます。",
+    },
     "fault_plan_not_rebuilt": {
         "ru": "план не обновлён: {error}",
         "en": "the plan was not rebuilt: {error}",

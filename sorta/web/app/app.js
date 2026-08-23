@@ -4445,6 +4445,16 @@
     }
   }
 
+  // F249: the layout's refusals carry a code like every other fault of ours — the
+  // destination that will not take a folder, the filesystem that gave up mid-run — so
+  // they are drawn from the same catalog. Without a code it is the engine's `ValueError`
+  // (an in-place layout with several sources), whose English sentence is all there is.
+  function sortErrorText(data) {
+    var template = data.error_code ? I18N["fault_" + data.error_code] : null;
+    var text = template ? fmt(template, faultValues(data.error_params || {})) : data.error;
+    return I18N.sort_error_prefix + text;
+  }
+
   function renderSortStatus(data) {
     var bar = document.getElementById("sort-progress");
     var statusEl = document.getElementById("sort-status");
@@ -4470,8 +4480,16 @@
       statusEl.textContent = ""; warnEl.textContent = ""; return;
     }
     if (data.error) {
-      statusEl.textContent = I18N.sort_error_prefix + data.error;
-      warnEl.textContent = "";
+      statusEl.textContent = sortErrorText(data);
+      // F249: a layout that stopped in the middle has moved files, and every one of them
+      // is in the journal — so the roll back is what the screen owes next. A destination
+      // that refused moved nothing, and the offer would then be about an EARLIER batch.
+      var moved = (data.error_params || {}).moved;
+      warnEl.textContent = moved ? I18N.sort_undo_hint : "";
+      if (moved) {
+        movesLoaded = false;
+        refreshUndoAvailability();
+      }
       return;
     }
     var r = data.result || {};
