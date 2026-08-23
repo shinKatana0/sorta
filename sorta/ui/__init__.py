@@ -110,10 +110,10 @@ user to the terminal for exactly the situation the journal was written for.
 
 (10) `POST /api/browse` (F51, the "Browse…" button — next to the "Process" path field
 and next to the layout destination field on the "Cities" tab) — opens a native
-folder-picker dialog and returns `{"path": str}` (an empty string on cancel/error/no
-GUI — not a 500, the button is just a convenience, manual path entry always works).
-The dialog — tkinter `askdirectory` in a SEPARATE subprocess (`_browse_for_folder`,
-`subprocess.run([sys.executable, "-c", ...])`): tkinter is not thread-safe, and the
+folder-picker dialog and returns `{"path": str}`, plus a `problem` code when there is no
+path (F247: no picker, or one that lost its answer). Never a 500: the button is just a
+convenience, manual path entry always works. The dialog — tkinter `askdirectory` in a
+SEPARATE subprocess (`_browse_for_folder`): tkinter is not thread-safe, and the
 POST handler runs on a ThreadingHTTPServer thread, not the process's main thread; a
 fresh process = its own main thread, without a conflict with the server. The returned
 path is not processed at all on the server — `POST /api/process` already validates
