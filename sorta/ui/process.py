@@ -41,7 +41,9 @@ from ..junk import (
 from ..landmarks import _SCAN_KEY as _LANDMARK_SCAN_KEY
 from ..landmarks import Classifier, clip_classifier, detect_landmarks
 from ..naming import name_events, naming_settings
-from ..relocate import RelocateError, RelocatePlan, relocate
+from ..relocate import (
+    CollectionMoved, RelocateError, RelocatePlan, refuse_if_the_collection_moved, relocate,
+)
 from ..runlog import (
     Measurement, measurement_files, measurement_unit, read_measurements, stage_timer,
 )
@@ -1782,3 +1784,44 @@ def _relocate_payload(db_path: Path, old_prefix: str, new_prefix: str, *,
         return {"error": RELOCATE_REFUSED, "reason": str(exc),
                 "code": exc.code, "params": exc.params}
     return _relocate_plan_to_json(plan)
+
+
+# --- F248: "the folder is not there" has two meanings, and only one of them is a typo --
+
+# The refusal of a source that is not a folder, when there is nothing to have moved. A
+# code like every other refusal of ours (F245), so the page draws the sentence from its
+# own catalog instead of showing an English one to a Japanese reader.
+SOURCE_MISSING = "source_missing"
+
+_SOURCE_MISSING_HINT = ("there is no folder at {path} — check the path, or pick it with "
+                        "the button beside the field.")
+
+
+def _source_refusal(db_path: Path, cfg: Config, source_dir: str) -> dict | None:
+    """Why `POST /api/process` may not index `source_dir`, or None to let it start.
+
+    Two refusals, because "the folder is not there" says two things. Over an empty index
+    it is a mistyped path; over a full one it is the collection having moved, and that
+    answer carries `relocate` — the prefix the index holds — which is what the page
+    opens the transfer panel with.
+
+    Which of the two it is belongs to `relocate.refuse_if_the_collection_moved` and is
+    ASKED of it over a config pointed at this source, never re-derived: a second
+    threshold here would be a second place to forget the day that one moves. Nothing is
+    started either way — this decides only what the refusal says.
+    """
+    if Path(source_dir).is_dir():
+        return None
+    conn = _connect(db_path)
+    try:
+        refuse_if_the_collection_moved(
+            dataclasses.replace(cfg, sources=[Path(source_dir)]), conn)
+    except CollectionMoved as exc:
+        return {"error": exc.code, "code": exc.code, "params": dict(exc.params),
+                "reason": str(exc),
+                "relocate": {"old_prefix": _indexed_prefix(db_path)}}
+    finally:
+        conn.close()
+    return {"error": SOURCE_MISSING, "code": SOURCE_MISSING,
+            "params": {"path": source_dir},
+            "reason": _SOURCE_MISSING_HINT.format(path=source_dir)}

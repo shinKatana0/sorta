@@ -44,7 +44,8 @@ sorta/splash.py       39
 sorta/tiers.py        137
 sorta/tray.py         228   # F246 +9: why a step writes a line when it BEGINS, and why
                             # nothing behind "ready" may import torch either
-sorta/ui/__init__.py  888
+sorta/ui/__init__.py  896   # F248 +8: the route docstring names both refusals a start
+                            # can answer with, and which of them carries the offer
 sorta/ui/common.py    167
 sorta/ui/layout.py    556   # F249 +21: what `_run_sort` does with a refusal of the file
                             # system — the two new status fields, why the destination is
@@ -52,7 +53,10 @@ sorta/ui/layout.py    556   # F249 +21: what `_run_sort` does with a refusal of 
 sorta/ui/moves.py     35
 sorta/ui/overview.py  50
 sorta/ui/page.py      23
-sorta/ui/process.py   774   # F247 +12: why the child answers in UTF-8 bytes and what it
+sorta/ui/process.py   790   # F248 +16: why "the folder is not there" is answered as two
+                            # different things, and why the threshold between them is
+                            # asked of `relocate` instead of written down twice.
+                            # F247 +12: why the child answers in UTF-8 bytes and what it
                             # cost the owner not to, why a failed write is an exit code,
                             # and what the third refusal means.
                             # F245 +13 (why the download refusal is English, and the
@@ -62,8 +66,9 @@ sorta/ui/process.py   774   # F247 +12: why the child answers in UTF-8 bytes and
                             # carries a code as well as its sentence
 sorta/ui/review.py    325
 sorta/ui/slices.py    506
-sorta/ui/strings.py   515   # F249 +3: why the mid-run refusal has a code although no
-                            # exception class of ours is behind it.
+sorta/ui/strings.py   519   # F248 +4: why a refusal with no exception class behind
+                            # it is in the fault catalog all the same. F249 +3: the
+                            # same question about the mid-run refusal.
                             # F247 +11: the picker's refusals are computed and not
                             # written down — which system package applies is a question
                             # about the machine, and apt was shown on Windows.

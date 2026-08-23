@@ -3645,10 +3645,17 @@
           && document.getElementById("process-landmarks-verify-checkbox").checked,
     }).then(function (resp) {
       if (resp && resp.error) {
+        // F248: a refusal of the start is drawn from the catalog like every other
+        // refusal of ours (F245); one without a code falls back to its own text, which
+        // is what the four that have none ("sort is running" and the rest) still show.
         document.getElementById("process-status").textContent =
-            I18N.process_start_error_prefix + resp.error;
+            I18N.process_start_error_prefix + faultSentence(resp);
+        // A refusal with a way out says so in a field of its own rather than by its
+        // code: the panel is one, and both paths into it have to open the same thing.
+        if (resp.relocate) showRelocateOffer(resp.relocate.old_prefix);
         return;
       }
+      relocateOfferedByStart = false;
       if (processPollTimer) clearTimeout(processPollTimer);
       pollProcessStatus();
     });
@@ -3691,10 +3698,28 @@
   // file being opened, and a client matching on prose would go quiet the day it changed.
   // Every other `index` failure is offered the same button — it opens a form that writes
   // nothing until a plan has been shown, so an offer made in vain costs a click.
+  // F248: a start that is REFUSED reaches no stage, so the snapshot below knows nothing
+  // about it and would hide the panel on the next poll. The flag is what carries that
+  // second way in until the move is applied or a run actually starts.
+  var relocateOfferedByStart = false;
+
+  function setRelocateOfferShown(shown) {
+    document.getElementById("relocate-offer").style.display = shown ? "" : "none";
+  }
+
   function renderRelocateOffer(data) {
     var failed = data.error ? (data.error_stage || data.stage) : null;
-    document.getElementById("relocate-offer").style.display =
-        failed === "index" ? "" : "none";
+    setRelocateOfferShown(failed === "index" || relocateOfferedByStart);
+  }
+
+  // The other way into the same panel, with the prefix the server read off the index.
+  // The field is filled only while it is empty, like the `/api/relocate/suggest` prefill
+  // below: a path somebody typed is an answer and is not overwritten.
+  function showRelocateOffer(oldPrefix) {
+    relocateOfferedByStart = true;
+    setRelocateOfferShown(true);
+    var field = document.getElementById("relocate-old");
+    if (oldPrefix && !field.value.trim()) field.value = oldPrefix;
   }
 
   // Whether the plan on screen is about what the fields hold right now. The apply button
@@ -3775,7 +3800,8 @@
         }
         setRelocateStatus(fmt(I18N.relocate_applied, { rows: resp.rows }), false);
         resetRelocatePlan();
-        document.getElementById("relocate-offer").style.display = "none";
+        relocateOfferedByStart = false;
+        setRelocateOfferShown(false);
         // Every count and every plan on this page was built on the old paths, so they are
         // re-read here rather than left to whenever a tab is next opened.
         refreshTabsAfterProcess();

@@ -448,10 +448,12 @@ class TestTheScreenOffersTheMove(ScreenCase):
         self.assertIn('id="relocate-offer"', self.html)
         self.assertIn("renderRelocateOffer(data);", self.body("renderProcessStatus"))
 
-    def test_it_appears_for_a_failed_index_stage_and_for_nothing_else(self):
+    def test_it_appears_for_a_failed_index_stage(self):
+        """F248 gave the panel a second way in (a refused START, which reaches no
+        stage), so this path is no longer the only one — it is still this one."""
         body = self.body("renderRelocateOffer")
         self.assertIn("data.error_stage || data.stage", body)
-        self.assertIn('failed === "index" ? "" : "none"', body)
+        self.assertIn('failed === "index"', body)
 
     def test_the_form_has_both_prefixes_and_the_folder_picker(self):
         for element in ('id="relocate-old"', 'id="relocate-new"',
