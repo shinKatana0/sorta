@@ -567,10 +567,10 @@ _browse_lock = threading.Lock()
 # sentences on the screen — an exit code is the one channel that survives a broken stdout.
 _BROWSE_NO_ANSWER_EXIT = 7
 
-# F247: the answer is UTF-8 BYTES, not text in whatever the locale picked. `sys.stdout.
-# write(path)` raised UnicodeEncodeError for the owner on 2026-08-23 (cp1251 has no
-# character for parts of that path), and the traceback was all that came back of a folder
-# that had been chosen. `-X utf8` below is the same decision for the rest of the output.
+# F247: the answer is UTF-8 BYTES, not text in whatever the locale picked. Writing it to
+# `sys.stdout` raised UnicodeEncodeError on 2026-08-23 (cp1251 has no character for parts
+# of that path), and the traceback was all that came back of a folder that had been
+# chosen. `-X utf8` below is the same decision for the rest of the output.
 _BROWSE_DIALOG_SCRIPT = (
     "import tkinter, tkinter.filedialog, sys\n"
     "root = tkinter.Tk()\n"
@@ -623,8 +623,8 @@ def _browse_for_folder() -> tuple[str, str]:
 BROWSE_CANCELLED = ""
 BROWSE_UNAVAILABLE = "unavailable"
 # F247: the third outcome — the dialog was drawn, a folder was chosen, and the path did
-# not come back. It answered BROWSE_UNAVAILABLE, which told the owner the machine has no
-# folder picker while he was looking at the one it had just closed.
+# not come back. It answered BROWSE_UNAVAILABLE — "this machine has no folder picker",
+# said about the picker whose window had just closed.
 BROWSE_NO_ANSWER = "no_answer"
 
 
