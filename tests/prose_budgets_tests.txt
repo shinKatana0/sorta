@@ -96,7 +96,7 @@ tests/test_junk_asker_pipeline.py                    135
 tests/test_junk_ocr_gate.py                          66
 tests/test_junk_parallel_ocr.py                      80
 tests/test_junk_phase_progress.py                    53
-tests/test_junk_phase_timings.py                     42
+tests/test_junk_phase_timings.py                     47
 tests/test_junk_quality_population.py                21
 tests/test_junk_rescue.py                            90
 tests/test_junk_tier.py                              77

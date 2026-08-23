@@ -230,7 +230,12 @@ class TestPhaseSecondsFitTheStage(PhaseTimingTestBase):
         phases = sum(float(m["elapsed"])
                      for _r, m in self.phase_lines(captured.records))
 
-        self.assertLessEqual(phases, stage_elapsed)
+        # Both sides are `elapsed=` values rounded to milliseconds by `runlog`, and the
+        # left one is a SUM of them: three phases that exactly fill their stage add up to
+        # 0.037000000000000005 against the stage's 0.037 and the assertion fails on the
+        # last bit of a float. Caught 2026-08-23. The tolerance is a millisecond — the
+        # resolution the two numbers are printed at, so nothing real hides under it.
+        self.assertLessEqual(phases, stage_elapsed + 1e-3)
         # And not an order of magnitude short of it: the phases are meant to account
         # for the stage, not to sample it. What is left over is the setup before the
         # first phase opens (the collection query, the tier gates).
