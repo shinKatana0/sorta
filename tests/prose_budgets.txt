@@ -46,7 +46,7 @@ sorta/tray.py         228   # F246 +9: why a step writes a line when it BEGINS, 
                             # nothing behind "ready" may import torch either
 sorta/ui/__init__.py  888
 sorta/ui/common.py    167
-sorta/ui/layout.py    557   # F249 +22: what `_run_sort` does with a refusal of the file
+sorta/ui/layout.py    556   # F249 +21: what `_run_sort` does with a refusal of the file
                             # system — the two new status fields, why the destination is
                             # probed first, and where the "how many moved" number is read
 sorta/ui/moves.py     35

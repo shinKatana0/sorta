@@ -1438,9 +1438,8 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
     result: dict | None = None
     try:
         dest_path = Path(dest) if dest else None
-        # The root the run will really write into — for an in-place layout the single
-        # configured source, resolved by the rule `plan_and_sort` uses (F28). None means
-        # that rule does not apply, and the engine's own ValueError says so below.
+        # None — the in-place rule does not apply (≠1 source), and the engine's own
+        # ValueError below is the answer to that; there is nothing to probe first.
         dest_root = _summary_dest(cfg, dest)
         batch_before = conn.execute(
             "SELECT MAX(id) AS last FROM move_batches").fetchone()["last"] or 0
@@ -1467,7 +1466,7 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
                     "SELECT COUNT(*) AS n FROM moves "
                     "WHERE status = 'done' AND batch_id > ?",
                     (batch_before,)).fetchone()["n"] or 0)
-                where = getattr(exc, "filename", None) or dest_root or dest or ""
+                where = exc.filename or dest_root or dest or ""
                 error_code = "sort_stopped_by_filesystem"
                 error_params = {"path": str(where), "error": str(exc), "moved": moved}
                 error = (f"the layout stopped at {where}: {exc}. {moved} files had "
