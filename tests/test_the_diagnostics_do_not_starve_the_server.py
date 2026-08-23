@@ -37,6 +37,7 @@ import contextlib
 import dataclasses
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -384,8 +385,7 @@ class TestTheAnswerArrivesWhole(unittest.TestCase):
         a machine where it is."""
         with children() as run:
             diagnostics.probe_torch_facts()
-        path = run.call_args[1]["env"]["PYTHONPATH"].split(";" if sys.platform ==
-                                                           "win32" else ":")
+        path = run.call_args[1]["env"]["PYTHONPATH"].split(os.pathsep)
         for entry in sys.path:
             if entry:
                 self.assertIn(entry, path)
