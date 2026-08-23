@@ -14,7 +14,6 @@ do is test behaviour — `fetch` never settles here, so no async path runs at al
 """
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import unittest
