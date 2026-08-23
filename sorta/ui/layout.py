@@ -25,10 +25,14 @@ from typing import Any
 
 from .. import i18n, imaging
 from ..config import Config
+from ..faults import fault_code, fault_params
 from ..geodata import GeoDataMissing, GeoResolver
 from ..sorter import (
     ALBUM_KINDS, ALBUM_MODES, SELECTORLESS_ALBUM_KINDS, AlbumReport, PlanItem, plan_and_sort,
 )
+# F249: the destination is asked whether it accepts a folder BEFORE the first file
+# moves — the one thing this module borrows from the sorter besides the engine itself.
+from ..sorter import check_dest_writable
 # F104: the pre-apply summary has to say what the apply will DO, so it asks the two
 # functions the apply itself uses rather than re-deriving the rule here — the moment
 # the two answers can differ, the dialog is quoting numbers nobody has to honour.
@@ -1094,6 +1098,8 @@ class _SortState:
         self.done = 0
         self.total = 0
         self.error: str | None = None
+        self.error_code: str | None = None
+        self.error_params: dict[str, object] = {}
         self.finished = False
         self.result: dict | None = None
         self._cancel_requested = False
@@ -1121,11 +1127,18 @@ class _SortState:
         with self._lock:
             return self._cancel_requested
 
-    def finish(self, error: str | None, result: dict | None) -> None:
+    def finish(self, error: str | None, result: dict | None,
+               error_code: str | None = None,
+               error_params: dict[str, object] | None = None) -> None:
+        """End the run. `error_code`/`error_params` are the F245 personality of the
+        failure, absent for a refusal that has none — the page then has only the English
+        sentence, which is what it shows."""
         with self._lock:
             self.running = False
             self.finished = True
             self.error = error
+            self.error_code = error_code
+            self.error_params = dict(error_params or {})
             self.result = result
 
     def snapshot(self) -> dict:
@@ -1135,6 +1148,11 @@ class _SortState:
                 "done": self.done,
                 "total": self.total,
                 "error": self.error,
+                # F249: which refusal it was and the values it names, so the page can say
+                # it in its own language. Null for the `ValueError` of an in-place layout
+                # with several sources — that one is shown as it arrived.
+                "error_code": self.error_code,
+                "error_params": dict(self.error_params),
                 "finished": self.finished,
                 "result": self.result,
                 "cancel_requested": self._cancel_requested,
@@ -1398,6 +1416,13 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
     `cfg.sources`) — caught and stored in the state as an error, the thread does not
     crash and the server stays alive.
 
+    F249: and it may raise `OSError`, which is what actually happened — a destination
+    the machine would not let us create landed as a bare traceback in the log, with the
+    page reading "sorted 0". So the destination is asked first (`check_dest_writable`),
+    and any refusal of the filesystem, before the run or on the hundredth file, becomes
+    an answer with a code, a path and how many files had already moved. What did move is
+    in the journal and rolls back with `undo`; nothing here touches either.
+
     F97: `should_cancel` is the state's own flag, so `POST /api/sort/cancel` stops the
     copying between files. A cancelled run is NOT an error — it returns a result like
     any other, with `cancelled` set and `moved` telling how far it got.
@@ -1408,15 +1433,45 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
     """
     conn = _connect(db_path)
     error: str | None = None
+    error_code: str | None = None
+    error_params: dict[str, object] = {}
     result: dict | None = None
     try:
         dest_path = Path(dest) if dest else None
+        # The root the run will really write into — for an in-place layout the single
+        # configured source, resolved by the rule `plan_and_sort` uses (F28). None means
+        # that rule does not apply, and the engine's own ValueError says so below.
+        dest_root = _summary_dest(cfg, dest)
+        batch_before = conn.execute(
+            "SELECT MAX(id) AS last FROM move_batches").fetchone()["last"] or 0
         try:
+            if dest_root is not None:
+                check_dest_writable(dest_root)
             report = plan_and_sort(cfg, conn, by, dest_path, apply=True,
                                    copy=(mode == "copy"), progress=state.set_progress,
                                    should_cancel=state.cancel_requested)
         except ValueError as exc:
             error = str(exc)
+        except OSError as exc:
+            _log.exception("sorta ui: the layout stopped on a filesystem refusal")
+            error_code = fault_code(exc)
+            if error_code is not None:
+                error = str(exc)
+                error_params = fault_params(exc)
+            else:
+                # How many files actually left, read off the journal rather than off a
+                # report that a raise never returns. The journal is committed BEFORE
+                # every operation, which is the same property `undo` needs to take them
+                # back; `batch_before` keeps an earlier layout out of this run's count.
+                moved = int(conn.execute(
+                    "SELECT COUNT(*) AS n FROM moves "
+                    "WHERE status = 'done' AND batch_id > ?",
+                    (batch_before,)).fetchone()["n"] or 0)
+                where = getattr(exc, "filename", None) or dest_root or dest or ""
+                error_code = "sort_stopped_by_filesystem"
+                error_params = {"path": str(where), "error": str(exc), "moved": moved}
+                error = (f"the layout stopped at {where}: {exc}. {moved} files had "
+                         f"already been moved and can be rolled back.")
         else:
             result = {
                 "moved": report.moved,
@@ -1441,4 +1496,4 @@ def _run_sort(db_path: Path, cfg: Config, dest: str | None, mode: str,
                 result["preview_stale"] = True
     finally:
         conn.close()
-        state.finish(error, result)
+        state.finish(error, result, error_code, error_params)
