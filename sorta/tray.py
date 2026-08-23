@@ -112,6 +112,11 @@ QUIT_QUESTION_FALLBACK = "cli.tray.quit_running"
 # run with, and a launch is not a stage of the pipeline.
 _STARTUP_LINE = "startup step=%s elapsed=%.3f"
 _STARTUP_READY_LINE = "startup ready elapsed=%.3f"
+# F246: a step that has not finished used to leave NO line at all, so fifteen minutes of
+# silence in the log read exactly like a dead process — the owner had no way to tell them
+# apart and restarted the program. The beginning is a line of its own; `elapsed=` is
+# absent from it, which is also what keeps `runlog` from reading it as a timing.
+_STARTUP_BEGIN_LINE = "startup step=%s started"
 
 
 class TrayUnavailable(Fault, RuntimeError):
@@ -254,6 +259,7 @@ def _startup_step(step: str) -> Iterator[None]:
     answer out of the file instead of measuring somebody else's machine by hand."""
     state = ui.startup_state()
     state.enter(step)
+    _LOG.info(_STARTUP_BEGIN_LINE, step)
     started = time.perf_counter()
     try:
         yield
@@ -270,8 +276,13 @@ def _finish_startup() -> None:
     the silence, so they run here, on a thread of a program that is already serving —
     which is why nothing they do may escape: a probe that fails is a failed probe, not a
     failed launch. Ready is declared FIRST and means "the server can serve"; waiting for
-    the probes held the page behind `log_environment`, which imports torch (13.96 s on a
-    warm fast machine, far worse on a cold disk).
+    the probes held the page behind `log_environment`.
+
+    F246: nothing here may import torch either. Declaring ready early gave the page back
+    but not the PROCESS — the GPU probe went on holding the interpreter, and the tab that
+    had just been shown the program could not fetch anything for as long as it took. The
+    torch question now leaves for a child of its own (`diagnostics.current_gpu_health`),
+    and `log_environment` is called without `probe_gpu`, which is what keeps it cheap.
     """
     state = ui.startup_state()
     state.ready()
