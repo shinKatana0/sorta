@@ -1379,18 +1379,6 @@
     });
   });
 
-  // The tab the markup opens on has to be ACTIVATED, not merely visible. `overview-body`
-  // carries a "loading" line in page.html, and only `activateTab` asks for the numbers
-  // that replace it — so on a fresh page the overview sat at "loading" until somebody
-  // left the tab and came back. Found in the VM, 2026-08-23. The name is taken from the
-  // markup rather than written twice; a guard in the suite keeps the two in step.
-  (function activateTheTabTheMarkupOpensOn() {
-    var opened = TAB_NAMES.filter(function (t) {
-      return document.getElementById("tab-" + t).classList.contains("active");
-    })[0];
-    if (opened) activateTab(opened);
-  })();
-
   // --- F133: the slices ------------------------------------------------------
   // The pin row is BUILT, never written out in the markup: F129 replaces the fixed list
   // with a query, and a row of hand-written buttons would have to be thrown away then.
@@ -6778,4 +6766,19 @@
       loadDupes();
     });
   });
+
+  // LAST on purpose. The tab the markup opens on has to be ACTIVATED, not merely visible:
+  // `overview-body` carries a "loading" line in page.html and only `activateTab` asks for
+  // the numbers that replace it, so a fresh page sat at "loading" until somebody left the
+  // tab and came back. Placed among the tab handlers first, it read
+  // `OVERVIEW_SKELETON_ROWS` — a `var` assigned 880 lines further down, so still
+  // `undefined` — threw, and killed the rest of the script: every handler below it,
+  // Browse and Start included, was never wired. Found in the VM, 2026-08-23. Anything
+  // this file does ON LOAD belongs here, after every `var` in it holds its value.
+  (function activateTheTabTheMarkupOpensOn() {
+    var opened = TAB_NAMES.filter(function (t) {
+      return document.getElementById("tab-" + t).classList.contains("active");
+    })[0];
+    if (opened) activateTab(opened);
+  })();
 })();

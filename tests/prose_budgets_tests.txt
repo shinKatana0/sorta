@@ -6,8 +6,13 @@
 #
 # Lowering a number needs nothing but the shrunken file. RAISING one is the point of the
 # file: prose that grows has to be argued for in the diff that grows it.
+# F248 +2: the offer now has a second way in, and the case that used to be "for this
+# stage and for nothing else" says which of the two it still covers
                             # bytes
+                            # new fields of the status payload
                             # refusals of the picker are, and why the child is read as
+                            # rollback snapshot inherited the two fields
+                            # torch after a launch turned round, and what turned it
                             # torch after a launch turned round, and what turned it
 tests/__init__.py                                    0
 tests/conftest.py                                    46
@@ -187,13 +192,11 @@ tests/test_the_collection_can_move.py                25
 tests/test_the_cpu_tier_gets_a_number.py             59
 tests/test_the_diagnostics_do_not_starve_the_server.py  104
 tests/test_the_first_launch_says_it_is_starting.py   166   # F246 +6: the assertion about
-                            # torch after a launch turned round, and what turned it
-# F248 +2: the offer now has a second way in, and the case that used to be "for this
-# stage and for nothing else" says which of the two it still covers
 tests/test_the_index_follows_from_the_screen.py      78
 tests/test_the_log_speaks_english.py                 44
 tests/test_the_moved_collection_is_reachable_from_the_screen.py  50
 tests/test_the_opening_tab_is_activated.py            15
+tests/test_the_page_script_reaches_its_end.py         20
 tests/test_the_picked_folder_reaches_the_field.py     33
 tests/test_the_screen_speaks_the_users_language.py   104
 tests/test_three_tiers_of_sameness.py                83
@@ -247,7 +250,6 @@ tests/test_ui_search_person.py                       55
 tests/test_ui_settings.py                            103
 tests/test_ui_slice_albums.py                        52
 tests/test_ui_sort.py                                43   # F249 +2: the two
-                            # new fields of the status payload
 tests/test_ui_sort_dest.py                           8
 tests/test_ui_sort_summary.py                        49
 tests/test_ui_source_dir.py                          11
@@ -258,7 +260,6 @@ tests/test_ui_tabs_visibility.py                     32
 tests/test_ui_three_layers.py                        91
 tests/test_ui_tri_state.py                           31
 tests/test_ui_undo.py                                29   # F249 +2: why the
-                            # rollback snapshot inherited the two fields
 tests/test_undo_takes_back_the_folders.py            12
 tests/test_uninstalling_leaves_nothing.py            86
 tests/test_utility_frames.py                         64
