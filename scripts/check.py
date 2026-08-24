@@ -87,10 +87,11 @@ The worker count is measured, not assumed (F251, 2026-08-24)
 Eight is now a CEILING and no longer the decision. The decision is the largest count
 whose estimated cost — a floor the run pays whatever `-n` says, plus a marginal cost per
 worker — fits in the headroom with `_RESERVE_MB` still unspent, and it is never taken
-below `min(cores, _MIN_WORKERS)`. It exists because the machine the gate runs on is not the machine the eight was measured on: over
-2026-08-23/24 seven gate runs out of twelve died with `MemoryError`,
-`RemoteDisconnected` or `ConnectionAbortedError`, every time on different, unrelated
-tests, on a tree that was green before and after. Not one of them was about the branch.
+below `min(cores, _MIN_WORKERS)`. It exists because the machine the gate runs on is not
+the machine the eight was measured on: over 2026-08-23/24 seven gate runs out of twelve
+died with `MemoryError`, `RemoteDisconnected` or `ConnectionAbortedError`, every time on
+different, unrelated tests, on a tree that was green before and after. Not one of them
+was about the branch.
 They were about Windows' COMMIT limit — which counts what processes reserved, not what
 they touched — standing at 59 of 74.6 GB before the gate started, held by a browser, WSL
 and other sessions, while 17.6 GB of physical memory sat free. Eight workers of
