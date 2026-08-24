@@ -326,7 +326,11 @@ class TestNvidiaGpuPresent(unittest.TestCase):
         # machine.
         self.assertIn("--query-gpu=name,driver_version", args[0])
         self.assertGreater(kwargs["timeout"], 0)
-        self.assertLessEqual(kwargs["timeout"], 5)
+        # Bounded, because a half-installed driver can hang on this call — but the ceiling
+        # used to be 5 s and the value 3.0, and that made an RTX 5090 read as NO CARD:
+        # measured 2026-08-24, the first nvidia-smi after boot takes 3738 ms and the launch
+        # asks exactly once, cold. The floor lives with the constant; here only the ceiling.
+        self.assertLessEqual(kwargs["timeout"], 60)
         self.assertFalse(kwargs["check"])
 
     def test_does_not_import_torch(self):

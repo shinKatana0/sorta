@@ -46,7 +46,7 @@ tests/test_dedup_restored.py                         19
 tests/test_derivative_does_not_outlive_original.py   54
 tests/test_detector_cascade.py                       100
 tests/test_detector_reaches_the_screen.py            135
-tests/test_diagnostics.py                            32   # F250 +2: why the case that
+tests/test_diagnostics.py                            36   # F250 +2: why the case that
                                                           # collects its own health has a
                                                           # card in it
 tests/test_docs_guides.py                            181
@@ -145,7 +145,7 @@ tests/test_naming_landmarks.py                       36
 tests/test_naming_providers.py                       36
 tests/test_naming_vlm.py                             76
 tests/test_naming_vlm_batching.py                    71
-tests/test_no_card_no_question.py                    61   # F250: new file
+tests/test_no_card_no_question.py                    70   # F250: new file
 tests/test_no_console_nobody_asked_for.py            84   # F246 +1: the sixth child
 tests/test_offline.py                                22
 tests/test_only_our_page_may_write.py                89
