@@ -100,15 +100,15 @@ allocation happens to be.
 
 Memory may only LOWER the count: on an idle 4-core CI runner the formula returns the
 same 4 it always did, and a feature that fixed one laptop by slowing CI down would be a
-bad trade. The budget per worker is measured, and measured PER INSTALL PROFILE, for the
-same reason: a gpu worker costs several times a cpu one, so a single number would have
-to be the expensive one and CI — which runs the cpu profile — would pay for a card it
-does not have. And the run says out loud what it picked and out of what — always, not
-only when it lowered — because the alternative is what actually happened: measuring the
-machine BY HAND, after the red gate, to find out whether the machine was the reason.
+bad trade. The budget per worker is measured and not estimated — `_COMMIT_BUDGET_MB` has
+the table — and there is one per READING, because Windows answers with what is left of
+its commit limit and Linux with memory that is actually free, and those are different
+quantities however similar the words are. And the run says out loud what it picked and
+out of what — always, not only when it lowered — because the alternative is what
+actually happened: measuring the machine BY HAND, after the red gate, to find out
+whether the machine was the reason.
 
-    workers: 5 of 8 (24 cores) — 12.3 GB of commit headroom, 2.4 GB budgeted per
-    gpu-profile worker
+    workers: 5 of 8 (24 cores) — 18.6 GB of commit headroom, 3.4 GB budgeted per worker
 
 If the headroom does not cover even one worker the run does not start (exit
 `_TOO_TIGHT`): eight minutes spent to arrive at a predictable `MemoryError` is not a
@@ -195,46 +195,37 @@ _MAX_WORKERS = 8
 
 _BYTES_PER_MB = 1024 * 1024
 
-# Measured 2026-08-24, 24 cores: the parallel half's own process tree, sampled every 2 s
-# for the sum of its PagefileUsage — the private COMMIT charge, because the machine-wide
-# number would have measured who else was awake. The table is in the CHANGELOG.
+# One budget per READING, because the two readings are not the same quantity — see
+# `Headroom`. Measured 2026-08-24 on this machine, 24 cores, by sampling the parallel
+# half's own process tree every 2 s for the sum of its PagefileUsage (private commit
+# charge; the machine-wide figure would have measured who else was awake):
 #
-# Each number is peak/workers of the WHOLE tree and not the slope between two counts: the
-# fixed part (the controller, coverage's data, whichever heavy fixtures overlap) comes
-# out of the same headroom, and a budget that charges only for the slope hands out
-# workers the machine cannot afford — which is the failure this exists to stop.
+#     profile   workers   peak commit   per worker   parallel half
+#     gpu             8      27 944 MB     3 493 MB          394 s
+#     gpu             4      20 982 MB     5 246 MB          555 s
+#     cpu             8      25 958 MB     3 245 MB          350 s
+#     cpu             4      18 884 MB     4 721 MB          555 s
 #
-# Two profiles because they are not within rounding distance of each other, and one
-# number would have to be the expensive one: charging gpu prices on CI would cost a
-# 4-core runner a worker or two for a cost it never pays.
-_BUDGET_MB = {"gpu": 3500, "cpu": 1200}  # provisional, the sweep is running
+# The install profile turned out NOT to be the axis: the marginal cost of a worker is
+# 1.74 GB on gpu and 1.77 GB on cpu — the profiles differ in the FLOOR (14.0 against
+# 11.8 GB), which the suite's own subprocess-spawning tests pay by importing torch 30-odd
+# times whatever `-n` says. So one number, taken at the ceiling: 3493 -> 3500.
+#
+# The trap in that number: a division cannot express a floor. Charging the amortised cost
+# at 8 workers is right when 8 are being considered and optimistic below — on a machine
+# with 15 GB of headroom the formula lands on 4 workers where the tree still wants ~19.
+# It is the count that gets lowered, not a guarantee that the run fits; the printed line
+# is what makes the remaining case readable instead of mysterious.
+_COMMIT_BUDGET_MB = 3500
 
+# MemAvailable is about pages actually held, not about reservations, so the commit figure
+# above would be the wrong quantity to divide it by. This is F219's measured peak
+# RESIDENT memory of the same tree (2026-08-07, gpu profile, 20.0 GB at 8 workers,
+# scripts/measure_gate_workers.py). It is a Windows measurement of a Linux number because
+# the project has no Linux machine; it is the first thing to re-take when it gets one.
+_RESIDENT_BUDGET_MB = 2500
 
-class Budget(NamedTuple):
-    """What one worker is charged, and which install profile that was measured on."""
-
-    megabytes: int
-    profile: str
-
-
-def install_profile() -> str:
-    """Which torch is installed, from its version string — `2.13.0+cu130` or `2.13.0+cpu`.
-
-    Read from the installed metadata and never by importing torch: the import is half a
-    gigabyte and several seconds, and this runs before every gate. An unreadable answer
-    is treated as "gpu", the expensive side: guessing cheap on a machine that pays the
-    expensive price is how the run gets to a MemoryError.
-    """
-    try:
-        from importlib.metadata import version
-
-        return "gpu" if "+cu" in version("torch") else "cpu"
-    except Exception:
-        return "gpu"
-
-
-_PROFILE = install_profile()
-_BUDGET = Budget(_BUDGET_MB[_PROFILE], _PROFILE)
+_BUDGET_MB = {"commit headroom": _COMMIT_BUDGET_MB, "available memory": _RESIDENT_BUDGET_MB}
 
 
 class Headroom(NamedTuple):
@@ -244,7 +235,8 @@ class Headroom(NamedTuple):
     an answer, not a failure. `name` differs per platform on purpose: Windows answers
     with what is left of the COMMIT limit, which counts reservations nobody has touched,
     and Linux with memory that is actually available. Pretending those are one fact is
-    how a number stops meaning anything.
+    how a number stops meaning anything — and it is also why each carries a budget of
+    its own, keyed by this name.
     """
 
     megabytes: int | None
@@ -337,29 +329,35 @@ def _gb(megabytes: float) -> str:
     return f"{megabytes / 1024:.1f} GB"
 
 
-def plan_workers(cores: int, headroom: Headroom, budget: Budget = _BUDGET,
+def budget_for(headroom: Headroom) -> int:
+    """What one worker is charged against this reading, in MB. See `_BUDGET_MB`."""
+    return _BUDGET_MB[headroom.name]
+
+
+def plan_workers(cores: int, headroom: Headroom, budget_mb: int | None = None,
                  ceiling: int = _MAX_WORKERS) -> WorkerPlan:
     """How many pytest workers this machine can afford, and the line that says why.
 
     Memory can only lower the count, never lift it above `min(cores, ceiling)`, and a
     machine that could not be measured gets exactly what it got before this existed.
+    `budget_mb` defaults to the one measured for the reading `headroom` carries.
     """
     by_cores = max(1, min(cores, ceiling))
     if headroom.megabytes is None:
         return WorkerPlan(by_cores, f"workers: {by_cores} of {ceiling} ({cores} cores) — "
                                     f"{headroom.name} could not be measured on "
                                     f"{sys.platform}, so memory got no vote here", headroom)
-    workers = min(by_cores, headroom.megabytes // budget.megabytes)
+    budget = budget_for(headroom) if budget_mb is None else budget_mb
+    workers = min(by_cores, headroom.megabytes // budget)
     return WorkerPlan(workers, f"workers: {workers} of {ceiling} ({cores} cores) — "
                                f"{_gb(headroom.megabytes)} of {headroom.name}, "
-                               f"{_gb(budget.megabytes)} budgeted per "
-                               f"{budget.profile}-profile worker", headroom)
+                               f"{_gb(budget)} budgeted per worker", headroom)
 
 
-def too_tight(plan: WorkerPlan, budget: Budget = _BUDGET) -> str:
+def too_tight(plan: WorkerPlan) -> str:
     """What is said instead of starting a run that cannot fit. Names both numbers."""
-    return (f"NOT STARTING: one {budget.profile}-profile worker is budgeted "
-            f"{_gb(budget.megabytes)} and this machine has "
+    return (f"NOT STARTING: one worker is budgeted {_gb(budget_for(plan.headroom))} "
+            f"and this machine has "
             f"{_gb(plan.headroom.megabytes or 0)} of {plan.headroom.name} left. The run "
             f"would reach a MemoryError in a few minutes instead of a verdict.\n"
             f"That figure counts every process on the machine and not this repository's: "

@@ -46,7 +46,7 @@ class TestTheCountFollowsTheMeasurement(unittest.TestCase):
 
     def setUp(self) -> None:
         self.check = load_check()
-        self.budget = self.check._BUDGET.megabytes
+        self.budget = self.check._COMMIT_BUDGET_MB
 
     def plan(self, cores: int, megabytes: int | None, name: str = "commit headroom") -> Any:
         return self.check.plan_workers(cores, self.check.Headroom(megabytes, name))
@@ -85,38 +85,42 @@ class TestTheCountFollowsTheMeasurement(unittest.TestCase):
 class TestCiIsNotMadeSlowerByThis(unittest.TestCase):
     """The trade this feature is not allowed to make.
 
-    The runners are 2-4 cores and nothing else runs on them; on such a machine the
-    answer has to be the cores, byte-for-byte what `min(cores, 8)` returned before. The
-    budget used here is the CPU one on purpose — `.github/workflows/check.yml` installs
-    `--extra cpu`, so charging the runner gpu prices would be a bill for a card that is
-    not in it.
+    The runners of `.github/workflows/check.yml` are 4 cores and 16 GB with nothing else
+    on them; on such a machine the answer has to be the cores, byte-for-byte what
+    `min(cores, 8)` returned before.
     """
+
+    # 4 cores, 16 GB — and the free figure differs by platform because the READING does:
+    # `MemAvailable` on an idle linux runner is most of the box, while a Windows commit
+    # headroom is what the image's page file leaves over the charge. Both are floors
+    # taken low on purpose; if a runner ever reports less, the line this feature prints
+    # says so in the CI log, and the budget is one edit away.
+    RUNNER_CORES = 4
+    RUNNER_HEADROOM_MB = {"available memory": 12 * 1024, "commit headroom": 14 * 1024}
 
     def setUp(self) -> None:
         self.check = load_check()
-        self.budget = self.check.Budget(self.check._BUDGET_MB["cpu"], "cpu")
 
-    def test_an_idle_runner_gets_every_core_on_both_platforms(self):
+    def test_an_idle_runner_gets_every_core_on_both_readings(self):
         for cores in (2, 4):
-            for name in ("commit headroom", "available memory"):
+            for name in self.RUNNER_HEADROOM_MB:
                 with self.subTest(cores=cores, name=name):
-                    plan = self.check.plan_workers(
-                        cores, self.check.Headroom(_PLENTY_MB, name), self.budget)
+                    plan = self.check.plan_workers(cores, self.check.Headroom(_PLENTY_MB, name))
                     self.assertEqual(plan.workers, min(cores, self.check._MAX_WORKERS))
 
-    # A GitHub-hosted runner — the machine `.github/workflows/check.yml` uses on both
-    # platforms — is 4 cores and 16 GB, and a fresh one has ~12 GB of either reading
-    # left. Four workers have to be affordable at that figure, which is a constraint on
-    # the BUDGET and the reason this test names a number instead of a plenty.
-    RUNNER_CORES, RUNNER_HEADROOM_MB = 4, 12 * 1024
-
     def test_a_github_runner_still_gets_all_four_of_its_cores(self):
-        for name in ("commit headroom", "available memory"):
+        for name, megabytes in self.RUNNER_HEADROOM_MB.items():
             with self.subTest(name=name):
                 plan = self.check.plan_workers(
-                    self.RUNNER_CORES, self.check.Headroom(self.RUNNER_HEADROOM_MB, name),
-                    self.budget)
+                    self.RUNNER_CORES, self.check.Headroom(megabytes, name))
                 self.assertEqual(plan.workers, self.RUNNER_CORES)
+
+    def test_no_budget_asks_a_runner_for_more_memory_than_it_has(self):
+        """A budget that four workers cannot fit into 16 GB would refuse CI outright —
+        the loudest possible version of the trade this feature must not make."""
+        for name, budget in self.check._BUDGET_MB.items():
+            with self.subTest(name=name):
+                self.assertLess(self.RUNNER_CORES * budget, 16 * 1024)
 
 
 class TestTheLineSaysWhatWasChosenAndWhy(unittest.TestCase):
@@ -124,7 +128,7 @@ class TestTheLineSaysWhatWasChosenAndWhy(unittest.TestCase):
 
     def setUp(self) -> None:
         self.check = load_check()
-        self.budget = self.check._BUDGET.megabytes
+        self.budget = self.check._COMMIT_BUDGET_MB
 
     def line(self, cores: int, megabytes: int | None, name: str = "commit headroom") -> str:
         return self.check.plan_workers(cores, self.check.Headroom(megabytes, name)).line
@@ -132,8 +136,7 @@ class TestTheLineSaysWhatWasChosenAndWhy(unittest.TestCase):
     def test_the_full_count_is_reported_as_loudly_as_a_lowered_one(self):
         full = self.line(24, _PLENTY_MB)
         self.assertRegex(full, r"^workers: 8 of 8 \(24 cores\)")
-        self.assertIn("budgeted per", full)
-        self.assertIn(self.check._BUDGET.profile, full)
+        self.assertIn("budgeted per worker", full)
 
     def test_a_lowered_count_names_the_headroom_and_the_budget(self):
         line = self.line(24, self.budget * 5)
@@ -144,6 +147,14 @@ class TestTheLineSaysWhatWasChosenAndWhy(unittest.TestCase):
     def test_the_line_names_the_reading_it_used_and_platforms_differ(self):
         self.assertIn("commit headroom", self.line(24, self.budget * 5))
         self.assertIn("available memory", self.line(24, self.budget * 5, "available memory"))
+
+    def test_each_reading_is_priced_with_the_budget_measured_for_it(self):
+        """The two readings are different quantities — a reservation Windows counts
+        against its limit and a page Linux really holds — so one price for both would be
+        a number that is wrong on at least one platform."""
+        for name, budget in self.check._BUDGET_MB.items():
+            with self.subTest(name=name):
+                self.assertIn(self.check._gb(budget), self.line(24, _PLENTY_MB, name))
 
     def test_a_failed_measurement_is_said_and_not_hidden(self):
         line = self.line(24, None)
@@ -280,7 +291,7 @@ class TestTheRunActsOnThePlan(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_a_tight_machine_that_can_still_afford_a_worker_runs(self):
-        plan = self.plan_for(self.check._BUDGET.megabytes)
+        plan = self.plan_for(self.check._COMMIT_BUDGET_MB)
         self.assertEqual(plan.workers, 1)
         code, printed, calls = self.invoke(plan, "--slow")
         self.assertEqual(code, 0)
@@ -330,30 +341,18 @@ class TestTheBudgetIsAMeasurementAndSaysSo(unittest.TestCase):
         self.changelog = (_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
     def test_both_budgets_are_plausible_numbers_of_megabytes(self):
-        for profile, budget in self.check._BUDGET_MB.items():
-            with self.subTest(profile=profile):
+        for name, budget in self.check._BUDGET_MB.items():
+            with self.subTest(name=name):
                 self.assertGreater(budget, 200)
                 self.assertLess(budget, 16 * 1024)
 
-    def test_a_gpu_worker_is_charged_more_than_a_cpu_one(self):
-        """If these ever converge, the profile split has stopped buying anything and the
-        simpler thing to do is delete it rather than keep two numbers in step."""
-        self.assertGreater(self.check._BUDGET_MB["gpu"], self.check._BUDGET_MB["cpu"])
-
-    def test_the_profile_is_read_from_the_metadata_and_not_from_an_import(self):
-        for reported, expected in [("2.13.0+cu130", "gpu"), ("2.13.0+cpu", "cpu"),
-                                   ("2.13.0", "cpu")]:
-            with self.subTest(reported=reported):
-                with mock.patch("importlib.metadata.version", return_value=reported):
-                    self.assertEqual(self.check.install_profile(), expected)
-
-    def test_an_unreadable_profile_is_charged_the_expensive_price(self):
-        """Guessing cheap on a machine that pays gpu prices is the MemoryError again."""
-        with mock.patch("importlib.metadata.version", side_effect=Exception("no torch")):
-            self.assertEqual(self.check.install_profile(), "gpu")
-
-    def test_this_venv_is_recognised_as_one_of_the_two(self):
-        self.assertIn(self.check.install_profile(), self.check._BUDGET_MB)
+    def test_every_reading_this_machine_can_produce_has_a_budget(self):
+        """A reading with no price would be a KeyError inside the gate, at the one
+        moment the gate is what everything else is waiting for."""
+        for platform in ("win32", "linux", "darwin"):
+            with self.subTest(platform=platform), \
+                    mock.patch.object(self.check.sys, "platform", platform):
+                self.assertIn(self.check.memory_headroom().name, self.check._BUDGET_MB)
 
     def budget_mentions(self) -> list[str]:
         """Every `<budget> MB` in the CHANGELOG. `assertIn` is avoided on purpose here:
@@ -376,8 +375,10 @@ class TestTheBudgetIsAMeasurementAndSaysSo(unittest.TestCase):
         """A number without a date is a number nobody can decide is stale — which is how
         `_MAX_WORKERS = 8` came to be trusted for a year."""
         source = (_ROOT / "scripts" / "check.py").read_text(encoding="utf-8")
-        found = source.index("_BUDGET_MB = ")
-        self.assertRegex(source[max(0, found - 1200):found], r"20\d\d-\d\d-\d\d")
+        for constant in ("_COMMIT_BUDGET_MB = ", "_RESIDENT_BUDGET_MB = "):
+            with self.subTest(constant=constant):
+                found = source.index(constant)
+                self.assertRegex(source[max(0, found - 1600):found], r"20\d\d-\d\d-\d\d")
 
 
 class TestTheDocstringStillDescribesTheGate(unittest.TestCase):
