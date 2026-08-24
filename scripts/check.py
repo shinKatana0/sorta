@@ -58,14 +58,29 @@ should be visible on the next run rather than half a year later.
 
 The suite is therefore run TWICE, and the split is not cosmetic:
 
-    parallel   pytest -n <measured, at most 8> -m "not serial"   the bulk
-    serial     pytest -m serial                               the tests that assert
+    parallel   pytest -n <chosen, at most 8> -m "not serial"   the bulk
+    serial     pytest -m serial                                the tests that assert
                                                  about TIME or bind a port — the
                                                  parallel half is a loaded machine,
                                                  which is exactly the condition under
                                                  which they fail
 
 The cap on the workers is about memory and not about cores; see `_MAX_WORKERS` below.
+Since F251 the cap is only the ceiling and the count under it is measured — the section
+after this one.
+
+A naive `-n auto` over everything would make the gate fast and UNRELIABLE, which is
+worse than slow: an unreliable gate teaches people to re-run instead of to read. No
+test was loosened to survive the parallel half — a test that cannot take it is
+`serial`, with the reason written next to the marker. The serial half is 27 tests and
+1 min 07 s of the 6 min 45 s; the parallel one is the other 5739.
+
+Coverage is measured over the SUM of the two passes: each one writes with
+`--cov-append` and neither judges the threshold (`--cov-fail-under=0`), and the
+threshold from pyproject.toml is checked exactly once, at the end, by `coverage
+report` over the combined data. Checking it per pass would mean judging 85% against
+the dozen tests of the serial half — a red gate — and against the parallel half's
+incomplete data — a green one that covers nothing.
 
 The worker count is measured, not assumed (F251, 2026-08-24)
 ------------------------------------------------------------
@@ -100,19 +115,6 @@ If the headroom does not cover even one worker the run does not start (exit
 check, it is a wait. Where the headroom cannot be measured at all — macOS, a refusing
 API — the count falls back to `min(cores, 8)`, exactly as before, and the line says
 that this is what happened.
-
-A naive `-n auto` over everything would make the gate fast and UNRELIABLE, which is
-worse than slow: an unreliable gate teaches people to re-run instead of to read. No
-test was loosened to survive the parallel half — a test that cannot take it is
-`serial`, with the reason written next to the marker. The serial half is 27 tests and
-1 min 07 s of the 6 min 45 s; the parallel one is the other 5739.
-
-Coverage is measured over the SUM of the two passes: each one writes with
-`--cov-append` and neither judges the threshold (`--cov-fail-under=0`), and the
-threshold from pyproject.toml is checked exactly once, at the end, by `coverage
-report` over the combined data. Checking it per pass would mean judging 85% against
-the dozen tests of the serial half — a red gate — and against the parallel half's
-incomplete data — a green one that covers nothing.
 
 Used:
   - manually: uv run --extra cpu --extra dev python scripts/check.py
@@ -216,7 +218,7 @@ class Budget(NamedTuple):
 
 
 def install_profile() -> str:
-    """"gpu" or "cpu", from torch's version string — `2.13.0+cu130` against `2.13.0+cpu`.
+    """Which torch is installed, from its version string — `2.13.0+cu130` or `2.13.0+cpu`.
 
     Read from the installed metadata and never by importing torch: the import is half a
     gigabyte and several seconds, and this runs before every gate. An unreadable answer
