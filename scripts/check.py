@@ -58,7 +58,7 @@ should be visible on the next run rather than half a year later.
 
 The suite is therefore run TWICE, and the split is not cosmetic:
 
-    parallel   pytest -n <cores, at most 8> -m "not serial"   the bulk
+    parallel   pytest -n <measured, at most 8> -m "not serial"   the bulk
     serial     pytest -m serial                               the tests that assert
                                                  about TIME or bind a port — the
                                                  parallel half is a loaded machine,
@@ -66,6 +66,40 @@ The suite is therefore run TWICE, and the split is not cosmetic:
                                                  which they fail
 
 The cap on the workers is about memory and not about cores; see `_MAX_WORKERS` below.
+
+The worker count is measured, not assumed (F251, 2026-08-24)
+------------------------------------------------------------
+Eight is now a CEILING and no longer the decision. The decision is
+
+    workers = min(cores, 8, memory headroom / the budget per worker), at least 1
+
+because the machine the gate runs on is not the machine the eight was measured on: over
+2026-08-23/24 seven gate runs out of twelve died with `MemoryError`,
+`RemoteDisconnected` or `ConnectionAbortedError`, every time on different, unrelated
+tests, on a tree that was green before and after. Not one of them was about the branch.
+They were about Windows' COMMIT limit — which counts what processes reserved, not what
+they touched — standing at 59 of 74.6 GB before the gate started, held by a browser, WSL
+and other sessions, while 17.6 GB of physical memory sat free. Eight workers of
+CUDA-torch reserve about what was left, so the failure lands wherever the next
+allocation happens to be.
+
+Memory may only LOWER the count: on an idle 4-core CI runner the formula returns the
+same 4 it always did, and a feature that fixed one laptop by slowing CI down would be a
+bad trade. The budget per worker is measured, and measured PER INSTALL PROFILE, for the
+same reason: a gpu worker costs several times a cpu one, so a single number would have
+to be the expensive one and CI — which runs the cpu profile — would pay for a card it
+does not have. And the run says out loud what it picked and out of what — always, not
+only when it lowered — because the alternative is what actually happened: measuring the
+machine BY HAND, after the red gate, to find out whether the machine was the reason.
+
+    workers: 5 of 8 (24 cores) — 12.3 GB of commit headroom, 2.4 GB budgeted per
+    gpu-profile worker
+
+If the headroom does not cover even one worker the run does not start (exit
+`_TOO_TIGHT`): eight minutes spent to arrive at a predictable `MemoryError` is not a
+check, it is a wait. Where the headroom cannot be measured at all — macOS, a refusing
+API — the count falls back to `min(cores, 8)`, exactly as before, and the line says
+that this is what happened.
 
 A naive `-n auto` over everything would make the gate fast and UNRELIABLE, which is
 worse than slow: an unreliable gate teaches people to re-run instead of to read. No
@@ -90,6 +124,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import NamedTuple
 
 # The Windows console (cp1251) does not encode the emoji in the output below —
 # without replace the script crashes with UnicodeEncodeError AFTER all gates have
@@ -150,8 +185,190 @@ _NO_VERDICT = ["--cov-fail-under=0"]
 # it, with about 4 GB to spare; twelve had one, sixteen had none. It is a cap and not a
 # fixed count — `min(cores, 8)` — so a 4-core CI runner still gets 4 and needs no branch
 # of its own in the configuration.
+#
+# Since F251 it is only the CEILING of that decision: the measurement above was true of
+# one machine on one day and was never re-taken, so the run takes it itself now. See the
+# docstring, `_BUDGET_MB` and `plan_workers`.
 _MAX_WORKERS = 8
-_WORKERS = str(min(os.cpu_count() or 1, _MAX_WORKERS))
+
+_BYTES_PER_MB = 1024 * 1024
+
+# Measured 2026-08-24, 24 cores: the parallel half's own process tree, sampled every 2 s
+# for the sum of its PagefileUsage — the private COMMIT charge, because the machine-wide
+# number would have measured who else was awake. The table is in the CHANGELOG.
+#
+# Each number is peak/workers of the WHOLE tree and not the slope between two counts: the
+# fixed part (the controller, coverage's data, whichever heavy fixtures overlap) comes
+# out of the same headroom, and a budget that charges only for the slope hands out
+# workers the machine cannot afford — which is the failure this exists to stop.
+#
+# Two profiles because they are not within rounding distance of each other, and one
+# number would have to be the expensive one: charging gpu prices on CI would cost a
+# 4-core runner a worker or two for a cost it never pays.
+_BUDGET_MB = {"gpu": 3500, "cpu": 1200}  # provisional, the sweep is running
+
+
+class Budget(NamedTuple):
+    """What one worker is charged, and which install profile that was measured on."""
+
+    megabytes: int
+    profile: str
+
+
+def install_profile() -> str:
+    """"gpu" or "cpu", from torch's version string — `2.13.0+cu130` against `2.13.0+cpu`.
+
+    Read from the installed metadata and never by importing torch: the import is half a
+    gigabyte and several seconds, and this runs before every gate. An unreadable answer
+    is treated as "gpu", the expensive side: guessing cheap on a machine that pays the
+    expensive price is how the run gets to a MemoryError.
+    """
+    try:
+        from importlib.metadata import version
+
+        return "gpu" if "+cu" in version("torch") else "cpu"
+    except Exception:
+        return "gpu"
+
+
+_PROFILE = install_profile()
+_BUDGET = Budget(_BUDGET_MB[_PROFILE], _PROFILE)
+
+
+class Headroom(NamedTuple):
+    """How much memory the machine will let this run reserve, and what that number is.
+
+    `megabytes` is None where the platform cannot be asked without a new dependency —
+    an answer, not a failure. `name` differs per platform on purpose: Windows answers
+    with what is left of the COMMIT limit, which counts reservations nobody has touched,
+    and Linux with memory that is actually available. Pretending those are one fact is
+    how a number stops meaning anything.
+    """
+
+    megabytes: int | None
+    name: str
+
+
+class WorkerPlan(NamedTuple):
+    """The count the parallel half will use, and the line the run prints about it.
+
+    `workers` is 0 when the headroom does not cover a single worker: the line is then
+    the whole answer, and it is the caller that must not start. `headroom` travels with
+    the plan so that the refusal quotes the reading the count was made from, and not
+    whatever the machine looks like by the time it is printed.
+    """
+
+    workers: int
+    line: str
+    headroom: Headroom
+
+
+def _windows_commit_headroom_mb() -> int | None:
+    """`ullAvailPageFile` of GlobalMemoryStatusEx, in MB. None if the call fails.
+
+    Not `ullAvailPhys`: the failures this feature is about arrived with 17.6 GB of
+    physical memory free. Windows refuses an allocation when the COMMIT charge would
+    pass the limit, and a worker of CUDA-torch reserves gigabytes whether or not it ever
+    writes to them.
+    """
+    try:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        # Reached through getattr: `windll` does not exist off Windows, where this file
+        # is still imported and still read by mypy for the other platform.
+        windll = getattr(ctypes, "windll", None)
+        if windll is None or not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return int(status.ullAvailPageFile) // _BYTES_PER_MB
+    except Exception:
+        return None
+
+
+def _linux_available_mb() -> int | None:
+    """`MemAvailable` of /proc/meminfo, in MB. None if it cannot be read.
+
+    MemAvailable and not MemFree: on a box that has been up for a day most of MemFree is
+    page cache a run may have back for the asking, and MemFree reads as an emergency on
+    every machine.
+    """
+    try:
+        with open("/proc/meminfo", encoding="utf-8", errors="replace") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        return int(parts[1]) * 1024 // _BYTES_PER_MB  # the file is in kB
+                    return None
+    except Exception:
+        return None
+    return None
+
+
+def memory_headroom() -> Headroom:
+    """What this machine will let the parallel half reserve. Never raises."""
+    if sys.platform == "win32":
+        return Headroom(_windows_commit_headroom_mb(), "commit headroom")
+    if sys.platform.startswith("linux"):
+        return Headroom(_linux_available_mb(), "available memory")
+    # macOS has no reading here that means the same thing (`vm_stat` counts pages of six
+    # kinds and their sum is not MemAvailable), and an invented number would be worse
+    # than none: it would lower the count on somebody's machine for no reason.
+    return Headroom(None, "available memory")
+
+
+def _gb(megabytes: float) -> str:
+    return f"{megabytes / 1024:.1f} GB"
+
+
+def plan_workers(cores: int, headroom: Headroom, budget: Budget = _BUDGET,
+                 ceiling: int = _MAX_WORKERS) -> WorkerPlan:
+    """How many pytest workers this machine can afford, and the line that says why.
+
+    Memory can only lower the count, never lift it above `min(cores, ceiling)`, and a
+    machine that could not be measured gets exactly what it got before this existed.
+    """
+    by_cores = max(1, min(cores, ceiling))
+    if headroom.megabytes is None:
+        return WorkerPlan(by_cores, f"workers: {by_cores} of {ceiling} ({cores} cores) — "
+                                    f"{headroom.name} could not be measured on "
+                                    f"{sys.platform}, so memory got no vote here", headroom)
+    workers = min(by_cores, headroom.megabytes // budget.megabytes)
+    return WorkerPlan(workers, f"workers: {workers} of {ceiling} ({cores} cores) — "
+                               f"{_gb(headroom.megabytes)} of {headroom.name}, "
+                               f"{_gb(budget.megabytes)} budgeted per "
+                               f"{budget.profile}-profile worker", headroom)
+
+
+def too_tight(plan: WorkerPlan, budget: Budget = _BUDGET) -> str:
+    """What is said instead of starting a run that cannot fit. Names both numbers."""
+    return (f"NOT STARTING: one {budget.profile}-profile worker is budgeted "
+            f"{_gb(budget.megabytes)} and this machine has "
+            f"{_gb(plan.headroom.megabytes or 0)} of {plan.headroom.name} left. The run "
+            f"would reach a MemoryError in a few minutes instead of a verdict.\n"
+            f"That figure counts every process on the machine and not this repository's: "
+            f"another worktree's gate, a product run, the browser, WSL — close one of "
+            f"them and start the gate again.")
+
+
+_PLAN = plan_workers(os.cpu_count() or 1, memory_headroom())
+# Trap: the command below is built even when the plan refuses (0 workers) — it is `main`
+# that stops the run, and `-n 0` would otherwise reach pytest as a valid request.
+_WORKERS = str(max(_PLAN.workers, 1))
 
 # `loadfile` and not xdist's default `load` (which hands out one test at a time). The
 # suite has modules whose tests share process state on purpose — a module-level
@@ -187,6 +404,11 @@ ERASE_COVERAGE = [sys.executable, "-m", "coverage", "erase"]
 # pytest's "no tests were collected". Only the serial half may legitimately hit it —
 # if every `serial` marker is ever removed, that is an empty pass, not a failed gate.
 _NO_TESTS_COLLECTED = 5
+
+# Not 1: "the machine cannot host this run" is not "the branch is broken", and a caller
+# that reads exit codes should be able to tell the two apart. Non-zero all the same —
+# nothing was checked, so nothing may be reported green.
+_TOO_TIGHT = 3
 
 
 def _duration(seconds: float) -> str:
@@ -233,6 +455,14 @@ def main() -> int:
         done = "✅ All gates passed (lint + types + tests/coverage)."
 
     if not args.fast:
+        # Printed on every run that will start pytest, not only on a run that lowered
+        # the count: a red gate has to be readable as "the machine was tight" WITHOUT
+        # measuring the machine by hand afterwards, and that only works if the number is
+        # there on the green ones too.
+        print(_PLAN.line)
+        if _PLAN.workers < 1:
+            print(too_tight(_PLAN))
+            return _TOO_TIGHT
         subprocess.run(ERASE_COVERAGE)
 
     code = run(checks)

@@ -77,7 +77,9 @@ tests/test_faces_skip_reclustering.py                71
 tests/test_first_run_wizard.py                       74
 tests/test_frame_quality.py                          188
 tests/test_frontend_comments_english.py              91
-tests/test_gate_parallel.py                          76
+tests/test_gate_parallel.py                          79   # F251 +3: why the plan is
+                            # pinned in the tests that call main() — measured live, it
+                            # would be read while the gate's own workers hold the memory
 tests/test_geo.py                                    56
 tests/test_geo_cache.py                              76
 tests/test_geo_city_fallback.py                      55
@@ -195,6 +197,7 @@ tests/test_the_collection_can_move.py                25
 tests/test_the_cpu_tier_gets_a_number.py             59
 tests/test_the_diagnostics_do_not_starve_the_server.py  104
 tests/test_the_first_launch_says_it_is_starting.py   166   # F246 +6: the assertion about
+tests/test_the_gate_sizes_itself_to_the_machine.py    55   # F251: new file
 tests/test_the_index_follows_from_the_screen.py      78
 tests/test_the_log_speaks_english.py                 44
 tests/test_the_moved_collection_is_reachable_from_the_screen.py  50

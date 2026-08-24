@@ -323,7 +323,12 @@ class TestTheFastGateStillDoesNotRunTheSuite(unittest.TestCase):
             calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0)
 
+        # F251: the plan is pinned rather than taken from the machine. Left to itself it
+        # would be measured DURING the parallel half — when the gate's own workers hold
+        # the headroom — and a run tight enough to refuse would turn these into red.
+        roomy = self.check.plan_workers(8, self.check.Headroom(512 * 1024, "measured"))
         with mock.patch.object(self.check.subprocess, "run", side_effect=record), \
+                mock.patch.object(self.check, "_PLAN", roomy), \
                 mock.patch.object(sys, "argv", ["check.py", *argv]):
             self.assertEqual(self.check.main(), 0)
         return calls
