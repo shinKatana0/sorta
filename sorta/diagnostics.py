@@ -527,6 +527,7 @@ def gpu_health_out_of_process(*, timeout: float = GPU_PROBE_TIMEOUT_S,
 
 
 def current_gpu_health(*, timeout: float = GPU_PROBE_TIMEOUT_S,
+                       gpu_present: bool | None = None,
                        log: logging.Logger = _LOG) -> GpuHealth | None:
     """The GPU state for a caller that must stay responsive. None — nobody answered.
 
@@ -534,10 +535,12 @@ def current_gpu_health(*, timeout: float = GPU_PROBE_TIMEOUT_S,
     this process (a run, which is about to use it anyway) the question costs an attribute
     lookup and is answered here; where it is not (the tray, `sorta ui`) it goes to a child
     and this process keeps serving while the child imports.
+
+    `gpu_present` overrides the nvidia-smi probe for a caller that has already asked.
     """
     if "torch" in sys.modules:
-        return gpu_health()
-    return gpu_health_out_of_process(timeout=timeout, log=log)
+        return gpu_health(gpu_present=gpu_present)
+    return gpu_health_out_of_process(timeout=timeout, gpu_present=gpu_present, log=log)
 
 
 def warn_if_gpu_mismatch(
@@ -551,9 +554,26 @@ def warn_if_gpu_mismatch(
     F246: with no `health` given it asks `current_gpu_health`, which does not drag torch
     into a process that is serving. A probe with no answer is False — never a warning
     invented out of no data.
+
+    F250: with no card in the machine it asks nothing else at all and returns False.
     """
     if health is None:
-        health = current_gpu_health(timeout=timeout, log=log)
+        # F250: the cheap question first. `nvidia_gpu_present` is one bounded nvidia-smi
+        # call; the torch half is an interpreter starting from nothing — 222.6 s in the
+        # owner's VM on 2026-08-24, 78 s short of the probe timeout, paid on every launch.
+        # Not asking it without a card is a PRODUCT decision and not an optimisation: all
+        # three problems below are about a card that is there. `torch_ignores_gpu` and
+        # `ort_ignores_gpu` cannot fire without `gpu_present` by construction, and the F63
+        # `mismatch` — onnxruntime offers CUDA, torch does not — has nothing to repair on
+        # a machine where there is no CUDA to execute.
+        # TRAP: the answer comes from `nvidia-smi`. A machine WITH a card but without that
+        # binary on PATH reads as "no card" and gets no warning — this is where to look
+        # when the warning is silent on hardware that has one. The price is already paid
+        # by choice: the install wizard reads the same probe (F230), and two places
+        # disagreeing about one question is worse than one that says nothing.
+        if not nvidia_gpu_present():
+            return False
+        health = current_gpu_health(timeout=timeout, gpu_present=True, log=log)
     if health is None or not health.degraded:
         return False
     log.warning(
