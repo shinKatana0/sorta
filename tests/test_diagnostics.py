@@ -375,8 +375,10 @@ class TestWarnIfGpuMismatch(unittest.TestCase):
             self.assertFalse(warn_if_gpu_mismatch(health))
 
     def test_collects_health_itself_when_not_given(self):
+        # A card, because F250: with none in the machine nothing is collected at all —
+        # that decision is pinned in tests/test_no_card_no_question.py.
         with patched(fake_torch("2.13.0+cpu"), fake_ort(CUDA_PROVIDERS)):
-            with mock.patch("sorta.diagnostics.nvidia_gpu_present", return_value=False):
+            with mock.patch("sorta.diagnostics.nvidia_gpu_present", return_value=True):
                 with self.assertLogs(LOGGER_NAME, level=logging.WARNING) as cm:
                     warned = warn_if_gpu_mismatch()
         self.assertTrue(warned)

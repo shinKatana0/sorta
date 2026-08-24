@@ -46,7 +46,9 @@ tests/test_dedup_restored.py                         19
 tests/test_derivative_does_not_outlive_original.py   54
 tests/test_detector_cascade.py                       100
 tests/test_detector_reaches_the_screen.py            135
-tests/test_diagnostics.py                            30
+tests/test_diagnostics.py                            32   # F250 +2: why the case that
+                                                          # collects its own health has a
+                                                          # card in it
 tests/test_docs_guides.py                            181
 tests/test_docs_say_what_was_run.py                  57
 tests/test_doctor_tiers.py                           46
