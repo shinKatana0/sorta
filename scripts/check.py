@@ -84,11 +84,10 @@ incomplete data — a green one that covers nothing.
 
 The worker count is measured, not assumed (F251, 2026-08-24)
 ------------------------------------------------------------
-Eight is now a CEILING and no longer the decision. The decision is
-
-    workers = min(cores, 8, memory headroom / the budget per worker), at least 1
-
-because the machine the gate runs on is not the machine the eight was measured on: over
+Eight is now a CEILING and no longer the decision. The decision is the largest count
+whose estimated cost — a floor the run pays whatever `-n` says, plus a marginal cost per
+worker — fits in the headroom with `_RESERVE_MB` still unspent, and it is never taken
+below `min(cores, _MIN_WORKERS)`. It exists because the machine the gate runs on is not the machine the eight was measured on: over
 2026-08-23/24 seven gate runs out of twelve died with `MemoryError`,
 `RemoteDisconnected` or `ConnectionAbortedError`, every time on different, unrelated
 tests, on a tree that was green before and after. Not one of them was about the branch.
@@ -98,23 +97,26 @@ and other sessions, while 17.6 GB of physical memory sat free. Eight workers of
 CUDA-torch reserve about what was left, so the failure lands wherever the next
 allocation happens to be.
 
-Memory may only LOWER the count: on an idle 4-core CI runner the formula returns the
-same 4 it always did, and a feature that fixed one laptop by slowing CI down would be a
-bad trade. The budget per worker is measured and not estimated — `_COMMIT_BUDGET_MB` has
-the table — and there is one per READING, because Windows answers with what is left of
-its commit limit and Linux with memory that is actually free, and those are different
-quantities however similar the words are. And the run says out loud what it picked and
-out of what — always, not only when it lowered — because the alternative is what
-actually happened: measuring the machine BY HAND, after the red gate, to find out
-whether the machine was the reason.
+Memory may only LOWER the count, and only down to `min(cores, _MIN_WORKERS)`: **nothing
+here refuses to run**. The cost model is a straight line fitted through two points on
+one machine, and this repository holds the counter-example — CI's 4-core, 16 GB runners
+are below what that line claims four workers need, and they pass. A gate only its author
+can run is not a gate. So the estimate is allowed to take eight down to five; it is not
+allowed to tell a machine it cannot host the suite. The two costs are measured per
+READING (`_FLOOR_MB`, `_MARGINAL_MB`), because Windows answers with what is left of its
+commit limit and Linux with memory that is actually free, and those are different
+quantities however similar the words are.
 
-    workers: 5 of 8 (24 cores) — 18.6 GB of commit headroom, 3.4 GB budgeted per worker
+The run says out loud what it picked and out of what — always, not only when it lowered
+— because the alternative is what actually happened: measuring the machine BY HAND,
+after the red gate, to find out whether the machine was the reason.
 
-If the headroom does not cover even one worker the run does not start (exit
-`_TOO_TIGHT`): eight minutes spent to arrive at a predictable `MemoryError` is not a
-check, it is a wait. Where the headroom cannot be measured at all — macOS, a refusing
-API — the count falls back to `min(cores, 8)`, exactly as before, and the line says
-that this is what happened.
+    workers: 5 of 8 (24 cores) — 18.6 GB of commit headroom, 13.7 GB floor +
+    1.8 GB per worker, 2.0 GB left unspent
+
+Where the headroom cannot be measured at all — macOS, a refusing API — the count falls
+back to `min(cores, 8)`, exactly as before, and the line says that this is what
+happened.
 
 Used:
   - manually: uv run --extra cpu --extra dev python scripts/check.py
@@ -190,13 +192,13 @@ _NO_VERDICT = ["--cov-fail-under=0"]
 #
 # Since F251 it is only the CEILING of that decision: the measurement above was true of
 # one machine on one day and was never re-taken, so the run takes it itself now. See the
-# docstring, `_BUDGET_MB` and `plan_workers`.
+# docstring, `_FLOOR_MB` and `plan_workers`.
 _MAX_WORKERS = 8
 
 _BYTES_PER_MB = 1024 * 1024
 
-# One budget per READING, because the two readings are not the same quantity — see
-# `Headroom`. Measured 2026-08-24 on this machine, 24 cores, by sampling the parallel
+# One pair of numbers per READING, because the two readings are not the same quantity —
+# see `Headroom`. Measured 2026-08-24 on this machine, 24 cores, by sampling the parallel
 # half's own process tree every 2 s for the sum of its PagefileUsage (private commit
 # charge; the machine-wide figure would have measured who else was awake):
 #
@@ -209,23 +211,51 @@ _BYTES_PER_MB = 1024 * 1024
 # The install profile turned out NOT to be the axis: the marginal cost of a worker is
 # 1.74 GB on gpu and 1.77 GB on cpu — the profiles differ in the FLOOR (14.0 against
 # 11.8 GB), which the suite's own subprocess-spawning tests pay by importing torch 30-odd
-# times whatever `-n` says. So one number, taken at the ceiling: 3493 -> 3500.
+# times whatever `-n` says.
 #
-# The trap in that number: a division cannot express a floor. Charging the amortised cost
-# at 8 workers is right when 8 are being considered and optimistic below — on a machine
-# with 15 GB of headroom the formula lands on 4 workers where the tree still wants ~19.
-# It is the count that gets lowered, not a guarantee that the run fits; the printed line
-# is what makes the remaining case readable instead of mysterious.
-_COMMIT_BUDGET_MB = 3500
+# So the table is read as what it is — a cost paid whatever `-n` says plus a marginal
+# cost per worker — and not as one amortised figure to divide the headroom by. From it:
+# 27 944 - 20 982 = 6 962 MB for four workers on gpu, 1 740 MB each, leaving 14 022; cpu
+# gives 1 768 and 11 814. One pair, taken at the ceiling of both.
+#
+# The `available memory` pair is smaller because it is a different quantity —
+# MemAvailable is about pages actually held, where commit counts reservations nobody has
+# touched — but it is REASONED, not measured: the project has no Linux machine to sample
+# and nobody has run the sweep on one. The nearest measurement of that quantity is F219's
+# peak RESIDENT memory of the same tree on Windows (2026-08-07, 17.3 GB at 4 workers,
+# 20.0 GB at 8), which fits 14.6 GB + 0.7 GB per worker — a HIGHER floor and a smaller
+# slope than the pair below. Both readings are protected by `_MIN_WORKERS` either way;
+# this is the first number to re-take when there is a Linux machine to take it on.
+#
+# TRAP, and it is the reason nothing here REFUSES to run: this is an intercept fitted
+# through two points on ONE machine, not a floor the suite is known to need. It does not
+# transfer, and the counter-example is in this repository — CI runs on ubuntu-latest and
+# windows-latest, which have 16 GB and four cores, so the fit says four workers want
+# 20.9 GB and cannot fit at all. They pass, three times on 2026-08-24. Windows counts
+# reserved address space that was never touched; the runners do not have this machine's
+# CUDA wheels; two points do not describe a curve near its origin. So the number is used
+# only to LOWER a count that would otherwise be eight, never to declare a machine
+# incapable — a gate only its author can run is not a gate.
+_FLOOR_MB = {"commit headroom": 14000, "available memory": 10000}
+_MARGINAL_MB = {"commit headroom": 1800, "available memory": 1300}
 
-# MemAvailable is about pages actually held, not about reservations, so the commit figure
-# above would be the wrong quantity to divide it by. This is F219's measured peak
-# RESIDENT memory of the same tree (2026-08-07, gpu profile, 20.0 GB at 8 workers,
-# scripts/measure_gate_workers.py). It is a Windows measurement of a Linux number because
-# the project has no Linux machine; it is the first thing to re-take when it gets one.
-_RESIDENT_BUDGET_MB = 2500
+# Left unspent for whoever else moves while the run goes. A FIXED amount and not a
+# fraction: the floor is most of the reading on a busy machine, so a percentage lands on
+# one worker at 19 GB of headroom — a thirty-minute serial run — while adding nothing at
+# 60 GB. This number is reasoned, not measured, and that is the honest label: the
+# headroom on this machine swung between 15.6 and 28.1 GB inside one day (2026-08-24),
+# so two gigabytes is a bet that the next swing is smaller than the last ones were.
+# The estimate it protects IS measured; this is the cushion around it.
+_RESERVE_MB = 2000
 
-_BUDGET_MB = {"commit headroom": _COMMIT_BUDGET_MB, "available memory": _RESIDENT_BUDGET_MB}
+# How far the memory term is allowed to cut, and this floor comes from OBSERVATION rather
+# than from the model above. CI runs four workers on ubuntu-latest and windows-latest —
+# four cores, 16 GB, less than the fitted intercept claims four workers need — and passed
+# three times on 2026-08-24. So four is a count known to work on a modest machine, and the
+# estimate is not allowed to argue below it. What the memory term is FOR is the other end:
+# stopping a 24-core machine from taking eight when its headroom is 27 GB, which is where
+# every MemoryError of 2026-08-23/24 came from.
+_MIN_WORKERS = 4
 
 
 class Headroom(NamedTuple):
@@ -329,46 +359,55 @@ def _gb(megabytes: float) -> str:
     return f"{megabytes / 1024:.1f} GB"
 
 
-def budget_for(headroom: Headroom) -> int:
-    """What one worker is charged against this reading, in MB. See `_BUDGET_MB`."""
-    return _BUDGET_MB[headroom.name]
+def cost_of(workers: int, headroom: Headroom) -> int:
+    """What that many workers are estimated to reserve on this reading, in MB.
+
+    The floor is what the tree pays whatever `-n` says — the suite's own
+    subprocess-spawning tests import torch some thirty times either way — and the
+    marginal figure is what each worker adds on top. An estimate and not a promise: see
+    the trap on `_FLOOR_MB` for how far it may be trusted.
+    """
+    return _FLOOR_MB[headroom.name] + workers * _MARGINAL_MB[headroom.name]
 
 
-def plan_workers(cores: int, headroom: Headroom, budget_mb: int | None = None,
+def plan_workers(cores: int, headroom: Headroom,
                  ceiling: int = _MAX_WORKERS) -> WorkerPlan:
     """How many pytest workers this machine can afford, and the line that says why.
 
-    Memory can only lower the count, never lift it above `min(cores, ceiling)`, and a
-    machine that could not be measured gets exactly what it got before this existed.
-    `budget_mb` defaults to the one measured for the reading `headroom` carries.
+    The largest count that `cost_of` fits into the headroom with `_RESERVE_MB` to spare,
+    bounded by `min(cores, ceiling)` above and by `min(cores, _MIN_WORKERS)` below.
+    Memory can therefore only lower the count, and only so far — a machine the estimate
+    cannot explain still gets a run, because the estimate is a line through two points
+    on one machine and CI is the standing counter-example. A reading that could not be
+    taken at all leaves the count exactly where it was before this existed.
+
+    Dividing the headroom by one amortised per-worker cost, which is what this did
+    first, lands the plan on the edge instead: 26.9 GB of headroom bought 7 workers on
+    2026-08-24, 7 of them want 14.0 + 7 x 1.74 = 26.2, and the run met a MemoryError
+    with 0.7 GB nominally to spare.
     """
     by_cores = max(1, min(cores, ceiling))
     if headroom.megabytes is None:
         return WorkerPlan(by_cores, f"workers: {by_cores} of {ceiling} ({cores} cores) — "
                                     f"{headroom.name} could not be measured on "
                                     f"{sys.platform}, so memory got no vote here", headroom)
-    budget = budget_for(headroom) if budget_mb is None else budget_mb
-    workers = min(by_cores, headroom.megabytes // budget)
+    spendable = headroom.megabytes - _RESERVE_MB
+    workers = by_cores
+    least = min(by_cores, _MIN_WORKERS)
+    while workers > least and cost_of(workers, headroom) > spendable:
+        workers -= 1
     return WorkerPlan(workers, f"workers: {workers} of {ceiling} ({cores} cores) — "
                                f"{_gb(headroom.megabytes)} of {headroom.name}, "
-                               f"{_gb(budget)} budgeted per worker", headroom)
-
-
-def too_tight(plan: WorkerPlan) -> str:
-    """What is said instead of starting a run that cannot fit. Names both numbers."""
-    return (f"NOT STARTING: one worker is budgeted {_gb(budget_for(plan.headroom))} "
-            f"and this machine has "
-            f"{_gb(plan.headroom.megabytes or 0)} of {plan.headroom.name} left. The run "
-            f"would reach a MemoryError in a few minutes instead of a verdict.\n"
-            f"That figure counts every process on the machine and not this repository's: "
-            f"another worktree's gate, a product run, the browser, WSL — close one of "
-            f"them and start the gate again.")
+                               f"{_gb(_FLOOR_MB[headroom.name])} floor + "
+                               f"{_gb(_MARGINAL_MB[headroom.name])} per worker, "
+                               f"{_gb(_RESERVE_MB)} left unspent", headroom)
 
 
 _PLAN = plan_workers(os.cpu_count() or 1, memory_headroom())
-# Trap: the command below is built even when the plan refuses (0 workers) — it is `main`
-# that stops the run, and `-n 0` would otherwise reach pytest as a valid request.
-_WORKERS = str(max(_PLAN.workers, 1))
+# Trap: `-n 0` is a valid request to pytest and would distribute nothing, so the count
+# below must never reach zero. `plan_workers` cannot return one — it stops at
+# `min(cores, _MIN_WORKERS)` — and the next edit of that bound is what would break it.
+_WORKERS = str(_PLAN.workers)
 
 # `loadfile` and not xdist's default `load` (which hands out one test at a time). The
 # suite has modules whose tests share process state on purpose — a module-level
@@ -404,11 +443,6 @@ ERASE_COVERAGE = [sys.executable, "-m", "coverage", "erase"]
 # pytest's "no tests were collected". Only the serial half may legitimately hit it —
 # if every `serial` marker is ever removed, that is an empty pass, not a failed gate.
 _NO_TESTS_COLLECTED = 5
-
-# Not 1: "the machine cannot host this run" is not "the branch is broken", and a caller
-# that reads exit codes should be able to tell the two apart. Non-zero all the same —
-# nothing was checked, so nothing may be reported green.
-_TOO_TIGHT = 3
 
 
 def _duration(seconds: float) -> str:
@@ -465,9 +499,6 @@ def main() -> int:
         # without it the line arrived on line 729 of a 754-line captured run, after the
         # very wait it exists to explain.
         print(_PLAN.line, flush=True)
-        if _PLAN.workers < 1:
-            print(too_tight(_PLAN))
-            return _TOO_TIGHT
         subprocess.run(ERASE_COVERAGE)
 
     code = run(checks)

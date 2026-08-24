@@ -7,17 +7,12 @@ that was green before and after. The machine was at 59 GB of a 74.6 GB COMMIT li
 before the gate started, with 17.6 GB of physical memory free: enough memory, no
 allowance left to reserve it with.
 
-What this module holds in place:
-
-* memory may only LOWER the count. An idle 4-core runner must still get 4, or the
-  feature has paid for one laptop with everybody's CI.
-* a machine too tight for even one worker is TOLD SO instead of being made to spend
-  eight minutes arriving at a predictable `MemoryError`.
-* a platform that cannot be measured behaves exactly as it did before this existed, and
-  the line says that this is what happened.
-* the line is printed on every run that will start pytest — including the ones that got
-  the full count. Reading a red gate should not require measuring the machine by hand
-  afterwards, and that only works if the green runs carry the number too.
+What this module holds in place, one class per claim: the count is the largest one whose
+estimated cost fits with `_RESERVE_MB` unspent; nothing refuses to run; a platform that
+cannot be measured is left exactly as it was before this existed; and the line is printed
+on every run that will start pytest, the ones that got the full count included — reading
+a red gate should not require measuring the machine by hand afterwards, and that only
+works if the green runs carry the number too.
 """
 from __future__ import annotations
 
@@ -36,20 +31,27 @@ from tests.test_gate_parallel import load_check, pytest_args
 
 _ROOT = Path(__file__).resolve().parent.parent
 
-# Enough for the ceiling at any budget this feature would accept. Not `sys.maxsize`: the
-# line prints the number, and a machine with 8 exabytes free is not a readable fixture.
+# Enough for the ceiling under any cost model this feature would accept. Not
+# `sys.maxsize`: the line prints the number, and a machine with 8 exabytes free is not a
+# readable fixture.
 _PLENTY_MB = 512 * 1024
+
+# The reading this machine's gate uses, and the one every scenario below is written in
+# unless it says otherwise.
+_COMMIT = "commit headroom"
 
 
 class TestTheCountFollowsTheMeasurement(unittest.TestCase):
-    """The formula: min(cores, ceiling, headroom / budget), and never more than that."""
+    """The estimate: floor + workers x marginal, inside the headroom, reserve unspent."""
 
     def setUp(self) -> None:
         self.check = load_check()
-        self.budget = self.check._COMMIT_BUDGET_MB
 
-    def plan(self, cores: int, megabytes: int | None, name: str = "commit headroom") -> Any:
+    def plan(self, cores: int, megabytes: int | None, name: str = _COMMIT) -> Any:
         return self.check.plan_workers(cores, self.check.Headroom(megabytes, name))
+
+    def spendable(self, megabytes: int) -> int:
+        return megabytes - self.check._RESERVE_MB
 
     def test_plenty_of_headroom_is_the_count_this_gate_always_had(self):
         for cores, expected in [(24, 8), (16, 8), (8, 8), (4, 4), (2, 2), (1, 1)]:
@@ -60,17 +62,35 @@ class TestTheCountFollowsTheMeasurement(unittest.TestCase):
         """Memory has one direction. A 2-core box with a terabyte free still gets 2."""
         self.assertEqual(self.plan(2, _PLENTY_MB).workers, 2)
 
-    def test_a_tight_machine_gets_fewer_workers(self):
-        self.assertEqual(self.plan(24, self.budget * 5).workers, 5)
-        self.assertEqual(self.plan(24, self.budget * 3 + self.budget // 2).workers, 3)
+    def test_the_count_it_lands_on_is_the_largest_one_that_fits(self):
+        """Both halves: what was chosen fits, and one more would not have."""
+        for megabytes in range(16 * 1024, 40 * 1024, 512):
+            plan = self.plan(24, megabytes)
+            headroom = self.check.Headroom(megabytes, _COMMIT)
+            with self.subTest(megabytes=megabytes, workers=plan.workers):
+                if plan.workers > self.check._MIN_WORKERS:
+                    self.assertLessEqual(self.check.cost_of(plan.workers, headroom),
+                                         self.spendable(megabytes))
+                if plan.workers < self.check._MAX_WORKERS:
+                    self.assertGreater(self.check.cost_of(plan.workers + 1, headroom),
+                                       self.spendable(megabytes))
 
-    def test_the_ceiling_still_caps_a_machine_with_room_to_spare(self):
-        self.assertEqual(self.plan(24, self.budget * 40).workers, self.check._MAX_WORKERS)
+    def test_the_reserve_is_left_unspent_and_not_handed_to_a_worker(self):
+        """The count may not rise when the reserve is the only thing paying for it."""
+        headroom = self.check.Headroom(0, _COMMIT)
+        for workers in range(self.check._MIN_WORKERS + 1, self.check._MAX_WORKERS + 1):
+            exactly_enough = self.check.cost_of(workers, headroom)
+            with self.subTest(workers=workers):
+                self.assertLess(self.plan(24, exactly_enough).workers, workers)
+                self.assertEqual(
+                    self.plan(24, exactly_enough + self.check._RESERVE_MB).workers, workers)
 
-    def test_no_headroom_at_all_is_zero_workers_and_not_one(self):
-        """Clamping to 1 here would be the eight-minute wait this feature removes."""
-        self.assertEqual(self.plan(24, self.budget - 1).workers, 0)
-        self.assertEqual(self.plan(24, 0).workers, 0)
+    def test_more_headroom_never_means_fewer_workers(self):
+        counts = [self.plan(24, megabytes).workers
+                  for megabytes in range(2 * 1024, 48 * 1024, 256)]
+        self.assertEqual(counts, sorted(counts))
+        self.assertEqual(counts[0], self.check._MIN_WORKERS)
+        self.assertEqual(counts[-1], self.check._MAX_WORKERS)
 
     def test_a_machine_that_cannot_be_measured_behaves_as_before(self):
         self.assertEqual(self.plan(24, None).workers, 8)
@@ -82,21 +102,87 @@ class TestTheCountFollowsTheMeasurement(unittest.TestCase):
         self.assertEqual(self.plan(0, _PLENTY_MB).workers, 1)
 
 
+class TestTheCaseTheQuotientDiedOn(unittest.TestCase):
+    """The scenario that replaced the first model, kept as a fixture so it cannot come
+    back. On 2026-08-24 the gate had 26.9 GB of headroom; the amortised quotient of
+    3500 MB per worker bought 7, and 7 workers want 14.0 + 7 x 1.74 = 26.2 GB — the run
+    met a `MemoryError` with 0.7 GB nominally to spare."""
+
+    HEADROOM_MB = 26 * 1024 + 921  # 26.9 GB, the reading taken that day
+    AMORTISED_MB = 3500  # what the first model charged per worker
+
+    def setUp(self) -> None:
+        self.check = load_check()
+        self.headroom = self.check.Headroom(self.HEADROOM_MB, _COMMIT)
+
+    def test_the_old_arithmetic_really_did_say_seven(self):
+        """Guard the guard: if this stops being 7, the fixture has stopped modelling the
+        day it is named after and the test below proves nothing."""
+        self.assertEqual(self.HEADROOM_MB // self.AMORTISED_MB, 7)
+
+    def test_the_model_that_replaced_it_takes_fewer(self):
+        plan = self.check.plan_workers(24, self.headroom)
+        self.assertLess(plan.workers, 7)
+        self.assertLessEqual(self.check.cost_of(plan.workers, self.headroom),
+                             self.HEADROOM_MB - self.check._RESERVE_MB)
+
+
+class TestNothingRefusesToRun(unittest.TestCase):
+    """FINDING of 2026-08-24, and the reason there is no refusal path to test: the cost
+    model is an intercept fitted through two points on ONE machine, it says a 4-core,
+    16 GB runner cannot fit four workers, and CI ran four on ubuntu-latest and
+    windows-latest three times that day. A gate only its author can run is not a gate."""
+
+    def setUp(self) -> None:
+        self.check = load_check()
+
+    def test_no_reading_however_small_takes_the_count_below_the_floor(self):
+        for name in self.check._FLOOR_MB:
+            for megabytes in (0, 1, 512, 4 * 1024, 12 * 1024):
+                for cores in (1, 2, 4, 24):
+                    with self.subTest(name=name, megabytes=megabytes, cores=cores):
+                        plan = self.check.plan_workers(
+                            cores, self.check.Headroom(megabytes, name))
+                        self.assertEqual(plan.workers,
+                                         min(cores, self.check._MIN_WORKERS)
+                                         if cores > 1 else 1)
+
+    def test_a_machine_below_the_fitted_floor_still_runs_the_suite(self):
+        """The CI counter-example itself: less headroom than the model claims one worker
+        needs, and the answer is still four workers rather than a refusal."""
+        starved = self.check.Headroom(self.check._FLOOR_MB[_COMMIT] // 4, _COMMIT)
+        self.assertGreater(self.check.cost_of(1, starved), starved.megabytes)
+        self.assertEqual(self.check.plan_workers(4, starved).workers, 4)
+
+    def test_the_gate_starts_the_run_on_a_machine_with_nothing_free(self):
+        """End to end: no exit code of its own, no message instead of a run."""
+        calls: list[list[str]] = []
+
+        def record(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        plan = self.check.plan_workers(24, self.check.Headroom(0, _COMMIT))
+        with mock.patch.object(self.check.subprocess, "run", side_effect=record), \
+                mock.patch.object(self.check, "_PLAN", plan), \
+                mock.patch.object(sys, "argv", ["check.py", "--slow"]), \
+                redirect_stdout(StringIO()):
+            self.assertEqual(self.check.main(), 0)
+        self.assertEqual(calls[0], self.check.ERASE_COVERAGE)
+        self.assertTrue(any("pytest" in cmd for cmd in calls))
+
+
 class TestCiIsNotMadeSlowerByThis(unittest.TestCase):
-    """The trade this feature is not allowed to make.
+    """The trade this feature is not allowed to make: on a 4-core runner with nothing
+    else on it the answer stays the cores, byte-for-byte what `min(cores, 8)` gave."""
 
-    The runners of `.github/workflows/check.yml` are 4 cores and 16 GB with nothing else
-    on them; on such a machine the answer has to be the cores, byte-for-byte what
-    `min(cores, 8)` returned before.
-    """
-
-    # 4 cores, 16 GB — and the free figure differs by platform because the READING does:
+    # 4 cores, and the free figure differs by platform because the READING does:
     # `MemAvailable` on an idle linux runner is most of the box, while a Windows commit
-    # headroom is what the image's page file leaves over the charge. Both are floors
-    # taken low on purpose; if a runner ever reports less, the line this feature prints
-    # says so in the CI log, and the budget is one edit away.
+    # headroom is what the image's page file leaves over the charge. Deliberately taken
+    # low — below the fitted floor for either reading — because that is the case the
+    # runners actually presented and passed.
     RUNNER_CORES = 4
-    RUNNER_HEADROOM_MB = {"available memory": 12 * 1024, "commit headroom": 14 * 1024}
+    RUNNER_HEADROOM_MB = {"available memory": 8 * 1024, "commit headroom": 6 * 1024}
 
     def setUp(self) -> None:
         self.check = load_check()
@@ -115,12 +201,10 @@ class TestCiIsNotMadeSlowerByThis(unittest.TestCase):
                     self.RUNNER_CORES, self.check.Headroom(megabytes, name))
                 self.assertEqual(plan.workers, self.RUNNER_CORES)
 
-    def test_no_budget_asks_a_runner_for_more_memory_than_it_has(self):
-        """A budget that four workers cannot fit into 16 GB would refuse CI outright —
-        the loudest possible version of the trade this feature must not make."""
-        for name, budget in self.check._BUDGET_MB.items():
-            with self.subTest(name=name):
-                self.assertLess(self.RUNNER_CORES * budget, 16 * 1024)
+    def test_the_floor_under_the_count_is_the_runner_count(self):
+        """`_MIN_WORKERS` is not a taste: it is the count CI is observed to run."""
+        self.assertGreaterEqual(self.check._MIN_WORKERS, self.RUNNER_CORES)
+        self.assertLessEqual(self.check._MIN_WORKERS, self.check._MAX_WORKERS)
 
 
 class TestTheLineSaysWhatWasChosenAndWhy(unittest.TestCase):
@@ -128,46 +212,41 @@ class TestTheLineSaysWhatWasChosenAndWhy(unittest.TestCase):
 
     def setUp(self) -> None:
         self.check = load_check()
-        self.budget = self.check._COMMIT_BUDGET_MB
 
-    def line(self, cores: int, megabytes: int | None, name: str = "commit headroom") -> str:
+    def line(self, cores: int, megabytes: int | None, name: str = _COMMIT) -> str:
         return self.check.plan_workers(cores, self.check.Headroom(megabytes, name)).line
 
     def test_the_full_count_is_reported_as_loudly_as_a_lowered_one(self):
         full = self.line(24, _PLENTY_MB)
         self.assertRegex(full, r"^workers: 8 of 8 \(24 cores\)")
-        self.assertIn("budgeted per worker", full)
+        self.assertIn("floor", full)
+        self.assertIn("per worker", full)
 
-    def test_a_lowered_count_names_the_headroom_and_the_budget(self):
-        line = self.line(24, self.budget * 5)
-        self.assertRegex(line, r"^workers: 5 of 8 \(24 cores\)")
-        self.assertIn(self.check._gb(self.budget * 5), line)
-        self.assertIn(self.check._gb(self.budget), line)
+    def test_the_line_names_every_number_the_decision_was_made_from(self):
+        megabytes = 20 * 1024
+        line = self.line(24, megabytes)
+        for number in (megabytes, self.check._FLOOR_MB[_COMMIT],
+                       self.check._MARGINAL_MB[_COMMIT], self.check._RESERVE_MB):
+            self.assertIn(self.check._gb(number), line)
 
     def test_the_line_names_the_reading_it_used_and_platforms_differ(self):
-        self.assertIn("commit headroom", self.line(24, self.budget * 5))
-        self.assertIn("available memory", self.line(24, self.budget * 5, "available memory"))
+        self.assertIn("commit headroom", self.line(24, 20 * 1024))
+        self.assertIn("available memory", self.line(24, 20 * 1024, "available memory"))
 
-    def test_each_reading_is_priced_with_the_budget_measured_for_it(self):
+    def test_each_reading_is_priced_with_the_numbers_taken_for_it(self):
         """The two readings are different quantities — a reservation Windows counts
-        against its limit and a page Linux really holds — so one price for both would be
+        against its limit and a page Linux really holds — so one pair for both would be
         a number that is wrong on at least one platform."""
-        for name, budget in self.check._BUDGET_MB.items():
+        for name in self.check._FLOOR_MB:
             with self.subTest(name=name):
-                self.assertIn(self.check._gb(budget), self.line(24, _PLENTY_MB, name))
+                line = self.line(24, 20 * 1024, name)
+                self.assertIn(self.check._gb(self.check._FLOOR_MB[name]), line)
+                self.assertIn(self.check._gb(self.check._MARGINAL_MB[name]), line)
 
     def test_a_failed_measurement_is_said_and_not_hidden(self):
         line = self.line(24, None)
         self.assertRegex(line, r"^workers: 8 of 8 \(24 cores\)")
         self.assertIn("could not be measured", line)
-
-    def test_the_refusal_names_both_numbers_and_what_frees_them(self):
-        headroom = self.check.Headroom(self.budget // 2, "commit headroom")
-        message = self.check.too_tight(self.check.plan_workers(24, headroom))
-        self.assertIn(self.check._gb(headroom.megabytes), message)
-        self.assertIn(self.check._gb(self.budget), message)
-        # Naming a number without naming what moves it is a message nobody can act on.
-        self.assertIn("worktree", message)
 
     def test_gigabytes_are_printed_and_not_raw_megabytes(self):
         self.assertEqual(self.check._gb(2400), "2.3 GB")
@@ -236,7 +315,7 @@ class TestTheProbeNeverBreaksTheGate(unittest.TestCase):
 
 
 class TestTheRunActsOnThePlan(unittest.TestCase):
-    """What `main` does with the plan: prints it, and refuses on an impossible one."""
+    """What `main` does with the plan: prints it, at the top, on every run with tests."""
 
     def setUp(self) -> None:
         self.check = load_check()
@@ -257,8 +336,7 @@ class TestTheRunActsOnThePlan(unittest.TestCase):
         return code, out.getvalue(), calls
 
     def plan_for(self, megabytes: int | None, cores: int = 24) -> Any:
-        return self.check.plan_workers(cores, self.check.Headroom(megabytes,
-                                                                 "commit headroom"))
+        return self.check.plan_workers(cores, self.check.Headroom(megabytes, _COMMIT))
 
     def test_the_slow_half_prints_the_line_before_it_starts(self):
         plan = self.plan_for(_PLENTY_MB)
@@ -293,37 +371,15 @@ class TestTheRunActsOnThePlan(unittest.TestCase):
         _code, printed, _calls = self.invoke(plan)
         self.assertIn(plan.line, printed)
 
+    def test_a_lowered_count_is_printed_the_same_way_as_a_full_one(self):
+        lowered = self.plan_for(20 * 1024)
+        self.assertLess(lowered.workers, self.check._MAX_WORKERS)
+        _code, printed, _calls = self.invoke(lowered, "--slow")
+        self.assertIn(lowered.line, printed)
+
     def test_the_fast_gate_says_nothing_about_workers_because_it_starts_none(self):
         _code, printed, _calls = self.invoke(self.plan_for(_PLENTY_MB), "--fast")
         self.assertNotIn("workers:", printed)
-
-    def test_a_machine_with_no_headroom_stops_the_run_before_anything_starts(self):
-        code, printed, calls = self.invoke(self.plan_for(0), "--slow")
-        self.assertEqual(code, self.check._TOO_TIGHT)
-        self.assertNotEqual(code, 0, "nothing was checked, so nothing may read as green")
-        self.assertEqual(calls, [], "not even the coverage erase: the run did not start")
-        self.assertIn("NOT STARTING", printed)
-
-    def test_the_refusal_reaches_the_full_gate_as_well(self):
-        code, _printed, calls = self.invoke(self.plan_for(0))
-        self.assertEqual(code, self.check._TOO_TIGHT)
-        self.assertEqual(calls, [])
-
-    def test_a_tight_machine_that_can_still_afford_a_worker_runs(self):
-        plan = self.plan_for(self.check._COMMIT_BUDGET_MB)
-        self.assertEqual(plan.workers, 1)
-        code, printed, calls = self.invoke(plan, "--slow")
-        self.assertEqual(code, 0)
-        self.assertIn(plan.line, printed)
-        self.assertTrue(calls)
-
-    def test_the_refusal_does_not_reach_the_fast_gate(self):
-        """`--fast` is lint and types in one process: it neither needs the headroom nor
-        should be blocked by a machine that has none."""
-        code, printed, calls = self.invoke(self.plan_for(0), "--fast")
-        self.assertEqual(code, 0)
-        self.assertNotIn("NOT STARTING", printed)
-        self.assertEqual(calls, [cmd for _, cmd in self.check.FAST_CHECKS])
 
 
 class TestTheCommandCarriesTheChosenCount(unittest.TestCase):
@@ -334,7 +390,7 @@ class TestTheCommandCarriesTheChosenCount(unittest.TestCase):
 
     def test_the_parallel_half_runs_at_the_planned_count(self):
         args = pytest_args(self.check.SLOW_CHECKS[0][1])
-        self.assertEqual(args[args.index("-n") + 1], str(max(self.check._PLAN.workers, 1)))
+        self.assertEqual(args[args.index("-n") + 1], str(self.check._PLAN.workers))
 
     def test_the_count_is_a_number_and_never_zero_or_auto(self):
         args = pytest_args(self.check.SLOW_CHECKS[0][1])
@@ -348,75 +404,79 @@ class TestTheCommandCarriesTheChosenCount(unittest.TestCase):
         self.assertEqual(self.check._MAX_WORKERS, 8)
 
 
-class TestTheBudgetIsAMeasurementAndSaysSo(unittest.TestCase):
-    """A budget that is a guess is the same as the old eight, only newer.
-
-    So the number in `check.py` has to be findable in the CHANGELOG with the conditions
-    it was taken under. This test is what makes re-measuring it a two-file edit.
-    """
+class TestTheNumbersSayWhereTheyCameFrom(unittest.TestCase):
+    """A number that is a guess is the same as the old eight, only newer — so the two
+    that are measured are findable in the CHANGELOG with their conditions, and the two
+    that are reasoned are labelled as reasoned where they are defined."""
 
     def setUp(self) -> None:
         self.check = load_check()
         self.changelog = (_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.source = (_ROOT / "scripts" / "check.py").read_text(encoding="utf-8")
 
-    def test_both_budgets_are_plausible_numbers_of_megabytes(self):
-        for name, budget in self.check._BUDGET_MB.items():
+    def block_above(self, constant: str) -> str:
+        """The comment lines immediately above a constant — where this project keeps the
+        reason for a number."""
+        lines = self.source.splitlines()
+        index = next(number for number, line in enumerate(lines)
+                     if line.startswith(constant))
+        collected = []
+        while index > 0 and lines[index - 1].startswith("#"):
+            index -= 1
+            collected.insert(0, lines[index])
+        return "\n".join(collected)
+
+    def test_the_costs_are_plausible_numbers_of_megabytes(self):
+        for name, floor in self.check._FLOOR_MB.items():
             with self.subTest(name=name):
-                self.assertGreater(budget, 200)
-                self.assertLess(budget, 16 * 1024)
+                self.assertGreater(floor, 1024)
+                self.assertLess(floor, 32 * 1024)
+                self.assertGreater(self.check._MARGINAL_MB[name], 100)
+                self.assertLess(self.check._MARGINAL_MB[name], floor)
 
-    def test_every_reading_this_machine_can_produce_has_a_budget(self):
+    def test_every_reading_this_machine_can_produce_has_both_numbers(self):
         """A reading with no price would be a KeyError inside the gate, at the one
         moment the gate is what everything else is waiting for."""
         for platform in ("win32", "linux", "darwin"):
             with self.subTest(platform=platform), \
                     mock.patch.object(self.check.sys, "platform", platform):
-                self.assertIn(self.check.memory_headroom().name, self.check._BUDGET_MB)
+                name = self.check.memory_headroom().name
+                self.assertIn(name, self.check._FLOOR_MB)
+                self.assertIn(name, self.check._MARGINAL_MB)
 
-    def budget_mentions(self) -> list[str]:
-        """Every `<budget> MB` in the CHANGELOG. `assertIn` is avoided on purpose here:
-        it prints the container it searched, and that container is the CHANGELOG."""
-        return [f"{budget} MB" for budget in self.check._BUDGET_MB.values()
-                if f"{budget} MB" in self.changelog]
-
-    def test_the_changelog_carries_the_numbers_check_py_uses(self):
-        self.assertEqual(len(self.budget_mentions()), len(self.check._BUDGET_MB),
-                         "a budget in check.py that the CHANGELOG does not report")
+    def test_the_changelog_carries_the_numbers_the_run_prints(self):
+        for number in (self.check._FLOOR_MB[_COMMIT], self.check._MARGINAL_MB[_COMMIT],
+                       self.check._RESERVE_MB):
+            printed = self.check._gb(number)
+            self.assertTrue(printed in self.changelog,
+                            f"{printed} is in the line the gate prints and nowhere in "
+                            f"the CHANGELOG")
 
     def test_the_changelog_says_under_what_conditions_they_were_taken(self):
-        found = self.changelog.index(self.budget_mentions()[0])
+        found = self.changelog.index(self.check._gb(self.check._FLOOR_MB[_COMMIT]))
         entry = self.changelog[max(0, found - 6000):found + 6000].lower()
         for condition in ("2026-08-24", "gpu", "cpu", "cores"):
             self.assertTrue(condition in entry,
                             f"a measurement that does not say {condition!r} is an estimate")
 
-    def test_the_source_says_when_it_was_measured(self):
+    def test_the_measured_numbers_say_when_they_were_measured(self):
         """A number without a date is a number nobody can decide is stale — which is how
         `_MAX_WORKERS = 8` came to be trusted for a year."""
-        source = (_ROOT / "scripts" / "check.py").read_text(encoding="utf-8")
-        for constant in ("_COMMIT_BUDGET_MB = ", "_RESIDENT_BUDGET_MB = "):
-            with self.subTest(constant=constant):
-                found = source.index(constant)
-                self.assertRegex(source[max(0, found - 1600):found], r"20\d\d-\d\d-\d\d")
+        self.assertRegex(self.block_above("_FLOOR_MB = "), r"20\d\d-\d\d-\d\d")
 
+    def test_the_reasoned_numbers_admit_that_they_are_reasoned(self):
+        """`_RESERVE_MB` and `_MIN_WORKERS` are not measurements, and the day that stops
+        being written down is the day they start being quoted as ones."""
+        self.assertIn("reasoned, not measured", self.block_above("_RESERVE_MB = "))
+        self.assertIn("OBSERVATION", self.block_above("_MIN_WORKERS = "))
 
-class TestTheDocstringStillDescribesTheGate(unittest.TestCase):
-    """It has been wrong by a factor of three once already, about the duration."""
-
-    def setUp(self) -> None:
-        self.check = load_check()
-        self.doc = self.check.__doc__ or ""
-
-    def test_it_says_the_count_is_measured_and_eight_is_the_ceiling(self):
-        self.assertIn("workers = min(cores, 8, memory headroom", self.doc)
-        self.assertRegex(self.doc, r"(?i)ceiling")
-
-    def test_it_no_longer_promises_a_fixed_number_of_workers(self):
-        self.assertNotIn("-n <cores, at most 8>", self.doc)
-
-    def test_it_shows_the_line_the_run_prints(self):
-        shown = re.search(r"^\s*workers: \d+ of \d+ \(\d+ cores\).*$", self.doc, re.MULTILINE)
+    def test_the_docstring_shows_the_line_the_run_prints(self):
+        shown = re.search(r"^\s*workers: \d+ of \d+ \(\d+ cores\).*$",
+                          self.check.__doc__ or "", re.MULTILINE)
         self.assertIsNotNone(shown, "the docstring should show what the run prints")
+
+    def test_the_docstring_no_longer_promises_a_fixed_number_of_workers(self):
+        self.assertNotIn("-n <cores, at most 8>", self.check.__doc__ or "")
 
 
 if __name__ == "__main__":  # pragma: no cover

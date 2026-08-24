@@ -365,19 +365,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nowhere to be seen at the moment it mattered.
 
   So `_MAX_WORKERS = 8` — measured once, on one machine, on one day, and trusted ever
-  since — is now the CEILING and no longer the decision:
+  since — is now the CEILING and no longer the decision. The decision is the largest
+  count whose estimated cost fits in the headroom with a reserve still unspent:
 
-      workers = min(cores, 8, headroom / the budget per worker), never below 1
+      cost(workers) = floor + workers x marginal, and the count is the largest one with
+      cost(workers) <= headroom - 2.0 GB, never above min(cores, 8) and never below
+      min(cores, 4)
 
   Memory may only LOWER it, so an idle 4-core runner still gets its four. The run
   **always** prints what it chose and out of what, at the full count as well as at a
-  lowered one — `workers: 5 of 8 (24 cores) — 18.6 GB of commit headroom, 3.4 GB budgeted
-  per worker` — because the alternative is what actually happened: measuring the machine
-  by hand AFTER the red gate to find out whether the machine was the reason. And where
-  the headroom does not cover even one worker the run **does not start**: eight minutes
-  spent to arrive at a predictable `MemoryError` is a wait, not a check, so the gate
-  names both numbers, says what would free them, and exits 3 (not 1 — "this machine
-  cannot host the run" is not "the branch is broken").
+  lowered one — `workers: 5 of 8 (24 cores) — 18.6 GB of commit headroom, 13.7 GB floor +
+  1.8 GB per worker, 2.0 GB left unspent` — because the alternative is what actually
+  happened: measuring the machine by hand AFTER the red gate to find out whether the
+  machine was the reason.
+
+  **Nothing here refuses to run**, and that is the second finding rather than a
+  softening. The first version stopped the run when the headroom did not cover one
+  worker, and the counter-example is in this repository: the cost model is a straight
+  line fitted through two points on ONE machine, and CI's runners — four cores, 16 GB, on
+  ubuntu-latest and windows-latest — sit below what that line claims four workers need
+  and passed three times on 2026-08-24. Windows counts reserved address space nobody
+  touched, the runners have no CUDA wheels, and two points do not describe a curve near
+  its origin. A gate only its author can run is not a gate. So the estimate takes eight
+  down to five; it never tells a machine it cannot host the suite.
 
   Two readings, not one, because they are not the same quantity: Windows is asked for
   what is left of its commit limit (`ullAvailPageFile`), Linux for `MemAvailable`, and
@@ -385,7 +395,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MemAvailable. A platform that cannot be measured, or an API that refuses, falls back to
   exactly today's `min(cores, 8)` and the line says so instead of hiding it.
 
-  **The budget is a measurement, not an estimate** — "probably half a gig" would be the
+  **The cost is a measurement, not an estimate** — "probably half a gig" would be the
   old eight all over again, only newer. Measured 2026-08-24 on this machine (24 logical
   cores, commit limit 74.6-75.6 GB, both install profiles) by running the parallel half at
   a given `-n` with coverage on and sampling its own process tree every 2 s for the sum of
@@ -402,23 +412,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marginal cost of one more worker is 1.74 GB on gpu and 1.77 GB on cpu, and the profiles
   differ in the FLOOR (14.0 against 11.8 GB) — the price of the suite's own
   subprocess-spawning tests, which import torch thirty-odd times whatever `-n` says. So
-  the gate charges one number per reading rather than one per profile: **3500 MB** per
-  worker against commit headroom, taken at the ceiling (3493, rounded).
+  the table is read as the two numbers it actually contains, taken at the ceiling of both
+  profiles: a **13.7 GB** floor and **1.8 GB per worker** against commit headroom.
 
-  The trap that comes with it is written down where the number is: a division cannot
-  express a floor. The amortised cost at 8 workers is right when 8 are being considered
-  and optimistic below — with 15 GB of headroom the formula lands on 4 workers where the
-  tree still wants about 19. It lowers the count; it does not promise the run fits. The
-  printed line is what makes the rest of that case readable at the start rather than
-  mysterious at minute eight.
+  Reading it as one amortised per-worker figure and dividing the headroom by it — which
+  is what the first version did — throws half the measurement away and lands the plan on
+  the edge. It did, on the run that produced these very numbers: 26.9 GB of headroom
+  bought 7 workers at 3500 MB each, 7 workers want 14.0 + 7 x 1.74 = 26.2 GB, and the run
+  met a `MemoryError` with 0.7 GB nominally to spare. The same headroom now buys 6.
 
-  For `MemAvailable` the commit figure would be the wrong quantity — pages actually held,
-  not reservations — so that reading is priced from F219's measured peak RESIDENT memory
-  of the same tree (2026-08-07, 20.0 GB at 8 workers): **2500 MB** per worker. It is a
-  Windows measurement standing in for a Linux number because the project has no Linux
-  machine; when it gets one, that is the first number to re-take. Both budgets leave four
-  workers affordable inside a 16 GB CI runner, which is the trade this feature was not
-  allowed to make: a fix for one laptop paid for with everybody's CI.
+  Two numbers are **reasoned rather than measured**, and the comments beside them say so.
+  **2.0 GB** is left unspent for whoever else moves while the run goes — a fixed amount
+  and not a fraction, because a percentage lands on one worker at 19 GB of headroom and
+  adds nothing at 60; the headroom on this machine swung between 15.6 and 28.1 GB inside
+  one day, so it is a bet that the next swing is smaller than the last ones. And the
+  count is never cut below `min(cores, 4)`, which comes from OBSERVATION and not from the
+  model: four workers are known to run on a 16 GB runner because CI does it daily.
+
+  For `MemAvailable` the commit figures would be the wrong quantity — pages actually
+  held, not reservations — so that reading carries a smaller pair, **9.8 GB** and
+  **1.3 GB per worker**. That pair is reasoned too: the project has no Linux machine and
+  nobody has run the sweep on one. The nearest measurement of the quantity is F219's peak
+  RESIDENT memory of the same tree on Windows (2026-08-07: 17.3 GB at 4 workers, 20.0 GB
+  at 8, i.e. 14.6 GB plus 0.7 GB per worker), and it is the first thing to re-take when
+  there is a Linux machine to take it on. Under either pair a 4-core runner keeps its
+  four workers, which is the trade this feature was not allowed to make: a fix for one
+  laptop paid for with everybody's CI.
 - **No card, no question: the launch stops paying minutes for an answer it already has**
   (F250). In the owner's VM on 2026-08-24 the start-up step `gpu` took **222.6 s** — three
   minutes forty-two of a program the owner was waiting for, 78 s short of the probe's own
