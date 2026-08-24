@@ -459,7 +459,12 @@ def main() -> int:
         # the count: a red gate has to be readable as "the machine was tight" WITHOUT
         # measuring the machine by hand afterwards, and that only works if the number is
         # there on the green ones too.
-        print(_PLAN.line)
+        #
+        # `flush` and not tidiness: a piped stdout is block-buffered, while every check
+        # below writes to that pipe from a subprocess of its own. Measured 2026-08-24 —
+        # without it the line arrived on line 729 of a 754-line captured run, after the
+        # very wait it exists to explain.
+        print(_PLAN.line, flush=True)
         if _PLAN.workers < 1:
             print(too_tight(_PLAN))
             return _TOO_TIGHT

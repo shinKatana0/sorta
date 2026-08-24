@@ -197,7 +197,8 @@ tests/test_the_collection_can_move.py                25
 tests/test_the_cpu_tier_gets_a_number.py             59
 tests/test_the_diagnostics_do_not_starve_the_server.py  104
 tests/test_the_first_launch_says_it_is_starting.py   166   # F246 +6: the assertion about
-tests/test_the_gate_sizes_itself_to_the_machine.py    68   # F251: new file
+tests/test_the_gate_sizes_itself_to_the_machine.py    74   # F251: new file, +6 for why
+                            # a print that is not flushed is a print nobody reads
 tests/test_the_index_follows_from_the_screen.py      78
 tests/test_the_log_speaks_english.py                 44
 tests/test_the_moved_collection_is_reachable_from_the_screen.py  50

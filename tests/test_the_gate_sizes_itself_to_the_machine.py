@@ -269,6 +269,25 @@ class TestTheRunActsOnThePlan(unittest.TestCase):
                         "the point of the line is to be there BEFORE the wait")
         self.assertTrue(calls)
 
+    def test_the_line_is_flushed_or_a_captured_run_shows_it_last(self):
+        """The buffering is the whole difference between the line being read and not.
+
+        Everyone who reads a gate log — the orchestrator, CI, an agent — reads it
+        through a pipe, and a piped stdout is block-buffered while each check writes to
+        that same pipe from a subprocess directly.
+        """
+        plan = self.plan_for(_PLENTY_MB)
+        with mock.patch.object(self.check.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0)), \
+                mock.patch.object(self.check, "_PLAN", plan), \
+                mock.patch.object(sys, "argv", ["check.py", "--slow"]), \
+                mock.patch("builtins.print") as printed:
+            self.check.main()
+        wrote_the_line = [call for call in printed.call_args_list if plan.line in call.args]
+        self.assertTrue(wrote_the_line, printed.call_args_list)
+        self.assertTrue(all(call.kwargs.get("flush") for call in wrote_the_line),
+                        "the line must not wait in a buffer for the run it precedes")
+
     def test_the_full_gate_prints_it_too(self):
         plan = self.plan_for(_PLENTY_MB)
         _code, printed, _calls = self.invoke(plan)
