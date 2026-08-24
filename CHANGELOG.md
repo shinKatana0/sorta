@@ -347,6 +347,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of files that stayed.
 
 ### Changed
+- **No card, no question: the launch stops paying minutes for an answer it already has**
+  (F250). In the owner's VM on 2026-08-24 the start-up step `gpu` took **222.6 s** — three
+  minutes forty-two of a program the owner was waiting for, 78 s short of the probe's own
+  300 s timeout, on a machine with no NVIDIA card in it. The same step is 7.8 s on the
+  developer's machine, a factor of 28. F246 held: the interface answered throughout those
+  four minutes, where before it had gone dead — but it was still four minutes.
+
+  What was being bought: `warn_if_gpu_mismatch` asked `import torch` first (since F246, in
+  a child process, which is why the price is now an interpreter starting from nothing) and
+  the hardware fifth. It warns about three things, and **all three are about a card that
+  is there**: `torch_ignores_gpu` and `ort_ignores_gpu` cannot fire without `gpu_present`
+  by construction, and the F63 `mismatch` — onnxruntime offers CUDA, torch does not — has
+  nothing to repair on a machine with no CUDA to execute. So the cheap question goes
+  first: `nvidia-smi` needs neither stack, and with no card the launch imports nothing,
+  starts no child and says nothing.
+
+  Dropping that last warning is a **decision, not an optimisation**: on a card-less
+  machine `mismatch` could fire today and will not from now on. It is written where the
+  branch is and pinned by a test, so the next reading of `mismatch` does not restore it as
+  a bug fix. The trap that comes with it is written down too: the probe answers through
+  `nvidia-smi`, so a machine that HAS a card but no `nvidia-smi` on PATH now gets no
+  warning at all — the price of the install wizard (F230) and the launch reading one
+  probe rather than two that can disagree.
+
+  Measured 2026-08-24, dev machine, `cpu` profile (torch 2.13.0+cpu, onnxruntime absent,
+  so the child import is a floor), with `nvidia-smi` made unreachable to stand in for a
+  machine with no driver: the step was **3.99 s** and is **0.004 s** — a thousandfold, and
+  in the owner's VM it is the 222.6 s that goes. Nothing changes where there is a card:
+  4.42 s, of which 0.48 s is `nvidia-smi` and the rest the same child as before.
+  `sorta doctor` is untouched — it answers "what is installed here" and keeps importing
+  torch to do it, including on a machine with no card.
 - **The run screen speaks the language of the interface; the log goes on speaking
   English** (F245). F238/F239 moved every diagnostic sentence and every exception text to
   English and put a guard on `ast` to keep them there — the right call for a log that
