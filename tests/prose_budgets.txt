@@ -12,7 +12,7 @@ sorta/dates.py        17
 sorta/db/__init__.py  97
 sorta/dedup.py        191
 sorta/detect.py       175
-sorta/diagnostics.py  232   # F246 +64: the GPU probe moved into a child process — what
+sorta/diagnostics.py  243   # F246 +64: the GPU probe moved into a child process — what
                             # the torch import costs the process that pays it, why the
                             # child is told the import path, and which caller asks where
                             # F250 +17: the branch that skips the probe with no card is a

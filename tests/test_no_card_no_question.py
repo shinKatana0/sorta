@@ -255,5 +255,24 @@ class TestTheDoctorStillAsksEverything(unittest.TestCase):
                 self.assertIn("mismatch: YES", summary)
 
 
+
+class TestTheProbeIsGivenTimeToAnswer(unittest.TestCase):
+    """The floor under `_NVIDIA_SMI_TIMEOUT_S`, and why it is not a style preference.
+
+    At 3.0 s this machine's RTX 5090 read as NO CARD: measured 2026-08-24, the first
+    `nvidia-smi` after boot takes 3738 ms and warm ones 1547-1636 ms, and the launch asks
+    exactly once, cold. Since F250 that answer decides whether the GPU question is asked
+    at all, and F230's wizard reads the same probe before offering 2.5 GB of CUDA wheels,
+    so a false "no card" is wrong in two places at once.
+    """
+
+    def test_the_timeout_leaves_room_for_a_cold_call(self):
+        self.assertGreaterEqual(diagnostics._NVIDIA_SMI_TIMEOUT_S, 10.0)
+
+    def test_it_is_still_bounded(self):
+        """A half-installed driver can hang on this call; the wait has to end."""
+        self.assertLess(diagnostics._NVIDIA_SMI_TIMEOUT_S, 60.0)
+
+
 if __name__ == "__main__":
     unittest.main()

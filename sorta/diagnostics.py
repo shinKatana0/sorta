@@ -122,7 +122,18 @@ _PROBLEM_WARNING = "GPU setup problem: torch %s, onnxruntime providers: %s. %s"
 _NVIDIA_SMI_CMD = ("nvidia-smi", "--query-gpu=name,driver_version",
                    "--format=csv,noheader")
 # A machine with a half-installed driver can hang on this call — never wait longer.
-_NVIDIA_SMI_TIMEOUT_S = 3.0
+#
+# 3.0 s was too tight and made this machine's RTX 5090 read as NO CARD. Measured
+# 2026-08-24 on the owner's machine: the first call after boot takes 3738 ms and warm ones
+# 1547-1636 ms, so the launch — which asks exactly once, cold — lost the race every time.
+# Since F250 that answer decides whether the GPU question is asked at all, and F230's
+# wizard reads the same probe to decide whether to offer 2.5 GB of CUDA wheels, so a false
+# "no card" is expensive in two places at once.
+#
+# Generous on purpose, and it costs nothing to be: the timeout is only ever spent where
+# the binary EXISTS and is slow. A machine without a card has no `nvidia-smi` to run and
+# fails in milliseconds, which is the common case this used to be tuned for.
+_NVIDIA_SMI_TIMEOUT_S = 15.0
 
 # The CUDA the `gpu` profile is built for (pyproject's pytorch-cu130 index) and the driver
 # it needs. A CUDA major release has no forward compatibility: 13.0 requires r580 (580.65
