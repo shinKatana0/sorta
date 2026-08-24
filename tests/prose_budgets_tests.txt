@@ -143,6 +143,7 @@ tests/test_naming_landmarks.py                       36
 tests/test_naming_providers.py                       36
 tests/test_naming_vlm.py                             76
 tests/test_naming_vlm_batching.py                    71
+tests/test_no_card_no_question.py                    61   # F250: new file
 tests/test_no_console_nobody_asked_for.py            84   # F246 +1: the sixth child
 tests/test_offline.py                                22
 tests/test_only_our_page_may_write.py                89
