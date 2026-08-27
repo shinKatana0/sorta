@@ -519,10 +519,9 @@ class _CityFallbackResolver:
     """F86: the online provider first, the bundled offline base as insurance for the city.
 
     Nominatim answers for suburbs and the countryside without any of the city keys it is
-    read by, so the place used to end up as "country known, city NULL" — 1 596 files of the
-    live collection (1 471 exact_gps + 125 inherited) that the sorter then hid in
-    _Unsorted/no_place, while the SAME coordinates resolve offline (55.4138, 37.8976 ->
-    «Домодедово»; -8.79806, 115.2349 -> Jabajero).
+    read by, so the place used to end up as "country known, city NULL" — 1 596 files of a
+    full run (1 471 exact_gps + 125 inherited) that the sorter then hid in
+    _Unsorted/no_place, while the SAME coordinates resolve offline to a city.
 
     Country, city and district always come from ONE source: an offline city replaces the
     whole place, so a Nominatim country name is never glued onto a GeoNames city. If the

@@ -1,9 +1,9 @@
 """F86: an online answer without a city is completed from the bundled offline base.
 
-The live run (2026-07-26, geo.provider=online) left 1 471 exact_gps files with a
-country and city NULL — and the very same coordinates resolve to a city in the bundled
-GeoNames data. Both the network and the offline resolver are faked here: the network so
-the tests stay offline, the resolver so they do not pull the bundled 12 MB.
+A run with geo.provider=online (2026-07-26) left 1 471 exact_gps files with a country
+and city NULL where the bundled GeoNames data does know a city. The coordinates below
+are synthetic fixtures. Both the network and the offline resolver are faked here: the
+network so the tests stay offline, the resolver so they do not pull the bundled 12 MB.
 """
 import json
 import tempfile
@@ -32,9 +32,9 @@ _OFFLINE_NAMES = {
     _GID_KANGAR: "Kangar",
 }
 
-# the two live pairs from the defect report + two synthetic ones
-_DOMODEDOVO = (55.4138, 37.8976)
-_NUSA_DUA = (-8.79806, 115.2349)
+# synthetic fixture coordinates, one per branch of the fallback
+_DOMODEDOVO = (55.41, 37.90)
+_NUSA_DUA = (-8.80, 115.23)
 _BORDER = (6.5417, 100.12)      # online says TH, the offline base answers MY
 _OPEN_SEA = (13.5, 92.5)        # no city in the offline base either
 
@@ -148,8 +148,8 @@ class CityFallbackTestBase(unittest.TestCase):
 
 class TestOfflineFallback(CityFallbackTestBase):
     def test_country_without_city_takes_the_city_from_the_offline_base(self):
-        # the live pair: online returned only the country, the bundled base knows the
-        # place as «Домодедово» (district «Яковлевское»)
+        # online returned only the country; the offline base knows both the city and
+        # the district it sits in
         photo = self.add_file(_DOMODEDOVO)
         stats = self.run_geo()
         row = self.place_of(photo)
@@ -160,7 +160,7 @@ class TestOfflineFallback(CityFallbackTestBase):
         self.assertEqual(row["confidence"], "exact_gps")
         self.assertEqual(stats.exact_gps, 1)
 
-    def test_the_second_live_pair_too(self):
+    def test_the_second_coordinate_too(self):
         photo = self.add_file(_NUSA_DUA)
         self.run_geo()
         row = self.place_of(photo)
