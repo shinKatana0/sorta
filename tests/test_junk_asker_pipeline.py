@@ -23,12 +23,11 @@ nothing:
 
 And the watchdog the brief will not accept the feature without: THE PRICE OF A FRAME,
 measured against another phase of the SAME run rather than in seconds. `junk_pets_vlm` and
-`junk_rescue_vlm` ask one model one question about one frame, exactly as `junk_vlm` does,
-so a phase that costs several times what that one costs is a phase that stopped
-overlapping — and that statement survives a slower machine, where an absolute number in
-seconds does not. `TestTheGuardHasTeeth` runs the same fixture through an asker WITHOUT
-halves (the pre-F206 shape) and asserts the guard fails there, because a watchdog that
-cannot fail is not one.
+`junk_rescue_vlm` ask one model one question about one frame exactly as `junk_vlm` does, so
+a phase costing several times what that one costs has stopped overlapping — a statement
+that survives a slower machine, where an absolute number of seconds does not.
+`TestTheGuardHasTeeth` shows the watchdog can fail without a stopwatch of its own: the
+pre-F206 asker cannot overlap a frame, and the comparison goes red on the prices it gives.
 
 No model is loaded anywhere: every asker below is injected, as everywhere else in the junk
 suite.
@@ -100,8 +99,11 @@ PREPARE_SECONDS = 0.040
 GENERATE_SECONDS = 0.010
 # What the watchdog allows. Serial costs PREPARE+GENERATE a frame where the pipeline costs
 # about max(PREPARE / workers, GENERATE) — a factor of four here, threefold on the live
-# run — so a limit of two is comfortably clear of scheduling noise and nowhere near the
-# regression it is here to catch.
+# run — so a limit of two is clear of scheduling noise and nowhere near the regression.
+# F252 kept the 2.0 rather than lowering it: macos-latest priced the SERIAL shape at x1.89
+# on 2026-08-27 (3.92-4.06 on an idle 24-core box), so a limit catching that runner would
+# sit under what the pipelined side costs there and redden healthy code. The guard grew a
+# structural assertion instead, so the price is not the only thing between F206 and green.
 MAX_PHASE_RATIO = 2.0
 
 
@@ -453,47 +455,24 @@ class TestTheWorkIsNotDoubled(unittest.TestCase):
         self.assertEqual(len(parallel), len(set(parallel)))
 
 
-# Both subclasses below price a frame by SLEEPING for it — 8 ms of "prepare" against 2 ms
-# of "generate" — and then assert about the ratio of the two. That is an assertion about
-# time, and a machine running eight test processes and a worker session slows the
-# pipelined path as readily as the serial one, which compresses the ratio and fails the
-# claim on a run where nothing is wrong. Caught on 2026-08-08 in a gate for a feature that
-# touches neither askers nor timing.
+PRICED_PHASES = (CLASSIFY_PHASE_VLM, CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM)
+
+
+def assert_phase_overlaps(case: unittest.TestCase, prices: dict[str, float],
+                          phase: str) -> None:
+    """The watchdog's comparison: seconds per frame, `phase` against the deep tier."""
+    ratio = prices[phase] / prices[CLASSIFY_PHASE_VLM]
+    case.assertLess(
+        ratio, MAX_PHASE_RATIO,
+        f"{phase} costs x{ratio:.2f} of {CLASSIFY_PHASE_VLM} per frame — the same "
+        f"question about the same frame of the same model, so this is the pass having "
+        f"stopped overlapping (F206)")
+
+
+# serial: the prices below are seconds a frame, and a machine running eight test processes
+# and a worker session prices both sides of the comparison at once (2026-08-08).
 @pytest.mark.serial
-class PhaseRatioCase(unittest.TestCase):
-    """The shared arithmetic of the watchdog: seconds per frame, phase against phase."""
-
-    FRAMES = 24
-
-    def phase_seconds_per_frame(self, lines) -> dict[str, float]:
-        out = {}
-        for phase, match in lines.items():
-            processed = int(match["processed"] or 0)
-            if processed:
-                out[phase] = float(match["elapsed"]) / processed
-        return out
-
-    def priced_run(self, *, split: bool):
-        """One run of the fixture through askers of the given shape; its phase prices."""
-        run = AskerRun(WORKERS, frames=self.FRAMES)
-        self.addCleanup(run.close)
-        deep = SplitAsker({name: "personal_photo" for name in run.names},
-                          prepare_seconds=PREPARE_SECONDS,
-                          generate_seconds=GENERATE_SECONDS)
-        pet = SplitAsker({}, prepare_seconds=PREPARE_SECONDS,
-                         generate_seconds=GENERATE_SECONDS)
-        rescue = SplitAsker({}, default="photo", prepare_seconds=PREPARE_SECONDS,
-                            generate_seconds=GENERATE_SECONDS)
-        lines = run.run_logged(
-            pet.asker() if split else pet.serial_asker(),
-            rescue=rescue.asker() if split else rescue.serial_asker(),
-            deep=deep.asker(), case=self)
-        for asker in (deep, pet, rescue):
-            self.assertEqual(len(asker.asked), self.FRAMES)
-        return self.phase_seconds_per_frame(lines)
-
-
-class TestTheFramePriceGuard(PhaseRatioCase):
+class TestTheFramePriceGuard(unittest.TestCase):
     """The watchdog the brief will not accept the feature without.
 
     Relative and not absolute on purpose: 0.42 frames/s is a number about a card, while
@@ -503,47 +482,95 @@ class TestTheFramePriceGuard(PhaseRatioCase):
     because it is the pass that has been pipelined since F101.
     """
 
+    FRAMES = 24
+
     def setUp(self):
-        self.prices = self.priced_run(split=True)
+        self.askers, self.prices = self.priced_run()
+
+    def priced_run(self):
+        """One run of the fixture through split askers: its askers and its phase prices."""
+        run = AskerRun(WORKERS, frames=self.FRAMES)
+        self.addCleanup(run.close)
+        askers = {
+            CLASSIFY_PHASE_VLM: SplitAsker(
+                {name: "personal_photo" for name in run.names},
+                prepare_seconds=PREPARE_SECONDS, generate_seconds=GENERATE_SECONDS),
+            CLASSIFY_PHASE_PETS_VLM: SplitAsker(
+                {}, prepare_seconds=PREPARE_SECONDS, generate_seconds=GENERATE_SECONDS),
+            CLASSIFY_PHASE_RESCUE_VLM: SplitAsker(
+                {}, default="photo",
+                prepare_seconds=PREPARE_SECONDS, generate_seconds=GENERATE_SECONDS),
+        }
+        lines = run.run_logged(askers[CLASSIFY_PHASE_PETS_VLM].asker(),
+                               rescue=askers[CLASSIFY_PHASE_RESCUE_VLM].asker(),
+                               deep=askers[CLASSIFY_PHASE_VLM].asker(), case=self)
+        prices = {}
+        for phase, match in lines.items():
+            processed = int(match["processed"] or 0)
+            if processed:
+                prices[phase] = float(match["elapsed"]) / processed
+        for asker in askers.values():
+            self.assertEqual(len(asker.asked), self.FRAMES)
+        return askers, prices
 
     def test_the_animal_phase_is_not_multiply_dearer_than_the_deep_tier(self):
-        ratio = self.prices[CLASSIFY_PHASE_PETS_VLM] / self.prices[CLASSIFY_PHASE_VLM]
-        self.assertLess(
-            ratio, MAX_PHASE_RATIO,
-            f"{CLASSIFY_PHASE_PETS_VLM} costs x{ratio:.2f} of {CLASSIFY_PHASE_VLM} per "
-            f"frame — the same question about the same frame of the same model, so this "
-            f"is the pass having stopped overlapping (F206)")
+        assert_phase_overlaps(self, self.prices, CLASSIFY_PHASE_PETS_VLM)
 
     def test_the_rescue_phase_is_not_multiply_dearer_than_the_deep_tier(self):
-        ratio = self.prices[CLASSIFY_PHASE_RESCUE_VLM] / self.prices[CLASSIFY_PHASE_VLM]
-        self.assertLess(
-            ratio, MAX_PHASE_RATIO,
-            f"{CLASSIFY_PHASE_RESCUE_VLM} costs x{ratio:.2f} of {CLASSIFY_PHASE_VLM} "
-            f"per frame (F206)")
+        assert_phase_overlaps(self, self.prices, CLASSIFY_PHASE_RESCUE_VLM)
 
     def test_all_three_phases_were_actually_priced(self):
         """A watchdog over a phase that did not run would be green forever."""
-        for phase in (CLASSIFY_PHASE_VLM, CLASSIFY_PHASE_PETS_VLM,
-                      CLASSIFY_PHASE_RESCUE_VLM):
+        for phase in PRICED_PHASES:
             with self.subTest(phase=phase):
                 self.assertGreater(self.prices.get(phase, 0.0), 0.0)
 
+    def test_every_priced_phase_ran_its_halves_on_separate_threads(self):
+        """F252: the same run said structurally, for the machines the price cannot cover."""
+        for phase, asker in self.askers.items():
+            with self.subTest(phase=phase):
+                self.assertNotIn(threading.get_ident(), asker.prepare_threads)
+                self.assertEqual(len(asker.prepare_threads), WORKERS)
+                self.assertEqual(asker.generate_threads, {threading.get_ident()})
 
-class TestTheGuardHasTeeth(PhaseRatioCase):
-    """The same fixture through the PRE-F206 asker: the guard above must fail on it.
 
-    Without this the watchdog is a test that cannot go red, which is exactly what the
-    three days the regression lived were made of — a green gate over a question nobody
-    asked.
+class TestTheGuardHasTeeth(unittest.TestCase):
+    """The guard above must be able to fail — proved in two parts, neither of them timed.
+
+    One ratio off a serial run carried the whole claim, and macos-latest priced that run at
+    x1.89 on 2026-08-27 against 3.92-4.06 here — a true answer that no longer separates a
+    serial asker from a slow machine. Shape and arithmetic are therefore asserted apart.
     """
 
-    def test_an_asker_without_halves_breaks_the_ratio(self):
-        prices = self.priced_run(split=False)
-        ratio = prices[CLASSIFY_PHASE_PETS_VLM] / prices[CLASSIFY_PHASE_VLM]
-        self.assertGreater(
-            ratio, MAX_PHASE_RATIO,
-            f"a serial asker cost only x{ratio:.2f} of the pipelined tier — the guard "
-            f"in TestTheFramePriceGuard would not have caught F206")
+    SERIAL_PRICE = PREPARE_SECONDS + GENERATE_SECONDS
+    PIPELINED_PRICE = max(PREPARE_SECONDS / WORKERS, GENERATE_SECONDS)
+
+    def test_an_asker_without_halves_never_overlaps_a_frame(self):
+        run = AskerRun(WORKERS, frames=8)
+        self.addCleanup(run.close)
+        pet = SplitAsker({})
+        run.run(pet.serial_asker())
+        self.assertEqual(len(pet.asked), 8)
+        self.assertEqual(pet.prepare_threads, {threading.get_ident()})
+        self.assertEqual(pet.generate_threads, {threading.get_ident()})
+        self.assertEqual(pet.max_alive, 1)
+
+    def test_the_comparison_goes_red_on_the_prices_that_shape_gives(self):
+        prices = {CLASSIFY_PHASE_VLM: self.PIPELINED_PRICE,
+                  CLASSIFY_PHASE_PETS_VLM: self.SERIAL_PRICE,
+                  CLASSIFY_PHASE_RESCUE_VLM: self.SERIAL_PRICE}
+        for phase in (CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM):
+            with self.subTest(phase=phase):
+                with self.assertRaises(AssertionError) as caught:
+                    assert_phase_overlaps(self, prices, phase)
+                self.assertIn("F206", str(caught.exception))
+
+    def test_the_comparison_stays_green_when_every_phase_overlaps(self):
+        """Else the case above would be passing on a comparison that can only fail."""
+        prices = dict.fromkeys(PRICED_PHASES, self.PIPELINED_PRICE)
+        for phase in (CLASSIFY_PHASE_PETS_VLM, CLASSIFY_PHASE_RESCUE_VLM):
+            with self.subTest(phase=phase):
+                assert_phase_overlaps(self, prices, phase)
 
 
 class TestTheQuestionKeepsItsHalves(unittest.TestCase):
