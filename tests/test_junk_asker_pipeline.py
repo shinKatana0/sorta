@@ -470,7 +470,7 @@ def assert_phase_overlaps(case: unittest.TestCase, prices: dict[str, float],
 
 
 # serial: the prices below are seconds a frame, and a machine running eight test processes
-# and a worker session prices both sides of the comparison at once (2026-08-08).
+# and a worker session slows both sides of the comparison at once (2026-08-08).
 @pytest.mark.serial
 class TestTheFramePriceGuard(unittest.TestCase):
     """The watchdog the brief will not accept the feature without.
