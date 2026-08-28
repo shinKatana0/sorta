@@ -4,6 +4,52 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Three acceptance tests stopped asserting on a ratio of times** (F252). `TestTheGuardHasTeeth`
+  went red on macos-latest on 2026-08-27 with `1.8886 not greater than 2.0`, on a commit
+  that touched neither askers nor timing. It was not noise. The test paid a fixture
+  `PREPARE_SECONDS = 0.040` and `GENERATE_SECONDS = 0.010`, so a serial pass costs `P + G`
+  a frame and a pipelined one about `max(P / 4, G)`; with `X` seconds of fixed per-frame
+  cost falling on both legs alike, the ratio is `(50 + X) / (10 + X)`. An idle 24-core box
+  measured 3.92, 4.03, 4.06 over three consecutive runs — `X` of about 3 ms. The macOS
+  runner's 1.89 is `X` of about 35 ms: **the measurer answering correctly**, and at that
+  number the assertion no longer distinguishes a pipeline that regressed to the serial
+  path from a machine that is merely busy. It is the same failure that had already been
+  found at 1.76x and then 1.00x in `test_junk_vlm_pipeline` two days earlier.
+
+  Loosening the threshold was rejected by arithmetic rather than taste: to admit 1.89 the
+  limit must fall below 1.89, while the pipelined side prices at about 1.0 on that same
+  runner — the margin vanishes and the product watchdog `TestTheFramePriceGuard` starts
+  reddening on healthy code. So all three remaining stopwatch assertions were replaced by
+  structural ones, each verified ten runs in a row and each shown red on broken code:
+
+  * `test_junk_parallel_ocr` — all four OCR workers take a frame of their own, made exact
+    by the barrier the neighbouring class already uses. Forcing `_OcrPool.text_frac` onto
+    its serial branch fails it.
+  * `test_exif_parallel` — 256 paths become eight slices, one per exiftool session, read
+    on eight distinct threads. Forcing `_slice_count` to 1 fails it with
+    `[1, 0, 0, 0, 0, 0, 0, 0] != [1, 1, 1, 1, 1, 1, 1, 1]`.
+  * `TestTheGuardHasTeeth` proved two different things with one number and is now two
+    cases: an asker without halves never overlaps a frame (both halves on the caller's
+    thread, `max_alive == 1`), and the guard's comparison — extracted into a shared
+    `assert_phase_overlaps` — goes red on the phase prices that shape produces and green
+    on pipelined ones. Neither reads a clock.
+
+  What is left of the stopwatch in all three is a ceiling, `parallel < serial * 1.5`, for
+  the one shape a slow runner does not explain: a parallel path that costs more than the
+  serial one.
+
+- **The frame-price watchdog no longer rests on the price alone** (F252). `MAX_PHASE_RATIO`
+  stays at 2.0 — on macos-latest a real F206 regression would price at 1.89 and slip
+  under it, but a limit low enough to catch that runner would sit below what the pipelined
+  side costs there. `TestTheFramePriceGuard` therefore asserts, beside its two price
+  cases, that every priced phase prepared on `vlm_workers` threads and generated on the
+  caller's. The addition is measurably stronger than the price: forcing `_vlm_labels` down
+  the serial branch leaves **both** price cases green, because numerator and denominator
+  move together, and fails the structural one on all three phases.
+
 ## [0.6.0] - 2026-08-24
 
 ### Measured
