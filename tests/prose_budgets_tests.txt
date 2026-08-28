@@ -64,7 +64,7 @@ tests/test_every_slice_behaves_the_same.py           97
 tests/test_every_slice_shows_a_grid.py               83
 tests/test_every_slice_shows_more.py                 61
 tests/test_exif_flags.py                             26
-tests/test_exif_parallel.py                          69
+tests/test_exif_parallel.py                          68
 tests/test_face_sharpness.py                         95
 tests/test_faces.py                                  47
 tests/test_faces_cluster_progress.py                 33

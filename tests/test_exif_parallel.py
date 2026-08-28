@@ -322,38 +322,63 @@ class TestShutdown(FakeExifToolTestCase):
                                 f"выходов при {launched} запусках")
 
 
+class _SessionSpy:
+    """A session that remembers the slices it was handed and the threads they came on."""
+
+    def __init__(self, session: exif.ExifToolSession) -> None:
+        self._session = session
+        self.reads: list[tuple[int, int]] = []
+
+    def read(self, paths: list[Path]) -> dict:
+        self.reads.append((threading.get_ident(), len(paths)))
+        return self._session.read(paths)
+
+    def close(self) -> None:
+        self._session.close()
+
+
 class TestSpeedup(FakeExifToolTestCase):
-    """Acceptance: with an artificial per-file delay, N sessions are measurably faster."""
+    """Acceptance: the batch is read by eight sessions on eight threads, not by one."""
 
     count = 256
     delay = 0.005  # per file inside the fake exiftool
 
-    def measure(self, workers: int) -> float:
+    def measure(self, workers: int) -> tuple[list[_SessionSpy], float]:
         pool = exif.ExifToolPool()
         try:
             for session in pool.sessions(workers):
                 session.read([self.paths[0]])  # warm the processes; -stay_open is the point
+            spies = [_SessionSpy(s) for s in pool.sessions(workers)]
+            pool._sessions[:] = spies
             start = time.perf_counter()
             out = pool.read(self.paths, workers)
             elapsed = time.perf_counter() - start
         finally:
             pool.close()
         self.assertEqual(len(out), self.count)
-        return elapsed
+        return spies, elapsed
 
-    # serial: asserts on ELAPSED TIME (8 sessions beat 1) — the parallel half is a
-    # fully loaded machine, and the eight processes this starts cannot get eight cores
-    # there. Measured: it survived 6 parallel gates and 40 runs under two concurrent
-    # `-n auto` suites, because the fake exiftool's cost is a sleep rather than work —
-    # but the margin here is what went red on 2026-08-02 under three gates at once.
+    # F252: a slice each is the structural half of "beat one" and the clock is left as a
+    # ceiling only. The ratio this used to assert is the answer of a stopwatch, not of the
+    # code: 2026-08-27 the same shape gave 1.76x then 1.00x on a shared runner against
+    # 3.9x idle, and at 1.00x it stops telling a serial pool from a starved machine.
     @pytest.mark.serial
     def test_eight_sessions_beat_one(self):
-        serial = self.measure(1)
-        parallel = self.measure(8)
+        one, serial = self.measure(1)
+        eight, parallel = self.measure(8)
+        self.assertEqual([len(spy.reads) for spy in eight], [1] * 8,
+                         "every session must get exactly one slice of the batch")
+        self.assertEqual(sum(size for spy in eight for _thread, size in spy.reads),
+                         self.count)
+        self.assertEqual(len({thread for spy in eight for thread, _size in spy.reads}), 8,
+                         "the eight slices must be read on eight threads")
+        self.assertEqual([len(spy.reads) for spy in one], [1])
         print(f"\n[F72] {self.count} files @ {self.delay * 1000:.0f} ms: "
               f"1 session {serial:.2f}s -> 8 sessions {parallel:.2f}s "
               f"(x{serial / parallel:.1f})")
-        self.assertLess(parallel, serial / 2)  # the ideal is x8; the margin absorbs load
+        self.assertLess(parallel, serial * 1.5,
+                        f"8 sessions must not cost more than 1: "
+                        f"{parallel:.2f}s vs {serial:.2f}s")
 
 
 if __name__ == "__main__":
